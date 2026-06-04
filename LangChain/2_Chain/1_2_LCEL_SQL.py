@@ -31,8 +31,8 @@ print("-" * 100)
 sql = (
     raw_sql
     .replace("SQLQuery: ", "")
-    .replace("\n```sql", "")
-    .replace("\n```", "")
+    .replace("sql", "")
+    .replace("`", "")
     .strip()
 )
 raw_result: Any = db.run(sql)
