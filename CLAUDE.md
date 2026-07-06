@@ -8,12 +8,13 @@
 
 ## 1. 项目概述
 
-**charlotte_savanna** 是一个个人学习型项目，以 **Django 6.0** 为骨架，围绕两大主线展开：
+**charlotte_savanna** 是一个个人学习型项目，以 **Django 6.0** 为骨架，围绕三条主线展开：
 
 | 主线 | 位置 | 说明 |
 |------|------|------|
 | **Python 语言基础** | `charlotte/demo/` | OOP、装饰器、迭代器/生成器、深拷贝、多进程/多线程/协程 |
 | **LangChain 框架** | `LangChain/` | 从 Model I/O → Chain → Memory → Tools → Agent → RAG 的完整渐进式教程 |
+| **Node.js 后端** | `Claude/` | Node.js Express 服务端开发渐进式教程 |
 
 项目初始化于 2026-04-27，当前处于活跃开发中。Django 部分目前仅有脚手架，无实际业务模型和视图。
 
@@ -33,6 +34,9 @@
 | **对话模型** | `gpt-4o-mini` (OpenAI) / `deepseek-v4-pro` (DeepSeek) | — |
 | **搜索工具** | Tavily Search (`langchain_tavily`) | — |
 | **HTTP/Async** | httpx, aiohttp, uvicorn | — |
+| **Node.js 运行时** | Node.js | — |
+| **Node.js 框架** | Express | 4.x |
+| **JS 包管理** | npm | — |
 | **环境管理** | python-dotenv (.env) | — |
 | **包管理** | pip + venv | — |
 | **IDE** | PyCharm / IntelliJ IDEA (`.idea/`) | — |
@@ -84,7 +88,14 @@ charlotte_savanna/
 │       ├── 2_splitter.py        #     Character/Recursive/Token/Semantic
 │       ├── 3_embed.py           #     ChromaDB 持久化与检索
 │       └── 4_retriever.py       #     FAISS 检索器
+├── Claude/                       # Node.js 后端渐进式教程
+│   └── 1_HelloWorld/             #   Express HelloWorld 服务器
+│       ├── server.js             #     Express 路由与响应
+│       ├── package.json          #     npm 包配置
+│       └── package-lock.json     #     依赖锁定文件
 ├── templates/                   # Django 模板目录（空）
+├── main.py                      # （空占位）
+├── CLAUDE_SYSTEM.md             # 系统级 CLAUDE.md 副本（参考用）
 ├── .env                         # 环境变量（含 API Key，已加入 .gitignore）
 ├── .env.example                 # 环境变量模板（可安全提交）
 ├── requirements.txt             # 依赖列表
@@ -123,9 +134,20 @@ charlotte_savanna/
 - **Memory**：使用 `RunnableWithMessageHistory` + `BaseChatMessageHistory`，按 `session_id` 隔离会话
 - **Embedding/RAG**：向量数据库做好持久化目录管理 (`persist_directory`)，`chunk_size` 和 `chunk_overlap` 根据文档类型调优
 
-### 4.3 文件组织
+### 4.3 Node.js / Express 规范
 
-- **Demo/Tutorial 文件**：按 `序号_描述.py` 命名 (如 `1_1_LCEL.py`)，使用 `if __name__ == "__main__":` 包裹执行代码
+- **模块系统**：使用 CommonJS (`require`/`module.exports`)，与 Node.js 生态默认一致
+- **异步处理**：优先使用 `async/await`，避免 callback hell
+- **错误处理**：Express 路由中使用 try/catch 或 wrapper，不静默吞异常
+- **依赖管理**：`package.json` 明确声明 `dependencies`，`package-lock.json` 提交到版本控制
+- **端口配置**：通过环境变量 `PORT` 读取，提供默认 fallback
+- **代码风格**：2 空格缩进，使用 `const` 优先，箭头函数回调
+
+### 4.4 文件组织
+
+- **Demo/Tutorial 文件**：
+  - Python：按 `序号_描述.py` 命名 (如 `1_1_LCEL.py`)，使用 `if __name__ == "__main__":` 包裹执行代码
+  - Node.js：按 `序号_描述/` 目录组织 (如 `1_HelloWorld/`)，入口文件为 `server.js` 或 `index.js`
 - **注释**：中文注释，说明"为什么"而非"是什么"
 - **实验代码**：保留已注释的实现变体供学习参考，不要删除
 - **Asset 文件**：测试数据统一放在 `asset/` 子目录
@@ -146,7 +168,13 @@ charlotte_savanna/
 | tests.py | 🚧 空 | 无测试用例 |
 | demo/ | ✅ 完成 | Python 基础教程完整 |
 
-### 5.2 LangChain 教程 (`LangChain/`)
+### 5.2 Node.js 教程 (`Claude/`)
+
+| 模块 | 状态 | 说明 |
+|------|------|------|
+| 1_HelloWorld | ✅ 完成 | Express 基础：路由、响应、启动监听 |
+
+### 5.3 LangChain 教程 (`LangChain/`)
 
 | 模块 | 状态 | 说明 |
 |------|------|------|
@@ -158,27 +186,28 @@ charlotte_savanna/
 | 6_RAG | ✅ 完成 | 4 个管线步骤 + asset 数据 |
 | demo.py | ✅ 完成 | 集成示例 (Agent + RAG + Memory) |
 
-### 5.3 基础设施
+### 5.4 基础设施
 
 | 项目 | 状态 | 说明 |
 |------|------|------|
 | .env 管理 | ✅ | `.env.example` 提供模板 |
-| .gitignore | ✅ | 覆盖 Python/Django/IDE/OS 常见排除项 |
+| .gitignore | ✅ | 覆盖 Python/Django/Node.js/IDE/OS 常见排除项 |
 | 依赖管理 | ✅ | `requirements.txt` 已生成（177 个包） |
 | 配置安全 | ✅ | SECRET_KEY / DEBUG / ALLOWED_HOSTS 已环境变量化 |
 | README | ⚠️ | 仅一行标题，需补充完整文档 |
 | 测试 | ❌ | 无任何测试覆盖 |
 
-### 5.4 近期提交历史
+### 5.5 近期提交历史
 
 ```
-c8113e8 feat: Init Claude            ← 最新：Claude Code 集成
-39739cf feat: LangChain demo         ← Agent 集成示例
-683b23f feat: LangChain RAG 2
-6e4413c feat: LangChain RAG 1
-40ddd41 feat: LangChain Agent 2
-84a0d23 feat: LangChain Agent 1
-e8cf37c feat: LangChain Tools
+992f634 feat: add Node.js HelloWorld Express server  ← 最新
+fb8a959 fix: improve CLAUDE.md
+9dda83a fix: 完善 CLAUDE.md
+6cdc0a0 fix: 拆分系统级 CLAUDE.md
+ee7bb5b add .claude/CLAUDE.md
+48ff873 feat: 新增 claude.md
+c8113e8 feat: Init Claude
+39739cf feat: LangChain demo
 ...
 fed40ff Initial Project              ← 2026-04-27
 ```
@@ -199,6 +228,7 @@ fed40ff Initial Project              ← 2026-04-27
 - **虚拟环境**：`.venv/`，Windows Git Bash 下 `source .venv/Scripts/activate`
 - **Django 启动**：`python manage.py runserver`
 - **LangChain 脚本**：在 `LangChain/` 子目录下 `python <script>.py`（脚本内部 `load_dotenv()`）
+- **Node.js 脚本**：在 `Claude/` 子目录下 `npm start` 或 `node server.js`（首次需 `npm install`）
 - **实验性代码**：教程文件中的注释代码刻意保留，展示不同实现变体
 - **协作**：接受 PR（历史中有从 `szh1007` 的多分支合并），分支命名如 `YYYYMMDD`
 
@@ -219,4 +249,4 @@ pip freeze > requirements.txt      # 更新
 
 ---
 
-> **最后更新**：2026-07-06 | **维护者**：Claude Code (charlotte)
+> **最后更新**：2026-07-07 | **维护者**：Claude Code (charlotte)
