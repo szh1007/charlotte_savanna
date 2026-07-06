@@ -2,5 +2,6 @@ __pycache__
 
 .idea
 .env
+.claude
 
 /LangChain/6_RAG/chroma*/
