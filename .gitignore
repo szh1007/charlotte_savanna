@@ -1,7 +1,38 @@
-__pycache__
+# --- Python 字节码 ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+*.egg
+dist/
+build/
 
-.idea
+# --- 虚拟环境 ---
+.venv/
+venv/
+env/
+
+# --- 环境变量（含敏感信息） ---
 .env
+
+# --- IDE / 编辑器 ---
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# --- Django ---
+db.sqlite3
+/media/
+/staticfiles/
+
+# --- Claude Code（本地 AI 助手配置） ---
 .claude
 
+# --- LangChain / RAG ---
 /LangChain/6_RAG/chroma*/
+
+# --- 操作系统 ---
+.DS_Store
+Thumbs.db

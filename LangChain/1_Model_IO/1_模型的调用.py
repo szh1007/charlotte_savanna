@@ -26,11 +26,11 @@ from pydantic import SecretStr
         3.2 使用 OpenAI 官方的 API
         3.3 使用其他平台提供的 API
 """
-# # 1.LangChain API + 对话模型 + 硬编码
+# # 1.LangChain API + 对话模型 + 硬编码 (⚠️ 不安全，仅作对比演示)
 # chat_model = ChatOpenAI(
 #     model="gpt-4o-mini",
 #     base_url="https://api.openai-proxy.org/v1",
-#     api_key=SecretStr("sk-1jmKw77Y1M3xn8BYRff0MFkXheRiv8FZCWv6ONnLqpv5rxjy"),
+#     api_key=SecretStr("sk-your-api-key"),
 # )
 
 # # 2.LangChain API + 对话模型 + 环境变量
