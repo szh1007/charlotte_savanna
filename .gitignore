@@ -28,8 +28,7 @@ db.sqlite3
 /staticfiles/
 
 # --- Claude Code（本地 AI 助手配置） ---
-.claude/*
-!.claude/CLAUDE.md
+.claude/
 
 # --- LangChain / RAG ---
 /LangChain/6_RAG/chroma*/
