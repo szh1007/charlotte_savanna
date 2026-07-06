@@ -1,7 +1,8 @@
 # CLAUDE.md — 系统级配置
 
-> Claude Code 系统级上下文文件，适用于所有项目。项目特定内容请在各项目的 `CLAUDE.md` 中维护。
-> 参考标准：Google Technical Writing、PEP 8 / PEP 257、Conventional Commits、SOLID、12-Factor App。
+> Claude Code 系统级上下文文件，适用于所有项目。项目特定内容请在各项目的 `CLAUDE.md` 中维护
+
+> 参考标准：Google Technical Writing、PEP 8 / PEP 257、Conventional Commits、SOLID、12-Factor App、Karpathy-skills
 
 ---
 

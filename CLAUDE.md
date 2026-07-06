@@ -1,6 +1,7 @@
 # CLAUDE.md — charlotte_savanna
 
-> 通用规范（沟通风格、Git 操作、Python 编码、安全原则）参见系统级 `~/.claude/CLAUDE.md`。
+> 通用规范（沟通风格、Git 操作、Python 编码、安全原则）参见系统级 `~/.claude/CLAUDE.md`
+
 > 本文档仅包含 charlotte_savanna 项目特定内容。
 
 ---
