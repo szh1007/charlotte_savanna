@@ -249,4 +249,22 @@ pip freeze > requirements.txt      # 更新
 
 ---
 
+---
+
+## 7. Agent skills
+
+### Issue tracker
+
+GitHub Issues（仓库 `szh1007/charlotte_savanna`），外部 PR 作为 triage 入口。详见 `docs/agents/issue-tracker.md`。
+
+### Triage labels
+
+使用默认标签名：`needs-triage` / `needs-info` / `ready-for-agent` / `ready-for-human` / `wontfix`。详见 `docs/agents/triage-labels.md`。
+
+### Domain docs
+
+单上下文（single-context）：根目录 `CONTEXT.md` + `docs/adr/`。详见 `docs/agents/domain.md`。
+
+---
+
 > **最后更新**：2026-07-07 | **维护者**：Claude Code (charlotte)
