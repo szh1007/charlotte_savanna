@@ -8,15 +8,25 @@
 
 ## 1. 项目概述
 
-**charlotte_savanna** 是一个个人学习型项目，以 **Django 6.0** 为骨架，围绕三条主线展开：
+**charlotte_savanna** 是一个以 **Django 6.0** 为骨架的抓宠游戏后台管理系统，模拟"洛克王国：世界"的宠物捕捉玩法。
 
-| 主线 | 位置 | 说明 |
-|------|------|------|
-| **Python 语言基础** | `charlotte/demo/` | OOP、装饰器、迭代器/生成器、深拷贝、多进程/多线程/协程 |
-| **LangChain 框架** | `LangChain/` | 从 Model I/O → Chain → Memory → Tools → Agent → RAG 的完整渐进式教程 |
-| **Node.js 后端** | `Claude/` | Node.js Express 服务端开发渐进式教程 |
+**项目目标：** 提供宠物背包、宠物信息、玩家信息、玩家背包、道具信息等数据的后台管理功能，并配套前端操作界面。
 
 项目初始化于 2026-04-27，当前处于活跃开发中。Django 部分目前仅有脚手架，无实际业务模型和视图。
+
+---
+
+## 1.1 Demo 目录（非主流程，分析/开发时请忽略）
+
+根目录 `demo/` 下是个人自学 demo 和测试代码，**不属于项目主流程**。分析代码、重构、写测试、排查问题时均应跳过整个 `demo/` 目录：
+
+| 目录 | 内容 | 说明 |
+|------|------|------|
+| `demo/Python/` | Python OOP、装饰器、迭代器/生成器、深拷贝、多进程/多线程/协程 | 自学测试，与业务无关 |
+| `demo/LangChain/` | LangChain 渐进式教程 (Model I/O → Agent → RAG) | 自学测试，与业务无关 |
+| `demo/Claude/` | Node.js Express 渐进式教程 (HelloWorld → Payment → ...) | 自学测试，与业务无关 |
+
+这些目录仅作为个人学习参考保留，后续不会被删除。**所有自学测试用 demo 统一放入 `demo/` 目录**。任何主流程相关的工作（model 设计、view 编写、测试、性能分析、安全审计等）一律不涉及 `demo/` 目录。
 
 ---
 
@@ -57,52 +67,36 @@ charlotte_savanna/
 │   ├── __init__.py
 │   ├── settings.py              # Django 6.0 设置 (DEBUG=True, SQLite)
 │   ├── urls.py                  # 根路由 (当前仅 /admin/)
-│   ├── wsgi.py / asgi.py        # 部署入口
+│   ├── wsgi.py                  # WSGI 部署入口
+│   ├── asgi.py                  # ASGI 部署入口
 │   └── ...
 ├── charlotte/                   # 主 Django App
+│   ├── __init__.py
 │   ├── apps.py                  # AppConfig: CharlotteConfig
-│   ├── models.py                # （空）
-│   ├── views.py                 # （空）
-│   ├── admin.py                 # （空）
+│   ├── models.py                # （空 — 待实现宠物/玩家/道具模型）
+│   ├── views.py                 # （空 — 待实现管理后台视图）
+│   ├── admin.py                 # （空 — 待注册管理后台）
 │   ├── tests.py                 # 测试文件
-│   ├── migrations/              # Django 迁移目录
-│   └── demo/                    # Python 语言基础教程
-│       ├── class.py             #   抽象类、继承、property、魔术方法
-│       ├── decorator.py         #   闭包、函数/类装饰器
-│       ├── deepcopy.py          #   深拷贝
-│       ├── iterator.py          #   迭代器模式
-│       ├── generator.py         #   生成器 (yield/send/yield from)
-│       └── process/             #   多进程/多线程/协程
-│           ├── 1_*_process*.py  #     进程定义、Pool、通信(Queue/Pipe)
-│           ├── 3_thread.py      #     线程、RLock
-│           └── 6_2_coroutine.py #     asyncio、aiohttp
-├── LangChain/                   # LangChain 渐进式教程
-│   ├── demo.py                  #   ★ 集大成示例：Agent + RAG + Memory + Tools
-│   ├── 1_Model_IO/              #   模型调用、Prompt 模板、输出解析器、Ollama
-│   ├── 2_Chain/                 #   LCEL (推荐)、LLMChain
-│   ├── 3_Memory/                #   对话记忆 (Buffer/Window/Token/Summary/Entity/KG)
-│   ├── 4_Tools/                 #   工具定义 (@tool) 与调用
-│   ├── 5_Agent/                 #   Agent (ReAct + Function Calling)
-│   └── 6_RAG/                   #   文档加载→拆分→嵌入→检索 完整管线
-│       ├── 1_loader.py          #     TextLoader/PyPDFLoader/CSVLoader/JSONLoader
-│       ├── 2_splitter.py        #     Character/Recursive/Token/Semantic
-│       ├── 3_embed.py           #     ChromaDB 持久化与检索
-│       └── 4_retriever.py       #     FAISS 检索器
-├── Claude/                       # Node.js 后端渐进式教程
-│   └── 1_HelloWorld/             #   Express HelloWorld 服务器
-│       ├── server.js             #     Express 路由与响应
-│       ├── package.json          #     npm 包配置
-│       └── package-lock.json     #     依赖锁定文件
+│   └── migrations/              # Django 迁移目录
+├── demo/                        # [Demo] 自学测试代码（非主流程，忽略）
+│   ├── Python/                  #   Python 基础教程（class/decorator/iterator/generator/process）
+│   ├── LangChain/               #   LangChain 渐进式教程（Model I/O → Agent → RAG）
+│   └── Claude/                  #   Node.js Express 渐进式教程（HelloWorld → Payment）
 ├── templates/                   # Django 模板目录（空）
-├── main.py                      # （空占位）
+├── docs/                        # 项目文档
+│   ├── agents/                  #   Agent 定义与 triage 规范
+│   └── discuss/                 #   讨论记录
+├── CLAUDE.md                    # 本文件（项目上下文）
 ├── CLAUDE_SYSTEM.md             # 系统级 CLAUDE.md 副本（参考用）
+├── main.py                      # （空占位）
 ├── .env                         # 环境变量（含 API Key，已加入 .gitignore）
 ├── .env.example                 # 环境变量模板（可安全提交）
 ├── requirements.txt             # 依赖列表
 ├── .gitignore
 ├── .claude/
 │   ├── settings.json            # Claude Code 权限与模型配置（不提交）
-│   └── CLAUDE.md                # 本文件（提交）
+│   ├── commands/                #   自定义 slash 命令
+│   └── skills/                  #   自定义 skills
 └── README.md                    # 仅含标题 "# charlotte_savanna"
 ```
 
@@ -145,48 +139,37 @@ charlotte_savanna/
 
 ### 4.4 文件组织
 
-- **Demo/Tutorial 文件**：
+- **注释**：中文注释，说明"为什么"而非"是什么"
+- **实验代码**：`demo/` 目录下的教程代码中，已注释的实现变体保留供学习参考，不要删除
+- **Demo 文件命名**（仅适用于 `demo/` 目录）：
   - Python：按 `序号_描述.py` 命名 (如 `1_1_LCEL.py`)，使用 `if __name__ == "__main__":` 包裹执行代码
   - Node.js：按 `序号_描述/` 目录组织 (如 `1_HelloWorld/`)，入口文件为 `server.js` 或 `index.js`
-- **注释**：中文注释，说明"为什么"而非"是什么"
-- **实验代码**：保留已注释的实现变体供学习参考，不要删除
-- **Asset 文件**：测试数据统一放在 `asset/` 子目录
+  - Asset 文件：测试数据统一放在对应 demo 子目录的 `asset/` 下
 
 ---
 
 ## 5. 当前开发状态
 
-### 5.1 Django App (`charlotte/`)
+### 5.1 主流程 — Django App (`charlotte/`)
 
 | 组件 | 状态 | 说明 |
 |------|------|------|
-| models.py | 🚧 空 | 无数据模型 |
-| views.py | 🚧 空 | 无视图 |
-| admin.py | 🚧 空 | 无管理后台注册 |
-| urls.py | 🚧 不存在 | App 内无路由配置 |
-| templates/ | 🚧 空 | 无模板文件 |
-| tests.py | 🚧 空 | 无测试用例 |
-| demo/ | ✅ 完成 | Python 基础教程完整 |
+| models.py | 🚧 待实现 | 宠物 (Pet)、玩家 (Player)、背包 (Inventory)、道具 (Item) 等模型 |
+| views.py | 🚧 待实现 | 管理后台视图（列表/详情/编辑） |
+| admin.py | 🚧 待实现 | Django Admin 注册 |
+| urls.py | 🚧 待实现 | App 路由配置 |
+| templates/ | 🚧 待实现 | 前端操作界面模板 |
+| tests.py | 🚧 待实现 | 单元测试与集成测试 |
 
-### 5.2 Node.js 教程 (`Claude/`)
+### 5.2 Demo 目录（仅供学习参考，不计入主流程）
 
-| 模块 | 状态 | 说明 |
+| 目录 | 状态 | 说明 |
 |------|------|------|
-| 1_HelloWorld | ✅ 完成 | Express 基础：路由、响应、启动监听 |
+| `demo/Python/` | ✅ 完成 | Python 基础教程（OOP、装饰器、迭代器、多进程等） |
+| `demo/LangChain/` | ✅ 完成 | LangChain 渐进式教程（Model I/O → Agent → RAG，7 个模块） |
+| `demo/Claude/` | ✅ 完成 | Node.js Express 渐进式教程（HelloWorld + Payment） |
 
-### 5.3 LangChain 教程 (`LangChain/`)
-
-| 模块 | 状态 | 说明 |
-|------|------|------|
-| 1_Model_IO | ✅ 完成 | 5 个示例文件 |
-| 2_Chain | ✅ 完成 | 3 个示例文件 |
-| 3_Memory | ✅ 完成 | 1 个综合文件 |
-| 4_Tools | ✅ 完成 | 2 个示例文件 |
-| 5_Agent | ✅ 完成 | 2 个示例文件 (新旧模式) |
-| 6_RAG | ✅ 完成 | 4 个管线步骤 + asset 数据 |
-| demo.py | ✅ 完成 | 集成示例 (Agent + RAG + Memory) |
-
-### 5.4 基础设施
+### 5.3 基础设施
 
 | 项目 | 状态 | 说明 |
 |------|------|------|
@@ -197,7 +180,7 @@ charlotte_savanna/
 | README | ⚠️ | 仅一行标题，需补充完整文档 |
 | 测试 | ❌ | 无任何测试覆盖 |
 
-### 5.5 近期提交历史
+### 5.4 近期提交历史
 
 ```
 992f634 feat: add Node.js HelloWorld Express server  ← 最新
@@ -221,18 +204,31 @@ fed40ff Initial Project              ← 2026-04-27
 - **`.env` 已加入 `.gitignore`**，`.env.example` 作为模板提交到仓库
 - **`SECRET_KEY`** / **`DEBUG`** / **`ALLOWED_HOSTS`** 已环境变量化，本地有默认 fallback
 - **生产部署**：在 `.env` 中设置 `DJANGO_DEBUG=False` + 强随机 `DJANGO_SECRET_KEY`
-- **API Key**：`1_模型的调用.py` 注释中的演示 Key 已替换为占位符，不要将新 Key 写入源码注释
+- **API Key**：`demo/LangChain/1_Model_IO/` 中注释的演示 Key 已替换为占位符，不要将新 Key 写入源码注释
 
-### 6.2 开发约定
+### 6.2 主流程工作范围（重要）
+
+进行以下操作时，**工作范围限定在主流程代码**，不涉及 `demo/` 目录（含 `demo/Python/`、`demo/LangChain/`、`demo/Claude/` 三个子目录）：
+
+- 代码分析、搜索、重构
+- Model / View / Admin / Template 编写
+- 测试编写与运行
+- 性能分析与优化
+- 安全审计
+- 依赖管理（`requirements.txt` 中仅主流程需要的包）
+
+如有疑问（如不确定某个文件是否属于主流程），优先在 CLAUDE.md 中查看目录标注。
+
+### 6.3 开发约定
 
 - **虚拟环境**：`.venv/`，Windows Git Bash 下 `source .venv/Scripts/activate`
 - **Django 启动**：`python manage.py runserver`
-- **LangChain 脚本**：在 `LangChain/` 子目录下 `python <script>.py`（脚本内部 `load_dotenv()`）
-- **Node.js 脚本**：在 `Claude/` 子目录下 `npm start` 或 `node server.js`（首次需 `npm install`）
+- **LangChain 脚本**：在 `demo/LangChain/` 子目录下 `python <script>.py`（脚本内部 `load_dotenv()`）
+- **Node.js 脚本**：在 `demo/Claude/` 子目录下 `npm start` 或 `node server.js`（首次需 `npm install`）
 - **实验性代码**：教程文件中的注释代码刻意保留，展示不同实现变体
 - **协作**：接受 PR（历史中有从 `szh1007` 的多分支合并），分支命名如 `YYYYMMDD`
 
-### 6.3 依赖管理
+### 6.4 依赖管理
 
 ```bash
 pip install -r requirements.txt    # 安装
@@ -241,7 +237,7 @@ pip freeze > requirements.txt      # 更新
 
 核心依赖：Django ≥ 6.0、LangChain 全家桶、OpenAI SDK、ChromaDB、FAISS、python-dotenv、Tavily
 
-### 6.4 Claude Code 说明
+### 6.5 Claude Code 说明
 
 - 模型后端：DeepSeek（Anthropic 兼容模式），配置在 `settings.json`
 - `.claude/CLAUDE.md` 可提交，`settings.json` 不提交（含个人 API Key）
@@ -263,7 +259,7 @@ GitHub Issues（仓库 `szh1007/charlotte_savanna`），外部 PR 作为 triage 
 
 ### Domain docs
 
-单上下文（single-context）：根目录 `CONTEXT.md` + `docs/adr/`。详见 `docs/agents/domain.md`。
+单上下文（single-context）：待创建 `CONTEXT.md` + `docs/adr/`。详见 `docs/agents/domain.md`。
 
 ---
 
