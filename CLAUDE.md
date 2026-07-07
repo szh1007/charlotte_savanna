@@ -251,7 +251,7 @@ pip freeze > requirements.txt      # 更新
 
 ### Issue tracker
 
-GitHub Issues（仓库 `szh1007/charlotte_savanna`），外部 PR 作为 triage 入口。详见 `docs/agents/issue-tracker.md`。
+本地 Markdown（`.scratch/<feature-slug>/`），不自动同步 GitHub，由用户自行提交推送。详见 `docs/agents/issue-tracker.md`。
 
 ### Triage labels
 
