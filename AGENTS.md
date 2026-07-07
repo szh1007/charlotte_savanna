@@ -1,0 +1,266 @@
+# AGENTS.md — charlotte_savanna
+
+> 通用规范（沟通风格、Git 操作、Python 编码、安全原则）参见系统级 `~/.Codex/AGENTS.md`
+
+> 本文档仅包含 charlotte_savanna 项目特定内容。
+
+---
+
+## 1. 项目概述
+
+**charlotte_savanna** 是一个以 **Django 6.0** 为骨架的抓宠游戏后台管理系统，模拟"洛克王国：世界"的宠物捕捉玩法。
+
+**项目目标：** 提供宠物背包、宠物信息、玩家信息、玩家背包、道具信息等数据的后台管理功能，并配套前端操作界面。
+
+项目初始化于 2026-04-27，当前处于活跃开发中。Django 部分目前仅有脚手架，无实际业务模型和视图。
+
+---
+
+## 1.1 Demo 目录（非主流程，分析/开发时请忽略）
+
+根目录 `demo/` 下是个人自学 demo 和测试代码，**不属于项目主流程**。分析代码、重构、写测试、排查问题时均应跳过整个 `demo/` 目录：
+
+| 目录 | 内容 | 说明 |
+|------|------|------|
+| `demo/Python/` | Python OOP、装饰器、迭代器/生成器、深拷贝、多进程/多线程/协程 | 自学测试，与业务无关 |
+| `demo/LangChain/` | LangChain 渐进式教程 (Model I/O → Agent → RAG) | 自学测试，与业务无关 |
+| `demo/Codex/` | Node.js Express 渐进式教程 (HelloWorld → Payment → ...) | 自学测试，与业务无关 |
+
+这些目录仅作为个人学习参考保留，后续不会被删除。**所有自学测试用 demo 统一放入 `demo/` 目录**。任何主流程相关的工作（model 设计、view 编写、测试、性能分析、安全审计等）一律不涉及 `demo/` 目录。
+
+---
+
+## 2. 技术栈
+
+| 层级 | 技术 | 版本 |
+|------|------|------|
+| **语言** | Python | 3.13.13 |
+| **Web 框架** | Django | 6.0.4 |
+| **数据库** | SQLite3（开发） | — |
+| **LLM 框架** | LangChain (`langchain_core`, `langchain_classic`, `langchain_community`, `langchain_openai`, `langchain_text_splitters`, `langchain_experimental`, `langchain_chroma`) | 最新 |
+| **LLM 提供商** | OpenAI (via proxy `api.openai-proxy.org`) + DeepSeek (via `api.deepseek.com`) | — |
+| **向量数据库** | ChromaDB / FAISS | — |
+| **嵌入模型** | `text-embedding-3-large` / `text-embedding-ada-002` | — |
+| **对话模型** | `gpt-4o-mini` (OpenAI) / `deepseek-v4-pro` (DeepSeek) | — |
+| **搜索工具** | Tavily Search (`langchain_tavily`) | — |
+| **HTTP/Async** | httpx, aiohttp, uvicorn | — |
+| **Node.js 运行时** | Node.js | — |
+| **Node.js 框架** | Express | 4.x |
+| **JS 包管理** | npm | — |
+| **环境管理** | python-dotenv (.env) | — |
+| **包管理** | pip + venv | — |
+| **IDE** | PyCharm / IntelliJ IDEA (`.idea/`) | — |
+| **AI 助手** | Codex (`.Codex/`) | — |
+
+**LLM API 配置说明：**
+- **OpenAI 代理**：`OPENAI_BASE_URL="https://api.openai-proxy.org/v1"` — LangChain 教程中调用 `gpt-4o-mini` 等模型
+- **DeepSeek**：`ANTHROPIC_BASE_URL="https://api.deepseek.com/anthropic"` — Codex 的 Anthropic 兼容后端
+
+---
+
+## 3. 项目结构
+
+```
+charlotte_savanna/
+├── manage.py                    # Django CLI 入口
+├── charlotte_savanna/           # Django 项目配置包
+│   ├── __init__.py
+│   ├── settings.py              # Django 6.0 设置 (DEBUG=True, SQLite)
+│   ├── urls.py                  # 根路由 (当前仅 /admin/)
+│   ├── wsgi.py                  # WSGI 部署入口
+│   ├── asgi.py                  # ASGI 部署入口
+│   └── ...
+├── charlotte/                   # 主 Django App
+│   ├── __init__.py
+│   ├── apps.py                  # AppConfig: CharlotteConfig
+│   ├── models.py                # （空 — 待实现宠物/玩家/道具模型）
+│   ├── views.py                 # （空 — 待实现管理后台视图）
+│   ├── admin.py                 # （空 — 待注册管理后台）
+│   ├── tests.py                 # 测试文件
+│   └── migrations/              # Django 迁移目录
+├── demo/                        # [Demo] 自学测试代码（非主流程，忽略）
+│   ├── Python/                  #   Python 基础教程（class/decorator/iterator/generator/process）
+│   ├── LangChain/               #   LangChain 渐进式教程（Model I/O → Agent → RAG）
+│   └── Codex/                  #   Node.js Express 渐进式教程（HelloWorld → Payment）
+├── templates/                   # Django 模板目录（空）
+├── docs/                        # 项目文档
+│   ├── agents/                  #   Agent 定义与 triage 规范
+│   └── discuss/                 #   讨论记录
+├── AGENTS.md                    # 本文件（项目上下文）
+├── CLAUDE_SYSTEM.md             # 系统级 AGENTS.md 副本（参考用）
+├── main.py                      # （空占位）
+├── .env                         # 环境变量（含 API Key，已加入 .gitignore）
+├── .env.example                 # 环境变量模板（可安全提交）
+├── requirements.txt             # 依赖列表
+├── .gitignore
+├── .Codex/
+│   ├── settings.json            # Codex 权限与模型配置（不提交）
+│   ├── commands/                #   自定义 slash 命令
+│   └── skills/                  #   自定义 skills
+└── README.md                    # 仅含标题 "# charlotte_savanna"
+```
+
+---
+
+## 4. 框架特定规范
+
+### 4.1 Django 规范
+
+- **Models**：优先使用 `models.Model` 的子类，字段显式命名，添加 `verbose_name`（中文项目）
+- **Views**：优先使用 CBV (Class-Based Views)，复杂逻辑抽取到 Service 层
+- **URLs**：每个 app 维护自己的 `urls.py`，通过 `include()` 注册到根路由
+- **Settings**：敏感配置通过 `os.environ.get()` 读取，不硬编码；开发默认值允许 fallback
+- **Migrations**：每次模型变更生成 migration，提交到版本控制
+- **Templates**：遵循 DRY 原则，使用 `{% extends %}` / `{% include %}` 提取公共部分
+
+### 4.2 LangChain 规范
+
+- **Chain 构建**：优先使用 **LCEL (LangChain Expression Language)**，`|` 管道操作符优于 LLMChain
+  ```python
+  # ✅ 推荐：LCEL
+  chain = prompt | llm | output_parser
+
+  # ❌ 避免：旧式 LLMChain（已弃用）
+  chain = LLMChain(llm=llm, prompt=prompt)
+  ```
+- **Agent 模式**：优先使用 `create_tool_calling_agent` (Function Calling)，次选 `create_react_agent`
+- **Tool 定义**：优先使用 `@tool` 装饰器，确保 `description` 清晰、具体，能引导模型正确调用
+- **Memory**：使用 `RunnableWithMessageHistory` + `BaseChatMessageHistory`，按 `session_id` 隔离会话
+- **Embedding/RAG**：向量数据库做好持久化目录管理 (`persist_directory`)，`chunk_size` 和 `chunk_overlap` 根据文档类型调优
+
+### 4.3 Node.js / Express 规范
+
+- **模块系统**：使用 CommonJS (`require`/`module.exports`)，与 Node.js 生态默认一致
+- **异步处理**：优先使用 `async/await`，避免 callback hell
+- **错误处理**：Express 路由中使用 try/catch 或 wrapper，不静默吞异常
+- **依赖管理**：`package.json` 明确声明 `dependencies`，`package-lock.json` 提交到版本控制
+- **端口配置**：通过环境变量 `PORT` 读取，提供默认 fallback
+- **代码风格**：2 空格缩进，使用 `const` 优先，箭头函数回调
+
+### 4.4 文件组织
+
+- **注释**：中文注释，说明"为什么"而非"是什么"
+- **实验代码**：`demo/` 目录下的教程代码中，已注释的实现变体保留供学习参考，不要删除
+- **Demo 文件命名**（仅适用于 `demo/` 目录）：
+  - Python：按 `序号_描述.py` 命名 (如 `1_1_LCEL.py`)，使用 `if __name__ == "__main__":` 包裹执行代码
+  - Node.js：按 `序号_描述/` 目录组织 (如 `1_HelloWorld/`)，入口文件为 `server.js` 或 `index.js`
+  - Asset 文件：测试数据统一放在对应 demo 子目录的 `asset/` 下
+
+---
+
+## 5. 当前开发状态
+
+### 5.1 主流程 — Django App (`charlotte/`)
+
+| 组件 | 状态 | 说明 |
+|------|------|------|
+| models.py | 🚧 待实现 | 宠物 (Pet)、玩家 (Player)、背包 (Inventory)、道具 (Item) 等模型 |
+| views.py | 🚧 待实现 | 管理后台视图（列表/详情/编辑） |
+| admin.py | 🚧 待实现 | Django Admin 注册 |
+| urls.py | 🚧 待实现 | App 路由配置 |
+| templates/ | 🚧 待实现 | 前端操作界面模板 |
+| tests.py | 🚧 待实现 | 单元测试与集成测试 |
+
+### 5.2 Demo 目录（仅供学习参考，不计入主流程）
+
+| 目录 | 状态 | 说明 |
+|------|------|------|
+| `demo/Python/` | ✅ 完成 | Python 基础教程（OOP、装饰器、迭代器、多进程等） |
+| `demo/LangChain/` | ✅ 完成 | LangChain 渐进式教程（Model I/O → Agent → RAG，7 个模块） |
+| `demo/Codex/` | ✅ 完成 | Node.js Express 渐进式教程（HelloWorld + Payment） |
+
+### 5.3 基础设施
+
+| 项目 | 状态 | 说明 |
+|------|------|------|
+| .env 管理 | ✅ | `.env.example` 提供模板 |
+| .gitignore | ✅ | 覆盖 Python/Django/Node.js/IDE/OS 常见排除项 |
+| 依赖管理 | ✅ | `requirements.txt` 已生成（177 个包） |
+| 配置安全 | ✅ | SECRET_KEY / DEBUG / ALLOWED_HOSTS 已环境变量化 |
+| README | ⚠️ | 仅一行标题，需补充完整文档 |
+| 测试 | ❌ | 无任何测试覆盖 |
+
+### 5.4 近期提交历史
+
+```
+992f634 feat: add Node.js HelloWorld Express server  ← 最新
+fb8a959 fix: improve AGENTS.md
+9dda83a fix: 完善 AGENTS.md
+6cdc0a0 fix: 拆分系统级 AGENTS.md
+ee7bb5b add .Codex/AGENTS.md
+48ff873 feat: 新增 AGENTS.md
+c8113e8 feat: Init Codex
+39739cf feat: LangChain demo
+...
+fed40ff Initial Project              ← 2026-04-27
+```
+
+---
+
+## 6. 项目注意事项
+
+### 6.1 安全与配置
+
+- **`.env` 已加入 `.gitignore`**，`.env.example` 作为模板提交到仓库
+- **`SECRET_KEY`** / **`DEBUG`** / **`ALLOWED_HOSTS`** 已环境变量化，本地有默认 fallback
+- **生产部署**：在 `.env` 中设置 `DJANGO_DEBUG=False` + 强随机 `DJANGO_SECRET_KEY`
+- **API Key**：`demo/LangChain/1_Model_IO/` 中注释的演示 Key 已替换为占位符，不要将新 Key 写入源码注释
+
+### 6.2 主流程工作范围（重要）
+
+进行以下操作时，**工作范围限定在主流程代码**，不涉及 `demo/` 目录（含 `demo/Python/`、`demo/LangChain/`、`demo/Codex/` 三个子目录）：
+
+- 代码分析、搜索、重构
+- Model / View / Admin / Template 编写
+- 测试编写与运行
+- 性能分析与优化
+- 安全审计
+- 依赖管理（`requirements.txt` 中仅主流程需要的包）
+
+如有疑问（如不确定某个文件是否属于主流程），优先在 AGENTS.md 中查看目录标注。
+
+### 6.3 开发约定
+
+- **虚拟环境**：`.venv/`，Windows Git Bash 下 `source .venv/Scripts/activate`
+- **Django 启动**：`python manage.py runserver`
+- **LangChain 脚本**：在 `demo/LangChain/` 子目录下 `python <script>.py`（脚本内部 `load_dotenv()`）
+- **Node.js 脚本**：在 `demo/Codex/` 子目录下 `npm start` 或 `node server.js`（首次需 `npm install`）
+- **实验性代码**：教程文件中的注释代码刻意保留，展示不同实现变体
+- **协作**：接受 PR（历史中有从 `szh1007` 的多分支合并），分支命名如 `YYYYMMDD`
+
+### 6.4 依赖管理
+
+```bash
+pip install -r requirements.txt    # 安装
+pip freeze > requirements.txt      # 更新
+```
+
+核心依赖：Django ≥ 6.0、LangChain 全家桶、OpenAI SDK、ChromaDB、FAISS、python-dotenv、Tavily
+
+### 6.5 Codex 说明
+
+- 模型后端：DeepSeek（Anthropic 兼容模式），配置在 `settings.json`
+- `.Codex/AGENTS.md` 可提交，`settings.json` 不提交（含个人 API Key）
+- 系统级通用规范在 `~/.Codex/AGENTS.md`
+
+---
+
+---
+
+## 7. Agent skills
+
+### Issue tracker
+
+本地 Markdown（`.scratch/<feature-slug>/`），不自动同步 GitHub，由用户自行提交推送。详见 `docs/agents/issue-tracker.md`。
+
+### Triage labels
+
+使用默认标签名：`needs-triage` / `needs-info` / `ready-for-agent` / `ready-for-human` / `wontfix`。详见 `docs/agents/triage-labels.md`。
+
+### Domain docs
+
+单上下文（single-context）：待创建 `CONTEXT.md` + `docs/adr/`。详见 `docs/agents/domain.md`。
+
+---
+
+> **最后更新**：2026-07-07 | **维护者**：Codex (charlotte)
