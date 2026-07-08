@@ -34,27 +34,17 @@
 
 | 层级 | 技术 | 版本 |
 |------|------|------|
-| **语言** | Python | 3.13.13 |
-| **Web 框架** | Django | 6.0.4 |
+| **语言** | Python | 3.13 |
+| **Web 框架** | Django | 6.0 |
 | **数据库** | SQLite3（开发） | — |
-| **LLM 框架** | LangChain (`langchain_core`, `langchain_classic`, `langchain_community`, `langchain_openai`, `langchain_text_splitters`, `langchain_experimental`, `langchain_chroma`) | 最新 |
-| **LLM 提供商** | OpenAI (via proxy `api.openai-proxy.org`) + DeepSeek (via `api.deepseek.com`) | — |
+| **LLM 框架** | LangChain 全家桶 | 最新 |
 | **向量数据库** | ChromaDB / FAISS | — |
-| **嵌入模型** | `text-embedding-3-large` / `text-embedding-ada-002` | — |
-| **对话模型** | `gpt-4o-mini` (OpenAI) / `deepseek-v4-pro` (DeepSeek) | — |
-| **搜索工具** | Tavily Search (`langchain_tavily`) | — |
-| **HTTP/Async** | httpx, aiohttp, uvicorn | — |
-| **Node.js 运行时** | Node.js | — |
-| **Node.js 框架** | Express | 4.x |
-| **JS 包管理** | npm | — |
+| **Node.js 运行时** | Node.js + Express 4.x | — |
+| **包管理** | pip + venv + npm | — |
 | **环境管理** | python-dotenv (.env) | — |
-| **包管理** | pip + venv | — |
-| **IDE** | PyCharm / IntelliJ IDEA (`.idea/`) | — |
 | **AI 助手** | Claude Code (`.claude/`) | — |
 
-**LLM API 配置说明：**
-- **OpenAI 代理**：`OPENAI_BASE_URL="https://api.openai-proxy.org/v1"` — LangChain 教程中调用 `gpt-4o-mini` 等模型
-- **DeepSeek**：`ANTHROPIC_BASE_URL="https://api.deepseek.com/anthropic"` — Claude Code 的 Anthropic 兼容后端
+> LLM 提供商、具体模型名、API 端点和 Key 配置参见 `.env.example`。具体模型列表不在本文档中维护，避免过时。
 
 ---
 
@@ -139,7 +129,8 @@ charlotte_savanna/
 
 ### 4.4 文件组织
 
-- **注释**：中文注释，说明"为什么"而非"是什么"
+> 注释规范参见系统级 CLAUDE.md 第 6.2 节。
+
 - **实验代码**：`demo/` 目录下的教程代码中，已注释的实现变体保留供学习参考，不要删除
 - **Demo 文件命名**（仅适用于 `demo/` 目录）：
   - Python：按 `序号_描述.py` 命名 (如 `1_1_LCEL.py`)，使用 `if __name__ == "__main__":` 包裹执行代码
@@ -201,10 +192,8 @@ fed40ff Initial Project              ← 2026-04-27
 
 ### 6.1 安全与配置
 
-- **`.env` 已加入 `.gitignore`**，`.env.example` 作为模板提交到仓库
-- **`SECRET_KEY`** / **`DEBUG`** / **`ALLOWED_HOSTS`** 已环境变量化，本地有默认 fallback
-- **生产部署**：在 `.env` 中设置 `DJANGO_DEBUG=False` + 强随机 `DJANGO_SECRET_KEY`
-- **API Key**：`demo/LangChain/1_Model_IO/` 中注释的演示 Key 已替换为占位符，不要将新 Key 写入源码注释
+> 通用安全规范（`.env` 管理、API Key 保护、`.gitignore` 检查清单、敏感信息泄露处理）参见系统级 CLAUDE.md 第 3 节。
+> 项目 `.env.example` 已提供所需环境变量模板。
 
 ### 6.2 主流程工作范围（重要）
 
