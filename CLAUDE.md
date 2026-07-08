@@ -8,11 +8,9 @@
 
 ## 1. 项目概述
 
-**charlotte_savanna** 是一个以 **Django 6.0** 为骨架的抓宠游戏后台管理系统，模拟"洛克王国：世界"的宠物捕捉玩法。
+**charlotte_savanna** 是一个以 **Django 6.0** 为骨架的个人技术学习项目，用于自学 Django 开发、LangChain、Node.js 等技术栈。
 
-**项目目标：** 提供宠物背包、宠物信息、玩家信息、玩家背包、道具信息等数据的后台管理功能，并配套前端操作界面。
-
-项目初始化于 2026-04-27，当前处于活跃开发中。Django 部分目前仅有脚手架，无实际业务模型和视图。
+项目初始化于 2026-04-27，当前处于活跃开发中。项目整体方向尚未确定，后续可能新建多个 Django app 用于不同技术方向的学习和实验。
 
 ---
 
@@ -60,12 +58,12 @@ charlotte_savanna/
 │   ├── wsgi.py                  # WSGI 部署入口
 │   ├── asgi.py                  # ASGI 部署入口
 │   └── ...
-├── charlotte/                   # 主 Django App
+├── charlotte/                   # 主 Django App（待确定方向）
 │   ├── __init__.py
 │   ├── apps.py                  # AppConfig: CharlotteConfig
-│   ├── models.py                # （空 — 待实现宠物/玩家/道具模型）
-│   ├── views.py                 # （空 — 待实现管理后台视图）
-│   ├── admin.py                 # （空 — 待注册管理后台）
+│   ├── models.py                # （空）
+│   ├── views.py                 # （空）
+│   ├── admin.py                 # （空）
 │   ├── tests.py                 # 测试文件
 │   └── migrations/              # Django 迁移目录
 ├── demo/                        # [Demo] 自学测试代码（非主流程，忽略）
@@ -145,11 +143,11 @@ charlotte_savanna/
 
 | 组件 | 状态 | 说明 |
 |------|------|------|
-| models.py | 🚧 待实现 | 宠物 (Pet)、玩家 (Player)、背包 (Inventory)、道具 (Item) 等模型 |
-| views.py | 🚧 待实现 | 管理后台视图（列表/详情/编辑） |
+| models.py | 🚧 待实现 | 业务模型（方向待定） |
+| views.py | 🚧 待实现 | 视图逻辑（方向待定） |
 | admin.py | 🚧 待实现 | Django Admin 注册 |
 | urls.py | 🚧 待实现 | App 路由配置 |
-| templates/ | 🚧 待实现 | 前端操作界面模板 |
+| templates/ | 🚧 待实现 | 前端模板 |
 | tests.py | 🚧 待实现 | 单元测试与集成测试 |
 
 ### 5.2 Demo 目录（仅供学习参考，不计入主流程）
@@ -200,7 +198,7 @@ fed40ff Initial Project              ← 2026-04-27
 进行以下操作时，**工作范围限定在主流程代码**，不涉及 `demo/` 目录（含 `demo/Python/`、`demo/LangChain/`、`demo/Claude/` 三个子目录）：
 
 - 代码分析、搜索、重构
-- Model / View / Admin / Template 编写
+- Django app 开发
 - 测试编写与运行
 - 性能分析与优化
 - 安全审计
