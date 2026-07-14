@@ -9,6 +9,8 @@ llm = init_chat_model(
     model="deepseek:deepseek-v4-pro",
     temperature=0.7,  # 0 ~ 2, 0 表示更一致、准确, 2 表示更随机、艺术
     max_tokens=1024,  # 最大输出长度, 0 表示不限制
+    timeout=60,  # 超时时间, 单位秒
+    max_retries=3,  # 最大重试次数, 0 表示不重试
 )
 
 """ invoke 阻塞式 """
