@@ -1,6 +1,8 @@
-""" 提示词模板 PromptTemplate """
-import os, dotenv
+"""提示词模板 PromptTemplate"""
 
+import os
+
+import dotenv
 from langchain_core.prompts import PromptTemplate
 from langchain_openai import ChatOpenAI
 
@@ -37,11 +39,7 @@ template3 = PromptTemplate.from_template(
 )
 
 # 方式2
-template4 = (
-    PromptTemplate
-    .from_template(template="你是一个{role}, 你的名字是{name}")
-    .partial(role="AI专家")
-)
+template4 = PromptTemplate.from_template(template="你是一个{role}, 你的名字是{name}").partial(role="AI专家")
 
 # print(template3)
 # print(template4)

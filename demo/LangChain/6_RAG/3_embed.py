@@ -1,12 +1,15 @@
-""" 嵌入模型 embedding model """
-import os, dotenv, warnings
+"""嵌入模型 embedding model"""
 
-warnings.filterwarnings("ignore", category=DeprecationWarning)
+import os
+import warnings
 
+import dotenv
 from langchain_chroma import Chroma
-from langchain_community.document_loaders import CSVLoader, TextLoader
+from langchain_community.document_loaders import TextLoader
 from langchain_openai import OpenAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 dotenv.load_dotenv()
 os.environ["OPENAI_BASE_URL"] = os.getenv("OPENAI_BASE_URL", "")
@@ -18,7 +21,7 @@ splitter = RecursiveCharacterTextSplitter(
     chunk_overlap=10,
     add_start_index=True,
     length_function=len,
-    separators=["。", "，"],
+    separators=["。", ","],
 )
 
 """ 语句嵌入 & 文档嵌入 """
@@ -40,7 +43,7 @@ split_docs = splitter.split_documents(docs)
 chroma_db = Chroma.from_documents(
     documents=split_docs,
     embedding=embedding_model,
-    persist_directory="./chroma-1"  # 若不指定持久化目录, 则数据会存储在内存中, 并设置缓存
+    persist_directory="./chroma-1",  # 若不指定持久化目录, 则数据会存储在内存中, 并设置缓存
 )
 
 """ 数据的检索 """
@@ -69,5 +72,5 @@ chroma_db = Chroma.from_documents(
 
 # MMR 最大边际相关性 0-1
 response_docs5 = chroma_db.max_marginal_relevance_search(query="介绍量子力学", lambda_mult=0.5)
-for doc in response_docs5:
-    print(f"{doc.page_content[:10]}...")
+for _doc in response_docs5:
+    pass

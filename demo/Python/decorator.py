@@ -1,7 +1,6 @@
-""" 闭包 & 装饰器 """
+"""闭包 & 装饰器"""
 
 """ 闭包 """
-print("-" * 50, "闭包", "-" * 50)
 
 
 # 定义:
@@ -17,24 +16,18 @@ print("-" * 50, "闭包", "-" * 50)
 # 1.闭包如果引用【很大的对象】 且长期不释放 会增加内存占用
 # 2.相同效果可以用【类】来等价实现
 
+
 def outer(n: str):
     x = 10
-    print(f"outer-参数变量n的地址: {hex(id(n))}, 值: {n}")
-    print(f"outer-局部变量x的地址: {hex(id(x))}, 值: {x}")
 
     def inner():
         nonlocal x
         x += 1
-        print(f"{n}-{x}")
 
     return inner
 
 
 f = outer("test")
-print(f"f-闭包仓库: {f.__closure__}")
-print(f"f-闭包单元-n: {f.__closure__[0].cell_contents}")
-print(f"f-闭包单元-x: {f.__closure__[1].cell_contents}")
-print("-" * 50)
 
 f1 = outer("test1")
 f1()
@@ -44,15 +37,14 @@ f2()
 f2()
 
 """ 装饰器 """
-print("-" * 50, "装饰器", "-" * 50)
 
 
 # 装饰器: 保证不修改原函数的前提下 给函数新增一些额外的功能
 
+
 # 1.函数装饰器 - 无配置参数
 def say_hello_1(fun):
     def wrapper(*args, **kwargs):
-        print("fun-decorator")
         return fun(*args, **kwargs)
 
     return wrapper
@@ -61,9 +53,7 @@ def say_hello_1(fun):
 # 2.函数装饰器 - 有配置参数
 def say_hello_2(msg):  # 外层: 接收配置参数
     def middle(fun):  # 中层: 接收函数
-
         def wrapper(*args, **kwargs):  # 内层: 接收函数的参数
-            print(f"fun-decorator-{msg}")
             return fun(*args, **kwargs)
 
         return wrapper
@@ -73,10 +63,8 @@ def say_hello_2(msg):  # 外层: 接收配置参数
 
 # 3.类装饰器
 class SayHello1:
-
     def __call__(self, fun):
         def wrapper(*args, **kwargs):
-            print(f"class-decorator")
             return fun(*args, **kwargs)
 
         return wrapper
@@ -88,7 +76,6 @@ class SayHello2:
 
     def __call__(self, fun):
         def wrapper(*args, **kwargs):
-            print(f"class-decorator-{self.msg}")
             return fun(*args, **kwargs)
 
         return wrapper
@@ -99,7 +86,6 @@ class SayHello2:
 @say_hello_1
 @say_hello_2("add")
 def add(x, y):
-    print(f"{x} + {y} = {x + y}")
     return x + y
 
 
@@ -110,7 +96,7 @@ class ArgsError(Exception):
 
 # __all__
 # from ... import * 时仅__all__中的元素可用
-__all__ = ["add", "ArgsError"]
+__all__ = ["ArgsError", "add"]
 
 # __name__
 # 在其他模块运行时 = 模块名

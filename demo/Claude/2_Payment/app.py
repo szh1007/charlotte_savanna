@@ -1,17 +1,17 @@
 """个人记账工具 — Streamlit 主入口。
 
-启动方式：
+启动方式:
     streamlit run Claude/2_Payment/app.py
 
-页面结构：
-    侧边栏导航 → 3 个功能页面（添加记录 / 查看列表 / 分类统计）
+页面结构:
+    侧边栏导航 → 3 个功能页面(添加记录 / 查看列表 / 分类统计)
 """
 
 import hashlib
 import json
 
 import streamlit as st
-
+from charts import render_bar_chart, render_stats_table
 from constants import EXPENSE_CATEGORIES, INCOME_CATEGORIES, PAGE_SIZE
 from database import (
     add_transaction,
@@ -21,7 +21,6 @@ from database import (
     init_db,
     query_transactions,
 )
-from charts import render_bar_chart, render_stats_table
 from ui_components import (
     render_add_form,
     render_batch_delete_button,
@@ -42,9 +41,11 @@ st.set_page_config(
 
 # ---- 全局 CSS ---------------------------------------------------------------
 
+
 def _inject_css() -> None:
     """注入全局自定义样式。"""
-    st.markdown("""
+    st.markdown(
+        """
     <style>
     /* ===== 根变量 ===== */
     :root {
@@ -136,7 +137,9 @@ def _inject_css() -> None:
     /* ===== 按钮微调 ===== */
     button[kind="secondary"] { font-size: 13px !important; }
     </style>
-    """, unsafe_allow_html=True)
+    """,
+        unsafe_allow_html=True,
+    )
 
 
 # ---- 数据库初始化 ------------------------------------------------------------
@@ -164,8 +167,9 @@ def init_session_state() -> None:
 
 # ---- 辅助函数 ---------------------------------------------------------------
 
+
 def _all_categories() -> list[str]:
-    """返回所有分类（支出 + 收入去重合并）。"""
+    """返回所有分类(支出 + 收入去重合并)。"""
     seen: set[str] = set()
     result: list[str] = []
     for cat in EXPENSE_CATEGORIES + INCOME_CATEGORIES:
@@ -176,7 +180,7 @@ def _all_categories() -> list[str]:
 
 
 def _filter_hash(filters: dict) -> str:
-    """计算筛选条件的 MD5 hash，用于检测筛选条件是否变化。"""
+    """计算筛选条件的 MD5 hash,用于检测筛选条件是否变化。"""
     raw = json.dumps(filters, sort_keys=True, default=str)
     return hashlib.md5(raw.encode()).hexdigest()
 
@@ -189,7 +193,8 @@ def _get_transaction_by_id(tid: int, transactions: list[dict]) -> dict | None:
     return None
 
 
-# ---- 页面：添加记录 ---------------------------------------------------------
+# ---- 页面:添加记录 ---------------------------------------------------------
+
 
 def _render_add_page() -> None:
     """渲染添加收支记录页面。"""
@@ -218,15 +223,16 @@ def _render_add_page() -> None:
         st.success(
             f"✅ 已添加 —— {result['date']}  "
             f"{'💰 收入' if type_ == 'income' else '💸 支出'}  "
-            f"¥{result['amount']:,.2f}（{result['category']}）"
+            f"¥{result['amount']:,.2f}({result['category']})"
         )
         st.rerun()
 
 
-# ---- 页面：查看列表 ---------------------------------------------------------
+# ---- 页面:查看列表 ---------------------------------------------------------
+
 
 def _render_list_page() -> None:
-    """渲染账目列表页面（含筛选、分页、删除）。"""
+    """渲染账目列表页面(含筛选、分页、删除)。"""
     st.markdown("## 📊 查看列表")
     st.caption("筛选、浏览和管理所有收支记录")
 
@@ -267,7 +273,7 @@ def _render_list_page() -> None:
     # 交易列表
     selected_ids, single_delete_id = render_transaction_list(records, key_prefix="list")
 
-    # 分页控件（底部）
+    # 分页控件(底部)
     if total > PAGE_SIZE:
         st.session_state.list_page = render_pagination(
             total, st.session_state.list_page, PAGE_SIZE, key_prefix="list_bottom"
@@ -278,14 +284,10 @@ def _render_list_page() -> None:
         st.session_state.pending_delete_id = single_delete_id
 
     if st.session_state.pending_delete_id is not None:
-        pending_txn = _get_transaction_by_id(
-            st.session_state.pending_delete_id, records
-        )
+        pending_txn = _get_transaction_by_id(st.session_state.pending_delete_id, records)
         if pending_txn is None:
             all_records, _ = query_transactions(page=1, page_size=9999)
-            pending_txn = _get_transaction_by_id(
-                st.session_state.pending_delete_id, all_records
-            )
+            pending_txn = _get_transaction_by_id(st.session_state.pending_delete_id, all_records)
 
         action = render_single_delete_confirm(pending_txn, key_prefix="list")
         if action == "confirm":
@@ -307,10 +309,11 @@ def _render_list_page() -> None:
             st.rerun()
 
 
-# ---- 页面：分类统计 ---------------------------------------------------------
+# ---- 页面:分类统计 ---------------------------------------------------------
+
 
 def _render_stats_page() -> None:
-    """渲染分类统计页面（柱状图 + 统计表）。"""
+    """渲染分类统计页面(柱状图 + 统计表)。"""
     st.markdown("## 📈 分类统计")
     st.caption("直观查看各分类的支出 / 收入占比")
 
@@ -333,7 +336,7 @@ def _render_stats_page() -> None:
     filtered_stats = [s for s in all_stats if s["type"] == stats_type]
 
     if not filtered_stats:
-        st.info("暂无统计数据，请先添加记录。")
+        st.info("暂无统计数据,请先添加记录。")
         return
 
     st.markdown('<div class="chart-section">', unsafe_allow_html=True)
@@ -348,10 +351,11 @@ def _render_stats_page() -> None:
         st.markdown("##### 📋 统计表")
         render_stats_table(filtered_stats)
 
-    st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 # ---- 侧边栏 ----------------------------------------------------------------
+
 
 def _render_sidebar(page: str) -> str:
     """渲染侧边栏导航与统计卡片。
@@ -389,20 +393,23 @@ def _render_sidebar(page: str) -> str:
             income_total = sum(s["total"] for s in all_stats if s["type"] == "income")
             balance = income_total - expense_total
 
-            st.markdown(f'<p style="font-size:11px;color:#64748b;margin-bottom:8px;">📅 {curr_year} 年汇总</p>', unsafe_allow_html=True)
+            st.markdown(
+                f'<p style="font-size:11px;color:#64748b;margin-bottom:8px;">📅 {curr_year} 年汇总</p>',
+                unsafe_allow_html=True,
+            )
 
             st.markdown(
                 f'<div class="sidebar-stat">'
                 f'<div class="label">💰 收入</div>'
                 f'<div class="value positive">¥{income_total:,.2f}</div>'
-                f'</div>',
+                f"</div>",
                 unsafe_allow_html=True,
             )
             st.markdown(
                 f'<div class="sidebar-stat">'
                 f'<div class="label">💸 支出</div>'
                 f'<div class="value negative">¥{expense_total:,.2f}</div>'
-                f'</div>',
+                f"</div>",
                 unsafe_allow_html=True,
             )
             balance_class = "positive" if balance >= 0 else "negative"
@@ -410,7 +417,7 @@ def _render_sidebar(page: str) -> str:
                 f'<div class="sidebar-stat">'
                 f'<div class="label">📊 结余</div>'
                 f'<div class="value {balance_class}">¥{balance:,.2f}</div>'
-                f'</div>',
+                f"</div>",
                 unsafe_allow_html=True,
             )
 
@@ -419,8 +426,9 @@ def _render_sidebar(page: str) -> str:
 
 # ---- 主函数 ----------------------------------------------------------------
 
+
 def main() -> None:
-    """应用主函数：侧边栏导航 + 页面路由。"""
+    """应用主函数:侧边栏导航 + 页面路由。"""
     init_session_state()
 
     page = _render_sidebar("list")

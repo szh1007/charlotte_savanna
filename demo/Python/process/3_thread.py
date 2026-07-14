@@ -1,6 +1,8 @@
-""" 多进程 多线程 """
-import os, time
-from threading import get_native_id, Thread, RLock
+"""多进程 多线程"""
+
+import time
+from threading import RLock, Thread
+
 # from concurrent.futures import ThreadPoolExecutor, as_completed, Future
 
 """ 线程 Thread """
@@ -9,17 +11,18 @@ from threading import get_native_id, Thread, RLock
 # 2.线程池执行器 ThreadPoolExecutor 的使用方法和 ProcessPoolExecutor 一致
 # 3.多进程不能直接从主进程传递锁, 要借助 Manager, 但是多线程可以直接从主进程传递锁
 
+
 def speak(n, lock):
-    for i in range(n):
+    for _i in range(n):
         with lock:
-            print(f"speak-{i + 1}: {os.getpid()}-{get_native_id()}")
+            pass
         time.sleep(1)
 
 
 def study(n, lock):
-    for i in range(n):
+    for _i in range(n):
         with lock:
-            print(f"study-{i + 1}: {os.getpid()}-{get_native_id()}")
+            pass
         time.sleep(1)
 
 
@@ -30,9 +33,9 @@ class SpeakThread(Thread):
         self.lock = lock
 
     def run(self):
-        for i in range(self.n):
+        for _i in range(self.n):
             with self.lock:
-                print(f"speak-{i + 1}: {os.getpid()}-{get_native_id()}")
+                pass
             time.sleep(1)
 
 
@@ -43,17 +46,13 @@ class StudyThread(Thread):
         self.lock = lock
 
     def run(self):
-        for i in range(self.n):
+        for _i in range(self.n):
             with self.lock:
-                print(f"study-{i + 1}: {os.getpid()}-{get_native_id()}")
+                pass
             time.sleep(1)
 
 
 if __name__ == "__main__":
-    print("-" * 50, "MAIN START", "-" * 50)
-
-    print(os.getpid(), get_native_id())
-
     RL = RLock()
 
     # # 使用 Thread 创建线程
@@ -69,5 +68,3 @@ if __name__ == "__main__":
 
     t1.join()
     t2.join()
-
-    print("-" * 50, "MAIN END", "-" * 50)

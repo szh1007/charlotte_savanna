@@ -1,7 +1,9 @@
-""" 提示词模板 ChatPromptTemplate """
-import os, dotenv
+"""提示词模板 ChatPromptTemplate"""
 
-from langchain_core.messages import HumanMessage, AIMessage
+import os
+
+import dotenv
+from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_openai import ChatOpenAI
 
@@ -15,16 +17,20 @@ model = ChatOpenAI(model="gpt-4o-mini")
     参数本质上都是消息列表 (Messages), 只是列表中的"消息"有不同的形式
 """
 # 方式1 构造方法 - 常用 tuple
-template1 = ChatPromptTemplate([
-    ("system", "你是一个AI助手, 你的名字叫{name}"),
-    ("human", "我的问题是{question}"),
-])
+template1 = ChatPromptTemplate(
+    [
+        ("system", "你是一个AI助手, 你的名字叫{name}"),
+        ("human", "我的问题是{question}"),
+    ]
+)
 
 # 方式2 from_messages - 常用 tuple (还可以是: str、dict、Message、ChatPromptTemplate、MessagePromptTemplate)
-template2 = ChatPromptTemplate.from_messages([
-    ("system", "你是一个AI助手, 你的名字叫{name}"),
-    ("human", "我的问题是{question}"),
-])
+template2 = ChatPromptTemplate.from_messages(
+    [
+        ("system", "你是一个AI助手, 你的名字叫{name}"),
+        ("human", "我的问题是{question}"),
+    ]
+)
 
 """
 二、赋值
@@ -60,21 +66,21 @@ prompt4 = template1.format_prompt(name="小智", question="介绍一下LLM")
 三、插入消息列表 MessagesPlaceholder
     当模板中的消息类型和数量不确定时, 可以用于临时占位
 """
-template3 = ChatPromptTemplate.from_messages([
-    ("system", "你是一个AI助手, 你的名字叫{name}"),
-    MessagesPlaceholder("history"),
-    ("human", "{question}")
-])
+template3 = ChatPromptTemplate.from_messages(
+    [("system", "你是一个AI助手, 你的名字叫{name}"), MessagesPlaceholder("history"), ("human", "{question}")]
+)
 
-prompt5 = template3.invoke({
-    "name": "小智",
-    "history": [
-        AIMessage("有什么可以帮到你"),
-        HumanMessage("1 + 2 + ... + 100 = ?"),
-        AIMessage("5050"),
-    ],
-    "question": "我刚才问了什么问题"
-})
+prompt5 = template3.invoke(
+    {
+        "name": "小智",
+        "history": [
+            AIMessage("有什么可以帮到你"),
+            HumanMessage("1 + 2 + ... + 100 = ?"),
+            AIMessage("5050"),
+        ],
+        "question": "我刚才问了什么问题",
+    }
+)
 
 # response = model.invoke(prompt5)
 # print(response.content)

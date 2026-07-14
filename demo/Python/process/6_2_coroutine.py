@@ -1,7 +1,10 @@
-""" 协程 coroutine """
-import os, time
-import aiohttp
+"""协程 coroutine"""
+
 import asyncio
+import os
+import time
+
+import aiohttp
 
 """ 定义 """
 # 协程函数: async关键字修饰的函数
@@ -21,24 +24,18 @@ import asyncio
 
 """ 基础示例 """
 
+
 async def test():
-    print(f"test start")
-    print(f"test loading...")  # 无I/O操作
-    print(f"test end")
     return "result-test"
 
 
 async def work(n, delay):
-    print(f"work{n} start")
-    print(f"work{n} loading...")
     await asyncio.sleep(delay)  # I/O操作
-    print(f"work{n} end")
     return f"result-work{n}"
 
 
 async def main1():
-    print("main start")
-    start = time.time()
+    time.time()
 
     # # 写法1 (更灵活)
     # task0 = asyncio.create_task(test())
@@ -54,14 +51,12 @@ async def main1():
     # print(res0)
 
     # 写法2 (更简洁)
-    results = await asyncio.gather(
+    await asyncio.gather(
         test(),
         work(1, 1),
         work(2, 1),
     )
-    print(results)  # 按顺序返回结果
 
-    print(f"main end: {round(time.time() - start, 4)}s")
     return "result-main"
 
 
@@ -71,17 +66,14 @@ async def main1():
 
 """ 拓展示例 """
 
-async def download(http, url: str, n: int):
-    print(f"{n} downloading: {url}")
 
+async def download(http, url: str, n: int):
     # 【网络请求】-> I/O 等待
     response = await http.get(url)
     # 【等待数据】-> 数据可能分多次传输, 需要等待数据全部读取完, 也属于I/O等待
     content = await response.read()
 
-    print(f"{n} download finish")
-
-    os.makedirs(f"./download", exist_ok=True)
+    os.makedirs("./download", exist_ok=True)
     with open(f"./download/{n}.png", "wb") as f:
         f.write(content)
 
@@ -90,8 +82,7 @@ async def download(http, url: str, n: int):
 
 
 async def main2():
-    print("main start")
-    start = time.time()
+    time.time()
 
     urls = [
         "https://img1.baidu.com/it/u=2045120719,1916684086&fm=253&fmt=auto&app=120&f=JPEG?w=500&h=909",
@@ -104,8 +95,6 @@ async def main2():
     await asyncio.gather(*coroutines)
 
     await http.close()
-
-    print(f"main end: {round(time.time() - start, 4)}s")
 
 
 asyncio.run(main2())

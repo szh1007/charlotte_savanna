@@ -1,17 +1,17 @@
-"""数据库操作层：连接管理、建表、CRUD、统计查询。
+"""数据库操作层:连接管理、建表、CRUD、统计查询。
 
-所有 SQL 使用参数化查询（`?` 占位符），禁止字符串拼接。
-数据库文件 `db.sqlite3` 位于本模块同级目录，运行时自动创建。
+所有 SQL 使用参数化查询(`?` 占位符),禁止字符串拼接。
+数据库文件 `db.sqlite3` 位于本模块同级目录,运行时自动创建。
 """
 
 import os
 import sqlite3
 from typing import Any
 
-# 数据库文件路径：与本模块同级的 db.sqlite3
+# 数据库文件路径:与本模块同级的 db.sqlite3
 _DB_PATH = os.path.join(os.path.dirname(__file__), "db.sqlite3")
 
-# 建表 DDL（与 schema.sql 保持同步）
+# 建表 DDL(与 schema.sql 保持同步)
 _DDL = """
 CREATE TABLE IF NOT EXISTS transactions (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -31,7 +31,7 @@ CREATE INDEX IF NOT EXISTS idx_transactions_category ON transactions(category);
 def get_connection() -> sqlite3.Connection:
     """获取数据库连接。
 
-    Streamlit 多线程环境下，需要 check_same_thread=False 避免线程检查报错。
+    Streamlit 多线程环境下,需要 check_same_thread=False 避免线程检查报错。
     调用方负责关闭连接。
     """
     conn = sqlite3.connect(_DB_PATH, check_same_thread=False)
@@ -41,9 +41,9 @@ def get_connection() -> sqlite3.Connection:
 
 
 def init_db() -> None:
-    """初始化数据库：建表 + 建索引（IF NOT EXISTS，幂等）。
+    """初始化数据库:建表 + 建索引(IF NOT EXISTS,幂等)。
 
-    每次 Streamlit rerun 时都会被调用，但不会重复创建已有结构。
+    每次 Streamlit rerun 时都会被调用,但不会重复创建已有结构。
     """
     conn = get_connection()
     try:
@@ -63,11 +63,11 @@ def add_transaction(
     """新增一条收支记录。
 
     Args:
-        type_: 类型，'income' 或 'expense'。
-        amount: 金额，必须 > 0。
+        type_: 类型,'income' 或 'expense'。
+        amount: 金额,必须 > 0。
         category: 分类。
-        date: 日期，格式 YYYY-MM-DD。
-        note: 备注，可选。
+        date: 日期,格式 YYYY-MM-DD。
+        note: 备注,可选。
 
     Returns:
         新记录的 id。
@@ -92,14 +92,14 @@ def query_transactions(
     page: int = 1,
     page_size: int = 10,
 ) -> tuple[list[dict[str, Any]], int]:
-    """分页查询账目列表，支持按年/月/分类/类型筛选。
+    """分页查询账目列表,支持按年/月/分类/类型筛选。
 
     Args:
-        year: 年份，None 表示不筛选。
-        month: 月份（1-12），None 表示不筛选。
-        category: 分类，None 表示不筛选。
-        type_: 类型（'income'/'expense'），None 表示全部。
-        page: 页码，1-based。
+        year: 年份,None 表示不筛选。
+        month: 月份(1-12),None 表示不筛选。
+        category: 分类,None 表示不筛选。
+        type_: 类型('income'/'expense'),None 表示全部。
+        page: 页码,1-based。
         page_size: 每页条数。
 
     Returns:
@@ -133,11 +133,8 @@ def query_transactions(
 
         # 分页查询数据
         offset = (page - 1) * page_size
-        data_sql = (
-            f"SELECT * FROM transactions {where_clause} "
-            "ORDER BY date DESC, id DESC LIMIT ? OFFSET ?"
-        )
-        rows = conn.execute(data_sql, params + [page_size, offset]).fetchall()
+        data_sql = f"SELECT * FROM transactions {where_clause} ORDER BY date DESC, id DESC LIMIT ? OFFSET ?"
+        rows = conn.execute(data_sql, [*params, page_size, offset]).fetchall()
 
         # Row 对象转为 dict 列表
         records = [dict(row) for row in rows]
@@ -177,14 +174,14 @@ def get_category_stats(
 ) -> list[dict[str, Any]]:
     """按分类汇总金额与占比。
 
-    先按 type 分组，再按 category 汇总，计算每个分类在其 type 中的占比。
+    先按 type 分组,再按 category 汇总,计算每个分类在其 type 中的占比。
 
     Args:
-        year: 年份筛选，None 表示全部。
-        month: 月份筛选，None 表示全部。
+        year: 年份筛选,None 表示全部。
+        month: 月份筛选,None 表示全部。
 
     Returns:
-        列表，每项为 {type, category, total, percentage}，按 total 降序排列。
+        列表,每项为 {type, category, total, percentage},按 total 降序排列。
     """
     conditions: list[str] = []
     params: list[Any] = []
@@ -202,15 +199,9 @@ def get_category_stats(
 
     conn = get_connection()
     try:
-        # 先计算每个 type 的总金额，用于算占比
-        type_total_sql = (
-            f"SELECT type, SUM(amount) AS type_total FROM transactions {where_clause} "
-            "GROUP BY type"
-        )
-        type_totals = {
-            row["type"]: row["type_total"]
-            for row in conn.execute(type_total_sql, params).fetchall()
-        }
+        # 先计算每个 type 的总金额,用于算占比
+        type_total_sql = f"SELECT type, SUM(amount) AS type_total FROM transactions {where_clause} GROUP BY type"
+        type_totals = {row["type"]: row["type_total"] for row in conn.execute(type_total_sql, params).fetchall()}
 
         # 按分类汇总
         category_sql = (
@@ -223,19 +214,21 @@ def get_category_stats(
         for row in rows:
             type_total = type_totals.get(row["type"], 1)
             percentage = round(row["total"] / type_total * 100, 1) if type_total > 0 else 0.0
-            stats.append({
-                "type": row["type"],
-                "category": row["category"],
-                "total": row["total"],
-                "percentage": percentage,
-            })
+            stats.append(
+                {
+                    "type": row["type"],
+                    "category": row["category"],
+                    "total": row["total"],
+                    "percentage": percentage,
+                }
+            )
         return stats
     finally:
         conn.close()
 
 
 def get_years() -> list[int]:
-    """获取所有存在记录的年份（降序），用于筛选下拉框。"""
+    """获取所有存在记录的年份(降序),用于筛选下拉框。"""
     conn = get_connection()
     try:
         rows = conn.execute(

@@ -2,19 +2,18 @@
 多进程 多线程
 进程通信 Pipe(管道)
 """
+
 import time
-from multiprocessing import Process, Pipe
+from multiprocessing import Pipe, Process
 
 
 def test1(con):
     time.sleep(2)
     con.send(100)
-    print("test1 send 100")
 
 
 def test2(con):
-    data = con.recv()
-    print(f"test2 recv data: {data}")
+    con.recv()
 
 
 if __name__ == "__main__":

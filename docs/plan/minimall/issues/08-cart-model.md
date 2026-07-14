@@ -21,4 +21,3 @@
 - CartItem.quantity 不能超过产品库存（应用层校验，不在模型层）
 
 ## Comments
-

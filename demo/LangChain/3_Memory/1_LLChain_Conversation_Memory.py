@@ -1,18 +1,11 @@
-""" LLChain Conversation Memory """
-import os, dotenv
+"""LLChain Conversation Memory"""
 
-from langchain_classic.chains.conversation.base import ConversationChain
-from langchain_classic.chains.llm import LLMChain
+import os
+
+import dotenv
 from langchain_classic.memory import (
-    ConversationBufferMemory,
-    ConversationBufferWindowMemory,
-    ConversationTokenBufferMemory,
     ConversationSummaryMemory,
-    ConversationSummaryBufferMemory,
-    ConversationEntityMemory,
 )
-from langchain_classic.memory.prompt import ENTITY_MEMORY_CONVERSATION_TEMPLATE
-from langchain_community.memory.kg import ConversationKGMemory
 from langchain_core.chat_history import InMemoryChatMessageHistory
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_openai import ChatOpenAI
@@ -26,16 +19,20 @@ model = ChatOpenAI(model="gpt-4o-mini")
 1.PromptTemplate        执行时未存储
 2.ChatPromptTemplate    执行时已存储
 """
-template1 = ChatPromptTemplate.from_messages([
-    ("system", "你是一个AI专家, 你的名字叫小智"),
-    MessagesPlaceholder("chat_history"),
-    ("human", "{question}"),
-])
+template1 = ChatPromptTemplate.from_messages(
+    [
+        ("system", "你是一个AI专家, 你的名字叫小智"),
+        MessagesPlaceholder("chat_history"),
+        ("human", "{question}"),
+    ]
+)
 
-template2 = ChatPromptTemplate.from_messages([
-    ("system", "你是一个AI专家, 你的名字叫小智, 已知对话历史: {history}"),
-    ("human", "{input}"),
-])
+template2 = ChatPromptTemplate.from_messages(
+    [
+        ("system", "你是一个AI专家, 你的名字叫小智, 已知对话历史: {history}"),
+        ("human", "{input}"),
+    ]
+)
 
 """
 InMemoryChatMessageHistory
@@ -78,11 +75,10 @@ InMemoryChatMessageHistory
 """
 history = InMemoryChatMessageHistory()
 history.add_user_message("我是AI专业毕业的研究生")
-history.add_ai_message("好的，我知道了")
+history.add_ai_message("好的,我知道了")
 summary_memory = ConversationSummaryMemory.from_messages(llm=model, chat_memory=history)
 summary_memory.save_context({"input": "你好, 我叫 Charlotte"}, {"output": "你好, Charlotte"})
 summary_memory.save_context({"input": "我的女朋友叫 Savanna"}, {"output": "好的, 我知道了"})
-print(summary_memory.load_memory_variables({}))
 
 """
 1.4 混合记忆 (按 token, 最近记录保留、较早的记录摘要)
@@ -90,7 +86,7 @@ print(summary_memory.load_memory_variables({}))
 # mix_memory = ConversationSummaryBufferMemory(llm=model, max_token_limit=30)
 # mix_memory.save_context({"input": "你好, 我叫 Charlotte"}, {"output": "你好, Charlotte"})
 # mix_memory.save_context({"input": "我的女朋友叫 Savanna"}, {"output": "好的, 我知道了"})
-# mix_memory.save_context({"input": "我是AI专业毕业的研究生"}, {"output": "好的，我知道了"})
+# mix_memory.save_context({"input": "我是AI专业毕业的研究生"}, {"output": "好的,我知道了"})
 # print(mix_memory.load_memory_variables({}))
 
 """

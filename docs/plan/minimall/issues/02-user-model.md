@@ -23,4 +23,3 @@
 - `python manage.py createsuperuser` 可创建管理员
 
 ## Comments
-

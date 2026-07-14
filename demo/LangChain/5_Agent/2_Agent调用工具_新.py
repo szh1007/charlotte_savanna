@@ -1,23 +1,24 @@
-import os, dotenv
+import os
 
-from langchain_classic.memory import ConversationBufferMemory
-from langsmith import Client
+import dotenv
 from langchain_classic.agents import (
     AgentExecutor,
     create_react_agent,
     create_tool_calling_agent,
 )
+from langchain_classic.memory import ConversationBufferMemory
 from langchain_core.prompts import (
     ChatPromptTemplate,
     MessagesPlaceholder,
 )
 from langchain_core.tools import Tool
-from langchain_tavily import TavilySearch
 from langchain_openai import ChatOpenAI
+from langchain_tavily import TavilySearch
+from langsmith import Client
 
 
 def test_tool(query: str) -> str:
-    """ 自定义工具函数 """
+    """自定义工具函数"""
     return f"{query}: Surprise! Savanna!"
 
 
@@ -35,17 +36,19 @@ tools = [
     Tool(  # 自定义工具
         name="Test_Tool",
         func=test_tool,
-        description="当问题中包含 Charlotte 时, 直接调用并返回结果"  # 通过修改, 以达到让模型能识别并使用的程度
-    )
+        description="当问题中包含 Charlotte 时, 直接调用并返回结果",  # 通过修改, 以达到让模型能识别并使用的程度
+    ),
 ]
 
 """ Prompt """
-prompt1 = ChatPromptTemplate.from_messages([
-    ("system", "你是智能AI助手, 根据用户的提问, 必要时调用 tavily_search 工具进行互联网检索"),
-    MessagesPlaceholder("chat_history"),
-    MessagesPlaceholder("agent_scratchpad"),  # *重要！！必须要有！！！*
-    ("human", "{input}"),
-])
+prompt1 = ChatPromptTemplate.from_messages(
+    [
+        ("system", "你是智能AI助手, 根据用户的提问, 必要时调用 tavily_search 工具进行互联网检索"),
+        MessagesPlaceholder("chat_history"),
+        MessagesPlaceholder("agent_scratchpad"),  # *重要!!必须要有!!!*
+        ("human", "{input}"),
+    ]
+)
 
 prompt2 = Client().pull_prompt(
     prompt_identifier="hwchase17/react",
@@ -83,6 +86,4 @@ agent_executor = AgentExecutor(
 # print(result["output"])
 
 result1 = agent_executor.invoke({"input": "深圳今天的天气情况"})
-print(result1)
 result2 = agent_executor.invoke({"input": "江苏宿迁的呢"})
-print(result2)

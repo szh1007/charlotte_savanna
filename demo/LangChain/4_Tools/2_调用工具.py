@@ -1,6 +1,8 @@
-import os, dotenv, json
+import json
+import os
 
-from langchain_community.tools import MoveFileTool, CopyFileTool
+import dotenv
+from langchain_community.tools import CopyFileTool, MoveFileTool
 from langchain_core.messages import HumanMessage
 from langchain_core.utils.function_calling import convert_to_openai_function
 from langchain_openai import ChatOpenAI
@@ -40,10 +42,8 @@ if "function_call" in response.additional_kwargs:
     function_call = response.additional_kwargs["function_call"]
     tool_name = function_call["name"]
     tool_args = json.loads(function_call["arguments"])  # str -> json
-    print(f"调用工具: {tool_name}\n输入参数: {tool_args}")
 else:
-    print(f"模型回复: {response.content}")
+    pass
 
 if tool_name in tools:
     result = tools[tool_name].run(tool_args)
-    print(f"执行结果: {result}")

@@ -1,13 +1,15 @@
-""" 文档加载器 loader """
+"""文档加载器 loader"""
+
 import warnings
-warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 from langchain_community.document_loaders import (
-    TextLoader,
-    PyPDFLoader,
     CSVLoader,
     JSONLoader,
+    PyPDFLoader,
+    TextLoader,
 )
+
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 """ txt """
 txt1 = TextLoader("./asset/01-langchain-gbk.txt").load()

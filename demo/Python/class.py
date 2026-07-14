@@ -18,30 +18,30 @@ class Charlotte(Test):
     def __init__(self, name="Charlotte", gender="男", age=16):
         # 实例属性
         # 仅实例可以访问
-        self.name = name        # public    当前类、子类、类外部
-        self._gender = gender   # protected 当前类、子类
-        self.__age = age        # private   当前类
+        self.name = name  # public    当前类、子类、类外部
+        self._gender = gender  # protected 当前类、子类
+        self.__age = age  # private   当前类
 
     # 实例方法
     # self -> 实例本身 -> 可使用实例属性和类属性
     def fun1(self):
-        print(f"调用实例方法: {self}")
+        pass
 
     # 类方法
     # cls -> 类本身 -> 仅可以使用类属性
     @classmethod
     def fun2(cls):
-        print(f"调用类方法: {cls}")
+        pass
 
     # 静态方法
     # 不访问任何属性 -> 仅推荐使用类调用
     @staticmethod
     def fun3():
-        print("调用静态方法")
+        pass
 
     # 实现抽象方法
     def test(self):
-        print("抽象方法已实现")
+        pass
 
     # getter
     @property
@@ -68,26 +68,14 @@ class Charlotte(Test):
 
 if __name__ == "__main__":
     c = Charlotte()
-    print(c.__dict__)
-
-    print("-" * 50)
 
     c.fun1()
     c.fun2()
     Charlotte.fun3()
     c.test()
 
-    print("-" * 50)
-
-    print(c.age)
     c.age = 18
-    print(c.age)
     # c.age = "18"
     # c.age = 121
 
-    print("-" * 50)
-
-    print(c)
-    print(len(c))
     s = Charlotte("savanna", "女", 18)
-    print(c == s)

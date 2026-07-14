@@ -23,4 +23,3 @@
 - 分类 slug 唯一
 
 ## Comments
-

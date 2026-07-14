@@ -1,9 +1,11 @@
-""" 输出解析器 OutputParser """
-import os, dotenv
+"""输出解析器 OutputParser"""
 
+import os
+
+import dotenv
 from langchain_core.output_parsers import (
-    StrOutputParser,
     JsonOutputParser,
+    StrOutputParser,
     XMLOutputParser,
 )
 from langchain_core.prompts import PromptTemplate
@@ -33,7 +35,7 @@ json_template = PromptTemplate.from_template(
     partial_variables={
         "format1": json_parser.get_format_instructions(),
         "format2": "问题表示为 question, 答案表示为 answer",
-    }
+    },
 )
 
 # # 方式1
@@ -50,11 +52,8 @@ XMLOutputParser
 XML结果会自动解析成dict格式
 """
 xml_parser = XMLOutputParser()
-xml_template = (
-    PromptTemplate
-    .from_template("回答用户的问题, 满足格式: {format}\n问题: {question}")
-    .partial(format=xml_parser.get_format_instructions())
+xml_template = PromptTemplate.from_template("回答用户的问题, 满足格式: {format}\n问题: {question}").partial(
+    format=xml_parser.get_format_instructions()
 )
 
 chain = xml_template | model | xml_parser
-print(chain.invoke(input_dict))

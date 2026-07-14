@@ -1,13 +1,15 @@
 """
 LLMChain (will be removed in 2.0.0)
 """
-import os, dotenv
 
+import os
+
+import dotenv
+from langchain_classic.chains.llm import LLMChain
 from langchain_classic.chains.sequential import (
     SequentialChain,
     SimpleSequentialChain,
 )
-from langchain_classic.chains.llm import LLMChain
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 
@@ -20,9 +22,11 @@ model = ChatOpenAI(model="gpt-4o-mini")
 """
 基础 LLMChain
 """
-template1 = ChatPromptTemplate.from_messages([
-    ("human", "{actor}主演的所有电影的详细汇总信息"),
-])
+template1 = ChatPromptTemplate.from_messages(
+    [
+        ("human", "{actor}主演的所有电影的详细汇总信息"),
+    ]
+)
 chain1 = LLMChain(llm=model, prompt=template1, verbose=True)
 # print(chain1.invoke({"actor": "周星驰"}))
 
@@ -33,9 +37,11 @@ chain1 = LLMChain(llm=model, prompt=template1, verbose=True)
     2.变量名可以自定义
     3.最后 invoke 仅可以传输 str
 """
-template2 = ChatPromptTemplate.from_messages([
-    ("human", "已知电影信息: {movies}, 选出普遍好评率最高的5部"),
-])
+template2 = ChatPromptTemplate.from_messages(
+    [
+        ("human", "已知电影信息: {movies}, 选出普遍好评率最高的5部"),
+    ]
+)
 chain2 = LLMChain(llm=model, prompt=template2, verbose=True)
 
 ss_chain = SimpleSequentialChain(
@@ -52,13 +58,20 @@ ss_chain = SimpleSequentialChain(
     2.变量名必须要【显示定义】, 才能保证灵活映射
     3.使用 input_variables 和 output_variables 控制输入输出
 """
-template3 = ChatPromptTemplate.from_messages([
-    ("human", "{actor1}和{actor2}分别主演的所有电影的详细汇总信息"),
-])
+template3 = ChatPromptTemplate.from_messages(
+    [
+        ("human", "{actor1}和{actor2}分别主演的所有电影的详细汇总信息"),
+    ]
+)
 
-template4 = ChatPromptTemplate.from_messages([
-    ("human", "已知{actor1}和{actor2}电影信息描述: {movies}, 综合{plat1}和{plat2}的评价选出普遍好评率最高的{top}部"),
-])
+template4 = ChatPromptTemplate.from_messages(
+    [
+        (
+            "human",
+            "已知{actor1}和{actor2}电影信息描述: {movies}, 综合{plat1}和{plat2}的评价选出普遍好评率最高的{top}部",
+        ),
+    ]
+)
 
 chain3 = LLMChain(llm=model, prompt=template3, verbose=True, output_key="movies")
 chain4 = LLMChain(llm=model, prompt=template4, verbose=True, output_key="movies_top")

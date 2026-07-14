@@ -1,0 +1,22 @@
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+exclude = [".venv/"]
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "F",      # pyflakes
+    "I",      # isort (import 排序)
+    "N",      # pep8-naming (命名规范)
+    "W",      # pycodestyle warnings
+    "UP",     # pyupgrade (语法现代化)
+    "B",      # flake8-bugbear (常见 bug 陷阱)
+    "C4",     # flake8-comprehensions (推导式优化)
+    "SIM",    # flake8-simplify (简化写法)
+    "T20",    # flake8-print (禁止残留 print)
+    "RUF",    # Ruff 专有规则
+]
+
+[tool.ruff.format]
+quote-style = "double"

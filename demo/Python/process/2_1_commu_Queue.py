@@ -2,6 +2,7 @@
 多进程 多线程
 进程通信 Queue(队列)
 """
+
 import time
 from multiprocessing import Process, Queue
 
@@ -30,20 +31,18 @@ from multiprocessing import Process, Queue
 
 def test(queue):
     time.sleep(3)
-    v = queue.get()
-    print(f"异步进程出队: {v}")
+    queue.get()
 
 
 def async_enqueue(queue, n):
     for i in range(n):
-        print(f"入队: {i}")
         queue.put(i)
         time.sleep(0.5)
 
+
 def async_dequeue(queue, n):
-    for i in range(n):
-        data = queue.get()
-        print(f"出队: {data}")
+    for _i in range(n):
+        queue.get()
         time.sleep(1)
 
 

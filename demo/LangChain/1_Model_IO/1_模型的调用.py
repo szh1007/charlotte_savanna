@@ -1,9 +1,10 @@
-""" 模型的调用 """
-import os, dotenv
+"""模型的调用"""
 
-from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+import os
+
+import dotenv
+from langchain_core.messages import HumanMessage
 from langchain_openai import ChatOpenAI
-from pydantic import SecretStr
 
 """
 一、模型调用的分类
@@ -26,7 +27,7 @@ from pydantic import SecretStr
         3.2 使用 OpenAI 官方的 API
         3.3 使用其他平台提供的 API
 """
-# # 1.LangChain API + 对话模型 + 硬编码 (⚠️ 不安全，仅作对比演示)
+# # 1.LangChain API + 对话模型 + 硬编码 (⚠️ 不安全,仅作对比演示)
 # chat_model = ChatOpenAI(
 #     model="gpt-4o-mini",
 #     base_url="https://api.openai-proxy.org/v1",
@@ -97,6 +98,6 @@ stream_chat_model = ChatOpenAI(
     streaming=True,
 )
 messages = [HumanMessage(content="帮我制定一个英语六级的学习计划")]
-for chunk in stream_chat_model.stream(messages):
+for _chunk in stream_chat_model.stream(messages):
     # 逐个打印内容块 (刷新缓冲区, 保证没有换行符的情况下, 内容能立即显示)
-    print(chunk.content, end="", flush=True)
+    pass
