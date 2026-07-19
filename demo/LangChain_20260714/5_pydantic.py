@@ -30,8 +30,10 @@ class PersonList(BaseModel):
 
 
 try:
-    structured_llm = llm.with_structured_output(PersonList)
+    # include_raw: 是否包含原始输出的AIMessage
+    structured_llm = llm.with_structured_output(PersonList, include_raw=True)
     response = structured_llm.invoke("我叫charlotte, 是一位AI应用工程师, 你好")
     rprint(response)
 except Exception as e:
+    # pydantic 会进行格式强检验, 如果输出不符合要求, 会抛出异常
     rprint(e)
