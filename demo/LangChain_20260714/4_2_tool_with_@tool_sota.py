@@ -37,10 +37,15 @@ def get_weather(location: str, time: str = "today") -> str:
 
 
 # 绑定工具
-llm_with_tools = llm.bind_tools([get_weather])
+# tool_choice = "none" 绝不调用 / "auto" 自动 / "required" 必须调用 (可强制调用指定的工具, 设置为工具名即可)
+llm_with_tools = llm.bind_tools([get_weather], tool_choice="auto")
 
 # 查看工具定义描述
 rprint(convert_to_openai_tool(get_weather))
 
 # 查看工具调用情况 tool_calls
 rprint(llm_with_tools.invoke("ShenZhen Weather tomorrow").tool_calls)
+
+# 1.工具描述要尽可能清晰
+# 2.每个工具职责划分要边界清晰
+# 3.处理工具调用失败 - Agent级使用Prompt安排重试 / 调用级重试@retry / 最好让工具返回字符串 / 异步调用
