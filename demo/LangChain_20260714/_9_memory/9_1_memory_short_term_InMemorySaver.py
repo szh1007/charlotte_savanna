@@ -4,6 +4,10 @@ from langchain.chat_models import init_chat_model
 from langgraph.checkpoint.memory import InMemorySaver
 from rich import print as rprint
 
+"""
+短期记忆: State (会话状态) + Checkpointer (持久化机制) + Thread ID (会话窗口表标识)
+"""
+
 dotenv.load_dotenv()
 
 model = init_chat_model("deepseek:deepseek-v4-pro", extra_body={"thinking": {"type": "disabled"}})
