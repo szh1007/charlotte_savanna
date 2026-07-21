@@ -16,6 +16,8 @@ model = init_chat_model("deepseek:deepseek-v4-pro", extra_body={"thinking": {"ty
 # wrap (wrap_model_call、wrap_tool_call)
 # 有前后包裹结构, 先传递的包裹在外层, 即 1 - 2 - 3 - ... - 3 - 2 - 1
 
+# 全局包裹范围: agent > model > wrap
+
 agent = create_agent(
     name="agent_assistant",
     model=model,
