@@ -26,7 +26,7 @@ class GetWeatherFields(BaseModel):
     args_schema=GetWeatherFields,
 )
 def get_weather(location: str, time: str = "今天") -> str:
-    return f"{time}{location}在的天气: 多云转雷阵雨"
+    return f"{time}{location}的天气: 多云转雷阵雨"
 
 
 # 内置工具
