@@ -7,6 +7,7 @@ from langchain_community.document_loaders import (
     PyPDFLoader,
     TextLoader,
 )
+from rich import print as rprint
 
 load_dir = os.path.join(os.path.dirname(__file__), "load")
 
@@ -34,4 +35,4 @@ word_docs = Docx2txtLoader(os.path.join(load_dir, "sample.docx")).load()
 
 """ md (md 是纯文本, 直接用 TextLoader 即可, 避免 segfault) """
 md_docs = TextLoader(os.path.join(load_dir, "sample.md"), encoding="utf-8").load()
-# rprint(md_docs)
+rprint(md_docs)
