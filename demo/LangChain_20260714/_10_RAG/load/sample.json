@@ -1,0 +1,47 @@
+[
+    {
+        "id": 1,
+        "name": "Charlotte",
+        "age": 28,
+        "city": "Beijing",
+        "occupation": "Engineer",
+        "skills": ["Python", "LangChain", "Machine Learning"],
+        "department": "AI Research"
+    },
+    {
+        "id": 2,
+        "name": "Savanna",
+        "age": 26,
+        "city": "Shanghai",
+        "occupation": "Designer",
+        "skills": ["Figma", "UI Design", "UX Research"],
+        "department": "Product Design"
+    },
+    {
+        "id": 3,
+        "name": "Alex",
+        "age": 32,
+        "city": "Shenzhen",
+        "occupation": "Product Manager",
+        "skills": ["Scrum", "JIRA", "Roadmap Planning"],
+        "department": "Product"
+    },
+    {
+        "id": 4,
+        "name": "Bella",
+        "age": 29,
+        "city": "Hangzhou",
+        "occupation": "Data Scientist",
+        "skills": ["TensorFlow", "SQL", "Statistics"],
+        "department": "Data Platform"
+    },
+    {
+        "id": 5,
+        "name": "Charlie",
+        "age": 35,
+        "city": "Guangzhou",
+        "occupation": "Architect",
+        "skills": ["Microservices", "Kubernetes", "System Design"],
+        "department": "Infrastructure"
+    }
+]
