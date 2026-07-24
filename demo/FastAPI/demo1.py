@@ -11,9 +11,11 @@ if __name__ == "__main__":
 """
 
 from enum import Enum
+from pathlib import Path
 from typing import Annotated
 
-from fastapi import FastAPI, Form
+import aiofiles
+from fastapi import FastAPI, File, Form, UploadFile
 from pydantic import BaseModel, Field, field_validator
 
 app = FastAPI()
@@ -36,7 +38,9 @@ class User(BaseModel):
         description="密码",
     )
     edu: Edu = Field(Edu.UNIVERSITY, description="学历")
-    skills: list[str] = Field(["LangChain", "FastAPI"], min_items=2, max_items=10, description="技能")
+    skills: list[str] = Field(
+        ["LangChain", "FastAPI"], min_items=2, max_items=10, description="技能"
+    )
     desc: str | None = Field("", max_length=100, description="描述")
 
     @field_validator("skills", mode="before")
@@ -62,6 +66,11 @@ class User(BaseModel):
                     result.append(item)
             return result
         return v
+
+
+@app.get("/")
+def root():
+    return {"result": "Hello World"}
 
 
 @app.get("/user/{id}")
@@ -94,4 +103,31 @@ def test3(user: Annotated[User, Form()]):
         "code": 1,
         "message": "save user success",
         "data": user,
+    }
+
+
+@app.post("/upload/small")
+def upload_file_small(file: bytes = File(...)):
+    with open("./demo/FastAPI/data/upload.jpg", "wb") as f:
+        f.write(file)
+
+    return {
+        "code": 1,
+        "message": "small file uploaded successfully",
+    }
+
+
+@app.post("/upload/large")
+async def upload_file_large(file: UploadFile = File(...)):
+    ext = Path(file.filename).suffix.lower()
+    if ext not in [".png", ".jpg", ".jpeg"]:
+        return {"code": 0, "message": "file ext not in [jpg, jpeg, png]"}
+
+    async with aiofiles.open(f"./demo/FastAPI/data/{file.filename}", "wb") as f:
+        while chunk := await file.read(1024 * 1024):  # 1MB
+            await f.write(chunk)
+
+    return {
+        "code": 1,
+        "message": "large file uploaded successfully",
     }
