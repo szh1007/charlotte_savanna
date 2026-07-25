@@ -1,9 +1,9 @@
 """
 启动方法1
-$ uvicorn demo.FastAPI.demo1:app --reload
+$ uvicorn demo.FastAPI.utils.demo1:app --reload
 
 启动方法2
-$ python demo/FastAPI/demo1.py
+$ python demo/FastAPI/utils/demo1.py
 
 if __name__ == "__main__":
     uvicorn.run(app="demo1:app", host="127.0.0.1", port=8000, reload=True)
