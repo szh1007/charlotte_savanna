@@ -39,3 +39,7 @@ node_modules/
 
 # --- WorkBuddy ---
 .workbuddy
+
+# pre-commit
+.ruff*
+.black*
