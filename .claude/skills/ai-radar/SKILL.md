@@ -103,7 +103,7 @@ ALWAYS 使用以下模板：
 
 ### Step 5: 保存与展示
 
-1. 将报告保存为 `docs/skills_md/ai-radar/YYYY-MM-DD.md`（当前日期）。
+1. 将报告保存为 `docs/note/skills_analysis/ai-radar/YYYY-MM-DD.md`（当前日期）。
 2. 在终端输出简版摘要（🎯本周必看 + 📊趋势关键词 + 各方向条目数）。
 3. 提示完整报告路径。
 

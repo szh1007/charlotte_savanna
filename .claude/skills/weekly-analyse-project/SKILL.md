@@ -120,7 +120,7 @@ git status -b --porcelain
 1. 按模板填充所有数据。
 2. 对每个 feat/fix 提交写一行简短说明（中文）。
 3. 对比数据填入表格，计算变化百分比。
-4. 将报告保存为 `docs/skills_md/weekly-analyse-project/YYYY-MM-DD.md`（使用当前日期）。
+4. 将报告保存为 `docs/note/skills_analysis/weekly-analyse-project/YYYY-MM-DD.md`（使用当前日期）。
 5. 在终端输出报告摘要（概览 + 亮点），完整内容请用户查看文件。
 
 ### Step 6: 展示原则
