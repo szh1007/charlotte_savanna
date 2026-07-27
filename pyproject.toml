@@ -1,5 +1,5 @@
 [tool.ruff]
-line-length = 88
+line-length = 100
 target-version = "py313"
 exclude = [".venv/"]
 
@@ -16,6 +16,12 @@ select = [
     "T20",    # flake8-print (禁止残留 print)
     "RUF",    # Ruff 专有规则
 ]
+
+[tool.ruff.lint.per-file-ignores]
+"**/models.py" = ["RUF012"]
+"**/migrations/*.py" = ["RUF012"]
+"**/settings/*.py" = ["RUF012"]
+"**/settings.py" = ["RUF012"]
 
 [tool.ruff.format]
 quote-style = "double"
