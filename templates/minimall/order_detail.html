@@ -1,0 +1,133 @@
+{% extends "minimall/base.html" %}
+{% block title %}订单详情 - 淘宝{% endblock %}
+{% block content %}
+<div x-data="orderDetail" x-init="init()" style="max-width:800px;margin:0 auto;">
+  <template x-if="loading">
+    <div style="text-align:center;padding:60px;color:#adb5bd;">加载中...</div>
+  </template>
+  <template x-if="!loading && order">
+    <div>
+      <!-- Status header -->
+      <div style="background:#fff;border-radius:12px;padding:28px 32px;margin-bottom:20px;box-shadow:0 2px 12px rgba(0,0,0,.06);">
+        <div style="display:flex;justify-content:space-between;align-items:start;">
+          <div>
+            <div style="font-size:13px;color:#adb5bd;margin-bottom:4px;">订单号</div>
+            <div style="font-size:16px;font-weight:600;font-family:monospace;" x-text="order.order_no"></div>
+          </div>
+          <div style="text-align:right;">
+            <div style="font-size:13px;color:#adb5bd;margin-bottom:4px;">状态</div>
+            <div style="font-size:18px;font-weight:700;" :style="{color: statusColor(order.status)}" x-text="statusLabel(order.status)"></div>
+          </div>
+        </div>
+        <div style="display:flex;justify-content:space-between;margin-top:24px;position:relative;">
+          <div style="position:absolute;top:14px;left:0;right:0;height:4px;background:#e9ecef;border-radius:2px;"></div>
+          <template x-for="s in steps" :key="s.key">
+            <div style="position:relative;text-align:center;z-index:1;flex:1;">
+              <div :style="{width:'28px',height:'28px',borderRadius:'50%',background:stepDone(s.key)?'#ff6b6b':'#e9ecef',margin:'0 auto 6px',display:'flex',alignItems:'center',justifyContent:'center'}">
+                <span x-show="stepDone(s.key)" style="color:#fff;font-size:14px;">&#10003;</span>
+                <span x-show="!stepDone(s.key)" style="color:#adb5bd;font-size:14px;">&#9679;</span>
+              </div>
+              <div style="font-size:12px;color:#adb5bd;" x-text="s.label"></div>
+              <div style="font-size:11px;color:#ccc;" x-text="s.time ? new Date(s.time).toLocaleString() : ''"></div>
+            </div>
+          </template>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 320px;gap:20px;">
+        <!-- Left: items -->
+        <div style="background:#fff;border-radius:12px;padding:24px;box-shadow:0 2px 12px rgba(0,0,0,.06);">
+          <h3>商品明细</h3>
+          <template x-for="item in order.items" :key="item.id">
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-bottom:1px solid #f1f3f5;">
+              <div style="flex:1;">
+                <div style="font-weight:500;" x-text="item.product_name"></div>
+                <div style="font-size:13px;color:#adb5bd;">&yen;<span x-text="item.product_price"></span> x <span x-text="item.quantity"></span></div>
+              </div>
+              <div style="font-weight:600;">&yen;<span x-text="Number(item.subtotal).toFixed(2)"></span></div>
+            </div>
+          </template>
+          <div style="text-align:right;margin-top:16px;font-size:20px;font-weight:800;">
+            合计: &yen;<span x-text="Number(order.total_amount).toFixed(2)"></span>
+          </div>
+        </div>
+
+        <!-- Right -->
+        <div>
+          <div style="background:#fff;border-radius:12px;padding:24px;box-shadow:0 2px 12px rgba(0,0,0,.06);margin-bottom:16px;">
+            <h3>收货信息</h3>
+            <div style="font-size:14px;line-height:1.8;">
+              <div><strong x-text="(order.shipping_address_snapshot||{}).receiver_name"></strong> <span x-text="(order.shipping_address_snapshot||{}).phone"></span></div>
+              <div style="color:#666;" x-text="((order.shipping_address_snapshot||{}).province||'')+((order.shipping_address_snapshot||{}).city||'')+((order.shipping_address_snapshot||{}).district||'')"></div>
+              <div style="color:#666;" x-text="(order.shipping_address_snapshot||{}).detail"></div>
+            </div>
+          </div>
+
+          <div x-show="['pending','paid','shipped','received'].includes(order.status)" style="background:#fff;border-radius:12px;padding:24px;box-shadow:0 2px 12px rgba(0,0,0,.06);">
+            <template x-if="order.status === 'pending'">
+              <div>
+                <input type="password" x-model="payPwd" placeholder="支付密码" maxlength="6" style="width:100%;padding:10px;border:1px solid #e9ecef;border-radius:8px;margin-bottom:8px;text-align:center;font-size:18px;letter-spacing:8px;">
+                <button @click="doPay" style="width:100%;padding:12px;background:#ff6b6b;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:15px;font-weight:600;">确认支付</button>
+                <button @click="doCancel" style="width:100%;margin-top:8px;padding:12px;background:#f1f3f5;color:#666;border:none;border-radius:8px;cursor:pointer;font-size:15px;">取消订单</button>
+              </div>
+            </template>
+            <template x-if="order.status === 'paid'">
+              <button @click="doCancel" style="width:100%;padding:12px;background:#f1f3f5;color:#666;border:none;border-radius:8px;cursor:pointer;font-size:15px;">取消订单</button>
+            </template>
+            <template x-if="order.status === 'shipped'">
+              <button @click="doReceive" style="width:100%;padding:12px;background:#ff6b6b;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:15px;font-weight:600;">确认收货</button>
+            </template>
+            <template x-if="order.status === 'received'">
+              <button @click="doComplete" style="width:100%;padding:12px;background:#ff6b6b;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:15px;font-weight:600;">确认完成</button>
+            </template>
+          </div>
+        </div>
+      </div>
+    </div>
+  </template>
+</div>
+
+<script>
+document.addEventListener('alpine:init', () => {
+  Alpine.data('orderDetail', () => ({
+    order: null, loading: true, payPwd: '',
+    get orderNo() { var p = window.location.pathname.split('/').filter(function(s){return s;}); return p[p.length-1] || ''; },
+    async init() {
+      try {
+        var r = await fetch('/api/orders/' + this.orderNo + '/');
+        this.order = await r.json();
+      } catch(e) { console.error(e); }
+      finally { this.loading = false; }
+    },
+    get steps() {
+      if (!this.order) return [];
+      var st = this.order.status_timeline || [];
+      return ['pending','paid','shipped','received','completed'].map(function(k){
+        var labels = {pending:'已下单',paid:'已付款',shipped:'已发货',received:'已收货',completed:'已完成'};
+        var found = st.find(function(x){return x.status === k;});
+        return {key: k, label: labels[k], time: found ? found.time : ''};
+      });
+    },
+    stepDone: function(key) {
+      var s = this.order.status;
+      var order2 = ['pending','paid','shipped','received','completed'];
+      if (s === 'cancelled') return key === 'pending';
+      if (s === 'refunded') return order2.indexOf(key) <= 1;
+      return order2.indexOf(key) <= order2.indexOf(s);
+    },
+    doPay: function() { this.doAction('/api/orders/'+this.orderNo+'/pay/'); },
+    doCancel: function() { if(confirm('确定取消?')) this.doAction('/api/orders/'+this.orderNo+'/cancel/'); },
+    doReceive: function() { this.doAction('/api/orders/'+this.orderNo+'/receive/'); },
+    doComplete: function() { if(confirm('确认完成?')) this.doAction('/api/orders/'+this.orderNo+'/complete/'); },
+    async doAction(url) {
+      var csrf = document.querySelector('[name=csrfmiddlewaretoken]') ? document.querySelector('[name=csrfmiddlewaretoken]').value : '';
+      var r = await fetch(url,{method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':csrf},body:JSON.stringify({payment_password:this.payPwd})});
+      if (r.ok) { await r.json(); location.reload(); }
+      else { var e = await r.json(); alert(e.detail||'操作失败'); }
+    },
+    statusColor: function(s) { var m={pending:'#f4a261',paid:'#ff6b6b',shipped:'#339af0',received:'#20c997',completed:'#20c997',cancelled:'#adb5bd',refunded:'#adb5bd'}; return m[s]||'#333'; },
+    statusLabel: function(s) { var m={pending:'待付款',paid:'已付款',shipped:'已发货',received:'已收货',completed:'已完成',cancelled:'已取消',refunded:'已退款'}; return m[s]||s; }
+  }));
+});
+</script>
+{% endblock %}

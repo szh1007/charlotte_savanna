@@ -1,0 +1,106 @@
+{% extends "minimall/base.html" %}
+{% block title %}收货地址 - 淘宝{% endblock %}
+{% block content %}
+<h2 style="margin-bottom:20px;">收货地址</h2>
+<div x-data="addressPage()" x-init="load()">
+  <button @click="showForm = true; editingId = null; clearForm()" class="btn btn-primary" style="margin-bottom:20px;"
+          x-show="!showForm">+ 新增地址</button>
+
+  <!-- Form -->
+  <div x-show="showForm" style="background:#fff;border-radius:12px;padding:24px;margin-bottom:20px;max-width:500px;box-shadow:0 2px 12px rgba(0,0,0,.06);">
+    <h3 style="margin-bottom:16px;" x-text="editingId ? '修改地址' : '新增地址'"></h3>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+      <div>
+        <label style="font-size:14px;font-weight:600;">收货人</label>
+        <input x-model="form.receiver_name" style="width:100%;padding:8px;border:1px solid #e9ecef;border-radius:8px;">
+      </div>
+      <div>
+        <label style="font-size:14px;font-weight:600;">电话</label>
+        <input x-model="form.phone" style="width:100%;padding:8px;border:1px solid #e9ecef;border-radius:8px;">
+      </div>
+      <div>
+        <label style="font-size:14px;font-weight:600;">省</label>
+        <input x-model="form.province" style="width:100%;padding:8px;border:1px solid #e9ecef;border-radius:8px;">
+      </div>
+      <div>
+        <label style="font-size:14px;font-weight:600;">市</label>
+        <input x-model="form.city" style="width:100%;padding:8px;border:1px solid #e9ecef;border-radius:8px;">
+      </div>
+      <div>
+        <label style="font-size:14px;font-weight:600;">区</label>
+        <input x-model="form.district" style="width:100%;padding:8px;border:1px solid #e9ecef;border-radius:8px;">
+      </div>
+      <div style="display:flex;align-items:end;gap:8px;">
+        <label style="font-size:14px;"><input type="checkbox" x-model="form.is_default"> 设为默认</label>
+      </div>
+    </div>
+    <div style="margin-top:12px;">
+      <label style="font-size:14px;font-weight:600;">详细地址</label>
+      <input x-model="form.detail" style="width:100%;padding:8px;border:1px solid #e9ecef;border-radius:8px;">
+    </div>
+    <div style="margin-top:16px;display:flex;gap:12px;">
+      <button @click="save()" class="btn btn-primary">保存</button>
+      <button @click="showForm = false" class="btn" style="background:#f1f3f5;">取消</button>
+    </div>
+  </div>
+
+  <!-- List -->
+  <template x-if="loading"><p>加载中...</p></template>
+  <template x-if="!loading && addresses.length === 0 && !showForm">
+    <p style="color:#adb5bd;">暂无收货地址, 请新增.</p>
+  </template>
+  <template x-if="!loading && addresses.length > 0">
+    <div style="display:grid;gap:12px;">
+      <template x-for="addr in addresses" :key="addr.id">
+        <div style="background:#fff;border-radius:12px;padding:20px;display:flex;justify-content:space-between;align-items:center;box-shadow:0 2px 12px rgba(0,0,0,.06);">
+          <div>
+            <div style="font-weight:600;margin-bottom:4px;">
+              <span x-text="addr.receiver_name"></span>
+              <span style="margin-left:8px;color:#666;font-weight:400;" x-text="addr.phone"></span>
+              <span x-show="addr.is_default" style="margin-left:8px;background:#ff6b6b;color:#fff;font-size:11px;padding:2px 8px;border-radius:4px;">默认</span>
+            </div>
+            <div style="color:#999;font-size:14px;" x-text="addr.province + addr.city + addr.district + ' ' + addr.detail"></div>
+          </div>
+          <div style="display:flex;gap:8px;">
+            <button @click="edit(addr)" style="border:none;background:none;color:#ff6b6b;cursor:pointer;font-size:14px;">编辑</button>
+            <button @click="remove(addr)" style="border:none;background:none;color:#adb5bd;cursor:pointer;font-size:14px;">删除</button>
+          </div>
+        </div>
+      </template>
+    </div>
+  </template>
+</div>
+<script>
+function addressPage() {
+  return {
+    addresses: [], loading: true, showForm: false, editingId: null,
+    form: { receiver_name:'', phone:'', province:'', city:'', district:'', detail:'', is_default:false },
+    clearForm() { Object.keys(this.form).forEach(k => this.form[k] = k === 'is_default' ? false : ''); },
+    csrf() { return document.querySelector('[name=csrfmiddlewaretoken]').value; },
+    async load() {
+      this.loading = true;
+      try { const r = await fetch('/api/addresses/'); this.addresses = await r.json(); }
+      finally { this.loading = false; }
+    },
+    edit(addr) {
+      this.editingId = addr.id;
+      Object.keys(this.form).forEach(k => this.form[k] = addr[k] !== undefined ? addr[k] : false);
+      this.showForm = true;
+    },
+    async save() {
+      const url = this.editingId ? `/api/addresses/${this.editingId}/` : '/api/addresses/';
+      const method = this.editingId ? 'PATCH' : 'POST';
+      const r = await fetch(url, { method, headers:{'Content-Type':'application/json','X-CSRFToken':this.csrf()}, body: JSON.stringify(this.form) });
+      if (r.ok) { this.showForm = false; this.editingId = null; this.load(); }
+      else { const d = await r.json(); alert(d.detail || JSON.stringify(d)); }
+    },
+    async remove(addr) {
+      if (!confirm('确定删除 ' + addr.receiver_name + ' 的地址?')) return;
+      const r = await fetch(`/api/addresses/${addr.id}/`, { method:'DELETE', headers:{'X-CSRFToken':this.csrf()} });
+      if (r.ok) this.load();
+      else { const d = await r.json(); alert(d.detail || '删除失败'); }
+    }
+  };
+}
+</script>
+{% endblock %}

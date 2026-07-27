@@ -1,0 +1,46 @@
+{% extends "minimall/base.html" %}
+{% block title %}注册 - minimall{% endblock %}
+{% block content %}
+<h2 style="margin-bottom:20px">注册</h2>
+<form id="register-form" style="max-width:400px;">
+  {% csrf_token %}
+  <div style="margin-bottom:12px;">
+    <label>用户名</label>
+    <input type="text" name="username" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;" required>
+  </div>
+  <div style="margin-bottom:12px;">
+    <label>邮箱</label>
+    <input type="email" name="email" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;" required>
+  </div>
+  <div style="margin-bottom:12px;">
+    <label>密码</label>
+    <input type="password" name="password" minlength="8" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;" required>
+  </div>
+  <div style="margin-bottom:12px;">
+    <label>支付密码 (可选, 6位数字)</label>
+    <input type="password" name="payment_password" maxlength="6" minlength="6" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;">
+  </div>
+  <button type="submit" class="btn btn-primary" style="width:100%;">注册</button>
+  <p style="margin-top:12px;">已有账号? <a href="/shop/login/">登录</a></p>
+</form>
+<script>
+document.getElementById('register-form').addEventListener('submit', async function(e) {
+  e.preventDefault();
+  const formData = new FormData(this);
+  const data = {};
+  formData.forEach((v, k) => { if (v) data[k] = v; });
+  const csrf = this.querySelector('[name=csrfmiddlewaretoken]').value;
+  const r = await fetch('/api/auth/register/', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json', 'X-CSRFToken': csrf},
+    body: JSON.stringify(data)
+  });
+  if (r.ok) {
+    window.location.href = '/shop/login/';
+  } else {
+    const err = await r.json();
+    alert(Object.values(err).flat().join('\n'));
+  }
+});
+</script>
+{% endblock %}

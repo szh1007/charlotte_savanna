@@ -1,0 +1,13 @@
+<a href="/shop/products/{{ product.slug }}/" class="product-card"
+   style="text-decoration:none;color:inherit;display:block;">
+  {% if product.primary_image %}
+    <img src="{{ product.primary_image }}" alt="{{ product.name }}">
+  {% else %}
+    <div style="width:100%;height:200px;background:#f5f5f5;display:flex;align-items:center;justify-content:center;color:#ccc;font-size:48px;">?</div>
+  {% endif %}
+  <div class="info">
+    <div class="name">{{ product.name }}</div>
+    <div class="price">${{ product.price }}</div>
+    <div style="font-size:12px;color:#999;">{{ product.category_name }}</div>
+  </div>
+</a>

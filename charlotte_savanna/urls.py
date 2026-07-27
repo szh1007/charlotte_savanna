@@ -19,11 +19,13 @@ from django.conf import settings
 from django.conf.urls.static import static
 from django.contrib import admin
 from django.urls import include, path
+from django.views.generic import TemplateView
 
 urlpatterns = [
+    path("", TemplateView.as_view(template_name="welcome.html"), name="home"),
     path("admin/", admin.site.urls),
     path("api/", include("minimall.urls_api")),
-    path("minimall/", include("minimall.urls_html")),
+    path("shop/", include("minimall.urls_html")),
 ]
 
 if settings.DEBUG:

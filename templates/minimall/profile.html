@@ -1,0 +1,133 @@
+{% extends "minimall/base.html" %}
+{% block title %}个人中心 - 淘宝{% endblock %}
+{% block content %}
+<div style="max-width:700px;margin:0 auto;">
+  <!-- header card -->
+  <div style="display:flex;align-items:center;gap:24px;padding:32px;background:#fff;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,.06);margin-bottom:24px;">
+    <div style="position:relative;cursor:pointer;" onclick="document.getElementById('avatar-input').click()">
+      {% if user.minimall_profile.avatar %}
+        <img src="{{ user.minimall_profile.avatar.url }}" id="avatar-preview" style="width:80px;height:80px;border-radius:50%;object-fit:cover;border:3px solid #f0f0f0;">
+      {% else %}
+        <div id="avatar-preview" style="width:80px;height:80px;border-radius:50%;background:linear-gradient(135deg,#667eea,#e63946);display:flex;align-items:center;justify-content:center;color:#fff;font-size:36px;font-weight:700;border:3px solid #f0f0f0;">{{ user.username|first|upper }}</div>
+      {% endif %}
+      <span style="position:absolute;bottom:2px;right:2px;width:24px;height:24px;background:#2a9d8f;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#fff;font-size:14px;">+</span>
+    </div>
+    <div>
+      <div style="font-size:22px;font-weight:700;margin-bottom:4px;">{{ user.username }}</div>
+      <div style="color:#999;margin-bottom:4px;">{{ user.email }}</div>
+      <div style="color:#999;font-size:14px;">{{ user.minimall_profile.phone|default:'未设置手机号' }}</div>
+      <div style="color:#ff6b6b;font-size:20px;font-weight:700;margin-top:4px;">&yen;{{ user.minimall_profile.balance|floatformat:2 }}</div>
+    </div>
+  </div>
+
+  <!-- tabs -->
+  <div style="display:flex;gap:0;margin-bottom:24px;border-bottom:2px solid #eee;">
+    <button class="pf-tab active" data-tab="info" onclick="switchTab('info')" style="padding:10px 24px;border:none;background:none;cursor:pointer;font-size:15px;border-bottom:2px solid transparent;margin-bottom:-2px;">个人信息</button>
+    <button class="pf-tab" data-tab="password" onclick="switchTab('password')" style="padding:10px 24px;border:none;background:none;cursor:pointer;font-size:15px;border-bottom:2px solid transparent;margin-bottom:-2px;">安全设置</button>
+  </div>
+
+  <!-- tab: info -->
+  <div id="tab-info" class="pf-panel" style="background:#fff;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,.06);padding:24px;">
+    <form id="avatar-form" style="display:none;">
+      <input type="file" id="avatar-input" name="avatar" accept="image/*" onchange="uploadAvatar()">
+    </form>
+    <div style="margin-bottom:16px;">
+      <label style="display:block;margin-bottom:6px;font-weight:600;">账户余额</label>
+      <div style="display:flex;gap:12px;align-items:center;">
+        <span style="font-size:28px;font-weight:800;color:#ff6b6b;">&yen;{{ user.minimall_profile.balance|floatformat:2 }}</span>
+        <input type="number" id="recharge-amount" placeholder="充值金额" min="1" style="width:120px;padding:10px 12px;border:1px solid #ddd;border-radius:8px;font-size:14px;">
+        <button class="btn btn-primary" onclick="recharge()" style="padding:10px 20px;">充值</button>
+      </div>
+    </div>
+    <div style="margin-bottom:16px;">
+      <label style="display:block;margin-bottom:6px;font-weight:600;">手机号</label>
+      <input type="text" id="phone-input" value="{{ user.minimall_profile.phone|default:'' }}" placeholder="输入手机号" style="width:100%;padding:10px 12px;border:1px solid #ddd;border-radius:8px;font-size:14px;">
+    </div>
+    <button class="btn btn-primary" onclick="saveProfile()" style="padding:10px 32px;">保存</button>
+    <span id="info-msg" style="margin-left:12px;font-size:14px;"></span>
+  </div>
+
+  <!-- tab: password -->
+  <div id="tab-password" class="pf-panel" style="background:#fff;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,.06);padding:24px;display:none;">
+    <div style="margin-bottom:16px;">
+      <label style="display:block;margin-bottom:6px;font-weight:600;">旧密码</label>
+      <input type="password" id="old-pwd" style="width:100%;max-width:360px;padding:10px 12px;border:1px solid #ddd;border-radius:8px;font-size:14px;">
+    </div>
+    <div style="margin-bottom:16px;">
+      <label style="display:block;margin-bottom:6px;font-weight:600;">新密码</label>
+      <input type="password" id="new-pwd" minlength="8" style="width:100%;max-width:360px;padding:10px 12px;border:1px solid #ddd;border-radius:8px;font-size:14px;">
+    </div>
+    <button class="btn btn-primary" onclick="changePwd()" style="padding:10px 32px;">修改密码</button>
+    <span id="pwd-msg" style="margin-left:12px;font-size:14px;"></span>
+
+    <div style="border-top:1px solid #eee;margin-top:24px;padding-top:24px;">
+      <label style="display:block;margin-bottom:6px;font-weight:600;">支付密码 (6位数字)</label>
+      <input type="password" id="pay-pwd" maxlength="6" minlength="6" style="width:100%;max-width:360px;padding:10px 12px;border:1px solid #ddd;border-radius:8px;font-size:14px;">
+      <button class="btn btn-primary" onclick="setPayPwd()" style="margin-top:12px;padding:10px 32px;">设置支付密码</button>
+      <span id="paypwd-msg" style="margin-left:12px;font-size:14px;"></span>
+    </div>
+  </div>
+</div>
+
+<script>
+function csrf() { return document.querySelector('[name=csrfmiddlewaretoken]').value; }
+function msg(el, text, ok) { el.textContent = text; el.style.color = ok ? '#2a9d8f' : '#e63946'; }
+
+function switchTab(name) {
+  document.querySelectorAll('.pf-tab').forEach(t => { t.style.color = ''; t.style.borderBottomColor = 'transparent'; t.style.fontWeight = ''; });
+  document.querySelector(`[data-tab="${name}"]`).style.color = '#e63946';
+  document.querySelector(`[data-tab="${name}"]`).style.borderBottomColor = '#e63946';
+  document.querySelector(`[data-tab="${name}"]`).style.fontWeight = '600';
+  document.querySelectorAll('.pf-panel').forEach(p => p.style.display = 'none');
+  document.getElementById('tab-' + name).style.display = 'block';
+}
+switchTab('info');
+
+async function saveProfile() {
+  const fd = new FormData();
+  fd.append('phone', document.getElementById('phone-input').value);
+  const r = await fetch('/api/auth/me/', { method: 'PATCH', headers: {'X-CSRFToken': csrf()}, body: fd });
+  msg(document.getElementById('info-msg'), r.ok ? '保存成功' : '保存失败', r.ok);
+}
+
+async function uploadAvatar() {
+  const file = document.getElementById('avatar-input').files[0];
+  if (!file) return;
+  const fd = new FormData();
+  fd.append('avatar', file);
+  const r = await fetch('/api/auth/me/', { method: 'PATCH', headers: {'X-CSRFToken': csrf()}, body: fd });
+  if (r.ok) {
+    const data = await r.json();
+    const preview = document.getElementById('avatar-preview');
+    if (data.profile && data.profile.avatar) preview.src = data.profile.avatar;
+    location.reload();
+  }
+}
+
+async function changePwd() {
+  const body = JSON.stringify({old_password: document.getElementById('old-pwd').value, new_password: document.getElementById('new-pwd').value});
+  const r = await fetch('/api/auth/change-password/', { method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':csrf()}, body });
+  const el = document.getElementById('pwd-msg');
+  if (r.ok) { msg(el, '密码修改成功', true); document.getElementById('old-pwd').value = ''; document.getElementById('new-pwd').value = ''; }
+  else { const d = await r.json(); msg(el, d.detail || '修改失败', false); }
+}
+
+async function recharge() {
+  const amount = document.getElementById('recharge-amount').value;
+  if (!amount || parseFloat(amount) <= 0) return;
+  const r = await fetch('/api/auth/recharge/', {
+    method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':csrf()},
+    body: JSON.stringify({amount: parseFloat(amount)})
+  });
+  if (r.ok) { location.reload(); } else { const d = await r.json(); alert(d.detail); }
+}
+
+async function setPayPwd() {
+  const pwd = document.getElementById('pay-pwd').value;
+  if (!pwd || pwd.length !== 6) { msg(document.getElementById('paypwd-msg'), '请输入6位数字', false); return; }
+  const r = await fetch('/api/auth/me/', { method:'PATCH', headers:{'Content-Type':'application/json','X-CSRFToken':csrf()}, body: JSON.stringify({payment_password: pwd}) });
+  msg(document.getElementById('paypwd-msg'), r.ok ? '支付密码已设置' : '设置失败', r.ok);
+  if (r.ok) document.getElementById('pay-pwd').value = '';
+}
+</script>
+{% endblock %}

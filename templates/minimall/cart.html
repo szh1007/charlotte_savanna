@@ -1,0 +1,81 @@
+{% extends "minimall/base.html" %}
+{% block title %}购物车 - minimall{% endblock %}
+{% block content %}
+<h2 style="margin-bottom:20px">购物车</h2>
+<div x-data="cartPage()" x-init="loadCart()">
+  <template x-if="loading">
+    <p>加载中...</p>
+  </template>
+  <template x-if="!loading && items.length === 0">
+    <p>购物车是空的. <a href="/shop/">去逛逛</a></p>
+  </template>
+  <template x-if="!loading && items.length > 0">
+    <div>
+      <table>
+        <thead>
+          <tr style="text-align:left;">
+            <th style="padding:14px 16px;">商品</th>
+            <th style="padding:14px 16px;">单价</th>
+            <th style="padding:14px 16px;">数量</th>
+            <th style="padding:14px 16px;">小计</th>
+            <th style="padding:14px 16px;"></th>
+          </tr>
+        </thead>
+        <tbody>
+          <template x-for="item in items" :key="item.id">
+            <tr style="border-bottom:1px solid #eee;">
+              <td style="padding:14px 16px;" x-text="item.product_name"></td>
+              <td style="padding:14px 16px;">¥<span x-text="item.product_price"></span></td>
+              <td style="padding:14px 16px;">
+                <input type="number" :value="item.quantity" min="1" style="width:60px;padding:6px;"
+                  @input.debounce.500ms="updateQty(item, $event.target.value)">
+              </td>
+              <td style="padding:14px 16px;">¥<span x-text="Number(item.subtotal).toFixed(2)"></span></td>
+              <td style="padding:14px 16px;">
+                <button @click="removeItem(item)" style="background:none;border:none;color:#e63946;cursor:pointer;font-size:18px;">&times;</button>
+              </td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+      <div style="text-align:right;margin-top:24px;font-size:18px;">
+        <strong>合计 (<span x-text="totalCount"></span> 件): ¥<span x-text="totalAmount.toFixed(2)"></span></strong>
+      </div>
+      <div style="text-align:right;margin-top:16px;">
+        <button class="btn btn-primary" onclick="location.href='/shop/checkout/'">去结算</button>
+      </div>
+    </div>
+  </template>
+</div>
+<script>
+function cartPage() {
+  return {
+    items: [], loading: true,
+    get totalAmount() { return this.items.reduce((s, i) => s + i.subtotal, 0); },
+    get totalCount() { return this.items.reduce((s, i) => s + i.quantity, 0); },
+    async loadCart() {
+      this.loading = true;
+      try { const r = await fetch('/api/cart/'); const data = await r.json(); this.items = data.items || []; }
+      finally { this.loading = false; }
+    },
+    async updateQty(item, qty) {
+      qty = parseInt(qty) || 1;
+      if (qty < 1) qty = 1;
+      const r = await fetch(`/api/cart/items/${item.id}/`, {
+        method: 'PATCH',
+        headers: {'Content-Type': 'application/json', 'X-CSRFToken': this.getCsrf()},
+        body: JSON.stringify({quantity: qty})
+      });
+      if (r.ok) { const data = await r.json(); Object.assign(item, data); notifyCartUpdated(); }
+    },
+    async removeItem(item) {
+      const r = await fetch(`/api/cart/items/${item.id}/delete/`, {
+        method: 'DELETE', headers: {'X-CSRFToken': this.getCsrf()}
+      });
+      if (r.ok) { this.items = this.items.filter(i => i.id !== item.id); notifyCartUpdated(); }
+    },
+    getCsrf() { return document.querySelector('[name=csrfmiddlewaretoken]')?.value || ''; }
+  };
+}
+</script>
+{% endblock %}

@@ -1,0 +1,38 @@
+{% extends "minimall/base.html" %}
+{% block title %}登录 - minimall{% endblock %}
+{% block content %}
+<h2 style="margin-bottom:20px">登录</h2>
+<form id="login-form" style="max-width:400px;">
+  {% csrf_token %}
+  <div style="margin-bottom:12px;">
+    <label>用户名</label>
+    <input type="text" name="username" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;" required>
+  </div>
+  <div style="margin-bottom:12px;">
+    <label>密码</label>
+    <input type="password" name="password" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;" required>
+  </div>
+  <div id="error-msg" style="color:#e63946;margin-bottom:12px;display:none;"></div>
+  <button type="submit" class="btn btn-primary" style="width:100%;">登录</button>
+  <p style="margin-top:12px;">没有账号? <a href="/shop/register/">注册</a></p>
+</form>
+<script>
+document.getElementById('login-form').addEventListener('submit', async function(e) {
+  e.preventDefault();
+  const formData = new FormData(this);
+  const csrf = this.querySelector('[name=csrfmiddlewaretoken]').value;
+  const r = await fetch('/api/auth/login/', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json', 'X-CSRFToken': csrf},
+    body: JSON.stringify({username: formData.get('username'), password: formData.get('password')})
+  });
+  if (r.ok) {
+    window.location.href = '/shop/';
+  } else {
+    const err = await r.json();
+    document.getElementById('error-msg').textContent = err.detail || err.non_field_errors || '登录失败';
+    document.getElementById('error-msg').style.display = 'block';
+  }
+});
+</script>
+{% endblock %}

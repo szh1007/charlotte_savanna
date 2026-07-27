@@ -1,0 +1,80 @@
+{% extends "minimall/base.html" %}
+{% block title %}淘宝 - 首页{% endblock %}
+{% block content %}
+
+{% if featured_products %}
+<div style="padding:0 12px;margin-bottom:24px;">
+<div class="section-title">推荐</div>
+<div class="product-grid" style="grid-template-columns:repeat(auto-fill, minmax(180px, 1fr));gap:12px;">
+  {% for product in featured_products %}
+    <a href="/shop/products/{{ product.slug }}/" style="text-decoration:none;">
+      <div class="product-card">
+        <div class="img-wrap">
+          {% with img=product.images.all|first %}
+            {% if img %}<img src="{{ img.image.url }}" alt="{{ product.name }}">
+            {% else %}<span class="no-img">&#9744;</span>{% endif %}
+          {% endwith %}
+        </div>
+        <div class="info">
+          <div class="name">{{ product.name }}</div>
+          <div class="price">&yen;{{ product.price }}</div>
+          <div class="cat">{{ product.category.name }}</div>
+        </div>
+      </div>
+    </a>
+  {% endfor %}
+</div>
+{% endif %}
+
+<div class="two-col" style="padding:0 12px;gap:16px;">
+  <aside class="sidebar" style="width:160px;">
+    <ul>
+      <li><a href="?{% if search %}search={{ search }}&{% endif %}"
+             class="{% if not selected_category %}active{% endif %}">全部</a></li>
+      {% for cat in categories %}
+        <li>
+          <a href="?category={{ cat.slug }}{% if search %}&search={{ search }}{% endif %}"
+             class="{% if selected_category == cat.slug %}active{% endif %}">{{ cat.name }}</a>
+        </li>
+      {% endfor %}
+    </ul>
+  </aside>
+  <div class="main">
+    <form method="get" class="filters-bar" style="margin-bottom:16px;">
+      <input type="text" name="search" value="{{ search }}" placeholder="搜索商品..." style="width:240px;">
+      <input type="number" name="min_price" value="{{ min_price }}" placeholder="最低价" style="width:90px;">
+      <span style="color:#adb5bd;">-</span>
+      <input type="number" name="max_price" value="{{ max_price }}" placeholder="最高价" style="width:90px;">
+      <select name="ordering">
+        <option value="-created_at" {% if ordering == '-created_at' %}selected{% endif %}>最新</option>
+        <option value="price" {% if ordering == 'price' %}selected{% endif %}>价格: 低到高</option>
+        <option value="-price" {% if ordering == '-price' %}selected{% endif %}>价格: 高到低</option>
+      </select>
+      <button type="submit">筛选</button>
+      <span style="color:#adb5bd;font-size:13px;">共 {{ total }} 件</span>
+      {% if selected_category %}<input type="hidden" name="category" value="{{ selected_category }}">{% endif %}
+    </form>
+    <div class="product-grid" style="grid-template-columns:repeat(auto-fill, minmax(180px, 1fr));gap:10px;">
+      {% for product in products %}
+        <a href="/shop/products/{{ product.slug }}/" style="text-decoration:none;">
+          <div class="product-card">
+            <div class="img-wrap" style="height:200px;">
+              {% with img=product.images.all|first %}
+                {% if img %}<img src="{{ img.image.url }}" alt="{{ product.name }}">
+                {% else %}<span class="no-img">&#9744;</span>{% endif %}
+              {% endwith %}
+            </div>
+            <div class="info">
+              <div class="name">{{ product.name }}</div>
+              <div class="price">&yen;{{ product.price }}</div>
+              <div class="cat">{{ product.category.name }}</div>
+            </div>
+          </div>
+        </a>
+      {% empty %}
+        <p style="grid-column:1/-1;text-align:center;padding:80px;color:#adb5bd;font-size:16px;">没有找到商品</p>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,46 @@
+{% extends "minimall/base.html" %}
+{% block title %}我的订单 - minimall{% endblock %}
+{% block content %}
+<h2 style="margin-bottom:20px">我的订单</h2>
+<div x-data="orderList()" x-init="load()">
+  <template x-if="loading"><p>加载中...</p></template>
+  <template x-if="!loading && orders.length === 0">
+    <p>暂无订单. <a href="/shop/">去逛逛</a></p>
+  </template>
+  <template x-if="!loading && orders.length > 0">
+    <table style="width:100%;border-collapse:collapse;">
+      <thead><tr style="border-bottom:2px solid #eee;text-align:left;">
+        <th style="padding:12px 8px;">订单号</th>
+        <th style="padding:12px 8px;">状态</th>
+        <th style="padding:12px 8px;">金额</th>
+        <th style="padding:12px 8px;">时间</th>
+        <th style="padding:12px 8px;"></th>
+      </tr></thead>
+      <tbody>
+        <template x-for="order in orders" :key="order.order_no">
+          <tr style="border-bottom:1px solid #eee;">
+            <td style="padding:12px 8px;" x-text="order.order_no"></td>
+            <td style="padding:12px 8px;" x-text="statusLabel(order.status)" :style="{color: statusColor(order.status)}"></td>
+            <td style="padding:12px 8px;">¥<span x-text="Number(order.total_amount).toFixed(2)"></span></td>
+            <td style="padding:12px 8px;" x-text="new Date(order.created_at).toLocaleString()"></td>
+            <td style="padding:12px 8px;"><a :href="'/shop/orders/'+order.order_no+'/'" style="color:#e63946;">查看</a></td>
+          </tr>
+        </template>
+      </tbody>
+    </table>
+  </template>
+</div>
+<script>
+function orderList() {
+  return {
+    orders: [], loading: true,
+    async load() {
+      try { const r = await fetch('/api/orders/'); const d = await r.json(); this.orders = d.results || []; }
+      finally { this.loading = false; }
+    },
+    statusColor(s) { return {pending:'#f4a261', paid:'#2a9d8f', shipped:'#264653', received:'#e76f51', completed:'#2a9d8f', cancelled:'#ccc', refunded:'#e63946'}[s] || '#333'; },
+    statusLabel(s) { return {pending:'待付款', paid:'已付款', shipped:'已发货', received:'已收货', completed:'已完成', cancelled:'已取消', refunded:'已退款'}[s] || s; }
+  };
+}
+</script>
+{% endblock %}

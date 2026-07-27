@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}minimall{% endblock %}</title>
+  <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
+  <script src="https://unpkg.com/alpinejs@3.14.9" defer></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif; color: #333; background: #f5f5f5; }
+    nav { display: flex; align-items: center; padding: 0 40px; height: 64px; background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); color: #fff; gap: 24px; position: sticky; top: 0; z-index: 100; }
+    nav a { color: #fff; text-decoration: none; transition: opacity .2s; }
+    nav a:hover { opacity: .8; }
+    nav .logo { font-size: 22px; font-weight: 800; letter-spacing: 2px; color: #ff6b6b; }
+    nav .logo:hover { color: #ff8787; opacity: 1; }
+    nav .search-box { flex: 1; max-width: 480px; }
+    nav .search-box input { width: 100%; padding: 10px 16px; border: none; border-radius: 20px; background: rgba(255,255,255,.12); color: #fff; font-size: 14px; outline: none; transition: background .2s; }
+    nav .search-box input::placeholder { color: rgba(255,255,255,.5); }
+    nav .search-box input:focus { background: rgba(255,255,255,.2); }
+    nav .nav-links { display: flex; gap: 24px; align-items: center; margin-left: auto; }
+    .container { max-width: 1280px; margin: 0 auto; padding: 24px 32px; }
+    .container.wide { padding: 0 40px; max-width: 100%; }
+    .product-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 16px; }
+    .product-card { background: #fff; border-radius: 12px; overflow: hidden; transition: transform .2s, box-shadow .2s; cursor: pointer; }
+    .product-card:hover { transform: translateY(-4px); box-shadow: 0 8px 30px rgba(0,0,0,.12); }
+    .product-card .img-wrap { width: 100%; height: 220px; background: #f8f9fa; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+    .product-card .img-wrap img { width: 100%; height: 100%; object-fit: cover; transition: transform .3s; }
+    .product-card:hover .img-wrap img { transform: scale(1.05); }
+    .product-card .img-wrap .no-img { font-size: 56px; color: #dee2e6; }
+    .product-card .info { padding: 14px 16px; }
+    .product-card .name { font-size: 14px; font-weight: 500; margin-bottom: 8px; color: #333; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+    .product-card .price { font-size: 20px; font-weight: 800; color: #ff6b6b; }
+    .product-card .info .cat { font-size: 12px; color: #adb5bd; margin-top: 4px; }
+    footer { text-align: center; padding: 32px; color: #adb5bd; font-size: 13px; background: #fff; border-top: 1px solid #eee; margin-top: 40px; }
+    .two-col { display: flex; gap: 24px; }
+    .sidebar { width: 200px; flex-shrink: 0; background: #fff; border-radius: 12px; padding: 20px; }
+    .sidebar h3 { font-size: 16px; margin-bottom: 12px; color: #333; }
+    .sidebar ul { list-style: none; }
+    .sidebar li { padding: 6px 0; }
+    .sidebar a { color: #666; text-decoration: none; font-size: 14px; transition: color .2s; }
+    .sidebar a:hover, .sidebar a.active { color: #ff6b6b; font-weight: 600; }
+    .main { flex: 1; }
+    .filters-bar { display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; align-items: center; background: #fff; padding: 16px; border-radius: 12px; }
+    .filters-bar input, .filters-bar select { padding: 8px 12px; border: 1px solid #e9ecef; border-radius: 8px; font-size: 14px; outline: none; transition: border .2s; }
+    .filters-bar input:focus, .filters-bar select:focus { border-color: #ff6b6b; }
+    .filters-bar button { padding: 8px 20px; background: #ff6b6b; color: #fff; border: none; border-radius: 8px; font-size: 14px; cursor: pointer; font-weight: 600; transition: background .2s; }
+    .filters-bar button:hover { background: #ee5a5a; }
+    .section-title { font-size: 20px; font-weight: 700; margin-bottom: 16px; display: flex; align-items: center; gap: 12px; }
+    .section-title .count { font-size: 14px; font-weight: 400; color: #adb5bd; }
+    .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 48px; background: #fff; border-radius: 12px; padding: 32px; }
+    .detail-image-wrap { width: 100%; border-radius: 12px; overflow: hidden; background: #f8f9fa; display: flex; align-items: center; justify-content: center; }
+    .detail-image-wrap img { width: 100%; object-fit: contain; }
+    .detail-info h1 { font-size: 26px; margin-bottom: 16px; }
+    .detail-info .price-detail { font-size: 32px; color: #ff6b6b; font-weight: 800; margin-bottom: 16px; }
+    .detail-info .stock-detail { color: #868e96; margin-bottom: 24px; font-size: 15px; }
+    .detail-info .desc { color: #666; line-height: 1.7; margin-bottom: 24px; }
+    .btn { padding: 10px 24px; border: none; border-radius: 8px; cursor: pointer; font-size: 15px; font-weight: 600; transition: all .2s; }
+    .btn-primary { background: #ff6b6b; color: #fff; }
+    .btn-primary:hover { background: #ee5a5a; transform: translateY(-1px); }
+    .btn:disabled { background: #dee2e6; cursor: not-allowed; transform: none; }
+    .quantity-input { width: 64px; padding: 10px; text-align: center; border: 1px solid #e9ecef; border-radius: 8px; font-size: 15px; }
+    .cart-badge {
+      position: absolute; top: -8px; right: -12px;
+      background: #ff6b6b; color: #fff;
+      border-radius: 10px; min-width: 20px; height: 20px; padding: 0 5px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 11px; font-weight: 700; line-height: 1;
+    }
+    #toast { position: fixed; top: 24px; right: 24px; padding: 14px 24px; border-radius: 10px; color: #fff; z-index: 2000; display: none; font-size: 14px; }
+    #toast.success { background: #20c997; }
+    #toast.error { background: #ff6b6b; }
+    .dropdown-menu a:hover { background: #f8f9fa; }
+    table { background: #fff; border-radius: 12px; overflow: hidden; }
+    table th { background: #f8f9fa; font-weight: 600; font-size: 14px; color: #666; }
+  </style>
+</head>
+<body x-data="app()" @toast.window="toast = $event.detail; setTimeout(() => toast = null, 2000)">
+  <nav>
+    <a href="/shop/" class="logo">淘宝</a>
+    <div class="search-box">
+      <form method="get" action="/shop/">
+        <input type="text" placeholder="搜索商品..." name="search" value="{{ search|default:'' }}">
+      </form>
+    </div>
+    <div class="nav-links">
+      <a href="/shop/cart/" style="position:relative;display:inline-flex;align-items:center;"
+         @cart-updated.window="refreshCartCount()">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/>
+          <path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/>
+        </svg>
+        <span x-show="cartCount > 0" class="cart-badge" x-text="cartCount"></span>
+      </a>
+      <a href="/shop/orders/" style="display:inline-flex;align-items:center;">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+          <polyline points="14 2 14 8 20 8"/>
+          <line x1="16" y1="13" x2="8" y2="13"/>
+          <line x1="16" y1="17" x2="8" y2="17"/>
+          <polyline points="10 9 9 9 8 9"/>
+        </svg>
+      </a>
+      {% if user.is_authenticated %}
+        <span style="color:#ffd43b;font-weight:600;font-size:14px;">&yen;{{ user.minimall_profile.balance|floatformat:2 }}</span>
+        <!-- Avatar dropdown -->
+        <div style="position:relative;display:inline-flex;align-items:center;">
+          <div @click="dropdownOpen = !dropdownOpen" style="cursor:pointer;">
+            {% if user.minimall_profile.avatar %}
+              <img src="{{ user.minimall_profile.avatar.url }}" style="width:32px;height:32px;border-radius:50%;object-fit:cover;">
+            {% else %}
+              <div style="width:32px;height:32px;border-radius:50%;background:#e63946;display:flex;align-items:center;justify-content:center;color:#fff;font-size:14px;font-weight:700;">{{ user.username|first|upper }}</div>
+            {% endif %}
+          </div>
+          <div x-show="dropdownOpen" x-transition
+               style="position:absolute;top:calc(100% + 8px);right:0;background:#fff;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.15);min-width:160px;z-index:1000;overflow:hidden;">
+            <a href="/shop/profile/" style="display:flex;align-items:center;gap:8px;padding:12px 16px;color:#333;text-decoration:none;" @click="dropdownOpen=false">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+              个人中心
+            </a>
+            <a href="/shop/addresses/" style="display:flex;align-items:center;gap:8px;padding:12px 16px;color:#333;text-decoration:none;" @click="dropdownOpen=false">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+              收货地址
+            </a>
+            <div style="border-top:1px solid #eee;"></div>
+            <a href="#" @click="fetch('/api/auth/logout/',{method:'POST',headers:{'X-CSRFToken':document.querySelector('[name=csrfmiddlewaretoken]').value}}).then(()=>location.href='/shop/');return false;"
+               style="display:flex;align-items:center;gap:8px;padding:12px 16px;color:#e63946;text-decoration:none;">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+              退出
+            </a>
+          </div>
+          <div x-show="dropdownOpen" @click="dropdownOpen = false" style="position:fixed;inset:0;z-index:999;"></div>
+        </div>
+      {% else %}
+        <a href="/shop/login/">登录</a>
+        <a href="/shop/register/">注册</a>
+      {% endif %}
+    </div>
+  </nav>
+
+  <div x-show="toast" :class="toast?.type" id="toast" x-text="toast?.message" style="display:block;"></div>
+
+  <div class="container">
+    {% block content %}{% endblock %}
+  </div>
+
+  <script>
+    function app() {
+      return {
+        toast: null,
+        dropdownOpen: false,
+        cartCount: 0,
+        init() { this.refreshCartCount(); },
+        async refreshCartCount() {
+          try { const r = await fetch('/api/cart/'); const d = await r.json(); this.cartCount = d.total_count || 0; } catch(e) {}
+        }
+      };
+    }
+    function notifyCartUpdated() { window.dispatchEvent(new CustomEvent('cart-updated')); }
+  </script>
+  {% csrf_token %}
+</body>
+</html>

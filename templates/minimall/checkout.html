@@ -1,0 +1,88 @@
+{% extends "minimall/base.html" %}
+{% block title %}结算 - minimall{% endblock %}
+{% block content %}
+<h2 style="margin-bottom:20px">确认订单</h2>
+<div x-data="checkoutPage()" x-init="init()">
+  <div class="two-col">
+    <div class="main" style="flex:2;">
+      <h3>商品明细</h3>
+      <template x-if="loading"><p>加载中...</p></template>
+      <template x-if="!loading && cartItems.length === 0">
+        <p>购物车为空. <a href="/shop/">去逛逛</a></p>
+      </template>
+      <template x-if="!loading && cartItems.length > 0">
+        <table style="width:100%;border-collapse:collapse;">
+          <thead><tr style="border-bottom:2px solid #eee;text-align:left;">
+            <th style="padding:8px;">商品</th><th style="padding:8px;">单价</th><th style="padding:8px;">数量</th><th style="padding:8px;">小计</th>
+          </tr></thead>
+          <tbody>
+            <template x-for="item in cartItems" :key="item.id">
+              <tr style="border-bottom:1px solid #eee;">
+                <td style="padding:8px;" x-text="item.product_name"></td>
+                <td style="padding:8px;">¥<span x-text="item.product_price"></span></td>
+                <td style="padding:8px;" x-text="item.quantity"></td>
+                <td style="padding:8px;">¥<span x-text="Number(item.subtotal).toFixed(2)"></span></td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </template>
+    </div>
+    <aside class="sidebar" style="width:300px;">
+      <h3>收货地址 <a href="/shop/addresses/" style="font-size:13px;color:#ff6b6b;font-weight:400;margin-left:8px;">管理</a></h3>
+      <select x-model="addressId" style="width:100%;padding:8px;margin-bottom:12px;">
+        <option value="">请选择地址...</option>
+        <template x-for="addr in addresses" :key="addr.id">
+          <option :value="addr.id" x-text="addr.receiver_name + ' - ' + addr.detail"></option>
+        </template>
+      </select>
+      <div style="font-size:18px;margin:16px 0;">
+        总计: ¥<strong x-text="totalAmount.toFixed(2)"></strong>
+      </div>
+      <button class="btn btn-primary" style="width:100%;" @click="placeOrder" :disabled="!addressId || cartItems.length === 0">
+        提交订单
+      </button>
+    </aside>
+  </div>
+</div>
+<script>
+function checkoutPage() {
+  return {
+    cartItems: [], addresses: [], addressId: '', loading: true,
+    get totalAmount() { return this.cartItems.reduce((s,i) => s + i.subtotal, 0); },
+    async init() {
+      this.loading = true;
+      try {
+        const [cartR, addrR] = await Promise.all([fetch('/api/cart/'), fetch('/api/addresses/')]);
+        const cartData = await cartR.json();
+        this.cartItems = cartData.items || [];
+        this.addresses = await addrR.json();
+        if (this.addresses.length > 0) {
+          const def = this.addresses.find(a => a.is_default);
+          this.addressId = def ? def.id : this.addresses[0].id;
+        }
+      } finally { this.loading = false; }
+    },
+    async placeOrder() {
+      const csrf = document.querySelector('[name=csrfmiddlewaretoken]')?.value || '';
+      const r = await fetch('/api/orders/', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', 'X-CSRFToken': csrf},
+        body: JSON.stringify({
+          cart_item_ids: this.cartItems.map(i => i.id),
+          address_id: this.addressId,
+        })
+      });
+      if (r.ok) {
+        const data = await r.json();
+        notifyCartUpdated();
+        window.location.href = '/shop/orders/' + data.order_no + '/';
+      } else {
+        const err = await r.json();
+        alert(err.detail || '提交订单失败');
+      }
+    }
+  };
+}
+</script>
+{% endblock %}
