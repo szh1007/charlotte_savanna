@@ -20,6 +20,7 @@ class ProductFilter(django_filters.FilterSet):
             "created_at": "created_at",
             "-created_at": "-created_at",
             "name": "name",
+            "-name": "-name",
         },
         label="Ordering",
     )

@@ -69,7 +69,7 @@ class Profile(models.Model):
 
     class Meta:
         db_table = "minimall_profile"
-        verbose_name = "用户扩展"
+        verbose_name = "用户-扩展"
         verbose_name_plural = verbose_name
 
     def __init__(self, *args, **kwargs):
@@ -113,13 +113,14 @@ class Category(MPTTModel):
         verbose_name="上级分类",
     )
     is_active = models.BooleanField(default=True, verbose_name="是否启用")
+    sort_order = models.PositiveIntegerField(default=0, verbose_name="排序(越小越靠前)")
 
     class MPTTMeta:
-        order_insertion_by = ["name"]
+        order_insertion_by = ["sort_order", "name"]
 
     class Meta:
         db_table = "minimall_category"
-        verbose_name = "商品分类"
+        verbose_name = "类别"
         verbose_name_plural = verbose_name
 
     def __str__(self):
@@ -142,6 +143,7 @@ class Product(models.Model):
     stock = models.PositiveIntegerField(default=0, verbose_name="库存")
     is_active = models.BooleanField(default=True, verbose_name="是否上架")
     is_featured = models.BooleanField(default=False, verbose_name="是否推荐")
+    sort_order = models.PositiveIntegerField(default=0, verbose_name="排序(越小越靠前)")
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
     updated_at = models.DateTimeField(auto_now=True, verbose_name="更新时间")
 
@@ -149,7 +151,7 @@ class Product(models.Model):
         db_table = "minimall_product"
         verbose_name = "商品"
         verbose_name_plural = verbose_name
-        ordering = ["-created_at"]
+        ordering = ["sort_order", "-created_at"]
 
     def save(self, *args, **kwargs):
         if not self.slug:

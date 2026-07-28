@@ -123,10 +123,10 @@ def pay_order(order, payment_password):
         raise InvalidOrderStatusError(f"Cannot pay order in '{order.status}' status")
     profile = order.user.minimall_profile
     if not profile.check_payment_password(payment_password):
-        raise PaymentError("Invalid payment password")
+        raise PaymentError("支付密码错误")
 
     if profile.balance < order.total_amount:
-        raise PaymentError("Insufficient balance")
+        raise PaymentError("余额不足")
 
     profile.balance -= order.total_amount
     profile.save(update_fields=["balance"])
@@ -157,6 +157,12 @@ def cancel_order(order):
             if product:
                 product.stock += item.quantity
                 product.save(update_fields=["stock"])
+
+        # 已付款的订单取消后退还金额
+        if order.status == Order.Status.PAID:
+            profile = order.user.minimall_profile
+            profile.balance += order.total_amount
+            profile.save(update_fields=["balance"])
 
         order.status = Order.Status.CANCELLED
         order.cancelled_at = timezone.now()

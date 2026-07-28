@@ -1,58 +1,71 @@
 {% extends "minimall/base.html" %}
-{% block title %}收货地址 - 淘宝{% endblock %}
+{% block title %}收货地址 - minimall{% endblock %}
+{% block container_class %}container wide{% endblock %}
 {% block content %}
-<h2 style="margin-bottom:20px;">收货地址</h2>
+<div style="background:#fff;border-radius:14px;padding:24px 32px;box-shadow:0 2px 12px rgba(0,0,0,.06);">
 <div x-data="addressPage()" x-init="load()">
-  <button @click="showForm = true; editingId = null; clearForm()" class="btn btn-primary" style="margin-bottom:20px;"
-          x-show="!showForm">+ 新增地址</button>
+  <div style="display:flex;align-items:center;gap:24px;margin-bottom:20px;">
+    <h2 class="page-title" style="margin:0;">收货地址</h2>
+    <button @click="showForm = true; editingId = null; clearForm()" class="btn btn-primary">+ 新增地址</button>
+  </div>
 
   <!-- Form -->
-  <div x-show="showForm" style="background:#fff;border-radius:12px;padding:24px;margin-bottom:20px;max-width:500px;box-shadow:0 2px 12px rgba(0,0,0,.06);">
-    <h3 style="margin-bottom:16px;" x-text="editingId ? '修改地址' : '新增地址'"></h3>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
-      <div>
-        <label style="font-size:14px;font-weight:600;">收货人</label>
-        <input x-model="form.receiver_name" style="width:100%;padding:8px;border:1px solid #e9ecef;border-radius:8px;">
+  <div x-show="showForm" style="background:#fafbfc;border-radius:12px;padding:28px 32px;margin-bottom:20px;max-width:640px;box-shadow:0 2px 12px rgba(0,0,0,.06);">
+    <h3 style="margin-bottom:20px;" x-text="editingId ? '修改地址' : '新增地址'"></h3>
+    <div style="display:flex;flex-direction:column;gap:14px;">
+      <!-- 收货人 -->
+      <div style="display:flex;align-items:center;gap:12px;">
+        <label style="width:80px;flex-shrink:0;font-size:14px;font-weight:600;text-align:right;"><span style="color:#ff6b6b;">*</span> 收货人</label>
+        <input x-model="form.receiver_name" placeholder="请输入收货人姓名" required
+               :style="{flex:'1',padding:'10px 12px',border:'1.5px solid '+(errors.receiver_name?'#ff6b6b':'#e0e0e0'),borderRadius:'8px',fontSize:'14px'}">
       </div>
-      <div>
-        <label style="font-size:14px;font-weight:600;">电话</label>
-        <input x-model="form.phone" style="width:100%;padding:8px;border:1px solid #e9ecef;border-radius:8px;">
+      <!-- 电话 -->
+      <div style="display:flex;align-items:center;gap:12px;">
+        <label style="width:80px;flex-shrink:0;font-size:14px;font-weight:600;text-align:right;"><span style="color:#ff6b6b;">*</span> 电话</label>
+        <input x-model="form.phone" placeholder="请输入手机号" required
+               :style="{flex:'1',padding:'10px 12px',border:'1.5px solid '+(errors.phone?'#ff6b6b':'#e0e0e0'),borderRadius:'8px',fontSize:'14px'}">
       </div>
-      <div>
-        <label style="font-size:14px;font-weight:600;">省</label>
-        <input x-model="form.province" style="width:100%;padding:8px;border:1px solid #e9ecef;border-radius:8px;">
+      <!-- 省市区 -->
+      <div style="display:flex;align-items:center;gap:12px;">
+        <label style="width:80px;flex-shrink:0;font-size:14px;font-weight:600;text-align:right;"><span style="color:#ff6b6b;">*</span> 地区</label>
+        <select x-model="form.province" @change="onProvinceChange" x-ref="provinceSelect"
+                :style="{flex:'1',padding:'10px 8px',border:'1.5px solid '+(errors.province?'#ff6b6b':'#e0e0e0'),borderRadius:'8px',fontSize:'14px',background:'#fff'}">
+          <option value="">请选择省</option>
+        </select>
+        <select x-model="form.city" @change="onCityChange" x-ref="citySelect"
+                :style="{flex:'1',padding:'10px 8px',border:'1.5px solid '+(errors.city?'#ff6b6b':'#e0e0e0'),borderRadius:'8px',fontSize:'14px',background:'#fff'}">
+          <option value="">请选择市</option>
+        </select>
+        <select x-model="form.district" x-ref="districtSelect"
+                :style="{flex:'1',padding:'10px 8px',border:'1.5px solid '+(errors.district?'#ff6b6b':'#e0e0e0'),borderRadius:'8px',fontSize:'14px',background:'#fff'}">
+          <option value="">请选择区</option>
+        </select>
       </div>
-      <div>
-        <label style="font-size:14px;font-weight:600;">市</label>
-        <input x-model="form.city" style="width:100%;padding:8px;border:1px solid #e9ecef;border-radius:8px;">
-      </div>
-      <div>
-        <label style="font-size:14px;font-weight:600;">区</label>
-        <input x-model="form.district" style="width:100%;padding:8px;border:1px solid #e9ecef;border-radius:8px;">
-      </div>
-      <div style="display:flex;align-items:end;gap:8px;">
-        <label style="font-size:14px;"><input type="checkbox" x-model="form.is_default"> 设为默认</label>
+      <!-- 详细地址 -->
+      <div style="display:flex;align-items:center;gap:12px;">
+        <label style="width:80px;flex-shrink:0;font-size:14px;font-weight:600;text-align:right;"><span style="color:#ff6b6b;">*</span> 详细地址</label>
+        <input x-model="form.detail" placeholder="街道、门牌号等" required
+               :style="{flex:'1',padding:'10px 12px',border:'1.5px solid '+(errors.detail?'#ff6b6b':'#e0e0e0'),borderRadius:'8px',fontSize:'14px'}">
       </div>
     </div>
-    <div style="margin-top:12px;">
-      <label style="font-size:14px;font-weight:600;">详细地址</label>
-      <input x-model="form.detail" style="width:100%;padding:8px;border:1px solid #e9ecef;border-radius:8px;">
-    </div>
-    <div style="margin-top:16px;display:flex;gap:12px;">
-      <button @click="save()" class="btn btn-primary">保存</button>
-      <button @click="showForm = false" class="btn" style="background:#f1f3f5;">取消</button>
+    <div style="margin-top:20px;display:flex;gap:12px;align-items:center;justify-content:space-between;">
+      <div style="display:flex;gap:12px;">
+        <button @click="save()" class="btn btn-primary">保存</button>
+        <button @click="showForm = false" class="btn" style="background:#f1f3f5;">取消</button>
+      </div>
+      <label style="font-size:14px;"><input type="checkbox" x-model="form.is_default"> 设为默认</label>
     </div>
   </div>
 
   <!-- List -->
-  <template x-if="loading"><p>加载中...</p></template>
+  <template x-if="loading"><p style="text-align:center;padding:60px;color:#aaa;">加载中...</p></template>
   <template x-if="!loading && addresses.length === 0 && !showForm">
-    <p style="color:#adb5bd;">暂无收货地址, 请新增.</p>
+    <p style="text-align:center;padding:60px;color:#aaa;">暂无收货地址, 请新增.</p>
   </template>
   <template x-if="!loading && addresses.length > 0">
-    <div style="display:grid;gap:12px;">
+    <div>
       <template x-for="addr in addresses" :key="addr.id">
-        <div style="background:#fff;border-radius:12px;padding:20px;display:flex;justify-content:space-between;align-items:center;box-shadow:0 2px 12px rgba(0,0,0,.06);">
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:16px 12px;margin-bottom:8px;background:#fafbfc;border-radius:10px;border:1px solid #e9ecef;">
           <div>
             <div style="font-weight:600;margin-bottom:4px;">
               <span x-text="addr.receiver_name"></span>
@@ -61,44 +74,128 @@
             </div>
             <div style="color:#999;font-size:14px;" x-text="addr.province + addr.city + addr.district + ' ' + addr.detail"></div>
           </div>
-          <div style="display:flex;gap:8px;">
-            <button @click="edit(addr)" style="border:none;background:none;color:#ff6b6b;cursor:pointer;font-size:14px;">编辑</button>
-            <button @click="remove(addr)" style="border:none;background:none;color:#adb5bd;cursor:pointer;font-size:14px;">删除</button>
+          <div style="display:flex;gap:12px;flex-shrink:0;">
+            <button @click="edit(addr)" style="border:1.5px solid #ff6b6b;background:#fff;color:#ff6b6b;cursor:pointer;font-size:14px;font-weight:600;padding:6px 16px;border-radius:8px;transition:all .15s;"
+                    @mouseenter="$el.style.background='#fff0f0'" @mouseleave="$el.style.background='#fff'">编辑</button>
+            <button @click="remove(addr)" style="border:1.5px solid #e9ecef;background:#fff;color:#666;cursor:pointer;font-size:14px;font-weight:500;padding:6px 16px;border-radius:8px;transition:all .15s;"
+                    @mouseenter="$el.style.background='#f8f9fa';$el.style.color='#e63946'" @mouseleave="$el.style.background='#fff';$el.style.color='#666'">删除</button>
           </div>
         </div>
       </template>
     </div>
   </template>
 </div>
+</div>
 <script>
 function addressPage() {
   return {
     addresses: [], loading: true, showForm: false, editingId: null,
     form: { receiver_name:'', phone:'', province:'', city:'', district:'', detail:'', is_default:false },
-    clearForm() { Object.keys(this.form).forEach(k => this.form[k] = k === 'is_default' ? false : ''); },
+    errors: { receiver_name:false, phone:false, province:false, city:false, district:false, detail:false },
+    regionData: null, provinces: [], cities: [], districts: [],
+    async initRegion() {
+      try {
+        var r = await fetch('https://unpkg.com/china-area-data@5.0.1/data.json');
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        this.regionData = await r.json();
+        // v5 格式: 省份挂在 data["86"] 下
+        var provinceMap = this.regionData["86"] || {};
+        this.provinces = Object.keys(provinceMap).map(function(k) { return {code: k, name: provinceMap[k]}; });
+        this._populateSelect(this.$refs.provinceSelect, this.provinces, '请选择省');
+      } catch(e) { console.error('Failed to load region data', e); }
+    },
+    _populateSelect: function(el, options, placeholder) {
+      if (!el) return;
+      el.innerHTML = '<option value="">' + (placeholder || '') + '</option>';
+      options.forEach(function(o) {
+        var opt = document.createElement('option');
+        opt.value = o.name;
+        opt.textContent = o.name;
+        el.appendChild(opt);
+      });
+    },
+    onProvinceChange: function() {
+      var self = this;
+      self.cities = []; self.districts = []; self.form.city = ''; self.form.district = '';
+      self._populateSelect(self.$refs.citySelect, [], '请选择市');
+      self._populateSelect(self.$refs.districtSelect, [], '请选择区');
+      if (!self.form.province || !self.regionData) return;
+      var provCode = self._findCode(self.provinces, self.form.province);
+      if (!provCode) return;
+      // v5 格式: 城市挂在 data[provinceCode] 下
+      var cityMap = self.regionData[provCode] || {};
+      self.cities = Object.keys(cityMap).map(function(k) { return {code: k, name: cityMap[k]}; });
+      self._populateSelect(self.$refs.citySelect, self.cities, '请选择市');
+      if (self.currentCity) {
+        var cc = self._findCode(self.cities, self.currentCity);
+        if (cc) { self.form.city = self.currentCity; self.onCityChange(); }
+      }
+    },
+    onCityChange: function() {
+      var self = this;
+      self.districts = []; self.form.district = '';
+      self._populateSelect(self.$refs.districtSelect, [], '请选择区');
+      if (!self.form.city || !self.regionData) return;
+      var cityCode = self._findCode(self.cities, self.form.city);
+      if (!cityCode) return;
+      // v5 格式: 区县挂在 data[cityCode] 下
+      var districtMap = self.regionData[cityCode] || {};
+      self.districts = Object.keys(districtMap).map(function(k) { return {code: k, name: districtMap[k]}; });
+      self._populateSelect(self.$refs.districtSelect, self.districts, '请选择区');
+      // 编辑时恢复已选的区
+      if (self.currentDistrict) {
+        var dc = self._findCode(self.districts, self.currentDistrict);
+        if (dc) { self.form.district = self.currentDistrict; }
+      }
+    },
+    _findCode: function(arr, name) {
+      var found = arr.find(function(x) { return x.name === name; });
+      return found ? found.code : null;
+    },
+    currentCity: null, currentDistrict: null,
+    clearForm() {
+      var self = this;
+      Object.keys(this.form).forEach(function(k) { self.form[k] = k === 'is_default' ? false : ''; });
+      Object.keys(this.errors).forEach(function(k) { self.errors[k] = false; });
+      this.cities = []; this.districts = []; this.currentCity = null; this.currentDistrict = null;
+    },
     csrf() { return document.querySelector('[name=csrfmiddlewaretoken]').value; },
     async load() {
       this.loading = true;
-      try { const r = await fetch('/api/addresses/'); this.addresses = await r.json(); }
+      try { await this.initRegion(); const r = await fetch('/api/addresses/'); this.addresses = await r.json(); }
       finally { this.loading = false; }
     },
     edit(addr) {
       this.editingId = addr.id;
-      Object.keys(this.form).forEach(k => this.form[k] = addr[k] !== undefined ? addr[k] : false);
+      var self = this;
+      Object.keys(this.form).forEach(function(k) { self.form[k] = addr[k] !== undefined ? addr[k] : false; });
+      this.currentCity = addr.city;
+      this.currentDistrict = addr.district;
       this.showForm = true;
+      this.$nextTick(function() { self.onProvinceChange(); });
     },
     async save() {
-      const url = this.editingId ? `/api/addresses/${this.editingId}/` : '/api/addresses/';
-      const method = this.editingId ? 'PATCH' : 'POST';
-      const r = await fetch(url, { method, headers:{'Content-Type':'application/json','X-CSRFToken':this.csrf()}, body: JSON.stringify(this.form) });
+      // 前端必填校验
+      var self = this;
+      var fields = ['receiver_name','phone','province','city','district','detail'];
+      var valid = true;
+      fields.forEach(function(f) {
+        self.errors[f] = !self.form[f];
+        if (!self.form[f]) valid = false;
+      });
+      if (!valid) return;
+
+      var url = this.editingId ? '/api/addresses/' + this.editingId + '/' : '/api/addresses/';
+      var method = this.editingId ? 'PATCH' : 'POST';
+      var r = await fetch(url, { method: method, headers:{'Content-Type':'application/json','X-CSRFToken':this.csrf()}, body: JSON.stringify(this.form) });
       if (r.ok) { this.showForm = false; this.editingId = null; this.load(); }
-      else { const d = await r.json(); alert(d.detail || JSON.stringify(d)); }
+      else { var d = await r.json(); alert(d.detail || JSON.stringify(d)); }
     },
     async remove(addr) {
       if (!confirm('确定删除 ' + addr.receiver_name + ' 的地址?')) return;
-      const r = await fetch(`/api/addresses/${addr.id}/`, { method:'DELETE', headers:{'X-CSRFToken':this.csrf()} });
+      var r = await fetch('/api/addresses/' + addr.id + '/', { method:'DELETE', headers:{'X-CSRFToken':this.csrf()} });
       if (r.ok) this.load();
-      else { const d = await r.json(); alert(d.detail || '删除失败'); }
+      else { var d = await r.json(); alert(d.detail || '删除失败'); }
     }
   };
 }

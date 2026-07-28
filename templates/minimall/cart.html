@@ -1,62 +1,123 @@
 {% extends "minimall/base.html" %}
 {% block title %}购物车 - minimall{% endblock %}
+{% block container_class %}container wide{% endblock %}
 {% block content %}
-<h2 style="margin-bottom:20px">购物车</h2>
+<div style="background:#fff;border-radius:12px;padding:24px 32px;box-shadow:0 2px 12px rgba(0,0,0,.06);">
 <div x-data="cartPage()" x-init="loadCart()">
+<div style="display:flex;align-items:center;gap:24px;margin-bottom:20px;">
+  <h2 class="page-title" style="margin:0;">购物车</h2>
+  <a href="/shop/" class="btn btn-primary" style="text-decoration:none;">去逛逛</a>
+  <div style="flex:1;"></div>
+  <button @click="batchRemove()" :disabled="selected.length === 0"
+          class="btn" style="background:#e63946;color:#fff;"
+          :style="{opacity: selected.length === 0 ? '0.4' : '1'}">批量删除</button>
+</div>
   <template x-if="loading">
-    <p>加载中...</p>
+    <p style="text-align:center;padding:60px;color:#aaa;">加载中...</p>
   </template>
   <template x-if="!loading && items.length === 0">
-    <p>购物车是空的. <a href="/shop/">去逛逛</a></p>
+    <p style="text-align:center;padding:60px;color:#aaa;">快去首页看看吧</p>
   </template>
   <template x-if="!loading && items.length > 0">
     <div>
-      <table>
+      <table style="width:100%;">
         <thead>
           <tr style="text-align:left;">
-            <th style="padding:14px 16px;">商品</th>
-            <th style="padding:14px 16px;">单价</th>
-            <th style="padding:14px 16px;">数量</th>
-            <th style="padding:14px 16px;">小计</th>
-            <th style="padding:14px 16px;"></th>
+            <th style="padding:14px 16px;width:5%;">
+              <input type="checkbox" @change="toggleAll()" :checked="allSelected" style="width:18px;height:18px;cursor:pointer;">
+            </th>
+            <th style="padding:14px 16px;width:35%;">商品</th>
+            <th style="padding:14px 16px;width:15%;">单价</th>
+            <th style="padding:14px 16px;width:15%;">数量</th>
+            <th style="padding:14px 16px;width:15%;">小计</th>
+            <th style="padding:14px 16px;width:5%;"></th>
           </tr>
         </thead>
         <tbody>
           <template x-for="item in items" :key="item.id">
             <tr style="border-bottom:1px solid #eee;">
-              <td style="padding:14px 16px;" x-text="item.product_name"></td>
+              <td style="padding:14px 16px;">
+                <input type="checkbox" :value="item.id" x-model="selected" @change="saveSelection()" style="width:18px;height:18px;cursor:pointer;">
+              </td>
+              <td style="padding:14px 16px;">
+                <a :href="'/shop/products/' + item.product_slug + '/'" style="color:#333;text-decoration:none;font-weight:500;display:inline-flex;align-items:center;gap:8px;"
+                   @mouseenter="$el.style.color='#ff6b6b'" @mouseleave="$el.style.color='#333'">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;opacity:.5;"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                  <span x-text="item.product_name"></span>
+                </a>
+              </td>
               <td style="padding:14px 16px;">¥<span x-text="item.product_price"></span></td>
               <td style="padding:14px 16px;">
-                <input type="number" :value="item.quantity" min="1" style="width:60px;padding:6px;"
+                <input type="number" :value="item.quantity" min="1" style="width:64px;padding:8px;border:1px solid #ddd;border-radius:6px;text-align:center;"
                   @input.debounce.500ms="updateQty(item, $event.target.value)">
               </td>
               <td style="padding:14px 16px;">¥<span x-text="Number(item.subtotal).toFixed(2)"></span></td>
               <td style="padding:14px 16px;">
-                <button @click="removeItem(item)" style="background:none;border:none;color:#e63946;cursor:pointer;font-size:18px;">&times;</button>
+                <button @click="removeItem(item)" title="删除" style="background:none;border:none;color:#e63946;cursor:pointer;font-size:24px;font-weight:700;line-height:1;padding:4px 8px;border-radius:6px;transition:all .15s;"
+                        @mouseenter="$el.style.background='#fff0f0'" @mouseleave="$el.style.background='none'">&times;</button>
               </td>
             </tr>
           </template>
         </tbody>
       </table>
-      <div style="text-align:right;margin-top:24px;font-size:18px;">
-        <strong>合计 (<span x-text="totalCount"></span> 件): ¥<span x-text="totalAmount.toFixed(2)"></span></strong>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:24px;">
+        <strong style="font-size:20px;color:#333;">已选 <span style="color:#ff6b6b;" x-text="selectedCount"></span> 件，合计 ¥<span style="color:#ff6b6b;font-size:24px;" x-text="selectedAmount.toFixed(2)"></span></strong>
+        <button class="btn btn-primary" @click="submitOrder" :disabled="selected.length === 0">结算</button>
       </div>
-      <div style="text-align:right;margin-top:16px;">
-        <button class="btn btn-primary" onclick="location.href='/shop/checkout/'">去结算</button>
+      <!-- 分页 -->
+      <div style="display:flex;justify-content:center;align-items:center;gap:12px;margin-top:20px;padding-top:16px;border-top:1px solid #eee;">
+        <select @change="changePageSize(parseInt($event.target.value))" style="padding:7px 10px;border:1px solid #e0e0e0;border-radius:8px;font-size:13px;background:#fff;outline:none;">
+          <option :selected="pageSize === 5" value="5">5条/页</option>
+          <option :selected="pageSize === 10" value="10">10条/页</option>
+          <option :selected="pageSize === 20" value="20">20条/页</option>
+          <option :selected="pageSize === 50" value="50">50条/页</option>
+          <option :selected="pageSize === 100" value="100">100条/页</option>
+        </select>
+        <button @click="loadCart(page-1)" :disabled="page <= 1" style="padding:8px 16px;border:1px solid #e0e0e0;border-radius:8px;background:#fff;cursor:pointer;font-size:13px;"
+                :style="{color: page <= 1 ? '#ccc' : '#333'}">上一页</button>
+        <span style="font-size:13px;color:#666;">第 <span x-text="page"></span> / <span x-text="totalPages"></span> 页</span>
+        <button @click="loadCart(page+1)" :disabled="page >= totalPages" style="padding:8px 16px;border:1px solid #e0e0e0;border-radius:8px;background:#fff;cursor:pointer;font-size:13px;"
+                :style="{color: page >= totalPages ? '#ccc' : '#333'}">下一页</button>
       </div>
     </div>
   </template>
 </div>
+</div>
 <script>
 function cartPage() {
   return {
-    items: [], loading: true,
-    get totalAmount() { return this.items.reduce((s, i) => s + i.subtotal, 0); },
-    get totalCount() { return this.items.reduce((s, i) => s + i.quantity, 0); },
-    async loadCart() {
+    items: [], loading: true, selected: [],
+    page: 1, totalPages: 1, pageSize: 5,
+    get allSelected() { return this.items.length > 0 && this.selected.length === this.items.length; },
+    get selectedItems() { var ids = this.selected.map(Number); return this.items.filter(function(i) { return ids.indexOf(i.id) !== -1; }); },
+    get selectedAmount() { return this.selectedItems.reduce(function(s, i) { return s + i.subtotal; }, 0); },
+    get selectedCount() { return this.selectedItems.reduce(function(s, i) { return s + i.quantity; }, 0); },
+    async loadCart(page) {
+      page = page || 1;
       this.loading = true;
-      try { const r = await fetch('/api/cart/'); const data = await r.json(); this.items = data.items || []; }
-      finally { this.loading = false; }
+      try {
+        const r = await fetch('/api/cart/?page=' + page + '&page_size=' + this.pageSize); const data = await r.json();
+        this.items = data.items || [];
+        this.page = data.page; this.totalPages = data.total_pages; this.pageSize = data.page_size || 10;
+        // 恢复上次勾选
+        var saved = localStorage.getItem('cart_selected');
+        if (saved) {
+          var ids = JSON.parse(saved);
+          var validIds = this.items.map(function(i) { return i.id; });
+          this.selected = ids.filter(function(id) { return validIds.indexOf(id) !== -1; });
+        }
+      } finally { this.loading = false; }
+    },
+    changePageSize: function(size) {
+      this.pageSize = size; this.page = 1; this.loadCart(1);
+    },
+    saveSelection: function() {
+      localStorage.setItem('cart_selected', JSON.stringify(this.selected));
+    },
+    toggleAll: function() {
+      if (this.allSelected) { this.selected = []; }
+      else { this.selected = this.items.map(function(i) { return i.id; }); }
+      this.saveSelection();
     },
     async updateQty(item, qty) {
       qty = parseInt(qty) || 1;
@@ -72,7 +133,32 @@ function cartPage() {
       const r = await fetch(`/api/cart/items/${item.id}/delete/`, {
         method: 'DELETE', headers: {'X-CSRFToken': this.getCsrf()}
       });
-      if (r.ok) { this.items = this.items.filter(i => i.id !== item.id); notifyCartUpdated(); }
+      if (r.ok) {
+        this.selected = this.selected.filter(function(id) { return id !== item.id; });
+        this.saveSelection();
+        notifyCartUpdated();
+        this.loadCart(this.page);
+      }
+    },
+    submitOrder: function() {
+      if (this.selected.length === 0) return;
+      localStorage.removeItem('cart_selected');
+      location.href = '/shop/checkout/?ids=' + this.selected.join(',');
+    },
+    async batchRemove() {
+      if (this.selected.length === 0) return;
+      if (!confirm('确定删除选中商品？')) return;
+      var self = this;
+      var ids = this.selected.slice();
+      for (var i = 0; i < ids.length; i++) {
+        await fetch('/api/cart/items/' + ids[i] + '/delete/', {
+          method: 'DELETE', headers: {'X-CSRFToken': this.getCsrf()}
+        });
+      }
+      this.selected = [];
+      this.saveSelection();
+      this.loadCart();
+      notifyCartUpdated();
     },
     getCsrf() { return document.querySelector('[name=csrfmiddlewaretoken]')?.value || ''; }
   };

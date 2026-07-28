@@ -20,7 +20,9 @@ class IndexView(TemplateView):
         if search:
             qs = qs.filter(name__icontains=search)
         category_slug = request.GET.get("category", "").strip()
-        if category_slug:
+        if category_slug == "_featured":
+            qs = qs.filter(is_featured=True)
+        elif category_slug:
             try:
                 cat = Category.objects.get(slug=category_slug)
                 qs = qs.filter(category__in=cat.get_descendants(include_self=True))
@@ -32,16 +34,32 @@ class IndexView(TemplateView):
         max_price = request.GET.get("max_price")
         if max_price:
             qs = qs.filter(price__lte=max_price)
-        ordering = request.GET.get("ordering", "-created_at")
-        qs = qs.order_by(ordering)
+        ordering = request.GET.get("ordering")
+        if ordering:
+            qs = qs.order_by(ordering, "sort_order")
+        else:
+            qs = qs.order_by("sort_order", "-created_at")
         return qs
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         qs = self.get_queryset(self.request)
-        context["categories"] = Category.objects.filter(is_active=True)
-        context["products"] = qs[:50]
-        context["total"] = qs.count()
+        from django.core.paginator import Paginator
+
+        page_size = int(self.request.GET.get("page_size", 5))
+        if page_size not in (5, 10, 20, 50, 100):
+            page_size = 5
+        paginator = Paginator(qs, page_size)
+        page_num = int(self.request.GET.get("page", 1))
+        page = paginator.get_page(page_num)
+        context["categories"] = Category.objects.filter(is_active=True).order_by(
+            "sort_order", "name"
+        )
+        context["products"] = page.object_list
+        context["total"] = paginator.count
+        context["page"] = page.number
+        context["total_pages"] = paginator.num_pages
+        context["page_size"] = page_size
         context["featured_products"] = Product.objects.filter(
             is_active=True, is_featured=True
         ).prefetch_related("images")[:4]

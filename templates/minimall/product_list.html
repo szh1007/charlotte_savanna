@@ -34,21 +34,27 @@
     <p>共 {{ total }} 件商品</p>
     <div class="product-grid">
       {% for product in products %}
-        <a href="/shop/products/{{ product.slug }}/" class="product-card"
-           style="text-decoration:none;color:inherit;display:block;">
-          {% with img=product.images.all|first %}
-            {% if img %}
-              <img src="{{ img.image.url }}?v={{ img.image_version }}{% if img.image_updated_at %}&t={{ img.image_updated_at.timestamp }}{% endif %}" alt="{{ product.name }}" style="width:100%;height:200px;object-fit:cover;">
-            {% else %}
-              <div style="width:100%;height:200px;background:#f5f5f5;display:flex;align-items:center;justify-content:center;color:#ccc;font-size:48px;">?</div>
-            {% endif %}
-          {% endwith %}
-          <div class="info">
-            <div class="name">{{ product.name }}</div>
-            <div class="price">¥{{ product.price }}</div>
-            <div style="font-size:12px;color:#999;">{{ product.category.name }}</div>
-          </div>
-        </a>
+        <div class="product-card" style="position:relative;">
+          <a href="/shop/products/{{ product.slug }}/" style="text-decoration:none;color:inherit;display:block;">
+            {% with img=product.images.all|first %}
+              {% if img %}
+                <img src="{{ img.image.url }}?v={{ img.image_version }}{% if img.image_updated_at %}&t={{ img.image_updated_at.timestamp }}{% endif %}" alt="{{ product.name }}" style="width:100%;height:200px;object-fit:cover;">
+              {% else %}
+                <div style="width:100%;height:200px;background:#f5f5f5;display:flex;align-items:center;justify-content:center;color:#ccc;font-size:48px;">?</div>
+              {% endif %}
+            {% endwith %}
+            <div class="info">
+              <div class="name">{{ product.name }}</div>
+              <div class="price">¥{{ product.price }}</div>
+              <div style="font-size:12px;color:#999;">{{ product.category.name }}</div>
+            </div>
+          </a>
+          <button class="card-cart-btn"
+                  @click.stop="addToCart({{ product.id }}, $event)"
+                  title="加入购物车">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg>
+          </button>
+        </div>
       {% empty %}
         <p>没有找到商品.</p>
       {% endfor %}

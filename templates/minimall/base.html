@@ -8,16 +8,17 @@
   <script src="https://unpkg.com/alpinejs@3.14.9" defer></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif; color: #333; background: #f5f5f5; }
-    nav { display: flex; align-items: center; padding: 0 40px; height: 64px; background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); color: #fff; gap: 24px; position: sticky; top: 0; z-index: 100; }
+    body { font-family: 'PingFang SC', 'Microsoft YaHei', 'Hiragino Sans GB', 'HarmonyOS Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; color: #333; background: #f0f2f5; -webkit-font-smoothing: antialiased; }
+    nav { display: flex; align-items: center; padding: 0 40px; height: 64px; background: linear-gradient(135deg, #f5a623 0%, #f7b733 40%, #f0a010 100%); color: #fff; gap: 24px; position: sticky; top: 0; z-index: 100; box-shadow: 0 2px 12px rgba(245,166,35,.3); }
     nav a { color: #fff; text-decoration: none; transition: opacity .2s; }
-    nav a:hover { opacity: .8; }
-    nav .logo { font-size: 22px; font-weight: 800; letter-spacing: 2px; color: #ff6b6b; }
-    nav .logo:hover { color: #ff8787; opacity: 1; }
-    nav .search-box { flex: 1; max-width: 480px; }
-    nav .search-box input { width: 100%; padding: 10px 16px; border: none; border-radius: 20px; background: rgba(255,255,255,.12); color: #fff; font-size: 14px; outline: none; transition: background .2s; }
-    nav .search-box input::placeholder { color: rgba(255,255,255,.5); }
-    nav .search-box input:focus { background: rgba(255,255,255,.2); }
+    nav a:hover { opacity: .85; }
+    nav .logo { font-size: 22px; font-weight: 800; letter-spacing: 2px; color: #fff; text-shadow: 0 2px 4px rgba(0,0,0,.15); }
+    nav .logo:hover { color: #fff3cd; opacity: 1; }
+    nav .search-box { flex: 1; max-width: 480px; position: relative; }
+    nav .search-box::before { content: '🔍'; position: absolute; left: 14px; top: 50%; transform: translateY(-50%); font-size: 14px; opacity: .6; pointer-events: none; z-index: 1; }
+    nav .search-box input { width: 100%; padding: 10px 16px 10px 38px; border: none; border-radius: 22px; background: rgba(255,255,255,.18); backdrop-filter: blur(8px); color: #fff; font-size: 14px; outline: none; transition: all .25s; }
+    nav .search-box input::placeholder { color: rgba(255,255,255,.6); }
+    nav .search-box input:focus { background: rgba(255,255,255,.28); box-shadow: 0 0 0 3px rgba(255,255,255,.15); }
     nav .nav-links { display: flex; gap: 24px; align-items: center; margin-left: auto; }
     .container { max-width: 1280px; margin: 0 auto; padding: 24px 32px; }
     .container.wide { padding: 0 40px; max-width: 100%; }
@@ -38,14 +39,18 @@
     .sidebar h3 { font-size: 16px; margin-bottom: 12px; color: #333; }
     .sidebar ul { list-style: none; }
     .sidebar li { padding: 6px 0; }
-    .sidebar a { color: #666; text-decoration: none; font-size: 14px; transition: color .2s; }
-    .sidebar a:hover, .sidebar a.active { color: #ff6b6b; font-weight: 600; }
+    .sidebar-link { color: #555; text-decoration: none; font-size: 14px; display: flex; align-items: center; gap: 10px; padding: 10px 16px; transition: all .15s; }
+    .sidebar-link:hover { background: #fdf2f2; color: #ff6b6b; }
+    .sidebar-featured { display: flex; align-items: center; gap: 10px; padding: 16px; text-decoration: none; color: #fff; font-size: 15px; font-weight: 700; transition: all .25s; }
+    .sidebar-featured:hover { filter: brightness(1.1); }
     .main { flex: 1; }
-    .filters-bar { display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; align-items: center; background: #fff; padding: 16px; border-radius: 12px; }
-    .filters-bar input, .filters-bar select { padding: 8px 12px; border: 1px solid #e9ecef; border-radius: 8px; font-size: 14px; outline: none; transition: border .2s; }
-    .filters-bar input:focus, .filters-bar select:focus { border-color: #ff6b6b; }
-    .filters-bar button { padding: 8px 20px; background: #ff6b6b; color: #fff; border: none; border-radius: 8px; font-size: 14px; cursor: pointer; font-weight: 600; transition: background .2s; }
-    .filters-bar button:hover { background: #ee5a5a; }
+    .filters-bar { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; align-items: center; background: #fff; padding: 14px 18px; border-radius: 14px; box-shadow: 0 1px 4px rgba(0,0,0,.04); }
+    .filters-bar input, .filters-bar select { padding: 9px 14px; border: 1.5px solid #d0d5dd; border-radius: 10px; font-size: 13px; outline: none; transition: all .2s; background: #fff; }
+    .filters-bar input:hover, .filters-bar select:hover { border-color: #b0b5bd; }
+    .filters-bar input:focus, .filters-bar select:focus { border-color: #ff6b6b; background: #fff; box-shadow: 0 0 0 3px rgba(255,107,107,.1); }
+    .filters-bar button { padding: 9px 22px; background: linear-gradient(135deg, #ff6b6b, #ee5a5a); color: #fff; border: none; border-radius: 10px; font-size: 13px; cursor: pointer; font-weight: 600; transition: all .2s; box-shadow: 0 2px 8px rgba(255,107,107,.25); }
+    .filters-bar button:hover { transform: translateY(-1px); box-shadow: 0 4px 14px rgba(255,107,107,.35); }
+    .filters-bar .count-badge { background: linear-gradient(135deg,#0ea5a0,#22d3d8); color: #fff; padding: 10px 22px; border-radius: 24px; font-size: 14px; font-weight: 700; margin-left: auto; box-shadow: 0 3px 12px rgba(14,165,160,.35); letter-spacing: 1px; }
     .section-title { font-size: 20px; font-weight: 700; margin-bottom: 16px; display: flex; align-items: center; gap: 12px; }
     .section-title .count { font-size: 14px; font-weight: 400; color: #adb5bd; }
     .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 48px; background: #fff; border-radius: 12px; padding: 32px; }
@@ -60,6 +65,16 @@
     .btn-primary:hover { background: #ee5a5a; transform: translateY(-1px); }
     .btn:disabled { background: #dee2e6; cursor: not-allowed; transform: none; }
     .quantity-input { width: 64px; padding: 10px; text-align: center; border: 1px solid #e9ecef; border-radius: 8px; font-size: 15px; }
+    .card-cart-btn {
+      position: absolute; bottom: 12px; right: 12px;
+      width: 36px; height: 36px; border-radius: 50%;
+      background: rgba(255,107,107,.9); color: #fff; border: none;
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer; transition: all .2s; opacity: 0; transform: translateY(4px);
+      box-shadow: 0 2px 8px rgba(255,107,107,.3);
+    }
+    .product-card:hover .card-cart-btn { opacity: 1; transform: translateY(0); }
+    .card-cart-btn:hover { background: #ff6b6b; transform: translateY(0) scale(1.1) !important; }
     .cart-badge {
       position: absolute; top: -8px; right: -12px;
       background: #ff6b6b; color: #fff;
@@ -67,12 +82,13 @@
       display: flex; align-items: center; justify-content: center;
       font-size: 11px; font-weight: 700; line-height: 1;
     }
-    #toast { position: fixed; top: 24px; right: 24px; padding: 14px 24px; border-radius: 10px; color: #fff; z-index: 2000; display: none; font-size: 14px; }
+    #toast { position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%); padding: 20px 36px; border-radius: 14px; color: #fff; z-index: 3000; display: none; font-size: 18px; font-weight: 600; box-shadow: 0 12px 40px rgba(0,0,0,.25); letter-spacing: 0.5px; }
     #toast.success { background: #20c997; }
     #toast.error { background: #ff6b6b; }
     .dropdown-menu a:hover { background: #f8f9fa; }
     table { background: #fff; border-radius: 12px; overflow: hidden; }
     table th { background: #f8f9fa; font-weight: 600; font-size: 14px; color: #666; }
+    .page-title { font-size: 22px; font-weight: 700; padding-left: 16px; border-left: 4px solid #ff6b6b; color: #333; letter-spacing: 0.5px; }
   </style>
 </head>
 <body x-data="app()" @toast.window="toast = $event.detail; setTimeout(() => toast = null, 2000)">
@@ -80,11 +96,11 @@
     <a href="/shop/" class="logo">淘宝</a>
     <div class="search-box">
       <form method="get" action="/shop/">
-        <input type="text" placeholder="搜索商品..." name="search" value="{{ search|default:'' }}">
+        <input type="text" placeholder="搜索商品名称" name="search" value="{{ search|default:'' }}">
       </form>
     </div>
     <div class="nav-links">
-      <a href="/shop/cart/" style="position:relative;display:inline-flex;align-items:center;"
+      <a href="/shop/cart/" title="购物车" style="position:relative;display:inline-flex;align-items:center;"
          @cart-updated.window="refreshCartCount()">
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/>
@@ -92,7 +108,7 @@
         </svg>
         <span x-show="cartCount > 0" class="cart-badge" x-text="cartCount"></span>
       </a>
-      <a href="/shop/orders/" style="display:inline-flex;align-items:center;">
+      <a href="/shop/orders/" title="我的订单" style="position:relative;display:inline-flex;align-items:center;">
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
           <polyline points="14 2 14 8 20 8"/>
@@ -100,9 +116,10 @@
           <line x1="16" y1="17" x2="8" y2="17"/>
           <polyline points="10 9 9 9 8 9"/>
         </svg>
+        <span x-show="orderCount > 0" class="cart-badge" x-text="orderCount"></span>
       </a>
       {% if user.is_authenticated %}
-        <span style="color:#ffd43b;font-weight:600;font-size:14px;">&yen;{{ user.minimall_profile.balance|floatformat:2 }}</span>
+        <span style="color:#fff;font-weight:700;font-size:14px;">&yen;{{ user.minimall_profile.balance|floatformat:2 }}</span>
         <!-- Avatar dropdown -->
         <div style="position:relative;display:inline-flex;align-items:center;">
           <div @click="dropdownOpen = !dropdownOpen" style="cursor:pointer;">
@@ -140,7 +157,7 @@
 
   <div x-show="toast" :class="toast?.type" id="toast" x-text="toast?.message" style="display:block;"></div>
 
-  <div class="container">
+  <div class="{% block container_class %}container{% endblock %}">
     {% block content %}{% endblock %}
   </div>
 
@@ -150,10 +167,40 @@
         toast: null,
         dropdownOpen: false,
         cartCount: 0,
-        init() { this.refreshCartCount(); },
+        orderCount: 0,
+        init() { this.refreshCartCount(); this.refreshOrderCount(); },
         async refreshCartCount() {
           try { const r = await fetch('/api/cart/'); const d = await r.json(); this.cartCount = d.total_count || 0; } catch(e) {}
-        }
+        },
+        async refreshOrderCount() {
+          try { const r = await fetch('/api/orders/active-count/'); const d = await r.json(); this.orderCount = d.count || 0; } catch(e) {}
+        },
+        async addToCart(productId, event) {
+          const btn = event.currentTarget;
+          btn.style.pointerEvents = 'none';
+          try {
+            const r = await fetch('/api/cart/items/', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]')?.value || '',
+              },
+              body: JSON.stringify({product_id: productId, quantity: 1}),
+            });
+            if (r.ok) {
+              this.toast = {type: 'success', message: '已加入购物车'};
+              setTimeout(() => this.toast = null, 2000);
+              notifyCartUpdated();
+            } else {
+              this.toast = {type: 'error', message: '添加失败'};
+              setTimeout(() => this.toast = null, 2000);
+            }
+          } catch(e) {
+            this.toast = {type: 'error', message: '网络错误'};
+            setTimeout(() => this.toast = null, 2000);
+          }
+          btn.style.pointerEvents = '';
+        },
       };
     }
     function notifyCartUpdated() { window.dispatchEvent(new CustomEvent('cart-updated')); }

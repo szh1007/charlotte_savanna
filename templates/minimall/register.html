@@ -1,46 +1,84 @@
 {% extends "minimall/base.html" %}
 {% block title %}注册 - minimall{% endblock %}
 {% block content %}
-<h2 style="margin-bottom:20px">注册</h2>
-<form id="register-form" style="max-width:400px;">
-  {% csrf_token %}
-  <div style="margin-bottom:12px;">
-    <label>用户名</label>
-    <input type="text" name="username" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;" required>
+<div style="max-width:480px;margin:0 auto;">
+  <div style="background:#fff;border-radius:14px;padding:36px 32px;box-shadow:0 2px 12px rgba(0,0,0,.06);">
+    <h2 style="margin-bottom:28px;text-align:center;font-weight:700;">注册</h2>
+    <form x-data="registerForm()" @submit.prevent="submit">
+      {% csrf_token %}
+      <div style="margin-bottom:16px;">
+        <label style="display:block;margin-bottom:6px;font-size:14px;font-weight:600;">用户名 <span style="color:#ff6b6b;">*</span></label>
+        <input type="text" x-model="username" required
+               :style="{width:'100%',padding:'12px 14px',border:'1.5px solid '+(errors.username?'#ff6b6b':'#e0e0e0'),borderRadius:'10px',fontSize:'15px',outline:'none',boxSizing:'border-box'}">
+        <p x-show="errors.username" style="color:#ff6b6b;font-size:12px;margin:4px 0 0 0;">请输入用户名</p>
+      </div>
+      <div style="margin-bottom:16px;">
+        <label style="display:block;margin-bottom:6px;font-size:14px;font-weight:600;">邮箱 <span style="color:#ff6b6b;">*</span></label>
+        <input type="email" x-model="email" required
+               :style="{width:'100%',padding:'12px 14px',border:'1.5px solid '+(errors.email?'#ff6b6b':'#e0e0e0'),borderRadius:'10px',fontSize:'15px',outline:'none',boxSizing:'border-box'}">
+        <p x-show="errors.email" style="color:#ff6b6b;font-size:12px;margin:4px 0 0 0;" x-text="errors.email"></p>
+      </div>
+      <div style="margin-bottom:16px;">
+        <label style="display:block;margin-bottom:6px;font-size:14px;font-weight:600;">密码 <span style="color:#ff6b6b;">*</span>  <span style="color:#adb5bd;font-weight:400;font-size:12px;">11-18位，包含数字、大小写字母、特殊字符 _@#$&*</span></label>
+        <input type="password" x-model="password" required
+               :style="{width:'100%',padding:'12px 14px',border:'1.5px solid '+(errors.password?'#ff6b6b':'#e0e0e0'),borderRadius:'10px',fontSize:'15px',outline:'none',boxSizing:'border-box'}">
+        <p x-show="errors.password" style="color:#ff6b6b;font-size:12px;margin:4px 0 0 0;" x-text="errors.password"></p>
+      </div>
+      <div style="margin-bottom:16px;">
+        <label style="display:block;margin-bottom:6px;font-size:14px;font-weight:600;">支付密码 <span style="color:#ff6b6b;">*</span>  <span style="color:#adb5bd;font-weight:400;font-size:12px;">6位数字，用于下单付款</span></label>
+        <input type="password" x-model="paymentPassword" maxlength="6" required
+               :style="{width:'100%',padding:'12px 14px',border:'1.5px solid '+(errors.paymentPassword?'#ff6b6b':'#e0e0e0'),borderRadius:'10px',fontSize:'15px',outline:'none',boxSizing:'border-box'}">
+        <p x-show="errors.paymentPassword" style="color:#ff6b6b;font-size:12px;margin:4px 0 0 0;" x-text="errors.paymentPassword"></p>
+      </div>
+      <div x-show="errorMsg" x-text="errorMsg" style="color:#e63946;font-size:13px;margin-bottom:12px;padding:8px 14px;background:#fff5f5;border-radius:8px;"></div>
+      <button type="submit" class="btn btn-primary" style="width:100%;padding:13px;font-size:16px;">注册</button>
+      <p style="margin-top:16px;text-align:center;font-size:14px;color:#999;">已有账号？<a href="/shop/login/" style="color:#ff6b6b;font-weight:500;">立即登录</a></p>
+    </form>
   </div>
-  <div style="margin-bottom:12px;">
-    <label>邮箱</label>
-    <input type="email" name="email" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;" required>
-  </div>
-  <div style="margin-bottom:12px;">
-    <label>密码</label>
-    <input type="password" name="password" minlength="8" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;" required>
-  </div>
-  <div style="margin-bottom:12px;">
-    <label>支付密码 (可选, 6位数字)</label>
-    <input type="password" name="payment_password" maxlength="6" minlength="6" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;">
-  </div>
-  <button type="submit" class="btn btn-primary" style="width:100%;">注册</button>
-  <p style="margin-top:12px;">已有账号? <a href="/shop/login/">登录</a></p>
-</form>
+</div>
 <script>
-document.getElementById('register-form').addEventListener('submit', async function(e) {
-  e.preventDefault();
-  const formData = new FormData(this);
-  const data = {};
-  formData.forEach((v, k) => { if (v) data[k] = v; });
-  const csrf = this.querySelector('[name=csrfmiddlewaretoken]').value;
-  const r = await fetch('/api/auth/register/', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json', 'X-CSRFToken': csrf},
-    body: JSON.stringify(data)
-  });
-  if (r.ok) {
-    window.location.href = '/shop/login/';
-  } else {
-    const err = await r.json();
-    alert(Object.values(err).flat().join('\n'));
-  }
-});
+function registerForm() {
+  return {
+    username: '', email: '', password: '', paymentPassword: '',
+    errors: { username: '', email: '', password: '', paymentPassword: '' },
+    errorMsg: '',
+    csrf() { return document.querySelector('[name=csrfmiddlewaretoken]').value; },
+    async submit() {
+      var self = this;
+      self.errorMsg = '';
+      self.errors = { username: '', email: '', password: '', paymentPassword: '' };
+
+      var valid = true;
+      if (!self.username) { self.errors.username = '请输入用户名'; valid = false; }
+      if (!self.email) { self.errors.email = '请输入邮箱'; valid = false; }
+      if (!self.password) {
+        self.errors.password = '请输入密码'; valid = false;
+      } else if (self.password.length < 11 || self.password.length > 18) {
+        self.errors.password = '密码长度须为11-18位'; valid = false;
+      } else if (!/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[_@#$&*])/.test(self.password)) {
+        self.errors.password = '密码必须同时包含数字、大小写字母和特殊字符（_ @ # $ & *）'; valid = false;
+      }
+      if (!self.paymentPassword) {
+        self.errors.paymentPassword = '请输入支付密码'; valid = false;
+      } else if (self.paymentPassword.length !== 6 || !/^\d{6}$/.test(self.paymentPassword)) {
+        self.errors.paymentPassword = '支付密码必须为6位数字'; valid = false;
+      }
+      if (!valid) return;
+
+      var body = { username: self.username, email: self.email, password: self.password, payment_password: self.paymentPassword };
+      var r = await fetch('/api/auth/register/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': self.csrf() },
+        body: JSON.stringify(body)
+      });
+      if (r.ok) {
+        window.location.href = '/shop/login/';
+      } else {
+        var err = await r.json();
+        self.errorMsg = Object.values(err).flat().join('；');
+      }
+    }
+  };
+}
 </script>
 {% endblock %}

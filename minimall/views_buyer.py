@@ -1,5 +1,6 @@
 import hashlib
 import json
+import re
 
 from django.contrib.auth import get_user_model, login, logout
 from django.shortcuts import get_object_or_404
@@ -18,7 +19,6 @@ from .models import Cart, CartItem, Order, Product, ShippingAddress
 from .serializers import (
     AddToCartSerializer,
     CartItemSerializer,
-    CartSerializer,
     CreateOrderSerializer,
     OrderDetailSerializer,
     OrderListSerializer,
@@ -92,6 +92,11 @@ class MeView(APIView):
         serializer = ProfileUpdateSerializer(profile, data=request.data, partial=True)
         if serializer.is_valid():
             serializer.save()
+            # 允许同步更新 User 模型的 email
+            email = request.data.get("email")
+            if email is not None:
+                request.user.email = email
+                request.user.save(update_fields=["email"])
             return Response(UserMeSerializer(request.user).data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -104,10 +109,34 @@ class ChangePasswordView(APIView):
         new = request.data.get("new_password", "")
         if not request.user.check_password(old):
             return Response({"detail": "旧密码错误"}, status=status.HTTP_400_BAD_REQUEST)
-        if len(new) < 8:
-            return Response({"detail": "新密码至少8位"}, status=status.HTTP_400_BAD_REQUEST)
+        if len(new) < 11 or len(new) > 18:
+            return Response({"detail": "密码长度须为11-18位"}, status=status.HTTP_400_BAD_REQUEST)
+        if not re.match(r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[_@#$&*])", new):
+            return Response(
+                {"detail": "新密码必须同时包含数字、大小写字母和特殊字符(_ @ # $ & *)"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         request.user.set_password(new)
         request.user.save()
+        return Response({"detail": "ok"})
+
+
+class ChangePaymentPasswordView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        old = request.data.get("old_password", "")
+        new = request.data.get("new_password", "")
+        profile = request.user.minimall_profile
+
+        if not profile.payment_password:
+            return Response({"detail": "请先设置支付密码"}, status=status.HTTP_400_BAD_REQUEST)
+        if not profile.check_payment_password(old):
+            return Response({"detail": "旧支付密码错误"}, status=status.HTTP_400_BAD_REQUEST)
+        if len(new) != 6 or not new.isdigit():
+            return Response({"detail": "支付密码必须为6位数字"}, status=status.HTTP_400_BAD_REQUEST)
+        profile.set_payment_password(new)
+        profile.save(update_fields=["payment_password"])
         return Response({"detail": "ok"})
 
 
@@ -217,7 +246,26 @@ class CartView(APIView):
 
     def get(self, request):
         cart = self._get_cart(request.user)
-        return Response(CartSerializer(cart, context={"request": request}).data)
+        items_qs = cart.items.all().order_by("-added_at")
+        from django.core.paginator import Paginator
+
+        page_size = int(request.query_params.get("page_size", 5))
+        if page_size not in (5, 10, 20, 50, 100):
+            page_size = 5
+        paginator = Paginator(items_qs, page_size)
+        page_num = int(request.query_params.get("page", 1))
+        page = paginator.get_page(page_num)
+        serializer = CartItemSerializer(page.object_list, many=True, context={"request": request})
+        return Response(
+            {
+                "count": paginator.count,
+                "page": page.number,
+                "total_pages": paginator.num_pages,
+                "page_size": page_size,
+                "items": serializer.data,
+                "total_count": paginator.count,
+            }
+        )
 
 
 class AddCartItemView(APIView):
@@ -345,6 +393,20 @@ class AddressDetailView(APIView):
 # ---------------------------------------------------------------------------
 
 
+class OrderActiveCountView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        active_statuses = [
+            Order.Status.PENDING,
+            Order.Status.PAID,
+            Order.Status.SHIPPED,
+            Order.Status.RECEIVED,
+        ]
+        count = Order.objects.filter(user=request.user, status__in=active_statuses).count()
+        return Response({"count": count})
+
+
 class OrderListView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -352,7 +414,10 @@ class OrderListView(APIView):
         orders = Order.objects.filter(user=request.user).prefetch_related("items")
         from django.core.paginator import Paginator
 
-        paginator = Paginator(orders, 20)
+        page_size = int(request.query_params.get("page_size", 5))
+        if page_size not in (5, 10, 20, 50, 100):
+            page_size = 5
+        paginator = Paginator(orders, page_size)
         page = paginator.get_page(int(request.query_params.get("page", 1)))
         serializer = OrderListSerializer(page.object_list, many=True)
         return Response(
@@ -360,6 +425,7 @@ class OrderListView(APIView):
                 "count": paginator.count,
                 "page": page.number,
                 "total_pages": paginator.num_pages,
+                "page_size": page_size,
                 "results": serializer.data,
             }
         )

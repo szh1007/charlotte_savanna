@@ -1,21 +1,29 @@
 {% extends "minimall/base.html" %}
 {% block title %}登录 - minimall{% endblock %}
 {% block content %}
-<h2 style="margin-bottom:20px">登录</h2>
-<form id="login-form" style="max-width:400px;">
-  {% csrf_token %}
-  <div style="margin-bottom:12px;">
-    <label>用户名</label>
-    <input type="text" name="username" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;" required>
+<div style="max-width:480px;margin:0 auto;">
+  <div style="background:#fff;border-radius:14px;padding:36px 32px;box-shadow:0 2px 12px rgba(0,0,0,.06);">
+    <h2 style="margin-bottom:28px;text-align:center;font-weight:700;">登录</h2>
+    <form id="login-form">
+      {% csrf_token %}
+      <div style="margin-bottom:16px;">
+        <label style="display:block;margin-bottom:6px;font-size:14px;font-weight:600;">用户名</label>
+        <input type="text" name="username" required
+               style="width:100%;padding:12px 14px;border:1.5px solid #e0e0e0;border-radius:10px;font-size:15px;outline:none;transition:border-color .2s;box-sizing:border-box;"
+               onfocus="this.style.borderColor='#ff6b6b'" onblur="this.style.borderColor='#e0e0e0'">
+      </div>
+      <div style="margin-bottom:16px;">
+        <label style="display:block;margin-bottom:6px;font-size:14px;font-weight:600;">密码</label>
+        <input type="password" name="password" required
+               style="width:100%;padding:12px 14px;border:1.5px solid #e0e0e0;border-radius:10px;font-size:15px;outline:none;transition:border-color .2s;box-sizing:border-box;"
+               onfocus="this.style.borderColor='#ff6b6b'" onblur="this.style.borderColor='#e0e0e0'">
+      </div>
+      <div id="error-msg" style="color:#e63946;font-size:13px;margin-bottom:12px;padding:8px 14px;background:#fff5f5;border-radius:8px;display:none;"></div>
+      <button type="submit" class="btn btn-primary" style="width:100%;padding:13px;font-size:16px;">登录</button>
+      <p style="margin-top:16px;text-align:center;font-size:14px;color:#999;">没有账号？<a href="/shop/register/" style="color:#ff6b6b;font-weight:500;">立即注册</a></p>
+    </form>
   </div>
-  <div style="margin-bottom:12px;">
-    <label>密码</label>
-    <input type="password" name="password" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;" required>
-  </div>
-  <div id="error-msg" style="color:#e63946;margin-bottom:12px;display:none;"></div>
-  <button type="submit" class="btn btn-primary" style="width:100%;">登录</button>
-  <p style="margin-top:12px;">没有账号? <a href="/shop/register/">注册</a></p>
-</form>
+</div>
 <script>
 document.getElementById('login-form').addEventListener('submit', async function(e) {
   e.preventDefault();
@@ -30,8 +38,9 @@ document.getElementById('login-form').addEventListener('submit', async function(
     window.location.href = '/shop/';
   } else {
     const err = await r.json();
-    document.getElementById('error-msg').textContent = err.detail || err.non_field_errors || '登录失败';
-    document.getElementById('error-msg').style.display = 'block';
+    const el = document.getElementById('error-msg');
+    el.textContent = err.detail || err.non_field_errors || '登录失败';
+    el.style.display = 'block';
   }
 });
 </script>

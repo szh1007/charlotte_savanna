@@ -1,42 +1,81 @@
 {% extends "minimall/base.html" %}
 {% block title %}我的订单 - minimall{% endblock %}
+{% block container_class %}container wide{% endblock %}
 {% block content %}
-<h2 style="margin-bottom:20px">我的订单</h2>
+<div style="background:#fff;border-radius:14px;padding:24px 32px;box-shadow:0 2px 12px rgba(0,0,0,.06);">
+<h2 class="page-title" style="margin-bottom:20px">我的订单</h2>
 <div x-data="orderList()" x-init="load()">
-  <template x-if="loading"><p>加载中...</p></template>
+  <template x-if="loading">
+    <p style="text-align:center;padding:60px;color:#aaa;">加载中...</p>
+  </template>
   <template x-if="!loading && orders.length === 0">
-    <p>暂无订单. <a href="/shop/">去逛逛</a></p>
+    <p style="text-align:center;padding:60px;color:#aaa;">暂无订单</p>
   </template>
   <template x-if="!loading && orders.length > 0">
-    <table style="width:100%;border-collapse:collapse;">
-      <thead><tr style="border-bottom:2px solid #eee;text-align:left;">
-        <th style="padding:12px 8px;">订单号</th>
-        <th style="padding:12px 8px;">状态</th>
-        <th style="padding:12px 8px;">金额</th>
-        <th style="padding:12px 8px;">时间</th>
-        <th style="padding:12px 8px;"></th>
-      </tr></thead>
+    <div>
+    <table style="width:100%;">
+      <thead>
+        <tr style="text-align:left;">
+          <th style="padding:14px 16px;width:30%;">订单号</th>
+          <th style="padding:14px 16px;width:15%;">状态</th>
+          <th style="padding:14px 16px;width:15%;">金额</th>
+          <th style="padding:14px 16px;width:25%;">时间</th>
+          <th style="padding:14px 16px;width:10%;"></th>
+        </tr>
+      </thead>
       <tbody>
         <template x-for="order in orders" :key="order.order_no">
           <tr style="border-bottom:1px solid #eee;">
-            <td style="padding:12px 8px;" x-text="order.order_no"></td>
-            <td style="padding:12px 8px;" x-text="statusLabel(order.status)" :style="{color: statusColor(order.status)}"></td>
-            <td style="padding:12px 8px;">¥<span x-text="Number(order.total_amount).toFixed(2)"></span></td>
-            <td style="padding:12px 8px;" x-text="new Date(order.created_at).toLocaleString()"></td>
-            <td style="padding:12px 8px;"><a :href="'/shop/orders/'+order.order_no+'/'" style="color:#e63946;">查看</a></td>
+            <td style="padding:14px 16px;">
+              <a :href="'/shop/orders/'+order.order_no+'/'" style="color:#333;text-decoration:none;font-weight:600;display:inline-flex;align-items:center;gap:8px;font-size:15px;letter-spacing:0.5px;"
+                 @mouseenter="$el.style.color='#ff6b6b'" @mouseleave="$el.style.color='#333'">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;opacity:.5;"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                <span x-text="order.order_no"></span>
+              </a>
+            </td>
+            <td style="padding:14px 16px;font-weight:600;font-size:14px;" x-text="statusLabel(order.status)" :style="{color: statusColor(order.status)}"></td>
+            <td style="padding:14px 16px;font-weight:700;font-size:15px;color:#ff6b6b;">¥<span x-text="Number(order.total_amount).toFixed(2)"></span></td>
+            <td style="padding:14px 16px;color:#999;font-size:13px;" x-text="new Date(order.created_at).toLocaleString()"></td>
           </tr>
         </template>
       </tbody>
     </table>
+    <!-- 分页 -->
+    <div style="display:flex;justify-content:center;align-items:center;gap:12px;margin-top:20px;padding-top:16px;border-top:1px solid #eee;">
+      <select @change="changePageSize(parseInt($event.target.value))" style="padding:7px 10px;border:1px solid #e0e0e0;border-radius:8px;font-size:13px;background:#fff;outline:none;">
+        <option :selected="pageSize === 5" value="5">5条/页</option>
+        <option :selected="pageSize === 10" value="10">10条/页</option>
+        <option :selected="pageSize === 20" value="20">20条/页</option>
+        <option :selected="pageSize === 50" value="50">50条/页</option>
+        <option :selected="pageSize === 100" value="100">100条/页</option>
+      </select>
+      <button @click="load(page-1)" :disabled="page <= 1" style="padding:8px 16px;border:1px solid #e0e0e0;border-radius:8px;background:#fff;cursor:pointer;font-size:13px;"
+              :style="{color: page <= 1 ? '#ccc' : '#333'}">上一页</button>
+      <span style="font-size:13px;color:#666;">第 <span x-text="page"></span> / <span x-text="totalPages"></span> 页</span>
+      <button @click="load(page+1)" :disabled="page >= totalPages" style="padding:8px 16px;border:1px solid #e0e0e0;border-radius:8px;background:#fff;cursor:pointer;font-size:13px;"
+              :style="{color: page >= totalPages ? '#ccc' : '#333'}">下一页</button>
+    </div>
+    </div>
   </template>
+</div>
 </div>
 <script>
 function orderList() {
   return {
     orders: [], loading: true,
-    async load() {
-      try { const r = await fetch('/api/orders/'); const d = await r.json(); this.orders = d.results || []; }
+    page: 1, totalPages: 1, pageSize: 5,
+    async load(page) {
+      page = page || 1;
+      this.loading = true;
+      try {
+        const r = await fetch('/api/orders/?page=' + page + '&page_size=' + this.pageSize); const d = await r.json();
+        this.orders = d.results || [];
+        this.page = d.page; this.totalPages = d.total_pages; this.pageSize = d.page_size || 10;
+      }
       finally { this.loading = false; }
+    },
+    changePageSize: function(size) {
+      this.pageSize = size; this.page = 1; this.load(1);
     },
     statusColor(s) { return {pending:'#f4a261', paid:'#2a9d8f', shipped:'#264653', received:'#e76f51', completed:'#2a9d8f', cancelled:'#ccc', refunded:'#e63946'}[s] || '#333'; },
     statusLabel(s) { return {pending:'待付款', paid:'已付款', shipped:'已发货', received:'已收货', completed:'已完成', cancelled:'已取消', refunded:'已退款'}[s] || s; }
