@@ -47,10 +47,10 @@ class ProductModelTest(TestCase):
     def test_product_images(self):
         cat = Category.objects.create(name="X", slug="img-test")
         p = Product.objects.create(name="P", category=cat, price=10.00)
-        img1 = ProductImage.objects.create(product=p, image="products/test1.jpg", is_primary=True)
+        img1 = ProductImage.objects.create(product=p, image="products/test1.jpg", sort_order=0)
         ProductImage.objects.create(product=p, image="products/test2.jpg", sort_order=1)
         self.assertEqual(p.images.count(), 2)
-        self.assertEqual(p.images.filter(is_primary=True).first(), img1)
+        self.assertEqual(p.images.first(), img1)
 
 
 class CartModelTest(TestCase):

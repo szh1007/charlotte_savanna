@@ -109,7 +109,7 @@ LOGIN_REDIRECT_URL = "/shop/"
 # ---------------------------------------------------------------------------
 STATIC_URL = "static/"
 MEDIA_URL = "/media/"
-MEDIA_ROOT = BASE_DIR / "media"
+MEDIA_ROOT = BASE_DIR
 
 # ---------------------------------------------------------------------------
 # 缓存 (Redis)

@@ -107,7 +107,7 @@
         <div style="position:relative;display:inline-flex;align-items:center;">
           <div @click="dropdownOpen = !dropdownOpen" style="cursor:pointer;">
             {% if user.minimall_profile.avatar %}
-              <img src="{{ user.minimall_profile.avatar.url }}" style="width:32px;height:32px;border-radius:50%;object-fit:cover;">
+              <img src="{{ user.minimall_profile.avatar.url }}?v={{ user.minimall_profile.avatar_version }}{% if user.minimall_profile.avatar_updated_at %}&t={{ user.minimall_profile.avatar_updated_at.timestamp }}{% endif %}" style="width:32px;height:32px;border-radius:50%;object-fit:cover;">
             {% else %}
               <div style="width:32px;height:32px;border-radius:50%;background:#e63946;display:flex;align-items:center;justify-content:center;color:#fff;font-size:14px;font-weight:700;">{{ user.username|first|upper }}</div>
             {% endif %}

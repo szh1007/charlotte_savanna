@@ -24,7 +24,7 @@ env/
 
 # --- Django ---
 db.sqlite3
-/media/
+**/uploads/
 /staticfiles/
 
 # --- LangChain / RAG ---

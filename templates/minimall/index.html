@@ -11,7 +11,7 @@
       <div class="product-card">
         <div class="img-wrap">
           {% with img=product.images.all|first %}
-            {% if img %}<img src="{{ img.image.url }}" alt="{{ product.name }}">
+            {% if img %}<img src="{{ img.image.url }}?v={{ img.image_version }}{% if img.image_updated_at %}&t={{ img.image_updated_at.timestamp }}{% endif %}" alt="{{ product.name }}">
             {% else %}<span class="no-img">&#9744;</span>{% endif %}
           {% endwith %}
         </div>
@@ -60,7 +60,7 @@
           <div class="product-card">
             <div class="img-wrap" style="height:200px;">
               {% with img=product.images.all|first %}
-                {% if img %}<img src="{{ img.image.url }}" alt="{{ product.name }}">
+                {% if img %}<img src="{{ img.image.url }}?v={{ img.image_version }}{% if img.image_updated_at %}&t={{ img.image_updated_at.timestamp }}{% endif %}" alt="{{ product.name }}">
                 {% else %}<span class="no-img">&#9744;</span>{% endif %}
               {% endwith %}
             </div>

@@ -21,7 +21,7 @@ User = get_user_model()
 class OrderServiceTest(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="svc", email="svc@t.com", password="pass")
-        Profile.objects.create(user=self.user)
+        Profile.objects.create(user=self.user, balance=10000)
         self.user.minimall_profile.set_payment_password("123456")
         self.user.minimall_profile.save()
         self.cat = Category.objects.create(name="Test", slug="svc-test")

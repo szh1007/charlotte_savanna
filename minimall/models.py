@@ -1,8 +1,29 @@
+import contextlib
+import os
+
 from django.conf import settings
 from django.contrib.auth.hashers import check_password, make_password
 from django.db import models
+from django.utils import timezone
 from django.utils.text import slugify
 from mptt.models import MPTTModel, TreeForeignKey
+
+
+def _ts():
+    return timezone.now().strftime("%Y%m%d%H%M%S")
+
+
+def avatar_upload_to(instance, filename):
+    ext = os.path.splitext(filename)[1]
+    return f"minimall/uploads/avatars/user_{instance.user_id}_{_ts()}{ext}"
+
+
+def product_image_upload_to(instance, filename):
+    ext = os.path.splitext(filename)[1]
+    return (
+        f"minimall/uploads/products/"
+        f"product_{instance.product_id}_{instance.sort_order}_{_ts()}{ext}"
+    )
 
 
 class Profile(models.Model):
@@ -24,7 +45,7 @@ class Profile(models.Model):
         verbose_name="手机号",
     )
     avatar = models.ImageField(
-        upload_to="avatars/",
+        upload_to=avatar_upload_to,
         blank=True,
         null=True,
         verbose_name="头像",
@@ -43,11 +64,17 @@ class Profile(models.Model):
         default=0,
         verbose_name="账户余额",
     )
+    avatar_version = models.PositiveIntegerField(default=1, verbose_name="头像版本号")
+    avatar_updated_at = models.DateTimeField(null=True, blank=True, verbose_name="头像更新时间")
 
     class Meta:
         db_table = "minimall_profile"
         verbose_name = "用户扩展"
         verbose_name_plural = verbose_name
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._old_avatar_name = self.avatar.name if self.pk else None
 
     def set_payment_password(self, raw_password: str) -> None:
         self.payment_password = make_password(raw_password)
@@ -56,6 +83,17 @@ class Profile(models.Model):
         if not self.payment_password:
             return False
         return check_password(raw_password, self.payment_password)
+
+    def save(self, *args, **kwargs):
+        if self.pk and self._old_avatar_name:
+            new_name = self.avatar.name or ""
+            if new_name != self._old_avatar_name:
+                with contextlib.suppress(Exception):
+                    self.avatar.storage.delete(self._old_avatar_name)
+                self.avatar_version = self.avatar_version + 1
+                self.avatar_updated_at = timezone.now()
+        super().save(*args, **kwargs)
+        self._old_avatar_name = self.avatar.name if self.avatar else None
 
 
 class Category(MPTTModel):
@@ -131,9 +169,10 @@ class ProductImage(models.Model):
         related_name="images",
         verbose_name="商品",
     )
-    image = models.ImageField(upload_to="products/", verbose_name="图片")
-    is_primary = models.BooleanField(default=False, verbose_name="是否主图")
+    image = models.ImageField(upload_to=product_image_upload_to, verbose_name="图片")
     sort_order = models.PositiveIntegerField(default=0, verbose_name="排序")
+    image_version = models.PositiveIntegerField(default=1, verbose_name="图片版本号")
+    image_updated_at = models.DateTimeField(null=True, blank=True, verbose_name="图片更新时间")
 
     class Meta:
         db_table = "minimall_product_image"
@@ -141,8 +180,54 @@ class ProductImage(models.Model):
         verbose_name_plural = verbose_name
         ordering = ["sort_order"]
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.pk:
+            self._old_image_name = self.image.name
+            self._old_sort_order = self.sort_order
+        else:
+            self._old_image_name = None
+            self._old_sort_order = None
+
     def __str__(self):
         return f"{self.product.name} - Image {self.sort_order}"
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            new_name = self.image.name or ""
+            image_changed = self._old_image_name and new_name != self._old_image_name
+            order_changed = (
+                self._old_sort_order is not None and self.sort_order != self._old_sort_order
+            )
+
+            if image_changed and self._old_image_name:
+                # 新图片上传 — 删旧文件
+                with contextlib.suppress(Exception):
+                    self.image.storage.delete(self._old_image_name)
+                self.image_version = self.image_version + 1
+                self.image_updated_at = timezone.now()
+
+            elif order_changed and not image_changed and self._old_image_name:
+                # 仅排序变更 — 重命名磁盘文件
+                try:
+                    old_path = self.image.storage.path(self._old_image_name)
+                    ext = os.path.splitext(self._old_image_name)[1]
+                    new_rel = (
+                        f"minimall/uploads/products/"
+                        f"product_{self.product_id}_{self.sort_order}_{_ts()}{ext}"
+                    )
+                    new_path = self.image.storage.path(new_rel)
+                    os.makedirs(os.path.dirname(new_path), exist_ok=True)
+                    os.rename(old_path, new_path)
+                    self.image.name = new_rel
+                except Exception:
+                    pass
+                self.image_version = self.image_version + 1
+                self.image_updated_at = timezone.now()
+
+        super().save(*args, **kwargs)
+        self._old_image_name = self.image.name if self.image else None
+        self._old_sort_order = self.sort_order
 
 
 class Cart(models.Model):

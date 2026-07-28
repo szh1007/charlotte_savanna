@@ -6,7 +6,7 @@
   <div style="display:flex;align-items:center;gap:24px;padding:32px;background:#fff;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,.06);margin-bottom:24px;">
     <div style="position:relative;cursor:pointer;" onclick="document.getElementById('avatar-input').click()">
       {% if user.minimall_profile.avatar %}
-        <img src="{{ user.minimall_profile.avatar.url }}" id="avatar-preview" style="width:80px;height:80px;border-radius:50%;object-fit:cover;border:3px solid #f0f0f0;">
+        <img src="{{ user.minimall_profile.avatar.url }}?v={{ user.minimall_profile.avatar_version }}{% if user.minimall_profile.avatar_updated_at %}&t={{ user.minimall_profile.avatar_updated_at.timestamp }}{% endif %}" id="avatar-preview" style="width:80px;height:80px;border-radius:50%;object-fit:cover;border:3px solid #f0f0f0;">
       {% else %}
         <div id="avatar-preview" style="width:80px;height:80px;border-radius:50%;background:linear-gradient(135deg,#667eea,#e63946);display:flex;align-items:center;justify-content:center;color:#fff;font-size:36px;font-weight:700;border:3px solid #f0f0f0;">{{ user.username|first|upper }}</div>
       {% endif %}

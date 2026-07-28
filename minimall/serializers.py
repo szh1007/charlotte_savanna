@@ -123,30 +123,24 @@ class CategoryTreeSerializer(serializers.ModelSerializer):
 class ProductImageSerializer(serializers.ModelSerializer):
     class Meta:
         model = ProductImage
-        fields = ["id", "image", "is_primary", "sort_order"]
+        fields = ["id", "image", "sort_order"]
 
 
 class ProductListSerializer(serializers.ModelSerializer):
-    primary_image = serializers.SerializerMethodField()
+    first_image = serializers.SerializerMethodField()
     category_name = serializers.CharField(source="category.name", read_only=True)
 
     class Meta:
         model = Product
-        fields = ["id", "name", "slug", "price", "primary_image", "category_name"]
+        fields = ["id", "name", "slug", "price", "first_image", "category_name"]
 
-    def get_primary_image(self, obj):
-        primary = None
-        for img in obj.images.all():
-            if img.is_primary:
-                primary = img
-                break
-        if primary is None:
-            primary = obj.images.first()
-        if primary:
+    def get_first_image(self, obj):
+        img = obj.images.first()
+        if img:
             request = self.context.get("request")
             if request:
-                return request.build_absolute_uri(primary.image.url)
-            return primary.image.url
+                return request.build_absolute_uri(img.image.url)
+            return img.image.url
         return None
 
 
@@ -212,14 +206,12 @@ class CartItemSerializer(serializers.ModelSerializer):
         ]
 
     def get_product_image(self, obj):
-        primary = obj.product.images.filter(is_primary=True).first()
-        if primary is None:
-            primary = obj.product.images.first()
-        if primary:
+        img = obj.product.images.first()
+        if img:
             request = self.context.get("request")
             if request:
-                return request.build_absolute_uri(primary.image.url)
-            return primary.image.url
+                return request.build_absolute_uri(img.image.url)
+            return img.image.url
         return None
 
     def get_subtotal(self, obj):
