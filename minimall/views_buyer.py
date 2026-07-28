@@ -113,6 +113,10 @@ class ChangePasswordView(APIView):
         new = request.data.get("new_password", "")
         if not request.user.check_password(old):
             return Response({"detail": "旧密码错误"}, status=status.HTTP_400_BAD_REQUEST)
+        if old == new:
+            return Response(
+                {"detail": "新密码不能与旧密码相同"}, status=status.HTTP_400_BAD_REQUEST
+            )
         if len(new) < 11 or len(new) > 18:
             return Response({"detail": "密码长度须为11-18位"}, status=status.HTTP_400_BAD_REQUEST)
         if not re.match(r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[_@#$&*])", new):
@@ -137,6 +141,10 @@ class ChangePaymentPasswordView(APIView):
             return Response({"detail": "请先设置支付密码"}, status=status.HTTP_400_BAD_REQUEST)
         if not profile.check_payment_password(old):
             return Response({"detail": "旧支付密码错误"}, status=status.HTTP_400_BAD_REQUEST)
+        if old == new:
+            return Response(
+                {"detail": "新密码不能与旧密码相同"}, status=status.HTTP_400_BAD_REQUEST
+            )
         if len(new) != 6 or not new.isdigit():
             return Response({"detail": "支付密码必须为6位数字"}, status=status.HTTP_400_BAD_REQUEST)
         profile.set_payment_password(new)

@@ -299,6 +299,9 @@ function profilePage() {
       if (f.new_password !== f.confirm_password) {
         this.pwdModal.error = '两次输入的新密码不一致'; return;
       }
+      if (f.old_password === f.new_password) {
+        this.pwdModal.error = '新密码不能与旧密码相同'; return;
+      }
       if (f.new_password.length < 11 || f.new_password.length > 18) {
         this.pwdModal.error = '密码长度须为11-18位'; return;
       }
@@ -339,6 +342,9 @@ function profilePage() {
       var f = this.payPwdForm;
       if (!f.old_password || !f.new_password || !f.confirm_password) {
         this.payPwdModal.error = '请填写所有字段'; return;
+      }
+      if (f.old_password === f.new_password) {
+        this.payPwdModal.error = '新密码不能与旧密码相同'; return;
       }
       if (f.new_password.length !== 6 || !/^\d{6}$/.test(f.new_password)) {
         this.payPwdModal.error = '支付密码必须为6位数字'; return;
