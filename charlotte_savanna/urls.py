@@ -21,6 +21,11 @@ from django.contrib import admin
 from django.urls import include, path
 from django.views.generic import TemplateView
 
+# 全局 Admin 站点配置
+admin.site.site_header = "Charlotte 后台管理"
+admin.site.site_title = "Charlotte"
+admin.site.index_title = "管理面板"
+
 urlpatterns = [
     path("", TemplateView.as_view(template_name="welcome.html"), name="home"),
     path("admin/", admin.site.urls),

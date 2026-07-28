@@ -95,6 +95,10 @@ class MeView(APIView):
             # 允许同步更新 User 模型的 email
             email = request.data.get("email")
             if email is not None:
+                if not re.match(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$", email):
+                    return Response(
+                        {"detail": "邮箱格式不正确"}, status=status.HTTP_400_BAD_REQUEST
+                    )
                 request.user.email = email
                 request.user.save(update_fields=["email"])
             return Response(UserMeSerializer(request.user).data)
@@ -154,6 +158,12 @@ class RechargeView(APIView):
         if amount <= 0:
             return Response({"detail": "金额必须大于0"}, status=status.HTTP_400_BAD_REQUEST)
         profile = request.user.minimall_profile
+        # 验证支付密码
+        payment_password = request.data.get("payment_password", "")
+        if not payment_password:
+            return Response({"detail": "请输入支付密码"}, status=status.HTTP_400_BAD_REQUEST)
+        if not profile.check_payment_password(payment_password):
+            return Response({"detail": "支付密码错误"}, status=status.HTTP_400_BAD_REQUEST)
         profile.balance += amount
         profile.save(update_fields=["balance"])
         serializer = UserMeSerializer(request.user)
@@ -180,16 +190,21 @@ class CategoryTreeView(APIView):
 class ProductListView(APIView):
     permission_classes = [AllowAny]
 
+    @staticmethod
+    def get_base_queryset():
+        """供缓存预热等场景使用."""
+        return (
+            Product.objects.filter(is_active=True)
+            .select_related("category")
+            .prefetch_related("images")
+        )
+
     def get(self, request):
         params_str = json.dumps(request.query_params, sort_keys=True)
         params_hash = hashlib.md5(params_str.encode()).hexdigest()
 
         def load():
-            qs = (
-                Product.objects.filter(is_active=True)
-                .select_related("category")
-                .prefetch_related("images")
-            )
+            qs = ProductListView.get_base_queryset()
             filterset = ProductFilter(request.query_params, queryset=qs)
             if filterset.is_valid():
                 qs = filterset.qs
@@ -256,6 +271,7 @@ class CartView(APIView):
         page_num = int(request.query_params.get("page", 1))
         page = paginator.get_page(page_num)
         serializer = CartItemSerializer(page.object_list, many=True, context={"request": request})
+        total_quantity = sum(cart.items.values_list("quantity", flat=True))
         return Response(
             {
                 "count": paginator.count,
@@ -263,7 +279,7 @@ class CartView(APIView):
                 "total_pages": paginator.num_pages,
                 "page_size": page_size,
                 "items": serializer.data,
-                "total_count": paginator.count,
+                "total_count": total_quantity,
             }
         )
 

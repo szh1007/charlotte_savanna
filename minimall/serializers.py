@@ -1,3 +1,5 @@
+import re
+
 from django.contrib.auth import authenticate, get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.db import IntegrityError
@@ -64,9 +66,9 @@ class UserLoginSerializer(serializers.Serializer):
             password=attrs["password"],
         )
         if user is None:
-            raise serializers.ValidationError("Invalid username or password")
+            raise serializers.ValidationError("用户名或密码错误")
         if not user.is_active:
-            raise serializers.ValidationError("Account is disabled")
+            raise serializers.ValidationError("账号已被禁用")
         attrs["user"] = user
         return attrs
 
@@ -262,11 +264,17 @@ class ProfileUpdateSerializer(serializers.ModelSerializer):
     payment_password = serializers.CharField(
         write_only=True, required=False, allow_blank=True, min_length=6, max_length=6
     )
+    phone = serializers.CharField(required=False, allow_blank=True)
 
     class Meta:
         model = Profile
         fields = ["phone", "avatar", "payment_password"]
-        extra_kwargs = {"phone": {"required": False}, "avatar": {"required": False}}
+        extra_kwargs = {"avatar": {"required": False}}
+
+    def validate_phone(self, value):
+        if value and not re.match(r"^1[3-9]\d{9}$", value):
+            raise serializers.ValidationError("手机号格式不正确")
+        return value
 
     def update(self, instance, validated_data):
         payment_password = validated_data.pop("payment_password", None)

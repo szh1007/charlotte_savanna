@@ -39,7 +39,9 @@ document.getElementById('login-form').addEventListener('submit', async function(
   } else {
     const err = await r.json();
     const el = document.getElementById('error-msg');
-    el.textContent = err.detail || err.non_field_errors || '登录失败';
+    var msg = err.detail || err.non_field_errors || '登录失败';
+    if (Array.isArray(msg)) msg = msg.join('；');
+    el.textContent = msg;
     el.style.display = 'block';
   }
 });

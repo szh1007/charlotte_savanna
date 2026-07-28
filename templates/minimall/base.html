@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{% block title %}minimall{% endblock %}</title>
+  <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><circle cx='32' cy='32' r='32' fill='%23ff6b6b'/><text x='32' y='46' font-size='44' font-weight='bold' text-anchor='middle' fill='%23fff'>M</text></svg>">
   <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
   <script src="https://unpkg.com/alpinejs@3.14.9" defer></script>
   <style>
@@ -82,7 +83,7 @@
       display: flex; align-items: center; justify-content: center;
       font-size: 11px; font-weight: 700; line-height: 1;
     }
-    #toast { position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%); padding: 20px 36px; border-radius: 14px; color: #fff; z-index: 3000; display: none; font-size: 18px; font-weight: 600; box-shadow: 0 12px 40px rgba(0,0,0,.25); letter-spacing: 0.5px; }
+    #toast { position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%); padding: 20px 36px; border-radius: 14px; color: #fff; z-index: 3000; font-size: 18px; font-weight: 600; box-shadow: 0 12px 40px rgba(0,0,0,.25); letter-spacing: 0.5px; }
     #toast.success { background: #20c997; }
     #toast.error { background: #ff6b6b; }
     .dropdown-menu a:hover { background: #f8f9fa; }

@@ -1,0 +1,20 @@
+{% load i18n %}
+<h3>{% blocktranslate with filter_title=title %}{{ filter_title }}{% endblocktranslate %}</h3>
+<ul>
+  <li>
+    <form method="get" style="display:flex;align-items:center;gap:3px;padding:2px 8px;">
+      {% for k, v in spec.used_parameters.items %}
+        {% if k != spec.parameter_name %}<input type="hidden" name="{{ k }}" value="{{ v }}">{% endif %}
+      {% endfor %}
+      <input type="hidden" name="{{ spec.parameter_name }}" value="range">
+      <input type="number" name="min_{{ spec.parameter_name }}" value=""
+             placeholder="最低" step="0.01"
+             style="width:62px;padding:3px 5px;border:1px solid #ccc;border-radius:3px;font-size:11px;">
+      <span style="color:#999;font-size:11px;">-</span>
+      <input type="number" name="max_{{ spec.parameter_name }}" value=""
+             placeholder="最高" step="0.01"
+             style="width:62px;padding:3px 5px;border:1px solid #ccc;border-radius:3px;font-size:11px;">
+      <button type="submit" style="padding:2px 6px;border:1px solid #999;border-radius:3px;background:#eee;font-size:11px;cursor:pointer;">&#9654;</button>
+    </form>
+  </li>
+</ul>

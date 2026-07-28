@@ -81,6 +81,23 @@
       </div>
     </div>
   </template>
+
+  <!-- 批量删除确认弹窗 -->
+  <div x-show="confirmModal.show" style="position:fixed;inset:0;z-index:2002;">
+    <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;">
+      <div @mousedown="confirmModal.show = false" style="position:absolute;inset:0;background:rgba(0,0,0,.35);backdrop-filter:blur(4px);"></div>
+      <div style="position:relative;background:#fff;border-radius:16px;padding:36px 32px;max-width:380px;width:92%;box-shadow:0 20px 60px rgba(0,0,0,.18);text-align:center;z-index:1;" @mousedown.stop="">
+        <div style="font-size:40px;margin-bottom:12px;">⚠</div>
+        <div style="font-size:18px;font-weight:700;margin-bottom:8px;color:#333;">批量删除</div>
+        <div style="color:#666;font-size:14px;line-height:1.6;margin-bottom:24px;">确定删除选中的 <span style="color:#ff6b6b;font-weight:600;" x-text="selected.length"></span> 种，<span style="color:#ff6b6b;font-weight:600;" x-text="selectedCount"></span> 件商品？</div>
+        <div style="display:flex;gap:12px;">
+          <button @click="confirmModal.show = false" style="flex:1;padding:12px;border:1.5px solid #e9ecef;border-radius:12px;background:#fff;color:#666;font-size:14px;cursor:pointer;font-weight:500;">取消</button>
+          <button @click="doBatchRemove()" style="flex:1;padding:12px;border:none;border-radius:12px;background:linear-gradient(135deg,#ff6b6b,#ee5a5a);color:#fff;font-size:14px;font-weight:600;cursor:pointer;box-shadow:0 4px 14px rgba(255,107,107,.3);">确定删除</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
 </div>
 </div>
 <script>
@@ -88,6 +105,7 @@ function cartPage() {
   return {
     items: [], loading: true, selected: [],
     page: 1, totalPages: 1, pageSize: 5,
+    confirmModal: {show: false},
     get allSelected() { return this.items.length > 0 && this.selected.length === this.items.length; },
     get selectedItems() { var ids = this.selected.map(Number); return this.items.filter(function(i) { return ids.indexOf(i.id) !== -1; }); },
     get selectedAmount() { return this.selectedItems.reduce(function(s, i) { return s + i.subtotal; }, 0); },
@@ -147,8 +165,10 @@ function cartPage() {
     },
     async batchRemove() {
       if (this.selected.length === 0) return;
-      if (!confirm('确定删除选中商品？')) return;
-      var self = this;
+      this.confirmModal = {show: true};
+    },
+    doBatchRemove: async function() {
+      this.confirmModal.show = false;
       var ids = this.selected.slice();
       for (var i = 0; i < ids.length; i++) {
         await fetch('/api/cart/items/' + ids[i] + '/delete/', {

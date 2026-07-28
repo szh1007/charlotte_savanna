@@ -1,0 +1,59 @@
+{% extends "admin/change_list.html" %}
+{% block object-tools %}{% endblock %}
+
+{% block extrahead %}{{ block.super }}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  var toolbarForm = document.querySelector('#changelist #toolbar form');
+  if (!toolbarForm) return;
+  toolbarForm.style.display = 'flex';
+  toolbarForm.style.alignItems = 'center';
+  toolbarForm.style.gap = '8px';
+  toolbarForm.style.flexWrap = 'wrap';
+
+  var actionsBox = document.querySelector('.actions');
+  if (!actionsBox) return;
+  var select = actionsBox.querySelector('select');
+  if (!select) return;
+  actionsBox.style.display = 'none';
+
+  // 右边容器: 动作按钮 + 计数器
+  var rightGroup = document.createElement('span');
+  rightGroup.style.cssText = 'margin-left:auto;display:flex;align-items:center;gap:16px;';
+  toolbarForm.appendChild(rightGroup);
+
+  // 动作按钮
+  select.querySelectorAll('option').forEach(function(opt) {
+    if (!opt.value) return;
+    var label = opt.textContent;
+    var b = document.createElement('button');
+    b.type = 'submit'; b.name = 'action'; b.value = opt.value;
+    b.className = 'button'; b.textContent = label;
+    if (opt.value === 'batch_delete') {
+      b.style.cssText = 'background:#e63946;color:#fff;border:1px solid #c53030;';
+      b.onmouseover = function() { this.style.background = '#c53030'; };
+      b.onmouseout = function() { this.style.background = '#e63946'; };
+    }
+    b.onclick = function() { return confirm('确定执行 ' + label + ' ？'); };
+    rightGroup.appendChild(b);
+  });
+
+  // 计数器
+  var s = document.createElement('span');
+  s.style.cssText = 'font-size:15px;font-weight:700;color:#333;white-space:nowrap;';
+  rightGroup.appendChild(s);
+
+  var resultList = document.querySelector('#result_list');
+  var toggle = document.querySelector('#action-toggle');
+
+  function update() {
+    var all = resultList ? resultList.querySelectorAll('tbody input.action-select') : [];
+    var checked = resultList ? resultList.querySelectorAll('tbody input.action-select:checked') : [];
+    s.textContent = checked.length + ' / ' + all.length;
+  }
+  update();
+  if (resultList) resultList.addEventListener('change', update);
+  if (toggle) toggle.addEventListener('change', update);
+});
+</script>
+{% endblock %}

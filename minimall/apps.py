@@ -8,3 +8,8 @@ class MinimallConfig(AppConfig):
 
     def ready(self):
         import minimall.signals  # noqa: F401
+
+        # 启动时预热缓存 (避免冷启动首次请求穿透)
+        from .cache import warmup_cache
+
+        warmup_cache()

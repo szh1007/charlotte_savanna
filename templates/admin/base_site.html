@@ -1,0 +1,26 @@
+{% extends "admin/base_site.html" %}
+
+{% block branding %}
+  {{ block.super }}
+  {% if redis_status %}
+    <span style="display:inline-flex;align-items:center;gap:6px;background:rgba(32,201,151,.12);color:#17a378;padding:3px 10px;border-radius:20px;font-size:12px;font-weight:500;margin-left:14px;vertical-align:middle;border:1px solid rgba(32,201,151,.25);">
+      <span style="width:7px;height:7px;border-radius:50%;background:#20c997;box-shadow:0 0 6px rgba(32,201,151,.6);"></span>
+      Redis OK
+    </span>
+  {% else %}
+    <span style="display:inline-flex;align-items:center;gap:6px;background:rgba(230,57,70,.1);color:#d63031;padding:3px 10px;border-radius:20px;font-size:12px;font-weight:500;margin-left:14px;vertical-align:middle;border:1px solid rgba(230,57,70,.2);animation:pulse 2s ease-in-out infinite;">
+      <span style="width:7px;height:7px;border-radius:50%;background:#e63946;box-shadow:0 0 6px rgba(230,57,70,.6);"></span>
+      Redis 异常
+    </span>
+  {% endif %}
+{% endblock %}
+
+{% block extrahead %}
+  {{ block.super }}
+  <style>
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+  </style>
+{% endblock %}
