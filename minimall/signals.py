@@ -1,5 +1,7 @@
 """Signal handlers — DB 变更后 (事务提交后) 失效缓存 (Cache-Aside)."""
 
+import contextlib
+
 from django.db import transaction
 from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
@@ -16,10 +18,18 @@ def clear_product_cache(sender, instance, **kwargs):
 
 
 @receiver(post_save, sender=ProductImage)
-@receiver(post_delete, sender=ProductImage)
-def clear_product_image_cache(sender, instance, **kwargs):
-    """商品图片变更 — 事务提交后失效."""
+def clear_product_image_cache_on_save(sender, instance, **kwargs):
+    """商品图片保存 — 失效缓存."""
     transaction.on_commit(lambda: invalidate_product_cache(instance.product))
+
+
+@receiver(post_delete, sender=ProductImage)
+def clear_product_image_cache_on_delete(sender, instance, **kwargs):
+    """商品图片删除 — 失效缓存 + 清理磁盘文件."""
+    transaction.on_commit(lambda: invalidate_product_cache(instance.product))
+    if instance.image and instance.image.name:
+        with contextlib.suppress(Exception):
+            instance.image.storage.delete(instance.image.name)
 
 
 @receiver(post_save, sender=Category)
