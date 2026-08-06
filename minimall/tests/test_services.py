@@ -3,7 +3,15 @@
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 
-from minimall.models import Cart, CartItem, Category, Order, Product, Profile, ShippingAddress
+from minimall.models import (
+    Cart,
+    CartItem,
+    Category,
+    Order,
+    Product,
+    Profile,
+    ShippingAddress,
+)
 from minimall.services import (
     InsufficientStockError,
     InvalidOrderStatusError,
@@ -20,7 +28,9 @@ User = get_user_model()
 
 class OrderServiceTest(TestCase):
     def setUp(self):
-        self.user = User.objects.create_user(username="svc", email="svc@t.com", password="pass")
+        self.user = User.objects.create_user(
+            username="svc", email="svc@t.com", password="pass"
+        )
         Profile.objects.create(user=self.user, balance=10000)
         self.user.minimall_profile.set_payment_password("123456")
         self.user.minimall_profile.save()
