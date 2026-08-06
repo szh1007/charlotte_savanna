@@ -2,7 +2,7 @@
 Django base settings for charlotte_savanna project.
 
 开发环境和生产环境共享的通用配置.
-环境特定配置见 development.py / production.py.
+环境特定配置见 dev.py / prod.py.
 """
 
 import os
@@ -87,7 +87,11 @@ DATABASES = {
 # 密码验证
 # ---------------------------------------------------------------------------
 AUTH_PASSWORD_VALIDATORS = [
-    {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
+    {
+        "NAME": (
+            "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"
+        )
+    },
     {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
     {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
     {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
