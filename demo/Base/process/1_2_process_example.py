@@ -8,15 +8,18 @@ from multiprocessing import Lock, Process, RLock
 
 def speak(n, lock):
     for _i in range(n):
-        lock.acquire()  # 上锁: 对于Lock, 锁是空闲的则立刻上锁, 否则会阻塞原地等待 (对于RLock, 可多次上锁)
-        lock.release()  # 解锁: 对于Lock, acquire 和 release 必须成对出现, 否则会死锁 (对于RLock, 可出现多对)
+        # 上锁: Lock-空闲立刻上锁/否则阻塞等待; RLock-可多次上锁
+        lock.acquire()
+        # 解锁: Lock-acquire/release必须成对/否则死锁; RLock-可出现多对
+        lock.release()
 
         time.sleep(1)
 
 
 def study(n, lock):
     for _i in range(n):
-        with lock:  # 【推荐】简单写法: 自动上锁/解锁, 相比传统写法, 即便代码有异常也能解锁, 避免死锁
+        # 【推荐】简单写法: 自动上锁/解锁, 即便代码有异常也能解锁, 避免死锁
+        with lock:
             pass
 
         time.sleep(1)
