@@ -40,6 +40,9 @@ node_modules/
 # --- WorkBuddy ---
 .workbuddy
 
-# pre-commit
+# --- pre-commit ---
 .ruff*
 .black*
+
+# --- LangSmith 调试 LangGraph ---
+.langgraph*

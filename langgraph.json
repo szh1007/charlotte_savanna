@@ -1,0 +1,7 @@
+{
+    "dependencies": ["."],
+    "graphs": {
+        "demo": "demo/LangGraph_v1.2/_5_LangSmith/demo.py:graph"
+    },
+    "env": ".env"
+}
