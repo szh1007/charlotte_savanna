@@ -13,6 +13,7 @@ from rich import print as rprint
 
 --- 主动记忆 (给用户使用)---
 长期记忆: *后端系统 Beckend*
+    FilesystemBackend: 直接方便, 但是存在本地, 无法跨 agent 读取
 """
 
 dotenv.load_dotenv()
