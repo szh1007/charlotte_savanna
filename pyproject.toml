@@ -16,7 +16,7 @@ select = [
     "T20",    # flake8-print (禁止残留 print)
     "RUF",    # Ruff 专有规则
 ]
-ignore = ["RUF012"]
+ignore = ["RUF012", "T201"]
 
 
 [tool.ruff.format]
