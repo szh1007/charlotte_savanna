@@ -7,7 +7,7 @@ Input Context
         能力: ...
         边界: ...
     memory: 定义长期规则和用户偏好, 本质是加载外部文件
-        memory = ["/memory/AGENTS.md", "/memory/preferences.md"]
+        memory = ["/config/memory/AGENTS.md", "/config/memory/preferences.md"]
     skills: 解决指定方案 (渐进式加载)
         skills = ["/skills"]
 
