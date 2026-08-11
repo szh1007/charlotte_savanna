@@ -3,7 +3,7 @@ import contextlib
 import datetime
 from typing import Any
 
-from api.context import get_thread_context
+from .context import get_thread_context
 
 # 尝试导入全局运行时(用于脚本模式下的流式输出)
 try:
@@ -86,7 +86,7 @@ class ToolMonitor:
 
         # 3. 控制台保底输出 (方便调试)
         # 加上特殊前缀, 方便肉眼识别
-        print(f"\n[Monitor:{event_type}] {message}")
+        print(f"\n[Monitor: {event_type}] {message}")
 
     def report_tool(self, tool_name: str, args: dict[str, Any] | None = None):
         """报告工具开始执行"""

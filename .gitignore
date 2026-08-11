@@ -46,3 +46,7 @@ node_modules/
 
 # --- LangSmith 调试 LangGraph ---
 .langgraph*
+
+# --- sh 脚本 ---
+*.sh
+/log

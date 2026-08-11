@@ -20,9 +20,8 @@ if project_root not in sys.path:
 # Import agent runner and monitor
 # 注意: agent.main_agent 导入时会初始化 main_agent, 这可能需要几秒钟
 
-from agent.main_agent import run_deep_agent  # noqa: E402
-
-from api.monitor import monitor  # noqa: E402
+from ..agent.main_agent import run_deep_agent  # noqa: E402
+from .monitor import monitor  # noqa: E402
 
 app = FastAPI(title="DeepAgents API")
 
