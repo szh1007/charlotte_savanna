@@ -35,7 +35,6 @@ INSTALLED_APPS = [
     "rest_framework",
     "django_filters",
     "mptt",
-    "charlotte.apps.CharlotteConfig",
     "minimall.apps.MinimallConfig",
 ]
 
