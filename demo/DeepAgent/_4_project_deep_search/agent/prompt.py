@@ -39,15 +39,16 @@ prompt_file_path = root_path / "prompt" / "prompt.yaml"
 
 # 加载YAML配置文件内容
 prompt_config_content = load_prompt(prompt_file_path)
-# 打印完整配置内容, 用于调试验证加载是否成功
-print(f"prompt_config_content: {prompt_config_content}")
+# # 打印完整配置内容, 用于调试验证加载是否成功
+# print(f"prompt_config_content: {prompt_config_content}")
 
 # 从总配置中提取主智能体的配置(对应prompts.yml中的main_agent节点)
 main_agent_config = prompt_config_content["main_agent"]
 # 从总配置中提取子智能体的配置(对应prompts.yml中的sub_agents节点)
 sub_agents_config = prompt_config_content["sub_agents"]
 
-# 打印拆分后的配置, 验证核心配置节点是否正确提取
-print(
-    f"main_agent_config: {main_agent_config} , \nsub_agents_config: {sub_agents_config}"
-)
+# # 打印拆分后的配置, 验证核心配置节点是否正确提取
+# print(
+#     f"main_agent_config: {main_agent_config} , "
+#     f"\nsub_agents_config: {sub_agents_config}"
+# )

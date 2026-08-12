@@ -237,4 +237,12 @@ async def websocket_endpoint(websocket: WebSocket, thread_id: str):
 
 
 if __name__ == "__main__":
-    uvicorn.run("api.server:app", host="0.0.0.0", port=8000, reload=True)
+    # 使用完整模块路径, 否则 reload 子进程以 "api.server" 为顶层包导入时
+    # 相对导入 (from ..agent ...) 会报
+    # "attempted relative import beyond top-level package"
+    uvicorn.run(
+        "demo.DeepAgent._4_project_deep_search.api.server:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
+    )
