@@ -55,14 +55,33 @@ class ToolMonitor:
         if self.websocket_manager:
             try:
                 # 获取当前线程 ID
+                """
+                websocket-4
+                    每次工具调用时, 都会根据 ContextVar 获取当前 thread_id
+                """
                 thread_id = get_thread_context()
 
+                """
+                loop-3
+                    如果当前的方法要使用 websocket 发送信息,
+                    只有当前的 loop 等于一开始绑定到 manager 的 loop,
+                    也就是等于 websocket 所属的 loop, 这个方法才能使用 websocket.
+                    但是这里直接统一写成, 只要 manager 有 loop 属性,
+                    无论怎样, 强制将要使用 websocket 的方法转移到该 loop, 就能发送了.
+
+                    (本质就是将要使用 websocket 的方法,
+                    从当前 loop 转移到 websocket 所属 loop)
+                """
                 # 假设 manager 有 loop 属性指向创建它的事件循环
                 if (
                     hasattr(self.websocket_manager, "loop")
                     and self.websocket_manager.loop
                 ):
                     if thread_id:
+                        """
+                        websocket-5-1
+                            要根据 thread_id 发送消息到对应的 WebSocket
+                        """
                         asyncio.run_coroutine_threadsafe(
                             self.websocket_manager.send_to_thread(payload, thread_id),
                             self.websocket_manager.loop,

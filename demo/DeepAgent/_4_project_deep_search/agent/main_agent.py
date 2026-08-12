@@ -68,6 +68,12 @@ async def run_deep_agent(task_query: str, thread_id: str | None = None):
 
     # ====================== 2. 上下文绑定: 初始化 ContextVars (关键: 隔离并发请求) ======================  # noqa: E501
     # 协程共享同一个线程id
+    """
+    websocket-3
+        每次异步协程任务, 在开启素有工具调用之前
+        先将 thread_id 绑定到当前线程 ContextVar 中, 类似 {协程ID: thread_id}
+        用于后续任务的隔离和资源管理
+    """
     thread_token = set_thread_context(thread_id)
 
     session_token = set_session_context(session_dir_str)

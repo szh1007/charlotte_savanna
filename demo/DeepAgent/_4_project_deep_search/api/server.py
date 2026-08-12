@@ -54,6 +54,10 @@ class ConnectionManager:
         self.loop = None
 
     def set_loop(self, loop):
+        """
+        loop-2
+            绑定事件循环到 monito 的 manager
+        """
         self.loop = loop
         monitor.set_websocket_manager(self)
 
@@ -72,6 +76,12 @@ class ConnectionManager:
 
     async def send_to_thread(self, message: dict, thread_id: str):
         if thread_id in self.active_connections:
+            """
+            websocket-5-2
+                根据 thread_id 获取到对应的 WebSocket 连接
+                使用获取到的 WebSocket 发送消息即可
+                结束
+            """
             websocket = self.active_connections[thread_id]
             await websocket.send_json(message)
 
@@ -82,6 +92,11 @@ manager = ConnectionManager()
 @app.on_event("startup")
 async def startup_event():
     # 在应用启动时, 将正确的事件循环绑定到 manager
+    """
+    loop-1
+        FastAPI 开启事件循环
+        同时也是 websocket 【能使用】的事件循环
+    """
     loop = asyncio.get_running_loop()
     manager.set_loop(loop)
     print(f"[Server] WebSocket Manager bound to loop: {id(loop)}")
@@ -99,6 +114,11 @@ async def run_task(request: TaskRequest):
     """
     thread_id = request.thread_id or str(uuid.uuid4())
 
+    """
+    websocket-1
+        每个会话请求异步任务时, 都会开启一个新的协程
+        但是同一个会话的 thread_id 相同
+    """
     # 异步运行 Agent, 不阻塞主线程
     # 注意: 这里简单的使用 asyncio.create_task 可能无法捕获所有错误
     # 在生产环境中建议使用 Celery 或其他任务队列
@@ -222,6 +242,12 @@ async def websocket_legacy(websocket: WebSocket):
 
 @app.websocket("/ws/{thread_id}")
 async def websocket_endpoint(websocket: WebSocket, thread_id: str):
+    """
+    websocket-2
+        前端请求异步任务时同步建立 WebSocket 连接
+        并将连接存储在 active_connections 字典中
+        保存形式为: {thread_id: websocket}
+    """
     await manager.connect(websocket, thread_id)
     try:
         while True:
