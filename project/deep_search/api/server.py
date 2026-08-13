@@ -267,7 +267,7 @@ if __name__ == "__main__":
     # 相对导入 (from ..agent ...) 会报
     # "attempted relative import beyond top-level package"
     uvicorn.run(
-        "demo.DeepAgent._4_project_deep_search.api.server:app",
+        "project.deep_search.api.server:app",
         host="0.0.0.0",
         port=8000,
         reload=True,
