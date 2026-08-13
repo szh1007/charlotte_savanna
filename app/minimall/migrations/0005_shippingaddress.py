@@ -18,17 +18,29 @@ class Migration(migrations.Migration):
                 (
                     "id",
                     models.BigAutoField(
-                        auto_created=True, primary_key=True, serialize=False, verbose_name="ID"
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
                     ),
                 ),
-                ("receiver_name", models.CharField(max_length=100, verbose_name="收货人")),
+                (
+                    "receiver_name",
+                    models.CharField(max_length=100, verbose_name="收货人"),
+                ),
                 ("phone", models.CharField(max_length=20, verbose_name="联系电话")),
                 ("province", models.CharField(max_length=50, verbose_name="省")),
                 ("city", models.CharField(max_length=50, verbose_name="市")),
                 ("district", models.CharField(max_length=50, verbose_name="区")),
                 ("detail", models.TextField(verbose_name="详细地址")),
-                ("is_default", models.BooleanField(default=False, verbose_name="默认地址")),
-                ("created_at", models.DateTimeField(auto_now_add=True, verbose_name="创建时间")),
+                (
+                    "is_default",
+                    models.BooleanField(default=False, verbose_name="默认地址"),
+                ),
+                (
+                    "created_at",
+                    models.DateTimeField(auto_now_add=True, verbose_name="创建时间"),
+                ),
                 (
                     "user",
                     models.ForeignKey(

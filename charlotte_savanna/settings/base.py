@@ -35,7 +35,7 @@ INSTALLED_APPS = [
     "rest_framework",
     "django_filters",
     "mptt",
-    "minimall.apps.MinimallConfig",
+    "app.minimall.apps.MinimallConfig",
 ]
 
 MIDDLEWARE = [
@@ -60,7 +60,7 @@ TEMPLATES = [
                 "django.template.context_processors.request",
                 "django.contrib.auth.context_processors.auth",
                 "django.contrib.messages.context_processors.messages",
-                "minimall.context_processors.redis_status",
+                "app.minimall.context_processors.redis_status",
             ],
         },
     },

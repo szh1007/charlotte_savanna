@@ -4,7 +4,7 @@ from django.contrib.auth import get_user_model
 from django.db.utils import IntegrityError
 from django.test import TestCase
 
-from minimall.models import (
+from app.minimall.models import (
     Cart,
     CartItem,
     Category,
@@ -13,6 +13,7 @@ from minimall.models import (
     ProductImage,
     Profile,
     ShippingAddress,
+    product_image_upload_to,
 )
 
 User = get_user_model()
@@ -20,7 +21,9 @@ User = get_user_model()
 
 class UserModelTest(TestCase):
     def test_create_user_with_profile(self):
-        user = User.objects.create_user(username="u1", email="u1@t.com", password="pass")
+        user = User.objects.create_user(
+            username="u1", email="u1@t.com", password="pass"
+        )
         Profile.objects.create(user=user)
         profile = user.minimall_profile
         self.assertIsNotNone(profile)
@@ -47,15 +50,27 @@ class ProductModelTest(TestCase):
     def test_product_images(self):
         cat = Category.objects.create(name="X", slug="img-test")
         p = Product.objects.create(name="P", category=cat, price=10.00)
-        img1 = ProductImage.objects.create(product=p, image="products/test1.jpg", sort_order=0)
+        img1 = ProductImage.objects.create(
+            product=p, image="products/test1.jpg", sort_order=0
+        )
         ProductImage.objects.create(product=p, image="products/test2.jpg", sort_order=1)
         self.assertEqual(p.images.count(), 2)
         self.assertEqual(p.images.first(), img1)
 
+    def test_image_upload_path_is_under_app(self):
+        """upload_to 应指向 app/minimall/uploads/, 与迁移后物理目录一致."""
+        cat = Category.objects.create(name="X", slug="img-path-test")
+        p = Product.objects.create(name="P", category=cat, price=10.00)
+        img = ProductImage(product=p, image="src.jpg", sort_order=0)
+        path = product_image_upload_to(img, "src.jpg")
+        self.assertTrue(path.startswith("app/minimall/uploads/products/"), path)
+
 
 class CartModelTest(TestCase):
     def test_unique_together(self):
-        user = User.objects.create_user(username="cu", email="cu@t.com", password="pass")
+        user = User.objects.create_user(
+            username="cu", email="cu@t.com", password="pass"
+        )
         cat = Category.objects.create(name="X", slug="cart-test")
         prod = Product.objects.create(name="P", category=cat, price=10.00)
         cart = Cart.objects.create(user=user)
@@ -70,7 +85,9 @@ class OrderModelTest(TestCase):
         self.assertEqual(len(Order.Status.choices), 7)
 
     def test_order_no_unique(self):
-        user = User.objects.create_user(username="ou", email="ou@t.com", password="pass")
+        user = User.objects.create_user(
+            username="ou", email="ou@t.com", password="pass"
+        )
         cat = Category.objects.create(name="X", slug="order-test")
         Product.objects.create(name="P", category=cat, price=10.00, stock=10)
         ShippingAddress.objects.create(
@@ -83,10 +100,16 @@ class OrderModelTest(TestCase):
             detail="D",
         )
         o1 = Order.objects.create(
-            order_no="TEST001", user=user, total_amount=10.00, shipping_address_snapshot={}
+            order_no="TEST001",
+            user=user,
+            total_amount=10.00,
+            shipping_address_snapshot={},
         )
         self.assertEqual(str(o1), "TEST001")
         with self.assertRaises(IntegrityError):
             Order.objects.create(
-                order_no="TEST001", user=user, total_amount=10.00, shipping_address_snapshot={}
+                order_no="TEST001",
+                user=user,
+                total_amount=10.00,
+                shipping_address_snapshot={},
             )

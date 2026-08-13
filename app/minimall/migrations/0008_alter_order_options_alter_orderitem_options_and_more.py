@@ -80,7 +80,9 @@ class Migration(migrations.Migration):
         migrations.AlterField(
             model_name="order",
             name="total_amount",
-            field=models.DecimalField(decimal_places=2, max_digits=10, verbose_name="总金额"),
+            field=models.DecimalField(
+                decimal_places=2, max_digits=10, verbose_name="总金额"
+            ),
         ),
         migrations.AlterField(
             model_name="order",
@@ -124,7 +126,9 @@ class Migration(migrations.Migration):
         migrations.AlterField(
             model_name="orderitem",
             name="product_price",
-            field=models.DecimalField(decimal_places=2, max_digits=10, verbose_name="商品单价"),
+            field=models.DecimalField(
+                decimal_places=2, max_digits=10, verbose_name="商品单价"
+            ),
         ),
         migrations.AlterField(
             model_name="orderitem",
@@ -134,6 +138,8 @@ class Migration(migrations.Migration):
         migrations.AlterField(
             model_name="orderitem",
             name="subtotal",
-            field=models.DecimalField(decimal_places=2, max_digits=10, verbose_name="小计"),
+            field=models.DecimalField(
+                decimal_places=2, max_digits=10, verbose_name="小计"
+            ),
         ),
     ]

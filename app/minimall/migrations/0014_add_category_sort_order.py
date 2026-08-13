@@ -12,6 +12,8 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name="category",
             name="sort_order",
-            field=models.PositiveIntegerField(default=0, verbose_name="排序(越小越靠前)"),
+            field=models.PositiveIntegerField(
+                default=0, verbose_name="排序(越小越靠前)"
+            ),
         ),
     ]

@@ -66,6 +66,19 @@ charlotte_savanna/
 │   ├── admin.py                 # （空）
 │   ├── tests.py                 # 测试文件
 │   └── migrations/              # Django 迁移目录
+├── app/                         # Django 业务子应用统一目录
+│   └── minimall/                #   商城应用（AppConfig: MinimallConfig, label=minimall）
+│       ├── apps.py              #   AppConfig: MinimallConfig
+│       ├── models.py
+│       ├── views_buyer.py       #   API 视图
+│       ├── views_html.py        #   页面视图
+│       ├── services.py
+│       ├── serializers.py
+│       ├── urls_api.py
+│       ├── urls_html.py
+│       ├── migrations/          #   迁移目录
+│       └── tests/               #   测试目录
+├── templates/minimall/          # 商城页面模板（全局模板目录）
 ├── demo/                        # [Demo] 自学测试代码（非主流程，忽略）
 │   ├── Python/                  #   Python 基础教程（class/decorator/iterator/generator/process）
 │   ├── LangChain/               #   LangChain 渐进式教程（Model I/O → Agent → RAG）
@@ -94,6 +107,7 @@ charlotte_savanna/
 
 ### 4.1 Django 规范
 
+- **App 组织**：所有业务子应用统一创建在 `app/` 目录下（如 `app.minimall`），AppConfig 显式设置 `label` 固定为 app 名（保证表名/迁移记录不变）
 - **Models**：优先使用 `models.Model` 的子类，字段显式命名，添加 `verbose_name`（中文项目）
 - **Views**：优先使用 CBV (Class-Based Views)，复杂逻辑抽取到 Service 层
 - **URLs**：每个 app 维护自己的 `urls.py`，通过 `include()` 注册到根路由

@@ -16,7 +16,10 @@ class Migration(migrations.Migration):
                 (
                     "id",
                     models.BigAutoField(
-                        auto_created=True, primary_key=True, serialize=False, verbose_name="ID"
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
                     ),
                 ),
                 ("name", models.CharField(max_length=200, verbose_name="商品名称")),
@@ -26,16 +29,33 @@ class Migration(migrations.Migration):
                         blank=True, max_length=200, unique=True, verbose_name="URL 别名"
                     ),
                 ),
-                ("description", models.TextField(blank=True, default="", verbose_name="商品描述")),
+                (
+                    "description",
+                    models.TextField(blank=True, default="", verbose_name="商品描述"),
+                ),
                 (
                     "price",
-                    models.DecimalField(decimal_places=2, max_digits=10, verbose_name="价格"),
+                    models.DecimalField(
+                        decimal_places=2, max_digits=10, verbose_name="价格"
+                    ),
                 ),
                 ("stock", models.PositiveIntegerField(default=0, verbose_name="库存")),
-                ("is_active", models.BooleanField(default=True, verbose_name="是否上架")),
-                ("is_featured", models.BooleanField(default=False, verbose_name="是否推荐")),
-                ("created_at", models.DateTimeField(auto_now_add=True, verbose_name="创建时间")),
-                ("updated_at", models.DateTimeField(auto_now=True, verbose_name="更新时间")),
+                (
+                    "is_active",
+                    models.BooleanField(default=True, verbose_name="是否上架"),
+                ),
+                (
+                    "is_featured",
+                    models.BooleanField(default=False, verbose_name="是否推荐"),
+                ),
+                (
+                    "created_at",
+                    models.DateTimeField(auto_now_add=True, verbose_name="创建时间"),
+                ),
+                (
+                    "updated_at",
+                    models.DateTimeField(auto_now=True, verbose_name="更新时间"),
+                ),
                 (
                     "category",
                     models.ForeignKey(
@@ -59,12 +79,24 @@ class Migration(migrations.Migration):
                 (
                     "id",
                     models.BigAutoField(
-                        auto_created=True, primary_key=True, serialize=False, verbose_name="ID"
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
                     ),
                 ),
-                ("image", models.ImageField(upload_to="products/", verbose_name="图片")),
-                ("is_primary", models.BooleanField(default=False, verbose_name="是否主图")),
-                ("sort_order", models.PositiveIntegerField(default=0, verbose_name="排序")),
+                (
+                    "image",
+                    models.ImageField(upload_to="products/", verbose_name="图片"),
+                ),
+                (
+                    "is_primary",
+                    models.BooleanField(default=False, verbose_name="是否主图"),
+                ),
+                (
+                    "sort_order",
+                    models.PositiveIntegerField(default=0, verbose_name="排序"),
+                ),
                 (
                     "product",
                     models.ForeignKey(

@@ -12,7 +12,9 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name="productimage",
             name="image_updated_at",
-            field=models.DateTimeField(blank=True, null=True, verbose_name="图片更新时间"),
+            field=models.DateTimeField(
+                blank=True, null=True, verbose_name="图片更新时间"
+            ),
         ),
         migrations.AddField(
             model_name="productimage",

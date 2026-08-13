@@ -17,12 +17,23 @@ class Migration(migrations.Migration):
                 (
                     "id",
                     models.BigAutoField(
-                        auto_created=True, primary_key=True, serialize=False, verbose_name="ID"
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
                     ),
                 ),
                 ("name", models.CharField(max_length=100, verbose_name="分类名称")),
-                ("slug", models.SlugField(max_length=100, unique=True, verbose_name="URL 别名")),
-                ("is_active", models.BooleanField(default=True, verbose_name="是否启用")),
+                (
+                    "slug",
+                    models.SlugField(
+                        max_length=100, unique=True, verbose_name="URL 别名"
+                    ),
+                ),
+                (
+                    "is_active",
+                    models.BooleanField(default=True, verbose_name="是否启用"),
+                ),
                 ("lft", models.PositiveIntegerField(editable=False)),
                 ("rght", models.PositiveIntegerField(editable=False)),
                 ("tree_id", models.PositiveIntegerField(db_index=True, editable=False)),

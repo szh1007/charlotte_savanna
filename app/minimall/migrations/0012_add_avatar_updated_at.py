@@ -12,6 +12,8 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name="profile",
             name="avatar_updated_at",
-            field=models.DateTimeField(blank=True, null=True, verbose_name="头像更新时间"),
+            field=models.DateTimeField(
+                blank=True, null=True, verbose_name="头像更新时间"
+            ),
         ),
     ]

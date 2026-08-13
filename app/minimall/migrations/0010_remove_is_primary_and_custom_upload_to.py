@@ -2,7 +2,7 @@
 
 from django.db import migrations, models
 
-import minimall.models
+import app.minimall.models
 
 
 class Migration(migrations.Migration):
@@ -19,7 +19,8 @@ class Migration(migrations.Migration):
             model_name="productimage",
             name="image",
             field=models.ImageField(
-                upload_to=minimall.models.product_image_upload_to, verbose_name="图片"
+                upload_to=app.minimall.models.product_image_upload_to,
+                verbose_name="图片",
             ),
         ),
         migrations.AlterField(
@@ -28,7 +29,7 @@ class Migration(migrations.Migration):
             field=models.ImageField(
                 blank=True,
                 null=True,
-                upload_to=minimall.models.avatar_upload_to,
+                upload_to=app.minimall.models.avatar_upload_to,
                 verbose_name="头像",
             ),
         ),

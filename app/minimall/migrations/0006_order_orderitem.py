@@ -18,10 +18,18 @@ class Migration(migrations.Migration):
                 (
                     "id",
                     models.BigAutoField(
-                        auto_created=True, primary_key=True, serialize=False, verbose_name="ID"
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
                     ),
                 ),
-                ("order_no", models.CharField(max_length=32, unique=True, verbose_name="Order No")),
+                (
+                    "order_no",
+                    models.CharField(
+                        max_length=32, unique=True, verbose_name="Order No"
+                    ),
+                ),
                 (
                     "status",
                     models.CharField(
@@ -49,21 +57,36 @@ class Migration(migrations.Migration):
                     "shipping_address_snapshot",
                     models.JSONField(verbose_name="Shipping Address Snapshot"),
                 ),
-                ("paid_at", models.DateTimeField(blank=True, null=True, verbose_name="Paid At")),
+                (
+                    "paid_at",
+                    models.DateTimeField(blank=True, null=True, verbose_name="Paid At"),
+                ),
                 (
                     "shipped_at",
-                    models.DateTimeField(blank=True, null=True, verbose_name="Shipped At"),
+                    models.DateTimeField(
+                        blank=True, null=True, verbose_name="Shipped At"
+                    ),
                 ),
                 (
                     "received_at",
-                    models.DateTimeField(blank=True, null=True, verbose_name="Received At"),
+                    models.DateTimeField(
+                        blank=True, null=True, verbose_name="Received At"
+                    ),
                 ),
                 (
                     "cancelled_at",
-                    models.DateTimeField(blank=True, null=True, verbose_name="Cancelled At"),
+                    models.DateTimeField(
+                        blank=True, null=True, verbose_name="Cancelled At"
+                    ),
                 ),
-                ("created_at", models.DateTimeField(auto_now_add=True, verbose_name="Created At")),
-                ("updated_at", models.DateTimeField(auto_now=True, verbose_name="Updated At")),
+                (
+                    "created_at",
+                    models.DateTimeField(auto_now_add=True, verbose_name="Created At"),
+                ),
+                (
+                    "updated_at",
+                    models.DateTimeField(auto_now=True, verbose_name="Updated At"),
+                ),
                 (
                     "user",
                     models.ForeignKey(
@@ -87,10 +110,16 @@ class Migration(migrations.Migration):
                 (
                     "id",
                     models.BigAutoField(
-                        auto_created=True, primary_key=True, serialize=False, verbose_name="ID"
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
                     ),
                 ),
-                ("product_name", models.CharField(max_length=200, verbose_name="Product Name")),
+                (
+                    "product_name",
+                    models.CharField(max_length=200, verbose_name="Product Name"),
+                ),
                 (
                     "product_price",
                     models.DecimalField(
@@ -100,7 +129,9 @@ class Migration(migrations.Migration):
                 ("quantity", models.PositiveIntegerField(verbose_name="Quantity")),
                 (
                     "subtotal",
-                    models.DecimalField(decimal_places=2, max_digits=10, verbose_name="Subtotal"),
+                    models.DecimalField(
+                        decimal_places=2, max_digits=10, verbose_name="Subtotal"
+                    ),
                 ),
                 (
                     "order",

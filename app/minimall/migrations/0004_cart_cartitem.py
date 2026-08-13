@@ -18,11 +18,20 @@ class Migration(migrations.Migration):
                 (
                     "id",
                     models.BigAutoField(
-                        auto_created=True, primary_key=True, serialize=False, verbose_name="ID"
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
                     ),
                 ),
-                ("created_at", models.DateTimeField(auto_now_add=True, verbose_name="创建时间")),
-                ("updated_at", models.DateTimeField(auto_now=True, verbose_name="更新时间")),
+                (
+                    "created_at",
+                    models.DateTimeField(auto_now_add=True, verbose_name="创建时间"),
+                ),
+                (
+                    "updated_at",
+                    models.DateTimeField(auto_now=True, verbose_name="更新时间"),
+                ),
                 (
                     "user",
                     models.OneToOneField(
@@ -45,11 +54,20 @@ class Migration(migrations.Migration):
                 (
                     "id",
                     models.BigAutoField(
-                        auto_created=True, primary_key=True, serialize=False, verbose_name="ID"
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
                     ),
                 ),
-                ("quantity", models.PositiveIntegerField(default=1, verbose_name="数量")),
-                ("added_at", models.DateTimeField(auto_now_add=True, verbose_name="添加时间")),
+                (
+                    "quantity",
+                    models.PositiveIntegerField(default=1, verbose_name="数量"),
+                ),
+                (
+                    "added_at",
+                    models.DateTimeField(auto_now_add=True, verbose_name="添加时间"),
+                ),
                 (
                     "cart",
                     models.ForeignKey(

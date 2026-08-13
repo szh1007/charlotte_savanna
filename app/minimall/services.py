@@ -37,9 +37,9 @@ def create_order(user, cart_item_ids, address_id):
     Raises:
         InsufficientStockError: if any product stock is insufficient
     """
-    cart_items = CartItem.objects.filter(id__in=cart_item_ids, cart__user=user).select_related(
-        "product"
-    )
+    cart_items = CartItem.objects.filter(
+        id__in=cart_item_ids, cart__user=user
+    ).select_related("product")
     if not cart_items:
         raise OrderServiceError("Cart is empty")
 
@@ -195,7 +195,9 @@ def receive_order(order):
         InvalidOrderStatusError: order not in shipped status
     """
     if order.status != Order.Status.SHIPPED:
-        raise InvalidOrderStatusError(f"Cannot receive order in '{order.status}' status")
+        raise InvalidOrderStatusError(
+            f"Cannot receive order in '{order.status}' status"
+        )
     order.status = Order.Status.RECEIVED
     order.received_at = timezone.now()
     order.save(update_fields=["status", "received_at", "updated_at"])
@@ -211,6 +213,8 @@ def complete_order(order):
         InvalidOrderStatusError: order not in received status
     """
     if order.status != Order.Status.RECEIVED:
-        raise InvalidOrderStatusError(f"Cannot complete order in '{order.status}' status")
+        raise InvalidOrderStatusError(
+            f"Cannot complete order in '{order.status}' status"
+        )
     order.status = Order.Status.COMPLETED
     order.save(update_fields=["status", "updated_at"])

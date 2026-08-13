@@ -64,11 +64,15 @@ class LoginView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
-        serializer = UserLoginSerializer(data=request.data, context={"request": request})
+        serializer = UserLoginSerializer(
+            data=request.data, context={"request": request}
+        )
         if serializer.is_valid():
             user = serializer.validated_data["user"]
             login(request, user)
-            return Response({"id": user.id, "username": user.username, "email": user.email})
+            return Response(
+                {"id": user.id, "username": user.username, "email": user.email}
+            )
         return Response(serializer.errors, status=status.HTTP_401_UNAUTHORIZED)
 
 
@@ -95,7 +99,9 @@ class MeView(APIView):
             # 允许同步更新 User 模型的 email
             email = request.data.get("email")
             if email is not None:
-                if not re.match(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$", email):
+                if not re.match(
+                    r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$", email
+                ):
                     return Response(
                         {"detail": "邮箱格式不正确"}, status=status.HTTP_400_BAD_REQUEST
                     )
@@ -112,13 +118,17 @@ class ChangePasswordView(APIView):
         old = request.data.get("old_password", "")
         new = request.data.get("new_password", "")
         if not request.user.check_password(old):
-            return Response({"detail": "旧密码错误"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"detail": "旧密码错误"}, status=status.HTTP_400_BAD_REQUEST
+            )
         if old == new:
             return Response(
                 {"detail": "新密码不能与旧密码相同"}, status=status.HTTP_400_BAD_REQUEST
             )
         if len(new) < 11 or len(new) > 18:
-            return Response({"detail": "密码长度须为11-18位"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"detail": "密码长度须为11-18位"}, status=status.HTTP_400_BAD_REQUEST
+            )
         if not re.match(r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[_@#$&*])", new):
             return Response(
                 {"detail": "新密码必须同时包含数字、大小写字母和特殊字符(_ @ # $ & *)"},
@@ -138,15 +148,21 @@ class ChangePaymentPasswordView(APIView):
         profile = request.user.minimall_profile
 
         if not profile.payment_password:
-            return Response({"detail": "请先设置支付密码"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"detail": "请先设置支付密码"}, status=status.HTTP_400_BAD_REQUEST
+            )
         if not profile.check_payment_password(old):
-            return Response({"detail": "旧支付密码错误"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"detail": "旧支付密码错误"}, status=status.HTTP_400_BAD_REQUEST
+            )
         if old == new:
             return Response(
                 {"detail": "新密码不能与旧密码相同"}, status=status.HTTP_400_BAD_REQUEST
             )
         if len(new) != 6 or not new.isdigit():
-            return Response({"detail": "支付密码必须为6位数字"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"detail": "支付密码必须为6位数字"}, status=status.HTTP_400_BAD_REQUEST
+            )
         profile.set_payment_password(new)
         profile.save(update_fields=["payment_password"])
         return Response({"detail": "ok"})
@@ -162,16 +178,24 @@ class RechargeView(APIView):
         try:
             amount = Decimal(str(amount))
         except InvalidOperation:
-            return Response({"detail": "请输入有效金额"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"detail": "请输入有效金额"}, status=status.HTTP_400_BAD_REQUEST
+            )
         if amount <= 0:
-            return Response({"detail": "金额必须大于0"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"detail": "金额必须大于0"}, status=status.HTTP_400_BAD_REQUEST
+            )
         profile = request.user.minimall_profile
         # 验证支付密码
         payment_password = request.data.get("payment_password", "")
         if not payment_password:
-            return Response({"detail": "请输入支付密码"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"detail": "请输入支付密码"}, status=status.HTTP_400_BAD_REQUEST
+            )
         if not profile.check_payment_password(payment_password):
-            return Response({"detail": "支付密码错误"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"detail": "支付密码错误"}, status=status.HTTP_400_BAD_REQUEST
+            )
         profile.balance += amount
         profile.save(update_fields=["balance"])
         serializer = UserMeSerializer(request.user)
@@ -243,7 +267,9 @@ class ProductDetailView(APIView):
     def get(self, request, slug):
         def load():
             product = (
-                Product.objects.filter(slug=slug, is_active=True).prefetch_related("images").first()
+                Product.objects.filter(slug=slug, is_active=True)
+                .prefetch_related("images")
+                .first()
             )
             if product is None:
                 return None
@@ -278,7 +304,9 @@ class CartView(APIView):
         paginator = Paginator(items_qs, page_size)
         page_num = int(request.query_params.get("page", 1))
         page = paginator.get_page(page_num)
-        serializer = CartItemSerializer(page.object_list, many=True, context={"request": request})
+        serializer = CartItemSerializer(
+            page.object_list, many=True, context={"request": request}
+        )
         total_quantity = sum(cart.items.values_list("quantity", flat=True))
         return Response(
             {
@@ -306,10 +334,15 @@ class AddCartItemView(APIView):
         try:
             product = Product.objects.get(id=product_id, is_active=True)
         except Product.DoesNotExist:
-            return Response({"detail": "Product not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {"detail": "Product not found"}, status=status.HTTP_404_NOT_FOUND
+            )
 
-        if quantity > product.stock:
-            quantity = product.stock
+        if product.stock <= 0:
+            return Response(
+                {"detail": "商品暂时缺货"}, status=status.HTTP_400_BAD_REQUEST
+            )
+        quantity = min(quantity, product.stock)
 
         cart, _ = Cart.objects.get_or_create(user=request.user)
         cart_item, created = CartItem.objects.get_or_create(
@@ -331,7 +364,9 @@ class UpdateCartItemView(APIView):
     permission_classes = [IsAuthenticated]
 
     def patch(self, request, cart_item_id):
-        cart_item = get_object_or_404(CartItem, id=cart_item_id, cart__user=request.user)
+        cart_item = get_object_or_404(
+            CartItem, id=cart_item_id, cart__user=request.user
+        )
         serializer = UpdateCartItemSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -343,14 +378,18 @@ class UpdateCartItemView(APIView):
 
         cart_item.quantity = min(quantity, cart_item.product.stock)
         cart_item.save()
-        return Response(CartItemSerializer(cart_item, context={"request": request}).data)
+        return Response(
+            CartItemSerializer(cart_item, context={"request": request}).data
+        )
 
 
 class DeleteCartItemView(APIView):
     permission_classes = [IsAuthenticated]
 
     def delete(self, request, cart_item_id):
-        cart_item = get_object_or_404(CartItem, id=cart_item_id, cart__user=request.user)
+        cart_item = get_object_or_404(
+            CartItem, id=cart_item_id, cart__user=request.user
+        )
         cart_item.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -405,7 +444,11 @@ class AddressDetailView(APIView):
         address = self._get_address(request.user, address_id)
         if address.is_default:
             return Response(
-                {"detail": "Cannot delete default address. Set another as default first."},
+                {
+                    "detail": (
+                        "Cannot delete default address. Set another as default first."
+                    )
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
         address.delete()
@@ -427,7 +470,9 @@ class OrderActiveCountView(APIView):
             Order.Status.SHIPPED,
             Order.Status.RECEIVED,
         ]
-        count = Order.objects.filter(user=request.user, status__in=active_statuses).count()
+        count = Order.objects.filter(
+            user=request.user, status__in=active_statuses
+        ).count()
         return Response({"count": count})
 
 

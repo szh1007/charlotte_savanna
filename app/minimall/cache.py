@@ -122,7 +122,9 @@ def _cache_delete(key):
 
 
 def _cache_delete_pattern(pattern):
-    return _safe_cache(cache.delete_pattern, "delete_pattern", default_return=False)(pattern)
+    return _safe_cache(cache.delete_pattern, "delete_pattern", default_return=False)(
+        pattern
+    )
 
 
 def _cache_client():

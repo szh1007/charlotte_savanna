@@ -46,16 +46,42 @@ urlpatterns = [
     path("products/<slug:slug>/", ProductDetailView.as_view(), name="product_detail"),
     path("cart/", CartView.as_view(), name="cart"),
     path("cart/items/", AddCartItemView.as_view(), name="cart_add"),
-    path("cart/items/<int:cart_item_id>/", UpdateCartItemView.as_view(), name="cart_update"),
-    path("cart/items/<int:cart_item_id>/delete/", DeleteCartItemView.as_view(), name="cart_delete"),
+    path(
+        "cart/items/<int:cart_item_id>/",
+        UpdateCartItemView.as_view(),
+        name="cart_update",
+    ),
+    path(
+        "cart/items/<int:cart_item_id>/delete/",
+        DeleteCartItemView.as_view(),
+        name="cart_delete",
+    ),
     path("cart/clear/", ClearCartView.as_view(), name="cart_clear"),
     path("addresses/", AddressListView.as_view(), name="address_list"),
-    path("addresses/<int:address_id>/", AddressDetailView.as_view(), name="address_detail"),
+    path(
+        "addresses/<int:address_id>/",
+        AddressDetailView.as_view(),
+        name="address_detail",
+    ),
     path("orders/", OrderListView.as_view(), name="order_list"),
-    path("orders/active-count/", OrderActiveCountView.as_view(), name="order_active_count"),
+    path(
+        "orders/active-count/",
+        OrderActiveCountView.as_view(),
+        name="order_active_count",
+    ),
     path("orders/<str:order_no>/", OrderDetailView.as_view(), name="order_detail"),
     path("orders/<str:order_no>/pay/", OrderPayView.as_view(), name="order_pay"),
-    path("orders/<str:order_no>/cancel/", OrderCancelView.as_view(), name="order_cancel"),
-    path("orders/<str:order_no>/receive/", OrderReceiveView.as_view(), name="order_receive"),
-    path("orders/<str:order_no>/complete/", OrderCompleteView.as_view(), name="order_complete"),
+    path(
+        "orders/<str:order_no>/cancel/", OrderCancelView.as_view(), name="order_cancel"
+    ),
+    path(
+        "orders/<str:order_no>/receive/",
+        OrderReceiveView.as_view(),
+        name="order_receive",
+    ),
+    path(
+        "orders/<str:order_no>/complete/",
+        OrderCompleteView.as_view(),
+        name="order_complete",
+    ),
 ]

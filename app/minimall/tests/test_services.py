@@ -3,7 +3,7 @@
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 
-from minimall.models import (
+from app.minimall.models import (
     Cart,
     CartItem,
     Category,
@@ -12,7 +12,7 @@ from minimall.models import (
     Profile,
     ShippingAddress,
 )
-from minimall.services import (
+from app.minimall.services import (
     InsufficientStockError,
     InvalidOrderStatusError,
     PaymentError,

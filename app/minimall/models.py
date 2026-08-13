@@ -15,13 +15,13 @@ def _ts():
 
 def avatar_upload_to(instance, filename):
     ext = os.path.splitext(filename)[1]
-    return f"minimall/uploads/avatars/user_{instance.user_id}_{_ts()}{ext}"
+    return f"app/minimall/uploads/avatars/user_{instance.user_id}_{_ts()}{ext}"
 
 
 def product_image_upload_to(instance, filename):
     ext = os.path.splitext(filename)[1]
     return (
-        f"minimall/uploads/products/"
+        f"app/minimall/uploads/products/"
         f"product_{instance.product_id}_{instance.sort_order}_{_ts()}{ext}"
     )
 
@@ -65,7 +65,9 @@ class Profile(models.Model):
         verbose_name="账户余额",
     )
     avatar_version = models.PositiveIntegerField(default=1, verbose_name="头像版本号")
-    avatar_updated_at = models.DateTimeField(null=True, blank=True, verbose_name="头像更新时间")
+    avatar_updated_at = models.DateTimeField(
+        null=True, blank=True, verbose_name="头像更新时间"
+    )
 
     class Meta:
         db_table = "minimall_profile"
@@ -131,7 +133,9 @@ class Product(models.Model):
     """商品."""
 
     name = models.CharField(max_length=200, verbose_name="商品名称")
-    slug = models.SlugField(max_length=200, unique=True, blank=True, verbose_name="URL 别名")
+    slug = models.SlugField(
+        max_length=200, unique=True, blank=True, verbose_name="URL 别名"
+    )
     description = models.TextField(blank=True, default="", verbose_name="商品描述")
     category = models.ForeignKey(
         Category,
@@ -174,7 +178,9 @@ class ProductImage(models.Model):
     image = models.ImageField(upload_to=product_image_upload_to, verbose_name="图片")
     sort_order = models.PositiveIntegerField(default=0, verbose_name="排序")
     image_version = models.PositiveIntegerField(default=1, verbose_name="图片版本号")
-    image_updated_at = models.DateTimeField(null=True, blank=True, verbose_name="图片更新时间")
+    image_updated_at = models.DateTimeField(
+        null=True, blank=True, verbose_name="图片更新时间"
+    )
 
     class Meta:
         db_table = "minimall_product_image"
@@ -202,7 +208,7 @@ class ProductImage(models.Model):
                 old_path = self.image.storage.path(self.image.name)
                 ext = os.path.splitext(self.image.name)[1]
                 new_rel = (
-                    f"minimall/uploads/products/"
+                    f"app/minimall/uploads/products/"
                     f"product_{self.product_id}_{self.sort_order}_{_ts()}{ext}"
                 )
                 new_path = self.image.storage.path(new_rel)
@@ -325,7 +331,9 @@ class Order(models.Model):
         default=Status.PENDING,
         verbose_name="状态",
     )
-    total_amount = models.DecimalField(max_digits=10, decimal_places=2, verbose_name="总金额")
+    total_amount = models.DecimalField(
+        max_digits=10, decimal_places=2, verbose_name="总金额"
+    )
     shipping_address_snapshot = models.JSONField(verbose_name="收货地址快照")
     paid_at = models.DateTimeField(null=True, blank=True, verbose_name="付款时间")
     shipped_at = models.DateTimeField(null=True, blank=True, verbose_name="发货时间")
@@ -359,7 +367,9 @@ class OrderItem(models.Model):
         verbose_name="商品",
     )
     product_name = models.CharField(max_length=200, verbose_name="商品名称")
-    product_price = models.DecimalField(max_digits=10, decimal_places=2, verbose_name="商品单价")
+    product_price = models.DecimalField(
+        max_digits=10, decimal_places=2, verbose_name="商品单价"
+    )
     quantity = models.PositiveIntegerField(verbose_name="数量")
     subtotal = models.DecimalField(max_digits=10, decimal_places=2, verbose_name="小计")
 

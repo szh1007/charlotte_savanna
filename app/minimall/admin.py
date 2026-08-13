@@ -55,10 +55,14 @@ class NumericRangeFilter(admin.SimpleListFilter):
         max_val = request.GET.get(f"max_{self._field_name}", "")
         if min_val:
             with contextlib.suppress(ValueError, TypeError):
-                queryset = queryset.filter(**{f"{self._field_name}__gte": float(min_val)})
+                queryset = queryset.filter(
+                    **{f"{self._field_name}__gte": float(min_val)}
+                )
         if max_val:
             with contextlib.suppress(ValueError, TypeError):
-                queryset = queryset.filter(**{f"{self._field_name}__lte": float(max_val)})
+                queryset = queryset.filter(
+                    **{f"{self._field_name}__lte": float(max_val)}
+                )
         return queryset
 
     def has_output(self):

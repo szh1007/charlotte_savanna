@@ -297,7 +297,9 @@ class CreateOrderSerializer(serializers.Serializer):
 
 
 class PayOrderSerializer(serializers.Serializer):
-    payment_password = serializers.CharField(write_only=True, min_length=6, max_length=6)
+    payment_password = serializers.CharField(
+        write_only=True, min_length=6, max_length=6
+    )
 
 
 class OrderItemSerializer(serializers.ModelSerializer):
@@ -346,13 +348,21 @@ class OrderDetailSerializer(serializers.ModelSerializer):
         ]
 
     def get_status_timeline(self, obj):
-        timeline = [{"status": "pending", "label": "Order placed", "time": obj.created_at}]
+        timeline = [
+            {"status": "pending", "label": "Order placed", "time": obj.created_at}
+        ]
         if obj.paid_at:
             timeline.append({"status": "paid", "label": "Paid", "time": obj.paid_at})
         if obj.shipped_at:
-            timeline.append({"status": "shipped", "label": "Shipped", "time": obj.shipped_at})
+            timeline.append(
+                {"status": "shipped", "label": "Shipped", "time": obj.shipped_at}
+            )
         if obj.received_at:
-            timeline.append({"status": "received", "label": "Received", "time": obj.received_at})
+            timeline.append(
+                {"status": "received", "label": "Received", "time": obj.received_at}
+            )
         if obj.cancelled_at:
-            timeline.append({"status": "cancelled", "label": "Cancelled", "time": obj.cancelled_at})
+            timeline.append(
+                {"status": "cancelled", "label": "Cancelled", "time": obj.cancelled_at}
+            )
         return timeline
