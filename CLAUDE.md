@@ -122,7 +122,8 @@ charlotte_savanna/
 │   ├── LangChain_v1.3/          #   LangChain 1.3 教程
 │   ├── LangGraph_v1.2/          #   LangGraph 1.2 教程
 │   ├── DeepAgent_v0.7/          #   DeepAgents 教程
-│   └── FastAPI/                 #   FastAPI 基础
+│   ├── FastAPI/                 #   FastAPI 基础
+│   └── SUMMARY.md               #   知识点学习总结（LangChain/LangGraph/DeepAgents）
 ├── .scratch/                    # 本地 Issue Tracker（Markdown，不同步 GitHub）
 │   ├── minimall/issues/         #   商城 17 个 issue
 │   └── miniblog/issues/         #   微博客 37 个 issue（规划中，未创建代码）
@@ -131,7 +132,7 @@ charlotte_savanna/
 │   └── note/                    #   学习笔记（skills 分析等）
 ├── .claude/
 │   ├── settings.json            #   Claude Code 权限与模型配置（不提交）
-│   └── skills/                  #   自定义 skills（ai-radar / weekly-analyse-project）
+│   └── skills/                  #   自定义 skills（ai-radar / weekly-analyse-project / knowledge-interview-prep）
 ├── CLAUDE.md                    # 本文件（项目上下文）
 ├── CLAUDE_SYSTEM.md             # 系统级 CLAUDE.md 副本（参考用）
 ├── main.py                      # （空占位）
@@ -259,6 +260,9 @@ charlotte_savanna/
 | `demo/LangGraph_v1.2/` | ✅ 完成 | LangGraph 1.2 教程 |
 | `demo/DeepAgent_v0.7/` | ✅ 完成 | DeepAgents 教程（3 模块） |
 | `demo/FastAPI/` | ✅ 完成 | FastAPI 基础（3 个 demo） |
+| `demo/SUMMARY.md` | ✅ 完成 | LangChain/LangGraph/DeepAgents 知识点学习总结 |
+
+> 另有 `demo/INTERVIEW.md`（大厂面试题整理，本地维护，`.gitignore` 排除不提交）。
 
 ### 5.6 基础设施
 
@@ -326,8 +330,16 @@ cd project/menu/ui && npm install
 
 - 模型后端：DeepSeek（Anthropic 兼容模式），配置在 `settings.json`
 - `.claude/CLAUDE.md` 可提交，`settings.json` 不提交（含个人 API Key）
-- 项目自定义 skills 在 `.claude/skills/`（`ai-radar` AI 领域周报、`weekly-analyse-project` 项目周报）
+- 项目自定义 skills 在 `.claude/skills/`（`ai-radar` AI 领域周报、`weekly-analyse-project` 项目周报、`knowledge-interview-prep` 知识点总结与面试题整理）
 - 系统级通用规范在 `~/.claude/CLAUDE.md`
+
+### 6.6 文档同步维护（CLAUDE.md / README.md）
+
+当项目文件发生大幅度变更（新增/删除模块、重构、新增重要文档或 skill 等）时，需同步更新 `CLAUDE.md` 与 `README.md`，保持文档与代码一致。
+
+- **定期询问**：每周六晚 21:00 主动询问用户「是否大幅度更改了项目文件内容，是否需要同步更新 CLAUDE.md 与 README.md」。
+- **上次更新时间**：记录在本文档末尾「最后更新」字段，每次同步更新文档后刷新该日期。
+- **超期提醒**：若距离上次更新超过 7 天，在会话开始时提醒一次「是否需要更新 CLAUDE.md 与 README.md」。
 
 ---
 

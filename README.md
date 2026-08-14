@@ -68,6 +68,7 @@ charlotte_savanna/
 ├── templates/               # 全局模板（minimall + admin）
 ├── sh/                      # 启动脚本（deep_search / menu 前后端）
 ├── demo/                    # 自学教程（非业务代码）
+│   └── SUMMARY.md           # 知识点学习总结
 ├── docs/                    # Agent 定义、triage 规范、学习笔记
 ├── .scratch/                # 本地 Issue Tracker（Markdown）
 ├── requirements.txt         # Python 依赖
@@ -109,7 +110,7 @@ charlotte_savanna/
 
 ### demo — 自学教程（非业务）
 
-Python 基础、LangChain 0.3/1.3、LangGraph 1.2、DeepAgents、FastAPI 的渐进式教程，仅作学习参考。
+Python 基础、LangChain 0.3/1.3、LangGraph 1.2、DeepAgents、FastAPI 的渐进式教程，仅作学习参考。另有 [`SUMMARY.md`](demo/SUMMARY.md)（知识点学习总结）；`demo/INTERVIEW.md` 为大厂面试题整理，本地维护不提交。
 
 ---
 
@@ -162,6 +163,7 @@ cp .env.example .env               # 填入真实 API Key
 | 文档 | 内容 |
 |------|------|
 | [CLAUDE.md](CLAUDE.md) | 项目上下文、框架规范、开发约定 |
+| [demo/SUMMARY.md](demo/SUMMARY.md) | 知识点学习总结（LangChain/LangGraph/DeepAgents） |
 | [project/deep_search/README.md](project/deep_search/README.md) | deep_search 子项目文档 |
 | [project/menu/README.md](project/menu/README.md) | menu 子项目文档 |
 | [docs/](docs/) | Agent 定义、triage 规范、学习笔记 |
