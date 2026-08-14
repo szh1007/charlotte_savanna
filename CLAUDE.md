@@ -10,19 +10,20 @@
 
 **charlotte_savanna** 是以 **Django 6.0** 为骨架的个人技术学习项目，自学 Django、LangChain、LangGraph、FastAPI、DeepAgents、Vue 3 等技术栈。
 
-项目初始化于 2026-04-27，当前处于活跃开发中。代码按「主流程业务 + 独立子项目 + 自学 demo」三条线组织：
+项目初始化于 2026-04-27，当前处于活跃开发中。代码按「业务模块 + 子项目 + 自学 demo」组织；正式「主流程」尚未确定，现有模块均为学习/测试性质：
 
 | 模块 | 类型 | 说明 |
 |------|------|------|
-| `app/minimall/` | 主流程 Django app | 商城业务（DRF API + 页面，Redis 缓存） |
-| `project/deep_search/` | 主流程独立子项目 | DeepAgents 深度检索智能体（FastAPI + Vue 前端） |
-| `demo/` | 非主流程 | 自学教程代码，见 §1.1 |
+| `app/minimall/` | 业务模块（测试原型） | 商城业务（DRF API + 页面，Redis 缓存） |
+| `project/deep_search/` | 子项目 | DeepAgents 深度检索智能体（FastAPI + Vue 前端） |
+| `project/menu/` | 子项目 | 餐厅智能助手（LangChain Agent + FastAPI + Vue） |
+| `demo/` | 自学教程 | 非业务代码，见 §1.1 |
 
 ---
 
-## 1.1 Demo 目录（非主流程，分析/开发时请忽略）
+## 1.1 Demo 目录（非业务代码，分析/开发时请忽略）
 
-根目录 `demo/` 下是个人自学教程代码，**不属于项目主流程**。分析代码、重构、写测试、排查问题时均应跳过整个 `demo/` 目录：
+根目录 `demo/` 下是个人自学教程代码，**不属于业务代码**。分析代码、重构、写测试、排查问题时均应跳过整个 `demo/` 目录：
 
 | 目录 | 内容 |
 |------|------|
@@ -33,7 +34,7 @@
 | `demo/DeepAgent/` | DeepAgents 教程（agent/subagent/interrupt/backend） |
 | `demo/FastAPI/` | FastAPI 基础（含 ORM demo） |
 
-所有自学教程统一放入 `demo/` 目录，仅作学习参考保留，后续不会被删除。**主流程相关的工作（model 设计、view 编写、测试、性能分析、安全审计等）一律不涉及 `demo/` 目录。**
+所有自学教程统一放入 `demo/` 目录，仅作学习参考保留，后续不会被删除。**业务/子项目相关的工作（model 设计、view 编写、测试、性能分析、安全审计等）一律不涉及 `demo/` 目录。**
 
 ---
 
@@ -42,13 +43,14 @@
 | 层级 | 技术 | 版本 |
 |------|------|------|
 | **语言** | Python | 3.13 |
-| **Web 框架** | Django（主流程）+ FastAPI（deep_search） | 6.0 / 0.139 |
-| **数据库** | MySQL（pymysql）+ Redis 缓存（django-redis） | — |
+| **Web 框架** | Django（minimall）+ FastAPI（deep_search / menu） | 6.0 / 0.139 |
+| **数据库** | MySQL + Redis 缓存（django-redis / redis-py） | — |
+| **ORM** | SQLAlchemy（menu 子项目） | 2.0 |
 | **Django 扩展** | DRF + django-filter + django-mptt | 3.17 / 25.2 / 0.18 |
 | **LLM 框架** | LangChain + LangGraph | 1.3 / 1.2 |
 | **Agent** | DeepAgents | 0.7 |
-| **向量数据库** | ChromaDB + FAISS + RAGFlow | — |
-| **前端** | Vue 3 + Vite + TypeScript（deep_search ui） | 3.5 / 7 / 5.9 |
+| **向量数据库** | ChromaDB + FAISS + RAGFlow + Milvus | — |
+| **前端** | Vue 3 + Vite + TypeScript/JavaScript + Element Plus | — |
 | **代码质量** | Ruff + pre-commit | — |
 | **包管理** | pip + venv + npm | — |
 | **环境管理** | python-dotenv (.env) | — |
@@ -87,25 +89,34 @@ charlotte_savanna/
 │       ├── tests/               #   test_api / test_models / test_services
 │       ├── todo/redis.md        #   Redis 缓存设计文档（架构/风险/使用）
 │       └── uploads/             #   本地文件上传（.gitignore 排除）
-├── project/                     # 主流程独立子项目
-│   └── deep_search/             #   深度检索智能体（FastAPI + DeepAgents）
-│       ├── agent/               #   main_agent + subagents（数据库查询/网络搜索/知识库）
-│       ├── api/                 #   FastAPI server / context（会话）/ monitor
-│       ├── tools/               #   mysql / pdf / markdown / ragflow / tavily / 文件读取 工具
-│       ├── utils/               #   session / stream / path_utils / word_converter
-│       ├── ragflow/             #   RAGFlow 集成 demo 与部署笔记
-│       ├── ui/                  #   Vue 3 + Vite + TS 前端
-│       ├── output/              #   生成结果输出
-│       ├── prompt/              #   prompt 配置（prompt.yaml）
-│       ├── updated/             #   （空占位）
+├── project/                     # 独立子项目（deep_search / menu）
+│   ├── deep_search/             #   深度检索智能体（FastAPI + DeepAgents）
+│   │   ├── agent/               #   main_agent + subagents（数据库查询/网络搜索/知识库）
+│   │   ├── api/                 #   FastAPI server / context（会话）/ monitor
+│   │   ├── tools/               #   mysql / pdf / markdown / ragflow / tavily / 文件读取 工具
+│   │   ├── utils/               #   session / stream / path_utils / word_converter
+│   │   ├── ragflow/             #   RAGFlow 集成 demo 与部署笔记
+│   │   ├── ui/                  #   Vue 3 + Vite + TS 前端
+│   │   ├── output/              #   生成结果输出
+│   │   ├── prompt/              #   prompt 配置（prompt.yaml）
+│   │   ├── updated/             #   （空占位）
+│   │   ├── README.md            #   子项目文档
+│   │   └── .env                 #   独立环境变量（不提交）
+│   └── menu/                    #   餐厅智能助手（LangChain Agent + FastAPI）
+│       ├── agent/               #   LangChain 餐厅 Agent（工具 + prompt + FAQ + milvus 同步）
+│       ├── api/                 #   FastAPI 服务（SSE 流式 + REST）
+│       ├── ui/                  #   Vue 3 + Vite + Element Plus 前端
+│       ├── README.md            #   子项目文档
 │       └── .env                 #   独立环境变量（不提交）
 ├── templates/                   # 全局模板目录
 │   ├── minimall/                #   商城页面模板（base + partials）
 │   └── admin/                   #   自定义 Admin 模板
 ├── sh/                          # 启动脚本
-│   ├── deep_search_backend.sh   #   启动 deep_search 后端（python -m project.deep_search.api.server）
-│   └── deep_search_frontend.sh  #   启动 deep_search 前端（cd ui && npm run dev）
-├── demo/                        # [Demo] 自学教程代码（非主流程，忽略）
+│   ├── deep_search_backend.sh   #   启动 deep_search 后端
+│   ├── deep_search_frontend.sh  #   启动 deep_search 前端
+│   ├── menu_backend.sh          #   启动 menu 后端
+│   └── menu_frontend.sh         #   启动 menu 前端
+├── demo/                        # [Demo] 自学教程代码（非业务，忽略）
 │   ├── Base/                    #   Python 基础
 │   ├── LangChain_v0.3/          #   LangChain 0.3 渐进式教程
 │   ├── LangChain_v1.3/          #   LangChain 1.3 教程
@@ -166,11 +177,11 @@ charlotte_savanna/
 - **外部服务**：MySQL 查询、RAGFlow 知识库、Tavily 网络搜索均封装为独立 tool，供 agent 调用
 - **输出**：agent 生成 markdown，可转 PDF（`tools/pdf_tools.py`），落盘到 `output/`
 
-### 4.4 前端（deep_search ui）
+### 4.4 前端（子项目 ui）
 
-- **技术栈**：Vue 3 + TypeScript + Vite（rolldown-vite），入口 `project/deep_search/ui/`
+- **技术栈**：Vue 3 + Vite；deep_search 用 TypeScript、menu 用 JavaScript，组件库按需引入（如 Element Plus）
 - **依赖管理**：`package.json` 明确声明 dependencies，`package-lock.json` 提交到版本控制
-- **代码风格**：TypeScript 严格模式，优先 `const`，组合式 API，箭头函数回调
+- **代码风格**：优先 `const`，组合式 API，箭头函数回调；TypeScript 项目开启严格模式
 
 ### 4.5 代码质量（Ruff / pre-commit）
 
@@ -187,11 +198,20 @@ charlotte_savanna/
   - 文件按 `_模块_序号_描述.py` 命名（如 `_6_2_tool_node.py`），使用 `if __name__ == "__main__":` 包裹执行代码
   - Asset 文件：测试数据统一放在对应子目录的 `asset/` 或 `load/` 下
 
+### 4.7 FastAPI / LangChain Agent（menu 子项目）
+
+- **后端**：FastAPI（`api/main.py`）+ LangChain `create_agent`（`agent/langchain.py`），DeepSeek 模型，`@tool` 挂载三个工具（菜品查询 / 口味语义检索 / 餐位预订）
+- **数据**：MySQL 存菜单与预订单，Milvus 存菜品向量做语义检索，Redis 存 FAQ 做相似推荐
+- **初始化**：先执行 `agent/prompt/menu.sql`（建表）、`agent/milvus_sync.py`（向量库）、`agent/FAQ/redis_sync.py`（FAQ）再启动
+- **前端**：Vue 3 + Element Plus（`ui/`），详细文档见 `project/menu/README.md`
+
 ---
 
 ## 5. 当前开发状态
 
-### 5.1 主流程 — minimall 商城 (`app/minimall/`)
+> 当前各模块均为学习/测试性质，正式「主流程」尚未确定：minimall 为 Django 测试原型，deep_search / menu 为独立子项目，miniblog 为规划中的测试流程。
+
+### 5.1 测试原型 — minimall 商城 (`app/minimall/`)
 
 | 组件 | 状态 | 说明 |
 |------|------|------|
@@ -202,7 +222,7 @@ charlotte_savanna/
 | 测试 (`tests/`) | ✅ | test_api / test_models / test_services |
 | Issue 进度 | ✅ | `.scratch/minimall/issues/` 17 个 issue 已闭环 |
 
-### 5.2 主流程 — deep_search 智能体 (`project/deep_search/`)
+### 5.2 子项目 — deep_search 智能体 (`project/deep_search/`)
 
 | 组件 | 状态 | 说明 |
 |------|------|------|
@@ -214,12 +234,22 @@ charlotte_savanna/
 
 > **全流程开发完毕**：agent → API → tools → RAGFlow → 前端链路已完整闭环，可通过 `sh/deep_search_backend.sh` + `sh/deep_search_frontend.sh` 启动。deep_search 在 `.scratch/` 无独立 issue 跟踪，进度以代码为准。
 
-### 5.3 规划中 — miniblog 微博客
+### 5.3 子项目 — menu 智能助手 (`project/menu/`)
+
+| 组件 | 状态 | 说明 |
+|------|------|------|
+| Agent (`agent/langchain.py`) | ✅ | LangChain create_agent + 3 个工具 |
+| API (`api/main.py`) | ✅ | FastAPI，SSE 流式 + REST |
+| 前端 (`ui/`) | ✅ | Vue 3 + Element Plus |
+
+> 餐厅智能助手「一绪寿喜烧」已闭环，可通过 `sh/menu_backend.sh` + `sh/menu_frontend.sh` 启动。详细文档见 `project/menu/README.md`。
+
+### 5.4 测试流程（规划中）— miniblog 微博客
 
 - 仅 `.scratch/miniblog/issues/` 有 37 个 issue 规划（FastAPI + SQLAlchemy + MySQL/PostgreSQL + Redis/Celery/Milvus + LangChain Agent + Vue），**尚未创建代码**
 - 环境变量模板已含相关配置（`DB_NAME_FASTAPI` / `PG_DB_NAME_FASTAPI` / `REDIS_URL` / `MILVUS_*`）
 
-### 5.4 Demo 目录（仅供学习参考，不计入主流程）
+### 5.5 Demo 目录（仅供学习参考，不计入业务/子项目）
 
 | 目录 | 状态 | 说明 |
 |------|------|------|
@@ -230,7 +260,7 @@ charlotte_savanna/
 | `demo/DeepAgent/` | ✅ 完成 | DeepAgents 教程（3 模块） |
 | `demo/FastAPI/` | ✅ 完成 | FastAPI 基础（3 个 demo） |
 
-### 5.5 基础设施
+### 5.6 基础设施
 
 | 项目 | 状态 | 说明 |
 |------|------|------|
@@ -239,7 +269,7 @@ charlotte_savanna/
 | 代码质量 | ✅ | Ruff + pre-commit 已接入 |
 | 依赖管理 | ✅ | `requirements.txt` 已生成（267 个包） |
 | 配置安全 | ✅ | SECRET_KEY / ALLOWED_HOSTS / DEBUG 已环境变量化，settings 拆分 dev/prod |
-| README | ⚠️ | 仅一行标题，需补充完整文档 |
+| README | ✅ | 根 README 已补全（项目简介 / 技术栈 / 模块 / 快速开始） |
 | miniblog 代码 | ❌ | 仅规划，未创建 |
 
 ---
@@ -251,21 +281,21 @@ charlotte_savanna/
 > 通用安全规范（`.env` 管理、API Key 保护、`.gitignore` 检查清单、敏感信息泄露处理）参见系统级 CLAUDE.md 第 3 节。
 
 - 项目 `.env.example` 已提供所需环境变量模板
-- `project/deep_search/.env` 为子项目独立环境变量，同样不提交
+- `project/deep_search/.env`、`project/menu/.env` 为子项目独立环境变量，同样不提交
 - 生产环境设置见 `settings/prod.py`（DEBUG=False + HSTS/HTTPS 加固），由 WSGI/ASGI 加载
 
-### 6.2 主流程工作范围（重要）
+### 6.2 业务工作范围（重要）
 
-进行以下操作时，**工作范围限定在主流程代码**，不涉及 `demo/` 目录（含 `demo/Base/`、`demo/LangChain_v0.3/`、`demo/LangChain_v1.3/`、`demo/LangGraph_v1.2/`、`demo/DeepAgent/`、`demo/FastAPI/` 全部子目录）：
+进行以下操作时，**工作范围限定在业务/子项目代码**，不涉及 `demo/` 目录（含 `demo/Base/`、`demo/LangChain_v0.3/`、`demo/LangChain_v1.3/`、`demo/LangGraph_v1.2/`、`demo/DeepAgent/`、`demo/FastAPI/` 全部子目录）：
 
 - 代码分析、搜索、重构
 - Django app 开发
 - 测试编写与运行
 - 性能分析与优化
 - 安全审计
-- 依赖管理（`requirements.txt` 中仅主流程需要的包）
+- 依赖管理（`requirements.txt` 中仅业务/子项目需要的包）
 
-如有疑问（如不确定某个文件是否属于主流程），优先在 CLAUDE.md 中查看目录标注。
+如有疑问（如不确定某个文件是否属于业务/子项目代码），优先在 CLAUDE.md 中查看目录标注。
 
 ### 6.3 开发约定
 
@@ -273,6 +303,8 @@ charlotte_savanna/
 - **Django 启动**：`python manage.py runserver`（默认加载 `settings.dev`，依赖 MySQL + Redis）
 - **deep_search 后端**：`sh/deep_search_backend.sh`（或 `python -m project.deep_search.api.server`）
 - **deep_search 前端**：`sh/deep_search_frontend.sh`（或 `cd project/deep_search/ui && npm run dev`，首次需 `npm install`）
+- **menu 后端**：`sh/menu_backend.sh`（或 `python -m project.menu.api.main`）
+- **menu 前端**：`sh/menu_frontend.sh`（或 `cd project/menu/ui && npm run dev`，首次需 `npm install`）
 - **LangGraph CLI**：`langgraph dev`（`langgraph.json` 配置了 graph 入口，指向 `demo/LangGraph_v1.2`）
 - **LangChain 脚本**：在对应 `demo/` 子目录下 `python <script>.py`（脚本内部 `load_dotenv()`）
 - **实验性代码**：教程文件中的注释代码刻意保留，展示不同实现变体
@@ -283,11 +315,12 @@ charlotte_savanna/
 ```bash
 pip install -r requirements.txt    # 安装
 pip freeze > requirements.txt      # 更新
-# deep_search 前端（独立）：
+# 子项目前端（独立）：
 cd project/deep_search/ui && npm install
+cd project/menu/ui && npm install
 ```
 
-核心依赖：Django 6.0、DRF、LangChain/LangGraph 1.x、DeepAgents、FastAPI、PyMySQL、django-redis、ChromaDB、FAISS、RAGFlow SDK、python-dotenv、Tavily
+核心依赖：Django 6.0、DRF、LangChain/LangGraph 1.x、DeepAgents、FastAPI、PyMySQL、SQLAlchemy、django-redis、redis-py、ChromaDB、FAISS、RAGFlow SDK、Milvus、python-dotenv、Tavily
 
 ### 6.5 Claude Code 说明
 
@@ -314,4 +347,4 @@ cd project/deep_search/ui && npm install
 
 ---
 
-> **最后更新**：2026-08-13 | **维护者**：Claude Code (charlotte)
+> **最后更新**：2026-08-15 | **维护者**：Claude Code (charlotte)

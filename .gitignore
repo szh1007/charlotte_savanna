@@ -17,7 +17,8 @@ env/
 
 # --- IDE / 编辑器 ---
 .idea/
-.vscode/
+.vscode/*
+!.vscode/settings.json
 *.swp
 *.swo
 *~

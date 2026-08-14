@@ -1,0 +1,17 @@
+{
+    "postman.settings.dotenv-detection-notification-visibility": false,
+    "python.analysis.autoImportCompletions": false,
+    "editor.defaultFormatter": "ms-python.black-formatter",
+    "[jsonc]": {
+        "editor.defaultFormatter": "vscode.json-language-features"
+    },
+    "files.exclude": {
+        ".idea": true,
+        ".langgraph_api": true,
+        ".ruff_cache": true,
+        "**/__pycache__": true
+    },
+    "workbench.editorAssociations": {
+        "*.md": "vscode.markdown.preview.editor"
+    }
+}
