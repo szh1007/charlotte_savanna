@@ -31,7 +31,7 @@
 | `demo/LangChain_v0.3/` | LangChain 0.3 渐进式教程（Model I/O → Agent → RAG，含 chroma 测试数据） |
 | `demo/LangChain_v1.3/` | LangChain 1.3 教程（model/prompt/tool/pydantic/agent/middleware/hook/memory/RAG） |
 | `demo/LangGraph_v1.2/` | LangGraph 1.2 教程（basis/stream/interrupt/memory/tool/subgraph） |
-| `demo/DeepAgent/` | DeepAgents 教程（agent/subagent/interrupt/backend） |
+| `demo/DeepAgent_v0.7/` | DeepAgents 教程（agent/subagent/interrupt/backend） |
 | `demo/FastAPI/` | FastAPI 基础（含 ORM demo） |
 
 所有自学教程统一放入 `demo/` 目录，仅作学习参考保留，后续不会被删除。**业务/子项目相关的工作（model 设计、view 编写、测试、性能分析、安全审计等）一律不涉及 `demo/` 目录。**
@@ -121,7 +121,7 @@ charlotte_savanna/
 │   ├── LangChain_v0.3/          #   LangChain 0.3 渐进式教程
 │   ├── LangChain_v1.3/          #   LangChain 1.3 教程
 │   ├── LangGraph_v1.2/          #   LangGraph 1.2 教程
-│   ├── DeepAgent/               #   DeepAgents 教程
+│   ├── DeepAgent_v0.7/          #   DeepAgents 教程
 │   └── FastAPI/                 #   FastAPI 基础
 ├── .scratch/                    # 本地 Issue Tracker（Markdown，不同步 GitHub）
 │   ├── minimall/issues/         #   商城 17 个 issue
@@ -257,7 +257,7 @@ charlotte_savanna/
 | `demo/LangChain_v0.3/` | ✅ 完成 | LangChain 0.3 渐进式教程 |
 | `demo/LangChain_v1.3/` | ✅ 完成 | LangChain 1.3 教程 |
 | `demo/LangGraph_v1.2/` | ✅ 完成 | LangGraph 1.2 教程 |
-| `demo/DeepAgent/` | ✅ 完成 | DeepAgents 教程（3 模块） |
+| `demo/DeepAgent_v0.7/` | ✅ 完成 | DeepAgents 教程（3 模块） |
 | `demo/FastAPI/` | ✅ 完成 | FastAPI 基础（3 个 demo） |
 
 ### 5.6 基础设施
@@ -286,7 +286,7 @@ charlotte_savanna/
 
 ### 6.2 业务工作范围（重要）
 
-进行以下操作时，**工作范围限定在业务/子项目代码**，不涉及 `demo/` 目录（含 `demo/Base/`、`demo/LangChain_v0.3/`、`demo/LangChain_v1.3/`、`demo/LangGraph_v1.2/`、`demo/DeepAgent/`、`demo/FastAPI/` 全部子目录）：
+进行以下操作时，**工作范围限定在业务/子项目代码**，不涉及 `demo/` 目录（含 `demo/Base/`、`demo/LangChain_v0.3/`、`demo/LangChain_v1.3/`、`demo/LangGraph_v1.2/`、`demo/DeepAgent_v0.7/`、`demo/FastAPI/` 全部子目录）：
 
 - 代码分析、搜索、重构
 - Django app 开发
