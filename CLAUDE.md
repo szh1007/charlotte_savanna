@@ -188,6 +188,10 @@ charlotte_savanna/
 
 - **Ruff**：配置在 `pyproject.toml`，`line-length = 88`，target `py313`；启用 isort 排序、flake8-simplify、pyupgrade 等规则
 - **pre-commit**：`.pre-commit-config.yaml` 定义 hooks —— ruff（--fix + format）、codespell 拼写检查、conventional-commits 提交信息校验、trailing-whitespace / end-of-file 等基础检查
+- **注释书写规范**（所有 Python 代码统一遵循）：
+  - 中英混排：中文与英文单词/标识符之间留一个空格
+  - 标点一律英文：注释中的逗号、句号、括号、冒号等使用 `,` `.` `(` `)` `:`，符号后按英文风格空一格
+  - 行宽：代码与注释每行 ≤ 88 字符（Black 风格），超长必须换行，避免 pre-commit 的 ruff format 报错
 
 ### 4.6 文件组织
 
@@ -359,4 +363,4 @@ cd project/menu/ui && npm install
 
 ---
 
-> **最后更新**：2026-08-15 | **维护者**：Claude Code (charlotte)
+> **最后更新**：2026-08-17 | **维护者**：Claude Code (charlotte)
