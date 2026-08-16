@@ -30,9 +30,9 @@ class HistoryMongoTool:
         """
         try:
             # 从环境变量读取 MongoDB 连接地址(敏感配置, 不硬编码)
-            self.mongo_url = os.getenv("MONGO_URL")
+            self.mongo_url = os.getenv("RK_MONGO_URL")
             # 从环境变量读取要使用的数据库名称
-            self.db_name = os.getenv("MONGO_DB_NAME")
+            self.db_name = os.getenv("RK_MONGO_DB_NAME")
 
             # 创建 MongoDB 客户端实例, 建立与数据库的连接
             self.client = MongoClient(self.mongo_url)

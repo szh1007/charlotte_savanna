@@ -16,8 +16,8 @@ class EmbeddingConfig:
 
 
 embedding_config = EmbeddingConfig(
-    bge_m3_path=env_str("BGE_M3_PATH"),
-    bge_m3=env_str("BGE_M3"),
-    bge_device=env_str("BGE_DEVICE"),
-    bge_fp16=env_bool("BGE_FP16"),
+    bge_m3_path=env_str("RK_BGE_M3_PATH"),
+    bge_m3=env_str("RK_BGE_M3"),
+    bge_device=env_str("RK_BGE_DEVICE"),
+    bge_fp16=env_bool("RK_BGE_FP16"),
 )

@@ -14,6 +14,6 @@ class MinerUConfig:
 
 
 mineru_config = MinerUConfig(
-    base_url=env_str("MINERU_BASE_URL"),
-    api_key=env_str("MINERU_API_TOKEN"),
+    base_url=env_str("RK_MINERU_BASE_URL"),
+    api_key=env_str("RK_MINERU_API_TOKEN"),
 )

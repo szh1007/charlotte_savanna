@@ -16,8 +16,8 @@ class MilvusConfig:
 
 
 milvus_config = MilvusConfig(
-    milvus_url=env_str("MILVUS_URL"),
-    chunks_collection=env_str("CHUNKS_COLLECTION"),
-    entity_name_collection=env_str("ENTITY_NAME_COLLECTION"),
-    item_name_collection=env_str("ITEM_NAME_COLLECTION"),
+    milvus_url=env_str("RK_MILVUS_URL"),
+    chunks_collection=env_str("RK_CHUNKS_COLLECTION"),
+    entity_name_collection=env_str("RK_ENTITY_NAME_COLLECTION"),
+    item_name_collection=env_str("RK_ITEM_NAME_COLLECTION"),
 )

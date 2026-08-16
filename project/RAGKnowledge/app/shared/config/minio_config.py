@@ -18,10 +18,10 @@ class MinIOConfig:
 
 
 minio_config = MinIOConfig(
-    endpoint=env_str("MINIO_ENDPOINT"),
-    access_key=env_str("MINIO_ACCESS_KEY"),
-    secret_key=env_str("MINIO_SECRET_KEY"),
-    bucket_name=env_str("MINIO_BUCKET_NAME"),
-    minio_img_dir=env_str("MINIO_IMG_DIR"),
-    minio_secure=env_bool("MINIO_SECURE"),
+    endpoint=env_str("RK_MINIO_ENDPOINT"),
+    access_key=env_str("RK_MINIO_ACCESS_KEY"),
+    secret_key=env_str("RK_MINIO_SECRET_KEY"),
+    bucket_name=env_str("RK_MINIO_BUCKET_NAME"),
+    minio_img_dir=env_str("RK_MINIO_IMG_DIR"),
+    minio_secure=env_bool("RK_MINIO_SECURE"),
 )

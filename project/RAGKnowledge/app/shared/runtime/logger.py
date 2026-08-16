@@ -26,11 +26,11 @@ from loguru import logger as _loguru_logger
 load_dotenv()
 
 # --------------- 第二步: 读取 .env 配置(带默认值, 防止配置缺失) ---------------
-LOG_CONSOLE_ENABLE = os.getenv("LOG_CONSOLE_ENABLE", "True").lower() == "true"
-LOG_CONSOLE_LEVEL = os.getenv("LOG_CONSOLE_LEVEL", "INFO").upper()
-LOG_FILE_ENABLE = os.getenv("LOG_FILE_ENABLE", "True").lower() == "true"
-LOG_FILE_LEVEL = os.getenv("LOG_FILE_LEVEL", "INFO").upper()
-LOG_FILE_RETENTION = os.getenv("LOG_FILE_RETENTION", "7 days")
+LOG_CONSOLE_ENABLE = os.getenv("RK_LOG_CONSOLE_ENABLE", "True").lower() == "true"
+LOG_CONSOLE_LEVEL = os.getenv("RK_LOG_CONSOLE_LEVEL", "INFO").upper()
+LOG_FILE_ENABLE = os.getenv("RK_LOG_FILE_ENABLE", "True").lower() == "true"
+LOG_FILE_LEVEL = os.getenv("RK_LOG_FILE_LEVEL", "INFO").upper()
+LOG_FILE_RETENTION = os.getenv("RK_LOG_FILE_RETENTION", "7 days")
 
 # --------------- 第三步: 定义日志路径(自动推导项目根) ---------------
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent

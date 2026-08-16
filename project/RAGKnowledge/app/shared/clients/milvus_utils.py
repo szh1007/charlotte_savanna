@@ -56,7 +56,7 @@ def create_hybrid_search_requests(
     :param limit: 单向量搜索返回结果数量, 默认5
     :return: 搜索请求列表, 包含 [dense_req, sparse_req]
     """
-    # 稠密向量默认搜索参数: 余弦相似度(COSINE), 适配 BGE-M3 稠密向量并与建库参数保持一致
+    # 稠密向量默认搜索参数: 内积(IP), BGE-M3 已做 L2 归一化, IP 等价于余弦相似度
     if dense_params is None:
         dense_params = {"metric_type": "IP"}
     # 稀疏向量默认搜索参数: 内积(IP), 适配 BGE-M3 稀疏向量
@@ -129,8 +129,10 @@ def hybrid_search(
             output_fields=output_fields,
             search_params=search_params,
         )
+
+        result_count = len(res[0]) if res and res[0] else 0
         logger.info(
-            f"Milvus 混合搜索完成, 集合[{collection_name}]共检索到{len(res[0])}条结果"
+            f"Milvus 混合搜索完成, 集合[{collection_name}]共检索到{result_count}条结果"
         )
         return res
     except Exception as e:

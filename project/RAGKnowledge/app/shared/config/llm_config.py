@@ -17,9 +17,9 @@ class LLMConfig:
 
 
 llm_config = LLMConfig(
-    base_url=env_str("OPENAI_BASE_URL"),
-    api_key=env_str("OPENAI_API_KEY"),
-    lv_model=env_str("VL_MODEL"),
-    llm_model=env_str("LLM_DEFAULT_MODEL"),
-    llm_temperature=env_float("LLM_DEFAULT_TEMPERATURE"),
+    base_url=env_str("RK_OPENAI_BASE_URL"),
+    api_key=env_str("RK_OPENAI_API_KEY"),
+    lv_model=env_str("RK_VL_MODEL"),
+    llm_model=env_str("RK_LLM_DEFAULT_MODEL"),
+    llm_temperature=env_float("RK_LLM_DEFAULT_TEMPERATURE"),
 )

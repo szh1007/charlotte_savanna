@@ -2,7 +2,15 @@
 工具脚本, 用于处理 download bgem3 相关的辅助任务.
 """
 
+from pathlib import Path
+
 from modelscope.hub.snapshot_download import snapshot_download
 
-model_dir = snapshot_download("BAAI/bge-m3", cache_dir="D:/modelscope_cache/models")
-print(f"模型已下载到: {model_dir}")
+model_id = "BAAI/bge-m3"
+local_cache_dir = Path("D:/__WorkSpace__/.modelscope_cache/models")
+
+local_cache_dir.mkdir(parents=True, exist_ok=True)
+
+model_dir = snapshot_download(model_id=model_id, cache_dir=str(local_cache_dir))
+
+print(f"{model_id} 模型已下载到: {model_dir}")

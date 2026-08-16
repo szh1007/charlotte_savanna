@@ -15,7 +15,7 @@ class RerankerConfig:
 
 
 reranker_config = RerankerConfig(
-    bge_reranker_large=env_str("BGE_RERANKER_LARGE"),
-    bge_reranker_device=env_str("BGE_RERANKER_DEVICE"),
-    bge_reranker_fp16=env_bool("BGE_RERANKER_FP16"),
+    bge_reranker_large=env_str("RK_BGE_RERANKER_LARGE"),
+    bge_reranker_device=env_str("RK_BGE_RERANKER_DEVICE"),
+    bge_reranker_fp16=env_bool("RK_BGE_RERANKER_FP16"),
 )
