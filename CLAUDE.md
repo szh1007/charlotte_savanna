@@ -124,9 +124,7 @@ charlotte_savanna/
 │   ├── DeepAgent_v0.7/          #   DeepAgents 教程
 │   ├── FastAPI/                 #   FastAPI 基础
 │   └── SUMMARY.md               #   知识点学习总结（LangChain/LangGraph/DeepAgents）
-├── .scratch/                    # 本地 Issue Tracker（Markdown，不同步 GitHub）
-│   ├── minimall/issues/         #   商城 17 个 issue
-│   └── miniblog/issues/         #   微博客 37 个 issue（规划中，未创建代码）
+├── .scratch/                    # 本地 Issue Tracker（Markdown，同步 GitHub，当前为空）
 ├── docs/
 │   ├── agents/                  #   Agent 定义与 triage 规范
 │   └── note/                    #   学习笔记（skills 分析等）
@@ -143,7 +141,7 @@ charlotte_savanna/
 ├── .env.example                 # 环境变量模板（可安全提交）
 ├── requirements.txt             # 依赖列表
 ├── .gitignore
-└── README.md                    # 仅含标题 "# charlotte_savanna"
+└── README.md                    # 项目简介 / 技术栈 / 模块 / 快速开始
 ```
 
 ---
@@ -214,7 +212,7 @@ charlotte_savanna/
 
 ## 5. 当前开发状态
 
-> 当前各模块均为学习/测试性质，正式「主流程」尚未确定：minimall 为 Django 测试原型，deep_search / menu 为独立子项目，miniblog 为规划中的测试流程。
+> 当前各模块均为学习/测试性质，正式「主流程」尚未确定：minimall 为 Django 测试原型，deep_search / menu 为独立子项目。
 
 ### 5.1 测试原型 — minimall 商城 (`app/minimall/`)
 
@@ -225,7 +223,6 @@ charlotte_savanna/
 | 页面 (`views_html.py`) | ✅ | 商品列表/详情/购物车/下单/个人中心等 CBV 页面 |
 | 缓存 (`cache.py`) | ✅ | Redis L2 缓存，覆盖击穿/穿透/雪崩/熔断 |
 | 测试 (`tests/`) | ✅ | test_api / test_models / test_services |
-| Issue 进度 | ✅ | `.scratch/minimall/issues/` 17 个 issue 已闭环 |
 
 ### 5.2 子项目 — deep_search 智能体 (`project/deep_search/`)
 
@@ -237,7 +234,7 @@ charlotte_savanna/
 | RAGFlow 集成 | ✅ | `ragflow/demo.py` + 部署笔记 |
 | 前端 (`ui/`) | ✅ | Vue 3 + Vite + TS |
 
-> **全流程开发完毕**：agent → API → tools → RAGFlow → 前端链路已完整闭环，可通过 `sh/deep_search_backend.sh` + `sh/deep_search_frontend.sh` 启动。deep_search 在 `.scratch/` 无独立 issue 跟踪，进度以代码为准。
+> **全流程开发完毕**：agent → API → tools → RAGFlow → 前端链路已完整闭环，可通过 `sh/deep_search_backend.sh` + `sh/deep_search_frontend.sh` 启动。
 
 ### 5.3 子项目 — menu 智能助手 (`project/menu/`)
 
@@ -249,12 +246,7 @@ charlotte_savanna/
 
 > 餐厅智能助手「一绪寿喜烧」已闭环，可通过 `sh/menu_backend.sh` + `sh/menu_frontend.sh` 启动。详细文档见 `project/menu/README.md`。
 
-### 5.4 测试流程（规划中）— miniblog 微博客
-
-- 仅 `.scratch/miniblog/issues/` 有 37 个 issue 规划（FastAPI + SQLAlchemy + MySQL/PostgreSQL + Redis/Celery/Milvus + LangChain Agent + Vue），**尚未创建代码**
-- 环境变量模板已含相关配置（`DB_NAME_FASTAPI` / `PG_DB_NAME_FASTAPI` / `REDIS_URL` / `MILVUS_*`）
-
-### 5.5 Demo 目录（仅供学习参考，不计入业务/子项目）
+### 5.4 Demo 目录（仅供学习参考，不计入业务/子项目）
 
 | 目录 | 状态 | 说明 |
 |------|------|------|
@@ -268,7 +260,7 @@ charlotte_savanna/
 
 > 另有 `demo/INTERVIEW.md`（大厂面试题整理，本地维护，`.gitignore` 排除不提交）。
 
-### 5.6 基础设施
+### 5.5 基础设施
 
 | 项目 | 状态 | 说明 |
 |------|------|------|
@@ -278,7 +270,6 @@ charlotte_savanna/
 | 依赖管理 | ✅ | `requirements.txt` 已生成（267 个包） |
 | 配置安全 | ✅ | SECRET_KEY / ALLOWED_HOSTS / DEBUG 已环境变量化，settings 拆分 dev/prod |
 | README | ✅ | 根 README 已补全（项目简介 / 技术栈 / 模块 / 快速开始） |
-| miniblog 代码 | ❌ | 仅规划，未创建 |
 
 ---
 
@@ -351,7 +342,7 @@ cd project/menu/ui && npm install
 
 ### Issue tracker
 
-本地 Markdown（`.scratch/<feature-slug>/`），不自动同步 GitHub，由用户自行提交推送。详见 `docs/agents/issue-tracker.md`。
+本地 Markdown（`.scratch/<feature-slug>/`），随仓库提交同步到 GitHub。详见 `docs/agents/issue-tracker.md`。
 
 ### Triage labels
 

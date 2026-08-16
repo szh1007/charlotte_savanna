@@ -70,7 +70,7 @@ charlotte_savanna/
 ├── demo/                    # 自学教程（非业务代码）
 │   └── SUMMARY.md           # 知识点学习总结
 ├── docs/                    # Agent 定义、triage 规范、学习笔记
-├── .scratch/                # 本地 Issue Tracker（Markdown）
+├── .scratch/                # 本地 Issue Tracker（Markdown，当前为空）
 ├── requirements.txt         # Python 依赖
 ├── .env.example             # 环境变量模板
 └── CLAUDE.md                # 项目上下文与开发规范
