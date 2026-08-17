@@ -10,7 +10,7 @@
 - user_flavor_search: 按用户口味语义检索菜品
 - search_main_dishes: 查询特色主菜
 
-注意: 本模块依赖 milvus.py 先运行, 完成 menu 数据库与 menu_items 集合的初始化.
+注意: 本模块依赖 milvus_sync.py 先运行, 完成 menu 数据库与 menu_items 集合的初始化.
 """
 
 import asyncio

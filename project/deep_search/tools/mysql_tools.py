@@ -38,7 +38,7 @@ def get_db_config():
         "port": int(os.getenv("DS_MYSQL_PORT", "3306")),
         "user": os.getenv("DS_MYSQL_USERNAME"),
         "password": os.getenv("DS_MYSQL_PASSWORD"),
-        "database": os.getenv("DS_MYSQL_NAME"),
+        "database": os.getenv("DS_MYSQL_NAME", "deep_search"),
         "charset": os.getenv("DS_MYSQL_CHARSET", "utf8mb4"),
         "collation": os.getenv("DS_MYSQL_COLLATION", "utf8mb4_unicode_ci"),
         "autocommit": True,
@@ -127,7 +127,7 @@ def show_table_data(table_name: str):
 
 
 @tool
-def excute_sql_data(sql: str):
+def execute_sql_data(sql: str):
     """
     执行sql语句, 返回查询结果, sql就是要执行的语句
     通过 list_table_names 工具校验表名称
@@ -166,4 +166,4 @@ def excute_sql_data(sql: str):
 if __name__ == "__main__":
     rprint(list_table_names.invoke({}))
     rprint(show_table_data.invoke({"table_name": "inventory"}))
-    rprint(excute_sql_data.invoke({"sql": "select * from inventory limit 100"}))
+    rprint(execute_sql_data.invoke({"sql": "select * from inventory limit 100"}))

@@ -731,19 +731,22 @@ builder.add_node(
 )
 ```
 
+- 注意: LangGraph 1.2 中 `timeout` 仅在**异步执行路径**可用 — 节点须为 `async def`, 且调用须用 `graph.ainvoke(...)` 而非 `graph.invoke(...)`, 否则运行时报 `Node timeouts are only supported for async nodes`。
+
 ### 4.11 缓存
 
 ```python
 from langgraph.cache.memory import InMemoryCache
 from langgraph.types import CachePolicy
 
-builder.add_node(test_node, cache_policy=CachePolicy(ttl=10, key_func=None))
+builder.add_node(test_node, cache_policy=CachePolicy(ttl=10))
 graph = builder.compile(cache=InMemoryCache())
 
 # 相同输入 + 确定输出 → 命中缓存，跳过执行
 ```
 
 - `key_func` 用于复杂/不可序列化数据自定义缓存键；默认用输入参数作键。
+- 注意: 不要显式传 `key_func=None`（LangGraph 1.2 会内部崩溃 `'NoneType' object is not callable`），需要默认行为时直接省略该参数。
 
 ## 5. Memory — 记忆
 
@@ -1060,7 +1063,7 @@ subgraph = (...).compile(
 
 核心主线：**create_deep_agent → Subagent（主从模式）→ Interrupt（审批）→ Backend（主动记忆）→ Permission / Skills / Context**。
 
-## 0. 何时用 DeepAgent（3 条铁律）
+## 0. 何时用 DeepAgent（4 条铁律）
 
 1. **问题极度开放**：已不足以用 LangGraph 条件边解决；
 2. **存在领域冲突**：单智能体执行时不同领域互相污染上下文，而主/子智能体有不同上下文；

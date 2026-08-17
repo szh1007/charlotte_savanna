@@ -1,9 +1,14 @@
 """
 安装Milvus (powershell)
+d:
+cd /Docker/Milvus
+
 Invoke-WebRequest \
-    http://raw.githubusercontent.com/milvus-io/milvus/\
-        refs/heads/master/scripts/standalone_embed.bat \
-        -Outfile standalone.bat
+    https://github.com/milvus-io/milvus/releases/\
+        download/v3.0.0/milvus-standalone-docker-compose.yml \
+            -OutFile docker-compose.yml
+
+docker compose up -d
 """
 
 import os

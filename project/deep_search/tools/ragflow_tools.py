@@ -115,5 +115,6 @@ def create_session_ask(chat_name: str, question: str):
         return f"RAGFlow聊天助手回答失败: {chat_name}, 错误信息: {e!s}"
 
 
-rprint(show_chat_list())
-rprint(create_session_ask(chat_name="综合对话助手", question="中国刑法包含几部分"))
+if __name__ == "__main__":
+    rprint(show_chat_list())
+    rprint(create_session_ask(chat_name="综合对话助手", question="中国刑法包含几部分"))

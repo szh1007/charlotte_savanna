@@ -142,7 +142,7 @@ project/deep_search/
 
 ```bash
 python -m project.deep_search.api.server
-# 或 sh/deep_search_backend.sh
+# 或仓库根目录 sh/deep_search_backend.sh
 ```
 
 后端服务地址：`http://127.0.0.1:8000`
@@ -152,7 +152,7 @@ python -m project.deep_search.api.server
 ```bash
 cd project/deep_search/ui
 npm install     # 首次运行
-npm run dev     # 或 sh/deep_search_frontend.sh
+npm run dev     # 或仓库根目录 sh/deep_search_frontend.sh
 ```
 
 ---
@@ -165,6 +165,7 @@ npm run dev     # 或 sh/deep_search_frontend.sh
 | POST | `/api/upload` | 上传文件到会话目录 | `files` + `thread_id`（表单） |
 | GET | `/api/download` | 下载指定文件 | `path`（绝对路径，须在 output 内） |
 | GET | `/api/files` | 列出目录下文件 | `path`（绝对路径，须在 output 内） |
+| GET | `/outputs/*` | 静态访问生成文件（前端文件卡片使用） | 文件相对路径 |
 | WS | `/ws/{thread_id}` | 流式上报任务进度 | — |
 
 ---

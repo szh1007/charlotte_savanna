@@ -9,8 +9,8 @@ from langchain.agents.middleware import (
     before_model,
 )
 from langchain.chat_models import init_chat_model
+from langgraph.runtime import Runtime
 from rich import print as rprint
-from streamlit.runtime import Runtime
 
 dotenv.load_dotenv()
 

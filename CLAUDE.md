@@ -127,11 +127,13 @@ charlotte_savanna/
 │   ├── agents/                  #   Agent 定义与 triage 规范
 │   └── note/                    #   学习笔记（skills 分析等）
 ├── .claude/
-│   ├── settings.json            #   Claude Code 权限与模型配置（不提交）
+│   ├── settings.json            #   Claude Code 权限配置（已提交）
+│   ├── settings.local.json      #   本地覆盖配置（不提交）
 │   └── skills/                  #   自定义 skills（ai-radar / weekly-analyse-project / knowledge-interview-prep）
 ├── CLAUDE.md                    # 本文件（项目上下文）
 ├── CLAUDE_SYSTEM.md             # 系统级 CLAUDE.md 副本（参考用）
-├── main.py                      # （空占位）
+├── AGENTS.md                    # 通用 Agent 指引（占位）
+├── AGENTS_SYSTEM.md             # 系统级 AGENTS.md 副本（参考用）
 ├── langgraph.json               # LangGraph CLI 配置（graph 指向 demo/LangGraph_v1.2）
 ├── pyproject.toml               # Ruff 配置（line-length=88, py313）
 ├── .pre-commit-config.yaml      # pre-commit hooks（ruff/codespell/conventional-commits）
@@ -318,8 +320,8 @@ cd project/menu/ui && npm install
 
 ### 6.5 Claude Code 说明
 
-- 模型后端：DeepSeek（Anthropic 兼容模式），配置在 `settings.json`
-- `.claude/CLAUDE.md` 可提交，`settings.json` 不提交（含个人 API Key）
+- 模型后端：DeepSeek（Anthropic 兼容模式），配置在 `settings.local.json`
+- `.claude/settings.json` 为权限配置（可提交），`settings.local.json` 含私人配置（不提交）；`.claude/` 下不存在 `CLAUDE.md`，项目上下文以根目录 `CLAUDE.md` 为准
 - 项目自定义 skills 在 `.claude/skills/`（`ai-radar` AI 领域周报、`weekly-analyse-project` 项目周报、`knowledge-interview-prep` 知识点总结与面试题整理）
 - 系统级通用规范在 `~/.claude/CLAUDE.md`
 

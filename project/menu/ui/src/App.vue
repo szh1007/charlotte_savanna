@@ -565,7 +565,7 @@ export default {
         }
         faqSuggestTimer = window.setTimeout(() => {
           fetchFaqSuggestions(q)
-        }, 10)
+        }, 100)
       },
       { flush: 'post' }
     )

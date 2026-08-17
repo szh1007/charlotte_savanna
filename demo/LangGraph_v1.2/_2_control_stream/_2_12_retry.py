@@ -1,3 +1,5 @@
+import asyncio
+
 from langgraph.errors import NodeError
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import MessagesState
@@ -11,7 +13,7 @@ class EmptyState(MessagesState):
     pass
 
 
-def test_node(state: EmptyState) -> EmptyState:
+async def test_node(state: EmptyState) -> EmptyState:
     logger.info("执行测试节点...")
     raise HTTPError("模拟抛出异常")
 
@@ -54,4 +56,5 @@ builder.add_edge("finalize", END)
 
 graph = builder.compile()
 
-graph.invoke({})
+# 注意: LangGraph 1.2 中 timeout 仅在异步执行路径可用, 必须用 ainvoke
+asyncio.run(graph.ainvoke({}))

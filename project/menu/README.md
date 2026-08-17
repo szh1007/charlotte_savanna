@@ -73,14 +73,14 @@ project/menu/
 
 - FAQ 数据存储于 Redis：`faq:all_items` 集合保存所有 key，每个 key（`faq:items:*`）为 `{question, answer}` 哈希。
 - 后端将所有 FAQ 问题与用户输入编码为 embedding 向量，计算**余弦相似度**，返回相似度最高的 **top-k（默认 2）** 个问题及答案。
-- 前端交互：用户输入提问时，**停止输入 500ms** 后自动调用该接口，在输入框上方展示推荐问题；点击问题即返回对应答案。
+- 前端交互：用户输入提问时，**停止输入 100ms** 后自动调用该接口，在输入框上方展示推荐问题；点击问题即返回对应答案。
 
 ### 3.4 前端界面（`ui/src/App.vue`）
 
 | 区域 | 功能 |
 |------|------|
 | 智能对话 | 聊天历史、流式输出、欢迎语快捷提问 |
-| FAQ 推荐 | 输入防抖 500ms 触发，展示推荐问题，点击返回答案 |
+| FAQ 推荐 | 输入防抖 100ms 触发，展示推荐问题，点击返回答案 |
 | 菜单列表 | 展示分类 / 辣度 / 素食标签，Agent 推荐菜品时高亮 + 闪烁 |
 | 预订信息 | 展示最近预约记录，支持刷新 |
 
@@ -114,6 +114,7 @@ project/menu/
 | `MENU_REDIS_URL` | Redis 服务地址 |
 | `CLOSEAI_API_KEY` / `CLOSEAI_BASE_URL` | 嵌入模型鉴权（OpenAI 兼容接口） |
 | `CLOSEAI_EMBEDDING_MODEL` | 嵌入模型名称 |
+| `DEEPSEEK_API_KEY` / `DEEPSEEK_API_BASE` | DeepSeek 对话模型鉴权 |
 | `DEEPSEEK_MODEL_NAME` | 对话模型名称（如 `deepseek:deepseek-v4-flash`） |
 
 > 参考项目根目录的 `.env.example` 配置模板。
@@ -142,7 +143,11 @@ project/menu/
 
 ```bash
 python -m project.menu.api.main
+
 # 或 uvicorn project.menu.api.main:app --host 127.0.0.1 --port 8000
+
+# 或一键脚本（仓库根目录 sh/ 下, 自动完成数据初始化 + 启动后端）
+sh sh/menu_backend.sh
 ```
 
 后端服务地址：`http://127.0.0.1:8000`
@@ -152,7 +157,7 @@ python -m project.menu.api.main
 ```bash
 cd project/menu/ui
 npm install     # 首次运行
-npm run dev     # 或直接双击 start.bat
+npm run dev     # 或直接双击 start.bat（Windows）/ 仓库根目录 sh/menu_frontend.sh
 ```
 
 前端地址：`http://localhost:3000`

@@ -44,5 +44,6 @@ def upload_file_to_data_set():
     rprint(current_dataset.upload_documents(document_list))
 
 
-create_data_set()
-upload_file_to_data_set()
+if __name__ == "__main__":
+    create_data_set()
+    upload_file_to_data_set()

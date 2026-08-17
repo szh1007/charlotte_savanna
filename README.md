@@ -155,6 +155,7 @@ cp .env.example .env               # 填入真实 API Key
 - **LLM（Embedding）**：`CLOSEAI_*`
 - **数据库**：`MYSQL_*`（Django + demo）、`PGSQL_*`（PostgreSQL demo）
 - **缓存 / 向量**：`REDIS_URL`、`MILVUS_*`（`MILVUS_URL` / `MILVUS_DATABASE_NAME` / `MILVUS_COLLECTION_NAME`）
+- **子项目专用**：`MENU_*`（menu）、`DS_*`（deep_search）
 - **Django**：`DJANGO_*`
 - **外部服务**：`TAVILY_API_KEY`、`LANGSMITH_*`
 

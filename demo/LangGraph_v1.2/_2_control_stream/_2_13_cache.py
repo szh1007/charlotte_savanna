@@ -30,8 +30,7 @@ builder.add_node(
     test_node,
     cache_policy=CachePolicy(
         ttl=10,  # 缓存过期时间, 单位-秒
-        key_func=None,  # 缓存键生成函数
-        # (给复杂的、不可序列化的数据使用), 默认使用输入参数
+        # 默认使用输入参数作为缓存键, 复杂/不可序列化数据可传 key_func 自定义
     ),
 )
 builder.add_edge(START, "test_node")

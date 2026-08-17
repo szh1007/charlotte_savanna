@@ -11,8 +11,8 @@ from langchain.chat_models import init_chat_model
 from langchain.messages import RemoveMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
+from langgraph.runtime import Runtime
 from rich import print as rprint
-from streamlit.runtime import Runtime
 
 dotenv.load_dotenv()
 

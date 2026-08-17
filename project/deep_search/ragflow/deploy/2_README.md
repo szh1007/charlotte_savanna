@@ -1,5 +1,7 @@
 # RAGFlow 核心实战
 
+> 说明: 本文为课程部署笔记, 示例代码与子项目当前的 `tools/ragflow_tools.py` / `ragflow/demo.py` 实现存在差异（工具名、初始化方式等）, 以实际代码为准。
+
 ## 一、环境准备与核心概念
 
 ### 1.1 什么是 RAGFlow？
@@ -16,13 +18,13 @@ RAGFlow 是字节跳动开源的 RAG（检索增强生成）框架，核心能�
 
 - 大模型集成（支持自定义大模型，生成带引用的答案）
 
-### 1.1 本地部署RAGFlow
+### 1.2 本地部署RAGFlow
 
-【部署文件】
+- 部署文件参考本目录下 `1_install.md` 与 `files/`（含多类型测试知识库文件）。
 
-### 1.2 环境配置
+### 1.3 环境配置
 
-#### 1.2.1 配置 .env 文件
+#### 1.3.1 配置 .env 文件
 
 在项目根目录创建 .env 文件，填入 RAGFlow 服务信息：
 
@@ -33,7 +35,7 @@ DS_RAGFLOW_API_URL=http://129.211.218.165  # 你的 RAGFlow 服务地址
 DS_RAGFLOW_API_KEY=ragflow-IyZjA4NzBlMDU2NDExZjE4NzJiNGE1NT  # 你的 API 密钥
 ```
 
-#### 1.2.2 安装依赖
+#### 1.3.2 安装依赖
 
 ```python
 # 核心依赖（SDK+环境变量+请求库）
@@ -42,7 +44,7 @@ pip install ragflow_sdk python-dotenv requests
 pip install langchain-core typing-extensions
 ```
 
-#### 1.2.3 加载环境变量工具函数
+#### 1.3.3 加载环境变量工具函数
 
 创建 [config.py](http://config.py)，封装环境变量加载逻辑（后续所有功能复用）：
 
@@ -184,7 +186,7 @@ def upload_documents(kb_id: str, file_paths: list) -> str:
         traceback.print_exc()
         return f"上传文档失败：{str(e)}"
 
-# 测试调用
+# 测试调用 (kb_id 与文件路径需替换为你实际创建的知识库与本地文件)
 if __name__ == "__main__":
     # create_knowledge_base(kb_name="法律文件知识库")
     # 8a4cfe10106211f188755e0656eb9057
