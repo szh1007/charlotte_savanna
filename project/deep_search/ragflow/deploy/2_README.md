@@ -29,8 +29,8 @@ RAGFlow 是字节跳动开源的 RAG（检索增强生成）框架，核心能�
 <img src="assets/48.png" alt="image-20260209110534502" style="zoom: 33%;" />
 
 ```python
-RAGFLOW_API_URL=http://129.211.218.165  # 你的 RAGFlow 服务地址
-RAGFLOW_API_KEY=ragflow-IyZjA4NzBlMDU2NDExZjE4NzJiNGE1NT  # 你的 API 密钥
+DS_RAGFLOW_API_URL=http://129.211.218.165  # 你的 RAGFlow 服务地址
+DS_RAGFLOW_API_KEY=ragflow-IyZjA4NzBlMDU2NDExZjE4NzJiNGE1NT  # 你的 API 密钥
 ```
 
 #### 1.2.2 安装依赖
@@ -64,8 +64,8 @@ def _load_ragflow_env() -> Tuple[Optional[str], Optional[str]]:
     else:
         load_dotenv()  # 无则加载系统环境变量
 
-    api_key = os.getenv("RAGFLOW_API_KEY")
-    base_url = os.getenv("RAGFLOW_API_URL")
+    api_key = os.getenv("DS_RAGFLOW_API_KEY")
+    base_url = os.getenv("DS_RAGFLOW_API_URL")
     return api_key, base_url
 ```
 
@@ -224,7 +224,7 @@ def get_assistant_list(
 
     # 配置校验
     if not api_key or not base_url:
-        return "错误：RAGFlow 环境变量未配置（需设置 RAGFLOW_API_URL 与 RAGFLOW_API_KEY）"
+        return "错误：RAGFlow 环境变量未配置（需设置 DS_RAGFLOW_API_URL 与 DS_RAGFLOW_API_KEY）"
 
     result = ""
     try:
@@ -448,7 +448,7 @@ def batch_delete_sessions(
 
 ### 4.1 环境配置类问题
 
-- 问题：未配置 RAGFlow 环境变量 → 检查 .env 文件是否存在，RAGFLOW_API_URL 和 RAGFLOW_API_KEY 是否填写正确
+- 问题：未配置 RAGFlow 环境变量 → 检查 .env 文件是否存在，DS_RAGFLOW_API_URL 和 DS_RAGFLOW_API_KEY 是否填写正确
 
 - 问题：连接 RAGFlow 服务失败 → 检查服务地址是否可达（浏览器访问 base_url/health 应返回 200），网络是否有防火墙限制
 

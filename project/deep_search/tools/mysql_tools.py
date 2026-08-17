@@ -34,15 +34,15 @@ dotenv.load_dotenv()
 def get_db_config():
     """获取数据库配置"""
     config = {  # config 中的 key 是固定的
-        "host": os.getenv("MYSQL_HOST", "localhost"),
-        "port": int(os.getenv("MYSQL_PORT", "3306")),
-        "user": os.getenv("MYSQL_USERNAME"),
-        "password": os.getenv("MYSQL_PASSWORD"),
-        "database": os.getenv("MYSQL_NAME"),
-        "charset": os.getenv("MYSQL_CHARSET", "utf8mb4"),
-        "collation": os.getenv("MYSQL_COLLATION", "utf8mb4_unicode_ci"),
+        "host": os.getenv("DS_MYSQL_HOST", "localhost"),
+        "port": int(os.getenv("DS_MYSQL_PORT", "3306")),
+        "user": os.getenv("DS_MYSQL_USERNAME"),
+        "password": os.getenv("DS_MYSQL_PASSWORD"),
+        "database": os.getenv("DS_MYSQL_NAME"),
+        "charset": os.getenv("DS_MYSQL_CHARSET", "utf8mb4"),
+        "collation": os.getenv("DS_MYSQL_COLLATION", "utf8mb4_unicode_ci"),
         "autocommit": True,
-        "sql_mode": os.getenv("MYSQL_SQL_MODE", "TRADITIONAL"),
+        "sql_mode": os.getenv("DS_MYSQL_SQL_MODE", "TRADITIONAL"),
     }
 
     # 移除 None 值 (核心必要操作)

@@ -29,8 +29,8 @@ def config_ragflow_env() -> tuple[str, str]:
     """
     dotenv.load_dotenv(override=True)
 
-    api_key = os.getenv("RAGFLOW_API_KEY")
-    base_url = os.getenv("RAGFLOW_API_URL")
+    api_key = os.getenv("DS_RAGFLOW_API_KEY")
+    base_url = os.getenv("DS_RAGFLOW_API_URL")
     return base_url, api_key
 
 

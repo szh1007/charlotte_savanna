@@ -7,6 +7,6 @@ PROJECT_ROOT="$CHARLOTTE_ROOT/project/menu"
 FRONTEND_DIR="$PROJECT_ROOT/ui"
 
 cd "$CHARLOTTE_ROOT"
-# python -m project.menu.agent.FAQ.redis_sync
-# python -m project.menu.agent.milvus_sync
+python -m project.menu.agent.FAQ.redis_sync
+python -m project.menu.agent.milvus_sync
 python -m project.menu.api.main

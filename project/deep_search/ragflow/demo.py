@@ -12,8 +12,8 @@ def create_data_set():
     """RAGFlow - 创建知识库"""
 
     ragflow = RAGFlow(
-        base_url=os.getenv("RAGFLOW_API_URL", ""),
-        api_key=os.getenv("RAGFLOW_API_KEY", ""),
+        base_url=os.getenv("DS_RAGFLOW_API_URL", ""),
+        api_key=os.getenv("DS_RAGFLOW_API_KEY", ""),
     )
 
     created_dataset = ragflow.create_dataset(
@@ -26,8 +26,8 @@ def upload_file_to_data_set():
     """RAGFlow - 上传文件到知识库"""
 
     ragflow = RAGFlow(
-        base_url=os.getenv("RAGFLOW_API_URL", ""),
-        api_key=os.getenv("RAGFLOW_API_KEY", ""),
+        base_url=os.getenv("DS_RAGFLOW_API_URL", ""),
+        api_key=os.getenv("DS_RAGFLOW_API_KEY", ""),
     )
 
     current_dataset = ragflow.list_datasets(id="your-dataset-id")[0]

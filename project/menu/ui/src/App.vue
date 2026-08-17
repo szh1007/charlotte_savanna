@@ -844,12 +844,29 @@ body {
 /* 功能区布局 */
 .reservation-card {
   flex: 0 0 auto;
-  height: auto;
+  /* 上下高度固定，与下方菜单卡片合计 = 左侧对话面板高度，保证底部对齐 */
+  height: 300px;
   margin-bottom: 12px;
 }
 
 .reservation-card .el-card__body {
   padding: 20px;
+}
+
+/* 预订条目超出固定高度时内部滚动，空状态垂直居中 */
+.reservation-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.reservation-body .el-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
 }
 
 .reservation-list {

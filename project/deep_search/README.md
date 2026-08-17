@@ -124,11 +124,11 @@ project/deep_search/
 |--------|------|
 | `DEEPSEEK_API_BASE` / `DEEPSEEK_API_KEY` | DeepSeek 模型鉴权 |
 | `DEEPSEEK_MODEL_NAME` | 对话模型名称（如 `deepseek:deepseek-v4-flash`） |
-| `MYSQL_HOST` / `MYSQL_PORT` | MySQL 地址 / 端口 |
-| `MYSQL_USERNAME` / `MYSQL_PASSWORD` | MySQL 账号 / 密码 |
-| `MYSQL_NAME` | MySQL 数据库名（默认 `deep_search`） |
+| `DS_MYSQL_HOST` / `DS_MYSQL_PORT` | MySQL 地址 / 端口 |
+| `DS_MYSQL_USERNAME` / `DS_MYSQL_PASSWORD` | MySQL 账号 / 密码 |
+| `DS_MYSQL_NAME` | MySQL 数据库名（默认 `deep_search`） |
 | `TAVILY_API_KEY` | Tavily 联网搜索鉴权 |
-| `RAGFLOW_API_URL` / `RAGFLOW_API_KEY` | RAGFlow 服务地址 / 鉴权 |
+| `DS_RAGFLOW_API_URL` / `DS_RAGFLOW_API_KEY` | RAGFlow 服务地址 / 鉴权 |
 
 ---
 
@@ -173,5 +173,5 @@ npm run dev     # 或 sh/deep_search_frontend.sh
 
 1. 后端监听 `0.0.0.0:8000`，CORS 已放开，前端可直接跨域调用。
 2. `convert_md_to_pdf` 依赖 Word COM 引擎（`pywin32`），仅支持 Windows 环境。
-3. RAGFlow 知识库助手默认未启用，需在 `main_agent.py` 中取消注释并配置 `RAGFLOW_API_URL` / `RAGFLOW_API_KEY`。
+3. RAGFlow 知识库助手默认未启用，需在 `main_agent.py` 中取消注释并配置 `DS_RAGFLOW_API_URL` / `DS_RAGFLOW_API_KEY`。
 4. `.env` 含 API Key，请勿提交到版本控制。
