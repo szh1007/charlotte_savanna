@@ -110,7 +110,7 @@ charlotte_savanna/
 
 ### demo — 自学教程（非业务）
 
-Python 基础、LangChain 1.3、LangGraph 1.2、DeepAgents 0.7、FastAPI 的渐进式教程，仅作学习参考。另有 [`SUMMARY.md`](demo/SUMMARY.md)（知识点学习总结）；`demo/INTERVIEW.md` 为大厂面试题整理，本地维护不提交。
+Python 基础、LangChain 1.3、LangGraph 1.2、DeepAgents 0.7、FastAPI 的渐进式教程，仅作学习参考。另有 [`SUMMARY.md`](demo/SUMMARY.md)（知识点学习总结）。
 
 ---
 
@@ -151,10 +151,12 @@ cp .env.example .env               # 填入真实 API Key
 
 统一通过 `.env` 管理（模板见 [`.env.example`](.env.example)），子项目另持有独立 `.env`（`project/*/.env`，不提交）。主要分组：
 
-- **LLM**：`OPENAI_*` / `DEEPSEEK_*` / `ANTHROPIC_*`
-- **数据库**：`DB_*`（Django）、`MYSQL_*`（子项目）
-- **缓存 / 向量**：`REDIS_URL`、`MILVUS_*`
-- **外部服务**：`TAVILY_API_KEY`、`RAGFLOW_*`、`LANGSMITH_*`
+- **LLM（Chat）**：`DEEPSEEK_*`（含 `DEEPSEEK_MODEL_NAME`）
+- **LLM（Embedding）**：`CLOSEAI_*`
+- **数据库**：`MYSQL_*`（Django + demo）、`PGSQL_*`（PostgreSQL demo）
+- **缓存 / 向量**：`REDIS_URL`、`MILVUS_*`（`MILVUS_URL` / `MILVUS_DATABASE_NAME` / `MILVUS_COLLECTION_NAME`）
+- **Django**：`DJANGO_*`
+- **外部服务**：`TAVILY_API_KEY`、`LANGSMITH_*`
 
 ---
 

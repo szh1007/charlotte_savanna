@@ -55,7 +55,7 @@ project/menu/
 
 ### 3.1 智能对话（`POST /chat`）
 
-- 基于 LangChain `create_agent`，使用 **DeepSeek（deepseek-v4-pro）** 模型，关闭 thinking 模式。
+- 基于 LangChain `create_agent`，使用 **DeepSeek** 模型（`DEEPSEEK_MODEL_NAME` 指定），关闭 thinking 模式。
 - 通过 `InMemorySaver` checkpointer 按 `thread_id` 隔离并保留多轮对话历史。
 - 后端以 SSE（`text/event-stream`）流式返回，前端逐 token 渲染，并支持简单的 Markdown 加粗/换行。
 
@@ -94,7 +94,7 @@ project/menu/
 |------|------|
 | 后端框架 | FastAPI |
 | 智能体 | LangChain + LangGraph（checkpointer） |
-| 大模型 | DeepSeek（deepseek-v4-pro） |
+| 大模型 | DeepSeek（`DEEPSEEK_MODEL_NAME` 指定） |
 | 嵌入模型 | OpenAI 兼容接口的向量嵌入模型 |
 | 数据库 | MySQL（菜单 + 预订单） |
 | 向量库 | Milvus（菜品语义检索，HNSW + 余弦相似度） |
@@ -107,13 +107,14 @@ project/menu/
 
 | 变量名 | 说明 |
 |--------|------|
-| `MYSQL_HOST` / `MYSQL_PORT` | MySQL 地址 / 端口 |
-| `MYSQL_USERNAME` / `MYSQL_PASSWORD` | MySQL 账号 / 密码 |
-| `MYSQL_NAME` | MySQL 数据库名（默认 `menu`） |
+| `MENU_MYSQL_HOST` / `MENU_MYSQL_PORT` | MySQL 地址 / 端口 |
+| `MENU_MYSQL_USERNAME` / `MENU_MYSQL_PASSWORD` | MySQL 账号 / 密码 |
+| `MENU_MYSQL_NAME` | MySQL 数据库名（默认 `menu`） |
 | `MENU_MILVUS_URL` | Milvus 服务地址 |
 | `MENU_REDIS_URL` | Redis 服务地址 |
-| `OPENAI_API_KEY` / `OPENAI_BASE_URL` | 嵌入模型鉴权（OpenAI 兼容接口） |
-| `MENU_EMBEDDING_MODEL` | 嵌入模型名称 |
+| `CLOSEAI_API_KEY` / `CLOSEAI_BASE_URL` | 嵌入模型鉴权（OpenAI 兼容接口） |
+| `CLOSEAI_EMBEDDING_MODEL` | 嵌入模型名称 |
+| `DEEPSEEK_MODEL_NAME` | 对话模型名称（如 `deepseek:deepseek-v4-flash`） |
 
 > 参考项目根目录的 `.env.example` 配置模板。
 

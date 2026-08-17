@@ -1,3 +1,4 @@
+import os
 from typing import Literal
 
 import dotenv
@@ -33,7 +34,8 @@ Tips: graph无需配置长短期记忆, LangSmith 平台会自动处理
 dotenv.load_dotenv()
 
 model = init_chat_model(
-    "deepseek:deepseek-v4-pro", extra_body={"thinking": {"type": "disabled"}}
+    model=os.getenv("DEEPSEEK_MODEL_NAME", ""),
+    extra_body={"thinking": {"type": "disabled"}},
 )
 
 

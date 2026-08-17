@@ -255,8 +255,6 @@ charlotte_savanna/
 | `demo/FastAPI/` | ✅ 完成 | FastAPI 基础教程（3 个 demo） |
 | `demo/SUMMARY.md` | ✅ 完成 | LangChain/LangGraph/DeepAgents 知识点学习总结 |
 
-> 另有 `demo/INTERVIEW.md`（大厂面试题整理，本地维护，`.gitignore` 排除不提交）。
-
 ### 5.5 基础设施
 
 | 项目 | 状态 | 说明 |

@@ -1,3 +1,5 @@
+import os
+
 import dotenv
 from langchain.chat_models import init_chat_model
 from langchain.messages import AIMessage, HumanMessage, SystemMessage
@@ -6,7 +8,7 @@ from rich import print as fprint
 dotenv.load_dotenv()
 
 llm = init_chat_model(
-    model="deepseek:deepseek-v4-pro",
+    model=os.getenv("DEEPSEEK_MODEL_NAME", ""),
     temperature=0.7,  # 0 ~ 2, 0 表示更一致、准确, 2 表示更随机、艺术
     max_tokens=1024,  # 最大输出长度, 0 表示不限制
     timeout=60,  # 超时时间, 单位秒

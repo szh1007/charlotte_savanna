@@ -1,3 +1,5 @@
+import os
+
 import dotenv
 from langchain.agents import create_agent
 from langchain.agents.middleware import TodoListMiddleware
@@ -6,7 +8,8 @@ from langchain.chat_models import init_chat_model
 dotenv.load_dotenv()
 
 model = init_chat_model(
-    "deepseek:deepseek-v4-pro", extra_body={"thinking": {"type": "disabled"}}
+    model=os.getenv("DEEPSEEK_MODEL_NAME", ""),
+    extra_body={"thinking": {"type": "disabled"}},
 )
 
 # 仅做定义上的展示

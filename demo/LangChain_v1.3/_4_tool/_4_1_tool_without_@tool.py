@@ -1,3 +1,5 @@
+import os
+
 import dotenv
 from langchain.chat_models import init_chat_model
 from langchain_core.utils.function_calling import convert_to_openai_tool
@@ -5,7 +7,7 @@ from rich import print as rprint
 
 dotenv.load_dotenv()
 
-llm = init_chat_model("deepseek:deepseek-v4-pro")
+llm = init_chat_model(model=os.getenv("DEEPSEEK_MODEL_NAME", ""))
 
 
 # 定义工具

@@ -1,3 +1,5 @@
+import os
+
 import dotenv
 from deepagents import create_deep_agent
 from langchain.chat_models import init_chat_model
@@ -22,7 +24,8 @@ DeepAgent 架构模式 - 层级工作流 - 主从模式
 dotenv.load_dotenv()
 
 model = init_chat_model(
-    "deepseek:deepseek-v4-pro", extra_body={"thinking": {"type": "disabled"}}
+    model=os.getenv("DEEPSEEK_MODEL_NAME", ""),
+    extra_body={"thinking": {"type": "disabled"}},
 )
 
 tavily = TavilyClient()

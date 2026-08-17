@@ -19,7 +19,7 @@ llm2 = ChatOpenAI(
 )
 
 # 方法3: init_chat_model 根据供应商自动识别 (推荐)
-llm3 = init_chat_model("deepseek:deepseek-v4-pro")
+llm3 = init_chat_model(model=os.getenv("DEEPSEEK_MODEL_NAME", ""))
 
 response = llm3.invoke("一句话介绍你自己")
 # print(response.content)

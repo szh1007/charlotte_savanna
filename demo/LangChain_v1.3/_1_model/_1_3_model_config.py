@@ -1,10 +1,12 @@
+import os
+
 import dotenv
 from langchain.chat_models import init_chat_model
 
 dotenv.load_dotenv()
 
 llm = init_chat_model(
-    model="deepseek:deepseek-v4-pro",
+    model=os.getenv("DEEPSEEK_MODEL_NAME", ""),
     temperature=0.7,
     max_tokens=1024,
     timeout=60,

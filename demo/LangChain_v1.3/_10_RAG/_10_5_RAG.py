@@ -14,19 +14,19 @@ dotenv.load_dotenv()
 
 """ Milvus 向量数据库 - DDL """
 MILVUS_URL = os.getenv("MILVUS_URL", "")
-MILVUS_DB_NAME = os.getenv("MILVUS_DB_NAME", "")
+MILVUS_DATABASE_NAME = os.getenv("MILVUS_DATABASE_NAME", "")
 MILVUS_COLLECTION_NAME = os.getenv("MILVUS_COLLECTION_NAME", "")
 
 client = MilvusClient(MILVUS_URL)
 
 # 检查数据库是否存在, 不存在则创建
-if MILVUS_DB_NAME not in client.list_databases():
-    client.create_database(MILVUS_DB_NAME)
+if MILVUS_DATABASE_NAME not in client.list_databases():
+    client.create_database(MILVUS_DATABASE_NAME)
 
 rprint(f"Milvus_databases: {client.list_databases()}")
 
 # 切换数据库
-client.use_database(MILVUS_DB_NAME)
+client.use_database(MILVUS_DATABASE_NAME)
 
 # 检查集合是否存在, 存在则删除
 if MILVUS_COLLECTION_NAME in client.list_collections():
@@ -35,7 +35,7 @@ if MILVUS_COLLECTION_NAME in client.list_collections():
 # 重新创建 collection
 client.create_collection(
     MILVUS_COLLECTION_NAME,
-    dimension=int(os.getenv("EMBEDDING_DIM", 1024)),
+    dimension=int(os.getenv("EMBEDDING_DIM", 3072)),
     metric_type="COSINE",
 )
 
@@ -43,9 +43,9 @@ rprint(f"Milvus_charlotte_collections: {client.list_collections()}")
 
 """ Embedding """
 embedding_model = init_embeddings(
-    "openai:" + os.getenv("EMBEDDING_MODEL", ""),
-    api_key=os.getenv("OPENAI_API_KEY", ""),
-    base_url=os.getenv("OPENAI_BASE_URL", ""),
+    model=os.getenv("CLOSEAI_EMBEDDING_MODEL", ""),
+    api_key=os.getenv("CLOSEAI_API_KEY", ""),
+    base_url=os.getenv("CLOSEAI_BASE_URL", ""),
 )
 
 # loader
@@ -102,7 +102,8 @@ rprint(
 
 """ Agent """
 model = init_chat_model(
-    "deepseek:deepseek-v4-pro", extra_body={"thinking": {"type": "disabled"}}
+    model=os.getenv("DEEPSEEK_MODEL_NAME", ""),
+    extra_body={"thinking": {"type": "disabled"}},
 )
 
 agent = create_agent(

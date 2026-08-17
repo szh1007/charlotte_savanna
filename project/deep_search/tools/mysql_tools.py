@@ -36,9 +36,9 @@ def get_db_config():
     config = {  # config 中的 key 是固定的
         "host": os.getenv("MYSQL_HOST", "localhost"),
         "port": int(os.getenv("MYSQL_PORT", "3306")),
-        "user": os.getenv("MYSQL_USER"),
+        "user": os.getenv("MYSQL_USERNAME"),
         "password": os.getenv("MYSQL_PASSWORD"),
-        "database": os.getenv("MYSQL_DATABASE"),
+        "database": os.getenv("MYSQL_NAME"),
         "charset": os.getenv("MYSQL_CHARSET", "utf8mb4"),
         "collation": os.getenv("MYSQL_COLLATION", "utf8mb4_unicode_ci"),
         "autocommit": True,

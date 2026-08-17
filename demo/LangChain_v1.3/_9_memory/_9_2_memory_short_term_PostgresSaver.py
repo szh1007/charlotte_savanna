@@ -9,7 +9,8 @@ from rich import print as rprint
 dotenv.load_dotenv()
 
 model = init_chat_model(
-    "deepseek:deepseek-v4-pro", extra_body={"thinking": {"type": "disabled"}}
+    model=os.getenv("DEEPSEEK_MODEL_NAME", ""),
+    extra_body={"thinking": {"type": "disabled"}},
 )
 
 """
@@ -23,14 +24,14 @@ model = init_chat_model(
 
 
 # 连接 PostgreSQL
-PG_DB_URL = (
-    f"postgresql://{os.getenv('PG_DB_USERNAME', '')}:{os.getenv('PG_DB_PASSWORD', '')}\
-    @{os.getenv('PG_DB_HOST', '')}:{os.getenv('PG_DB_PORT', '')}\
-        /{os.getenv('PG_DB_NAME', '')}\
+PGSQL_URL = (
+    f"postgresql://{os.getenv('PGSQL_USERNAME', '')}:{os.getenv('PGSQL_PASSWORD', '')}\
+    @{os.getenv('PGSQL_HOST', '')}:{os.getenv('PGSQL_PORT', '')}\
+        /{os.getenv('PGSQL_NAME', '')}\
             ?sslmode=disable"
 )
 
-with PostgresSaver.from_conn_string(PG_DB_URL) as checkpointer:
+with PostgresSaver.from_conn_string(PGSQL_URL) as checkpointer:
     # 启动 PostgreSQL checkpointer
     checkpointer.setup()
 

@@ -109,7 +109,7 @@ project/deep_search/
 |------|------|
 | 后端框架 | FastAPI（WebSocket 流式） |
 | 智能体 | DeepAgents（create_deep_agent）+ LangGraph checkpointer |
-| 大模型 | DeepSeek（deepseek-v4-pro） |
+| 大模型 | DeepSeek（`DEEPSEEK_MODEL_NAME` 指定） |
 | 数据库 | MySQL（药品 / 库存 / 销售） |
 | 知识库 | RAGFlow |
 | 联网搜索 | Tavily |
@@ -123,9 +123,10 @@ project/deep_search/
 | 变量名 | 说明 |
 |--------|------|
 | `DEEPSEEK_API_BASE` / `DEEPSEEK_API_KEY` | DeepSeek 模型鉴权 |
+| `DEEPSEEK_MODEL_NAME` | 对话模型名称（如 `deepseek:deepseek-v4-flash`） |
 | `MYSQL_HOST` / `MYSQL_PORT` | MySQL 地址 / 端口 |
-| `MYSQL_USER` / `MYSQL_PASSWORD` | MySQL 账号 / 密码 |
-| `MYSQL_DATABASE` | MySQL 数据库名（默认 `deep_search`） |
+| `MYSQL_USERNAME` / `MYSQL_PASSWORD` | MySQL 账号 / 密码 |
+| `MYSQL_NAME` | MySQL 数据库名（默认 `deep_search`） |
 | `TAVILY_API_KEY` | Tavily 联网搜索鉴权 |
 | `RAGFLOW_API_URL` / `RAGFLOW_API_KEY` | RAGFlow 服务地址 / 鉴权 |
 

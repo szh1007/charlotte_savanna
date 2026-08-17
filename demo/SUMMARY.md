@@ -41,7 +41,7 @@ llm2 = ChatOpenAI(
 )
 
 # 方式3：init_chat_model 按 "provider:model" 自动识别（推荐）
-llm3 = init_chat_model("deepseek:deepseek-v4-pro")
+llm3 = init_chat_model(model=os.getenv("DEEPSEEK_MODEL_NAME", ""))
 ```
 
 > ⚠️ **额外补充**：`init_chat_model` 的模型字符串格式是 `"供应商:模型名"`，LangChain 会据此自动加载对应的 ChatModel 实现，是官方推荐的统一入口。嵌入模型同理用 `init_embeddings("openai:text-embedding-3-large", ...)`。
@@ -50,7 +50,7 @@ llm3 = init_chat_model("deepseek:deepseek-v4-pro")
 
 ```python
 llm = init_chat_model(
-    model="deepseek:deepseek-v4-pro",
+    model=os.getenv("DEEPSEEK_MODEL_NAME", ""),
     temperature=0.7,      # 0~2，越低越稳定一致，越高越随机发散
     max_tokens=1024,      # 最大输出长度，0 表示不限制
     timeout=60,           # 超时（秒）
@@ -467,9 +467,9 @@ docs = splitter.split_documents(src_docs)
 from langchain.embeddings import init_embeddings
 
 embedding_model = init_embeddings(
-    "openai:text-embedding-3-large",
-    api_key=os.getenv("OPENAI_API_KEY", ""),
-    base_url=os.getenv("OPENAI_BASE_URL", ""),
+    model=os.getenv("CLOSEAI_EMBEDDING_MODEL", ""),
+    api_key=os.getenv("CLOSEAI_API_KEY", ""),
+    base_url=os.getenv("CLOSEAI_BASE_URL", ""),
 )
 embeddings = embedding_model.embed_documents(texts)   # 批量向量化文档
 query_vec  = embedding_model.embed_query(query)       # 向量化查询

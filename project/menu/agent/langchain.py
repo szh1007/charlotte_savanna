@@ -56,9 +56,9 @@ menu_items_mapping = {
 
 # 向量嵌入模型 (OpenAI 兼容接口), 将文本编码为向量, 供 Milvus 语义检索使用
 embedding_model = init_embeddings(
-    "openai:" + os.getenv("MENU_EMBEDDING_MODEL", ""),
-    api_key=os.getenv("OPENAI_API_KEY", ""),
-    base_url=os.getenv("OPENAI_BASE_URL", ""),
+    model=os.getenv("CLOSEAI_EMBEDDING_MODEL", ""),
+    api_key=os.getenv("CLOSEAI_API_KEY", ""),
+    base_url=os.getenv("CLOSEAI_BASE_URL", ""),
 )
 
 # Milvus 向量数据库客户端, 切换到 menu 数据库 (需 milvus.py 先完成初始化)
@@ -68,9 +68,9 @@ milvus_client.use_database("menu")
 # MySQL 连接引擎 (SQLAlchemy), 供订座工具写入订单; pool_size=10 复用连接池
 mysql_engine = create_engine(
     "mysql+pymysql://"
-    f"{os.getenv('MYSQL_USERNAME', '')}:{os.getenv('MYSQL_PASSWORD', '')}@"
-    f"{os.getenv('MYSQL_HOST', '')}:{os.getenv('MYSQL_PORT', '')}/"
-    f"{os.getenv('MYSQL_NAME', '')}",
+    f"{os.getenv('MENU_MYSQL_USERNAME', '')}:{os.getenv('MENU_MYSQL_PASSWORD', '')}@"
+    f"{os.getenv('MENU_MYSQL_HOST', '')}:{os.getenv('MENU_MYSQL_PORT', '')}/"
+    f"{os.getenv('MENU_MYSQL_NAME', '')}",
     pool_size=10,
 )
 
@@ -188,11 +188,11 @@ def search_main_dishes() -> list[dict]:
     """
     with (
         pymysql.connect(
-            host=os.getenv("MYSQL_HOST"),
-            port=int(os.getenv("MYSQL_PORT")),
-            user=os.getenv("MYSQL_USERNAME"),
-            password=os.getenv("MYSQL_PASSWORD"),
-            database=os.getenv("MYSQL_NAME"),
+            host=os.getenv("MENU_MYSQL_HOST"),
+            port=int(os.getenv("MENU_MYSQL_PORT")),
+            user=os.getenv("MENU_MYSQL_USERNAME"),
+            password=os.getenv("MENU_MYSQL_PASSWORD"),
+            database=os.getenv("MENU_MYSQL_NAME"),
         ) as conn,
         conn.cursor(DictCursor) as cursor,
     ):
@@ -233,7 +233,8 @@ async def create_menu_agent():
         组装好的 LangChain Agent 实例.
     """
     model = init_chat_model(
-        "deepseek:deepseek-v4-pro", extra_body={"thinking": {"type": "disabled"}}
+        model=os.getenv("DEEPSEEK_MODEL_NAME", ""),
+        extra_body={"thinking": {"type": "disabled"}},
     )
 
     return create_agent(

@@ -13,9 +13,9 @@ from rich import print as rprint
 dotenv.load_dotenv()
 
 embedding_model = init_embeddings(
-    "openai:text-embedding-3-large",
-    api_key=os.getenv("OPENAI_API_KEY", ""),
-    base_url=os.getenv("OPENAI_BASE_URL", ""),
+    model=os.getenv("CLOSEAI_EMBEDDING_MODEL", ""),
+    api_key=os.getenv("CLOSEAI_API_KEY", ""),
+    base_url=os.getenv("CLOSEAI_BASE_URL", ""),
 )
 
 """ InMemoryStore 内存级长期记忆存储 """
@@ -47,14 +47,14 @@ rprint(f"store1 search: {store1.search(('User',), query='sava')}")  # 根据语�
 
 
 """ InMemoryStore 内存级长期记忆存储 """
-PG_DB_URL = (
-    f"postgresql://{os.getenv('PG_DB_USERNAME', '')}:{os.getenv('PG_DB_PASSWORD', '')}\
-    @{os.getenv('PG_DB_HOST', '')}:{os.getenv('PG_DB_PORT', '')}\
-        /{os.getenv('PG_DB_NAME', '')}\
+PGSQL_URL = (
+    f"postgresql://{os.getenv('PGSQL_USERNAME', '')}:{os.getenv('PGSQL_PASSWORD', '')}\
+    @{os.getenv('PGSQL_HOST', '')}:{os.getenv('PGSQL_PORT', '')}\
+        /{os.getenv('PGSQL_NAME', '')}\
             ?sslmode=disable"
 )
 
-with PostgresStore.from_conn_string(PG_DB_URL) as store2:
+with PostgresStore.from_conn_string(PGSQL_URL) as store2:
     store2.setup()
 
     store2.put(

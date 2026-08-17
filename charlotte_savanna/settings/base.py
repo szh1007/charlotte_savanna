@@ -74,11 +74,11 @@ WSGI_APPLICATION = "charlotte_savanna.wsgi.application"
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.mysql",
-        "NAME": os.environ.get("DB_NAME", "charlotte"),
-        "USER": os.environ.get("DB_USERNAME", "root"),
-        "PASSWORD": os.environ.get("DB_PASSWORD", ""),
-        "HOST": os.environ.get("DB_HOST", "localhost"),
-        "PORT": os.environ.get("DB_PORT", "3306"),
+        "NAME": os.environ.get("MYSQL_NAME", "charlotte"),
+        "USER": os.environ.get("MYSQL_USERNAME", "root"),
+        "PASSWORD": os.environ.get("MYSQL_PASSWORD", ""),
+        "HOST": os.environ.get("MYSQL_HOST", "localhost"),
+        "PORT": os.environ.get("MYSQL_PORT", "3306"),
     }
 }
 

@@ -41,11 +41,11 @@ menu_items_mapping = {
 # 从 MySQL 读取全部菜品, 转换为 "中文标签: 值" 格式的文本列表, 供嵌入模型编码
 with (
     pymysql.connect(
-        host=os.getenv("MYSQL_HOST"),
-        port=int(os.getenv("MYSQL_PORT")),
-        user=os.getenv("MYSQL_USERNAME"),
-        password=os.getenv("MYSQL_PASSWORD"),
-        database=os.getenv("MYSQL_NAME"),
+        host=os.getenv("MENU_MYSQL_HOST"),
+        port=int(os.getenv("MENU_MYSQL_PORT")),
+        user=os.getenv("MENU_MYSQL_USERNAME"),
+        password=os.getenv("MENU_MYSQL_PASSWORD"),
+        database=os.getenv("MENU_MYSQL_NAME"),
     ) as conn,
     conn.cursor(DictCursor) as cursor,
 ):
@@ -126,9 +126,9 @@ collection = milvus_client.create_collection(
 
 # 嵌入模型: 将文本编码为向量 (与 langchain.py 使用同一模型, 保证检索一致)
 embedding_model = init_embeddings(
-    "openai:" + os.getenv("MENU_EMBEDDING_MODEL", ""),
-    api_key=os.getenv("OPENAI_API_KEY", ""),
-    base_url=os.getenv("OPENAI_BASE_URL", ""),
+    model=os.getenv("CLOSEAI_EMBEDDING_MODEL", ""),
+    api_key=os.getenv("CLOSEAI_API_KEY", ""),
+    base_url=os.getenv("CLOSEAI_BASE_URL", ""),
 )
 
 # 批量编码全部菜品文本为向量

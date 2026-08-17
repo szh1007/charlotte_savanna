@@ -9,9 +9,9 @@ from rich import print as rprint
 dotenv.load_dotenv()
 
 embedding_model = init_embeddings(
-    "openai:text-embedding-3-large",
-    api_key=os.getenv("OPENAI_API_KEY", ""),
-    base_url=os.getenv("OPENAI_BASE_URL", ""),
+    model=os.getenv("CLOSEAI_EMBEDDING_MODEL", ""),
+    api_key=os.getenv("CLOSEAI_API_KEY", ""),
+    base_url=os.getenv("CLOSEAI_BASE_URL", ""),
 )
 
 # loader

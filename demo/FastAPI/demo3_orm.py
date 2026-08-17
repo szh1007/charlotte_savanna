@@ -11,11 +11,11 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 dotenv.load_dotenv()
 
-username = os.getenv("DB_USERNAME", "")
-pwd = os.getenv("DB_PASSWORD", "")
-host = os.getenv("DB_HOST", "")
-port = os.getenv("DB_PORT", "")
-db_name = os.getenv("DB_NAME_FASTAPI", "")
+username = os.getenv("MYSQL_USERNAME", "")
+pwd = os.getenv("MYSQL_PASSWORD", "")
+host = os.getenv("MYSQL_HOST", "")
+port = os.getenv("MYSQL_PORT", "")
+db_name = os.getenv("MYSQL_NAME", "")
 
 """ 数据库引擎配置 """
 async_engine = create_async_engine(

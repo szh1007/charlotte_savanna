@@ -1,3 +1,5 @@
+import os
+
 import dotenv
 from langchain.chat_models import init_chat_model
 from langchain.messages import HumanMessage
@@ -22,7 +24,8 @@ Tips 2 主图中调用不同的子图
 dotenv.load_dotenv()
 
 model = init_chat_model(
-    "deepseek:deepseek-v4-pro", extra_body={"thinking": {"type": "disabled"}}
+    model=os.getenv("DEEPSEEK_MODEL_NAME", ""),
+    extra_body={"thinking": {"type": "disabled"}},
 )
 
 

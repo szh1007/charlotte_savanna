@@ -1,3 +1,5 @@
+import os
+
 import dotenv
 from langchain.chat_models import init_chat_model
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -5,7 +7,7 @@ from rich import print as rprint
 
 dotenv.load_dotenv()
 
-llm = init_chat_model("deepseek:deepseek-v4-pro")
+llm = init_chat_model(model=os.getenv("DEEPSEEK_MODEL_NAME", ""))
 
 # # 使用初始化方法实例化
 # template = ChatPromptTemplate(
