@@ -6,7 +6,7 @@
 
 ## 核心概念关系
 
-AgentRuntime 驱动 Agent，Agent 通过 Tool 完成任务。每个 Turn 里，模型（ChatModel）产出 ModelResponse：若含 ToolCall，runtime 并发执行对应 Tool 并回填 ToolResult；会话状态按 Thread 分区，经 CheckpointSaver 落 Checkpoint（含 Serialization 序列化协议）实现断点续跑；整个过程产出 StreamEvent 推给前端，并记录为 Trace 供评估（GoldenSet + Judge）。
+AgentRuntime 驱动 Agent，Agent 通过 Tool 完成任务。每个 Turn 里，模型（ChatModel）产出 ModelResponse：若含 ToolCall，runtime 并发执行对应 Tool 并回填 ToolResult；会话状态按 Thread 分区，经 CheckpointSaver 落 Checkpoint（含 Serialization 序列化协议）实现断点续跑；整个过程产出 StreamEvent 推给前端，并记录为 Trace 供评估（GoldenSet + Judge）。P2 模块（Plugin）通过三类 ExtensionPoint（事件总线 / Hook / SPI）挂载，与核心闭环低耦合（ADR-0007）。
 
 ## Language
 
@@ -69,8 +69,20 @@ _Avoid_: 结束标记, 停止原因
 _Avoid_: 思考过程, CoT, 思维链
 
 **StreamEvent**:
-流式输出的最小事件单元，含 thinking / tool_call / tool_result / final 四类。
+流式输出的最小事件单元，含 thinking / tool_call / tool_result / final 四类，reasoning 流式增量为独立事件。
 _Avoid_: chunk, 事件
+
+**ExtensionPoint**:
+核心库定义的三类扩展机制（事件总线 / Hook / SPI），供 P2 模块挂载而不修改核心，核心零 import P2（ADR-0007）。
+_Avoid_: 插件接口
+
+**Hook**:
+生命周期回调（before_turn / after_turn / on_model_call / on_tool_executed / on_event），注册表骨架 P0 落地，P2 只填实现。
+_Avoid_: 回调, 钩子
+
+**Plugin**:
+P2 模块的可插拔单元（memory / cost / observability / multiagent / mcp / skills / eval / 上下文工程），经配置注册 + 惰性 import 挂载到 ExtensionPoint。
+_Avoid_: 插件, 扩展模块
 
 **LoopGuard**:
 循环防护，通过 max_turns、token 预算、wall-clock 时间与 kill switch 防止 Agent 无限循环。
@@ -384,10 +396,22 @@ _Avoid_: 工程基础
 
 ### 客服 demo 领域
 
+**Order**:
+minimall 的订单数据，客服工具以只读方式查询（独立查询层直连 MySQL，不依赖 Django ORM，最小权限）。
+_Avoid_: 订单记录
+
+**Refund**:
+退款操作，demo 中的高危副作用动作，执行前必须经 HITL 审批，走幂等键防重复执行。
+_Avoid_: 退钱, 赔付
+
 **Ticket**:
-客户问题的一次记录，可被创建、追踪、升级。
+客户问题的一次记录，可被创建、追踪、升级，落 Postgres（与 checkpoint 同库、同 alembic 迁移体系）。
 _Avoid_: 工单记录, issue
 
 **Escalation**:
-将无法自动处理的 Ticket 升级给人工客服。
+将无法自动处理的 Ticket 升级给人工客服，人工经接管台查看历史并回复。
 _Avoid_: 转人工, 升级
+
+**Approval**:
+HITL 审批记录，挂起的高危操作（退款/赔付）需人工批准或拒绝；挂起点持久化，审批后从断点恢复执行（超时默认 15 分钟）。
+_Avoid_: 审批单
