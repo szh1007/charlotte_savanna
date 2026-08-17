@@ -28,10 +28,9 @@
 | 目录 | 内容 |
 |------|------|
 | `demo/Base/` | Python 基础：OOP、装饰器、深拷贝、迭代器/生成器、多进程/多线程/协程 |
-| `demo/LangChain_v0.3/` | LangChain 0.3 渐进式教程（Model I/O → Agent → RAG，含 chroma 测试数据） |
 | `demo/LangChain_v1.3/` | LangChain 1.3 教程（model/prompt/tool/pydantic/agent/middleware/hook/memory/RAG） |
 | `demo/LangGraph_v1.2/` | LangGraph 1.2 教程（basis/stream/interrupt/memory/tool/subgraph） |
-| `demo/DeepAgent_v0.7/` | DeepAgents 教程（agent/subagent/interrupt/backend） |
+| `demo/DeepAgent_v0.7/` | DeepAgent 0.7 教程（agent/subagent/interrupt/backend） |
 | `demo/FastAPI/` | FastAPI 基础（含 ORM demo） |
 
 所有自学教程统一放入 `demo/` 目录，仅作学习参考保留，后续不会被删除。**业务/子项目相关的工作（model 设计、view 编写、测试、性能分析、安全审计等）一律不涉及 `demo/` 目录。**
@@ -118,10 +117,9 @@ charlotte_savanna/
 │   └── menu_frontend.sh         #   启动 menu 前端
 ├── demo/                        # [Demo] 自学教程代码（非业务，忽略）
 │   ├── Base/                    #   Python 基础
-│   ├── LangChain_v0.3/          #   LangChain 0.3 渐进式教程
 │   ├── LangChain_v1.3/          #   LangChain 1.3 教程
 │   ├── LangGraph_v1.2/          #   LangGraph 1.2 教程
-│   ├── DeepAgent_v0.7/          #   DeepAgents 教程
+│   ├── DeepAgent_v0.7/          #   DeepAgent 0.7 教程
 │   ├── FastAPI/                 #   FastAPI 基础
 │   └── SUMMARY.md               #   知识点学习总结（LangChain/LangGraph/DeepAgents）
 ├── .scratch/                    # 本地 Issue Tracker（Markdown，同步 GitHub，当前为空）
@@ -251,11 +249,10 @@ charlotte_savanna/
 | 目录 | 状态 | 说明 |
 |------|------|------|
 | `demo/Base/` | ✅ 完成 | Python 基础教程 |
-| `demo/LangChain_v0.3/` | ✅ 完成 | LangChain 0.3 渐进式教程 |
 | `demo/LangChain_v1.3/` | ✅ 完成 | LangChain 1.3 教程 |
 | `demo/LangGraph_v1.2/` | ✅ 完成 | LangGraph 1.2 教程 |
-| `demo/DeepAgent_v0.7/` | ✅ 完成 | DeepAgents 教程（3 模块） |
-| `demo/FastAPI/` | ✅ 完成 | FastAPI 基础（3 个 demo） |
+| `demo/DeepAgent_v0.7/` | ✅ 完成 | DeepAgent 0.7 教程 |
+| `demo/FastAPI/` | ✅ 完成 | FastAPI 基础教程（3 个 demo） |
 | `demo/SUMMARY.md` | ✅ 完成 | LangChain/LangGraph/DeepAgents 知识点学习总结 |
 
 > 另有 `demo/INTERVIEW.md`（大厂面试题整理，本地维护，`.gitignore` 排除不提交）。
@@ -285,7 +282,7 @@ charlotte_savanna/
 
 ### 6.2 业务工作范围（重要）
 
-进行以下操作时，**工作范围限定在业务/子项目代码**，不涉及 `demo/` 目录（含 `demo/Base/`、`demo/LangChain_v0.3/`、`demo/LangChain_v1.3/`、`demo/LangGraph_v1.2/`、`demo/DeepAgent_v0.7/`、`demo/FastAPI/` 全部子目录）：
+进行以下操作时，**工作范围限定在业务/子项目代码**，不涉及 `demo/` 目录（含 `demo/Base/`、`demo/LangChain_v1.3/`、`demo/LangGraph_v1.2/`、`demo/DeepAgent_v0.7/`、`demo/FastAPI/` 全部子目录）：
 
 - 代码分析、搜索、重构
 - Django app 开发

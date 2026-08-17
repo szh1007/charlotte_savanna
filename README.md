@@ -110,7 +110,7 @@ charlotte_savanna/
 
 ### demo — 自学教程（非业务）
 
-Python 基础、LangChain 0.3/1.3、LangGraph 1.2、DeepAgents、FastAPI 的渐进式教程，仅作学习参考。另有 [`SUMMARY.md`](demo/SUMMARY.md)（知识点学习总结）；`demo/INTERVIEW.md` 为大厂面试题整理，本地维护不提交。
+Python 基础、LangChain 1.3、LangGraph 1.2、DeepAgents 0.7、FastAPI 的渐进式教程，仅作学习参考。另有 [`SUMMARY.md`](demo/SUMMARY.md)（知识点学习总结）；`demo/INTERVIEW.md` 为大厂面试题整理，本地维护不提交。
 
 ---
 
