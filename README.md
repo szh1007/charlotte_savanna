@@ -28,7 +28,7 @@
 | 模块 | 定位 | 说明 |
 |------|------|------|
 | `app/minimall/` | 业务模块（测试原型） | Django 商城：DRF API + 页面 + Redis 缓存 |
-| `project/deep_search/` | 子项目 | DeepAgents 深度检索智能体（FastAPI + Vue） |
+| `project/deep_search/` | 子项目 | 深度检索智能体（DeepAgents + FastAPI + Vue） |
 | `project/menu/` | 子项目 | 餐厅智能助手（LangChain Agent + FastAPI + Vue） |
 | `demo/` | 自学教程 | Python / LangChain / LangGraph / DeepAgents / FastAPI 教程 |
 
