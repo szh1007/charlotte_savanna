@@ -8,7 +8,7 @@ from app.shared.config.milvus_config import MilvusConfig, milvus_config
 from app.shared.config.mineru_config import MinerUConfig, mineru_config
 from app.shared.config.minio_config import MinIOConfig, minio_config
 from app.shared.config.reranker_config import RerankerConfig, reranker_config
-from project.RAGKnowledge.app.shared.config.llm_config import LLMConfig, llm_config
+from project.rag_knowledge.app.shared.config.llm_config import LLMConfig, llm_config
 
 __all__ = [
     "EmbeddingConfig",
