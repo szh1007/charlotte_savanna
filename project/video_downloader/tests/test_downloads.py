@@ -169,6 +169,25 @@ def test_tasks_desc_order_and_progress(
     assert wait_until(lambda: find_task(client, id1)["status"] == STATUS_COMPLETED)
 
 
+def test_task_detail_returns_task(
+    client: TestClient, fake_extract, fake_download
+) -> None:
+    """单任务详情: 200 返回完整任务, 不存在的任务 404 (契约 PRD §8)."""
+    task_id = create_download(client, "https://www.bilibili.com/video/av12", "22")
+    assert wait_until(lambda: find_task(client, task_id)["status"] == STATUS_COMPLETED)
+
+    resp = client.get(f"/api/tasks/{task_id}")
+    assert resp.status_code == 200
+    detail = resp.json()
+    assert detail["task_id"] == task_id
+    assert detail["status"] == STATUS_COMPLETED
+    assert detail["title"] == "测试视频标题"
+    assert detail["kind"] == "download"
+    assert detail["progress"] == 100.0
+
+    assert client.get("/api/tasks/99999").status_code == 404
+
+
 def test_files_returns_attachment(
     client: TestClient, fake_extract, fake_download
 ) -> None:

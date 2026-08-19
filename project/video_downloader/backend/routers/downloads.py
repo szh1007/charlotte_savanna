@@ -42,6 +42,15 @@ def list_tasks() -> dict[str, list[TaskOut]]:
     return {"tasks": [task_to_out(t) for t in manager.list_tasks()]}
 
 
+@router.get("/api/tasks/{task_id}")
+def get_task_detail(task_id: int) -> TaskOut:
+    """单任务详情 (契约 PRD §8): 与列表同一序列化结构, 不存在返回 404."""
+    task = manager.get_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    return task_to_out(task)
+
+
 @router.get("/api/files/{task_id}")
 def get_delivery_file(task_id: int) -> FileResponse:
     task = manager.get_task(task_id)
