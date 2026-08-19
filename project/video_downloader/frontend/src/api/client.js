@@ -46,6 +46,19 @@ export function resolveUrl(url) {
   return request('/resolve', { method: 'POST', body: JSON.stringify({ url }) })
 }
 
+/** 创建下载任务 (选定清晰度档位发起下载). */
+export function createDownload(url, formatId) {
+  return request('/downloads', {
+    method: 'POST',
+    body: JSON.stringify({ url, format_id: formatId }),
+  })
+}
+
+/** 查询任务列表 (创建时间降序), 页面恢复时使用. */
+export function fetchTasks() {
+  return request('/tasks')
+}
+
 /** 查询支持平台列表. */
 export function fetchSites() {
   return request('/sites')

@@ -2,14 +2,21 @@
 import { computed, ref } from 'vue'
 
 // 解析结果卡: 封面 + 标题 + 平台徽章 + 时长
-// + 清晰度下拉 (锁定档带 🔒)
-// 「开始下载」动作属于 T08,
-// 本组件先完成结果展示与档位选择
+// + 清晰度下拉 (锁定档带 🔒) + 「开始下载」按钮 (T08)
 const props = defineProps({
   // ResolveResponse 字段:
   // task_id/title/cover/duration/site/formats/member_limited
   result: { type: Object, required: true },
+  // 解析来源链接: 「开始下载」发起请求用
+  url: { type: String, default: '' },
+  // 下载任务创建中 (防重复点击)
+  downloading: { type: Boolean, default: false },
+  // 创建下载任务失败的错误信息 (父组件透传,
+  // 如队列超限/档位锁定)
+  downloadError: { type: String, default: '' },
 })
+
+const emit = defineEmits(['download'])
 
 // 默认选中最高免费档 (后端按高度升序排列,
 // formats[0] 是最低档 360p)
@@ -33,10 +40,23 @@ function formatDuration(seconds) {
 
 const durationText = computed(() => formatDuration(props.result.duration))
 
+// 当前选中档位是否锁定: 全部档位锁定 (会员专属视频) 时
+// 禁用「开始下载」, 避免点击必然被后端拒绝
+const selectedLocked = computed(
+  () =>
+    props.result.formats.find((f) => f.format_id === selectedFormat.value)?.locked ??
+    false,
+)
+
 // 档位展示文案: 后端 label 已含清晰度 + 容器
 // (如 "1080p MP4"), 此处直接展示
 function formatLabel(f) {
   return f.label
+}
+
+function handleDownload() {
+  if (!selectedFormat.value || props.downloading) return
+  emit('download', { url: props.url, formatId: selectedFormat.value })
 }
 </script>
 
@@ -71,6 +91,17 @@ function formatLabel(f) {
         <span v-if="result.formats.length === 0" class="result__formats-empty">
           该视频暂无可用档位
         </span>
+        <button
+          class="btn-gradient result__download"
+          :disabled="downloading || !selectedFormat || selectedLocked"
+          @click="handleDownload"
+        >
+          <span v-if="downloading" class="result__spinner" aria-hidden="true"></span>
+          {{ downloading ? '创建中…' : '开始下载' }}
+        </button>
+        <p v-if="downloadError" class="result__error" role="alert">
+          {{ downloadError }}
+        </p>
       </div>
     </div>
   </section>
@@ -170,6 +201,38 @@ function formatLabel(f) {
   color: var(--text-dim);
 }
 
+.result__download {
+  height: 42px;
+  padding: 0 24px;
+  font-size: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.result__error {
+  flex-basis: 100%;
+  color: var(--danger);
+  font-size: 13px;
+}
+
+/* 创建中旋转指示 */
+.result__spinner {
+  width: 13px;
+  height: 13px;
+  border: 2px solid rgba(255, 255, 255, 0.4);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 @media (max-width: 640px) {
   .result {
     flex-direction: column;
@@ -182,6 +245,11 @@ function formatLabel(f) {
   .result__select {
     flex: 1;
     min-width: 0;
+  }
+
+  .result__download {
+    flex: 1;
+    justify-content: center;
   }
 }
 </style>
