@@ -139,21 +139,27 @@ def download(
         raise DownloadError(_friendly_message(e, fallback="下载失败")) from e
 
 
-# 主流平台展示清单 (名称 + 图标 + yt-dlp extractor key)
-# key 以引擎实际 ie_key() 为准 (如 Youtube / Iqiyi / VQQVideo), 不支持的平台不展示
+# 主流平台展示清单 (名称 + 图标 + 支持格式 + yt-dlp extractor key)
+# key 以引擎实际 ie_key() 为准 (如 Youtube / Iqiyi / VQQVideo), 不支持的平台不展示;
+# formats 为平台墙营销标注 (T09), 静态维护, 不随引擎动态探测
 POPULAR_SITES: list[dict[str, str]] = [
-    {"name": "B 站", "icon": "🅱️", "extractor": "BiliBili"},
-    {"name": "抖音", "icon": "🎵", "extractor": "Douyin"},
-    {"name": "YouTube", "icon": "▶️", "extractor": "Youtube"},
-    {"name": "小红书", "icon": "📕", "extractor": "XiaoHongShu"},
-    {"name": "微博", "icon": "📢", "extractor": "Weibo"},
-    {"name": "腾讯视频", "icon": "📺", "extractor": "VQQVideo"},
-    {"name": "优酷", "icon": "🌀", "extractor": "Youku"},
-    {"name": "爱奇艺", "icon": "💜", "extractor": "Iqiyi"},
-    {"name": "西瓜视频", "icon": "🍉", "extractor": "Ixigua"},
-    {"name": "TikTok", "icon": "🎶", "extractor": "TikTok"},
-    {"name": "Instagram", "icon": "📷", "extractor": "Instagram"},
-    {"name": "X (Twitter)", "icon": "🐦", "extractor": "Twitter"},
+    {"name": "B 站", "icon": "🅱️", "formats": "MP4 / FLV / 4K", "extractor": "BiliBili"},
+    {"name": "抖音", "icon": "🎵", "formats": "MP4", "extractor": "Douyin"},
+    {
+        "name": "YouTube",
+        "icon": "▶️",
+        "formats": "MP4 / WebM / 4K",
+        "extractor": "Youtube",
+    },
+    {"name": "小红书", "icon": "📕", "formats": "MP4", "extractor": "XiaoHongShu"},
+    {"name": "微博", "icon": "📢", "formats": "MP4 / FLV", "extractor": "Weibo"},
+    {"name": "腾讯视频", "icon": "📺", "formats": "MP4 / FLV", "extractor": "VQQVideo"},
+    {"name": "优酷", "icon": "🌀", "formats": "MP4 / FLV", "extractor": "Youku"},
+    {"name": "爱奇艺", "icon": "💜", "formats": "MP4 / FLV", "extractor": "Iqiyi"},
+    {"name": "西瓜视频", "icon": "🍉", "formats": "MP4", "extractor": "Ixigua"},
+    {"name": "TikTok", "icon": "🎶", "formats": "MP4", "extractor": "TikTok"},
+    {"name": "Instagram", "icon": "📷", "formats": "MP4", "extractor": "Instagram"},
+    {"name": "X (Twitter)", "icon": "🐦", "formats": "MP4", "extractor": "Twitter"},
 ]
 
 
@@ -168,7 +174,7 @@ def list_sites() -> tuple[list[dict[str, str]], int]:
     """返回主流平台列表 (校验引擎支持性) 与引擎全量支持数."""
     supported = _supported_keys()
     sites = [
-        {"name": s["name"], "icon": s["icon"]}
+        {"name": s["name"], "icon": s["icon"], "formats": s["formats"]}
         for s in POPULAR_SITES
         if s["extractor"] in supported
     ]

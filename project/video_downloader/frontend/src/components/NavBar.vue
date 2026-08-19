@@ -1,6 +1,17 @@
 <script setup>
-// 顶部导航栏: Logo + 会员入口 (渐变描边按钮,
-// 会员功能 T09 接入)
+// 顶部导航栏: Logo + 会员入口 (渐变描边按钮, T09 接通会员功能)
+// 未解锁: 点击滚动到会员营销区; 已解锁: 展示会员身份徽章
+const props = defineProps({
+  // 当前会话是否会员 (由 Home 统一管理, 刷新后经状态接口恢复)
+  isMember: { type: Boolean, default: false },
+})
+
+const emit = defineEmits(['go-member'])
+
+function handleClick() {
+  // 已解锁时点击仍回到会员区 (可查看权益详情)
+  emit('go-member')
+}
 </script>
 
 <template>
@@ -10,9 +21,14 @@
         <span class="nav__logo-icon">🚀</span>
         <span class="nav__logo-text">极速下载</span>
       </a>
-      <button class="btn-outline-gradient nav__member" type="button">
-        <span>✦</span>
-        会员解锁
+      <button
+        class="btn-outline-gradient nav__member"
+        :class="{ 'nav__member--active': isMember }"
+        type="button"
+        @click="handleClick"
+      >
+        <span>{{ isMember ? '✓' : '✦' }}</span>
+        {{ isMember ? '会员已解锁' : '会员解锁' }}
       </button>
     </div>
   </header>
@@ -66,6 +82,16 @@
 
 .nav__member span {
   color: var(--primary);
+}
+
+/* 已解锁态: 实心渐变徽章, 与「会员解锁」引导按钮区分 */
+.nav__member--active {
+  background: var(--gradient);
+  color: #fff;
+}
+
+.nav__member--active span {
+  color: #fff;
 }
 
 @media (max-width: 640px) {

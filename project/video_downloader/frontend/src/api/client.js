@@ -3,17 +3,42 @@
 // 生产由反向代理处理
 const BASE = '/api'
 
+// 会员会话 token 存储键 (localStorage): 当前会话持久,
+// 页面刷新后仍通过该 token 向后端恢复会员状态 (T09)
+export const MEMBER_TOKEN_KEY = 'vd_member_token'
+
+/** 读取本地会员 token (无则返回 null). */
+export function getMemberToken() {
+  return localStorage.getItem(MEMBER_TOKEN_KEY)
+}
+
+/** 保存 / 清除本地会员 token. */
+export function setMemberToken(token) {
+  if (token) {
+    localStorage.setItem(MEMBER_TOKEN_KEY, token)
+  } else {
+    localStorage.removeItem(MEMBER_TOKEN_KEY)
+  }
+}
+
 /**
  * 通用请求: 非 2xx 时抛出带后端 detail 的 Error, 网络失败给出明确提示.
+ * 自动附加 X-Member-Token header (有本地 token 时), 使解析/下载/状态
+ * 等接口按会员身份计算能力 (T05 后端强制校验).
  * @param {string} path 以 / 开头的 API 路径
  * @param {object} [options] fetch 选项 (method / body / headers 等)
  * @returns {Promise<any>} 解析后的 JSON 响应体
  */
 async function request(path, options = {}) {
+  const token = getMemberToken()
   let res
   try {
     res = await fetch(`${BASE}${path}`, {
-      headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { 'X-Member-Token': token } : {}),
+        ...(options.headers || {}),
+      },
       ...options,
     })
   } catch {
@@ -64,7 +89,12 @@ export function fetchSites() {
   return request('/sites')
 }
 
-/** 查询当前会话会员状态 (T09 接入会员入口后使用). */
+/** 查询当前会话会员状态 (刷新页面后恢复会员身份用). */
 export function fetchMemberStatus() {
   return request('/member/status')
+}
+
+/** 提交会员密钥: 通过则返回会话 token (由调用方持久化到 localStorage). */
+export function submitMemberKey(key) {
+  return request('/member', { method: 'POST', body: JSON.stringify({ key }) })
 }

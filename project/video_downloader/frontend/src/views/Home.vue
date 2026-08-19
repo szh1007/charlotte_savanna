@@ -1,13 +1,16 @@
 <script setup>
 import { onBeforeUnmount, onMounted, ref } from 'vue'
-import NavBar from '../components/NavBar.vue'
 import HeroSection from '../components/HeroSection.vue'
+import MemberSection from '../components/MemberSection.vue'
+import NavBar from '../components/NavBar.vue'
+import PlatformWall from '../components/PlatformWall.vue'
 import ResolveResult from '../components/ResolveResult.vue'
+import SiteFooter from '../components/SiteFooter.vue'
 import TaskPanel from '../components/TaskPanel.vue'
+import { useMember } from '../composables/useMember.js'
 import { createDownload, fetchTasks, resolveUrl } from '../api/client.js'
 
-// 单页布局 (PRD §10): 导航 → Hero → 解析结果 → 下载任务面板
-// (平台墙/会员区/页脚见 T09)
+// 单页布局 (PRD §10): 导航 → Hero → 解析结果 → 任务面板 → 平台墙 → 会员区 → 页脚
 const resolving = ref(false)
 const result = ref(null)
 const apiError = ref('')
@@ -15,8 +18,29 @@ const downloading = ref(false)
 const downloadError = ref('')
 const tasks = ref([])
 
-// 最近一次解析的链接 (「开始下载」发起请求用)
+// 最近一次解析的链接 (「开始下载」发起请求用; 会员解锁后自动重新解析)
 const lastUrl = ref('')
+
+// 会员状态 (T09): 全站共享, 解锁后 NavBar / 解析锁定档位 / 营销区联动
+const {
+  isMember,
+  memberExpires,
+  memberSubmitting,
+  memberError,
+  handleUnlock,
+  restoreMember,
+} = useMember({
+  onUnlocked() {
+    // 解锁后自动重新解析: 后端按会员身份返回无锁定档位
+    // (🔒 标识消失, 会员专属档位可选); 失败时保留旧结果卡
+    if (lastUrl.value) {
+      handleResolve(lastUrl.value, { keepOld: true })
+    }
+  },
+})
+
+// 会员区组件实例: 滚动定位后聚焦密钥输入框
+const memberSection = ref(null)
 
 // SSE 连接: 任务进度实时推送 (无轮询)
 let eventSource = null
@@ -39,10 +63,12 @@ function scheduleRefresh() {
   refreshTimer = setTimeout(refreshTasks, 300)
 }
 
-async function handleResolve(url) {
+async function handleResolve(url, { keepOld = false } = {}) {
   lastUrl.value = url
   resolving.value = true
-  result.value = null
+  // 正常解析清掉旧结果卡; keepOld (解锁联动) 时保留旧卡,
+  // 避免重解析失败 (如网络抖动) 后旧档位信息丢失
+  if (!keepOld) result.value = null
   apiError.value = ''
   downloadError.value = ''
   try {
@@ -83,6 +109,16 @@ async function handleDownload({ url, formatId }) {
   }
 }
 
+// 导航栏会员入口 / 结果卡解锁引导 (US 35): 滚动到会员营销区,
+// 未解锁时聚焦密钥输入框
+function scrollToMember() {
+  memberSection.value?.$el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  if (!isMember.value) {
+    // 平滑滚动时长不定, 等滚动完成后聚焦输入框
+    setTimeout(() => memberSection.value?.focusInput(), 400)
+  }
+}
+
 // SSE task-update: 合并状态字段到已有任务; 未知任务 (竞态先于
 // POST 响应到达的 queued 事件等) 触发防抖刷新补齐, 避免状态滞后
 function handleTaskUpdate(evt) {
@@ -115,6 +151,7 @@ onMounted(async () => {
   } catch {
     // 后端不可用时页面主体仍可用, 任务列表留空即可
   }
+  restoreMember()
   connectEvents()
 })
 
@@ -124,7 +161,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <NavBar />
+  <NavBar :is-member="isMember" @go-member="scrollToMember" />
   <HeroSection
     :resolving="resolving"
     :api-error="apiError"
@@ -138,7 +175,18 @@ onBeforeUnmount(() => {
       :downloading="downloading"
       :download-error="downloadError"
       @download="handleDownload"
+      @go-member="scrollToMember"
     />
     <TaskPanel :tasks="tasks" />
+    <PlatformWall />
+    <MemberSection
+      ref="memberSection"
+      :is-member="isMember"
+      :expires-at="memberExpires"
+      :submitting="memberSubmitting"
+      :error="memberError"
+      @unlock="handleUnlock"
+    />
   </main>
+  <SiteFooter />
 </template>

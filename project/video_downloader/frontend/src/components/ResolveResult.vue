@@ -16,13 +16,13 @@ const props = defineProps({
   downloadError: { type: String, default: '' },
 })
 
-const emit = defineEmits(['download'])
+const emit = defineEmits(['download', 'go-member'])
 
-// 默认选中最高免费档 (后端按高度升序排列,
-// formats[0] 是最低档 360p)
+// 默认选中最高可用档: 后端按高度升序排列 (formats[0] 是最低档 360p),
+// 反向找第一个未锁定档 = 最高档 (免费取最高免费档, 会员取 best)
 const selectedFormat = ref(
-  (props.result.formats.find((f) => !f.locked) ?? props.result.formats[0])
-    ?.format_id ?? '',
+  ([...props.result.formats].reverse().find((f) => !f.locked) ??
+    props.result.formats[0])?.format_id ?? '',
 )
 
 // 时长格式化: 秒 → "mm:ss" / "h:mm:ss";
@@ -72,6 +72,14 @@ function handleDownload() {
         <span v-if="result.site" class="badge">{{ result.site }}</span>
         <span v-if="durationText" class="badge badge--plain">{{ durationText }}</span>
         <span v-if="result.member_limited" class="badge">🔒 含会员专属档位</span>
+        <button
+          v-if="result.member_limited"
+          class="btn-outline-gradient result__unlock"
+          type="button"
+          @click="emit('go-member')"
+        >
+          🔓 解锁会员档位
+        </button>
       </div>
 
       <h2 class="result__title">{{ result.title }}</h2>
@@ -209,6 +217,13 @@ function handleDownload() {
   align-items: center;
   gap: 8px;
   white-space: nowrap;
+}
+
+/* 会员档位解锁引导 (US 35: 免费用户看到锁定档位时获转化路径) */
+.result__unlock {
+  padding: 7px 16px;
+  font-size: 13px;
+  margin-left: auto;
 }
 
 .result__error {
