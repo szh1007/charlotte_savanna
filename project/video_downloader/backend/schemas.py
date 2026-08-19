@@ -23,6 +23,7 @@ class FormatOut(BaseModel):
     label: str
     height: int | None
     ext: str
+    locked: bool = False  # 该档位对该用户是否锁定 (免费用户 >720p, T05)
 
 
 class ResolveResponse(BaseModel):
@@ -33,6 +34,7 @@ class ResolveResponse(BaseModel):
     duration: float | None = None
     site: str | None = None
     formats: list[FormatOut]
+    member_limited: bool = False  # 是否存在会员专属 (锁定) 档位
 
 
 class DownloadRequest(BaseModel):

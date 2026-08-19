@@ -1,10 +1,11 @@
-"""POST /api/downloads + GET /api/tasks + GET /api/files/{id} (T02)."""
+"""POST /api/downloads + GET /api/tasks + GET /api/files/{id} (T02, T05 付费差异)."""
 
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 
+from ..auth import MemberSession, get_member
 from ..downloader import ResolveError
 from ..schemas import (
     DownloadRequest,
@@ -13,19 +14,24 @@ from ..schemas import (
     ensure_http_url,
     task_to_out,
 )
-from ..task_manager import STATUS_COMPLETED, manager
+from ..task_manager import STATUS_COMPLETED, QueueLimitError, manager
 
 router = APIRouter(tags=["downloads"])
 
 
 @router.post("/api/downloads", response_model=DownloadResponse)
-def create_download(req: DownloadRequest) -> DownloadResponse:
+def create_download(
+    req: DownloadRequest,
+    member: MemberSession | None = Depends(get_member),
+) -> DownloadResponse:
     try:
         url = ensure_http_url(req.url)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
     try:
-        task = manager.create_download(url, req.format_id)
+        task = manager.create_download(url, req.format_id, is_member=member is not None)
+    except QueueLimitError as e:
+        raise HTTPException(status_code=429, detail=str(e)) from e
     except (ResolveError, ValueError) as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     return DownloadResponse(task_id=task.id, status=task.status)

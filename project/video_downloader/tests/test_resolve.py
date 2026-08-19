@@ -30,14 +30,18 @@ def test_resolve_valid_link_returns_metadata(
         "1080p WEBM",
         "最佳画质 (1080p)",
     ]
+    # 免费用户: >720p 档位标记 locked, member_limited 为 True (T05)
     assert formats[0] == {
         "format_id": "18",
         "height": 360,
         "ext": "mp4",
         "label": "360p MP4",
+        "locked": False,
     }
     assert formats[2]["format_id"] == "999"  # 1080p 含音频的 WEBM 胜出
+    assert formats[2]["locked"] is True
     assert formats[3]["format_id"] == "best"
+    assert body["member_limited"] is True
 
 
 def test_resolve_status_flows_pending_resolving_resolved(

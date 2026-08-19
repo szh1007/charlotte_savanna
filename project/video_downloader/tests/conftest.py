@@ -76,7 +76,7 @@ def clean_state():
     """
     tm.manager._tasks.clear()
     tm.manager._seq = 0
-    tm.manager._active = 0
+    tm.manager._active = {False: 0, True: 0}  # 免费/会员并发槽占用 (T05 按身份拆分)
     member_manager._sessions.clear()
     with bus._lock:  # 测试中断时 collector 可能未关闭, 清理订阅防串扰
         bus._subs.clear()

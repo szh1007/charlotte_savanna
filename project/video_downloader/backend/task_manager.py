@@ -27,11 +27,19 @@ STATUS_COMPLETED = "completed"
 STATUS_FAILED = "failed"
 STATUS_EXPIRED = "expired"
 
-# 并发下载槽位 (免费档 1, 会员档 3 由 T05 接入)
-CONCURRENCY = 1
+# 付费差异 (T05, PRD §5): 免费/会员能力边界, 后端强制, 非 UI 摆设
+FREE_MAX_HEIGHT = 720  # 免费档清晰度上限: >720p 档位标记锁定
+FREE_CONCURRENCY = 1  # 免费档并发下载槽位
+MEMBER_CONCURRENCY = 3  # 会员档并发下载槽位
+FREE_QUEUE_LIMIT = 5  # 免费档批量队列上限
+MEMBER_QUEUE_LIMIT = 50  # 会员档批量队列上限
 
 # 调度器扫描间隔 (秒): 把 queued 任务分配到空闲槽位 (PRD 设计值约 0.5s)
 _SCHEDULER_INTERVAL = 0.5
+
+
+class QueueLimitError(Exception):
+    """队列超限 (路由层转为 429 + 明确提示)."""
 
 
 @dataclass
@@ -39,6 +47,7 @@ class Task:
     id: int
     url: str
     kind: str  # "resolve" | "download"
+    is_member: bool = False  # 创建者会员身份快照 (档位锁定/并发/队列按此计算)
     status: str = STATUS_PENDING
     title: str | None = None
     cover: str | None = None
@@ -61,14 +70,15 @@ class TaskManager:
         self._tasks: dict[int, Task] = {}
         self._lock = threading.RLock()
         self._seq = 0
-        self._active = 0  # 当前执行中的下载任务数 (并发槽占用)
+        # 各身份的并发槽占用 (免费/会员槽位独立计算, 见 _scheduler_loop)
+        self._active: dict[bool, int] = {False: 0, True: 0}
         self._scheduler: threading.Thread | None = None
         self._scheduler_stop = threading.Event()
 
-    def create_task(self, url: str, kind: str) -> Task:
+    def create_task(self, url: str, kind: str, is_member: bool = False) -> Task:
         with self._lock:
             self._seq += 1
-            task = Task(id=self._seq, url=url, kind=kind)
+            task = Task(id=self._seq, url=url, kind=kind, is_member=is_member)
             self._tasks[task.id] = task
             return task
 
@@ -92,24 +102,32 @@ class TaskManager:
             tasks = sorted(self._tasks.values(), key=lambda t: t.id, reverse=True)
             return tasks[:limit]
 
-    def resolve(self, url: str) -> Task:
+    def resolve(self, url: str, is_member: bool = False) -> Task:
         """同步解析链接: 任务状态 pending → resolving → resolved / failed.
 
         解析耗时通常在秒级, 同步等待引擎返回; 失败时任务标记 failed 并抛出
-        ResolveError, 由路由层转为 4xx 响应.
+        ResolveError, 由路由层转为 4xx 响应. 按创建者身份标记档位锁定 (T05).
         """
-        task = self.create_task(url=url, kind="resolve")
+        task = self.create_task(url=url, kind="resolve", is_member=is_member)
         self._fill_resolved(task)
         return self.get_task(task.id)
 
     def _fill_resolved(self, task: Task) -> dict[str, Any]:
-        """执行解析并回填元信息 (resolve / create_download 共用解析段)."""
+        """执行解析并回填元信息 (resolve / create_download 共用解析段).
+
+        档位锁定按任务创建者身份标记: 免费用户 >720p 档位 locked (PRD §5 强制校验点 1).
+        """
         self.update_status(task.id, STATUS_RESOLVING)
         try:
             info = downloader.resolve(task.url)
         except downloader.ResolveError as e:
             self.update_status(task.id, STATUS_FAILED, error=str(e))
             raise
+        formats = []
+        for f in info.get("formats", []):
+            fmt = dict(f)  # 复制, 避免影响引擎返回的原始数据
+            fmt["locked"] = self._is_locked(fmt, task.is_member)
+            formats.append(fmt)
         self.update_status(
             task.id,
             STATUS_RESOLVED,
@@ -117,24 +135,69 @@ class TaskManager:
             cover=info.get("cover"),
             duration=info.get("duration"),
             site=info.get("site"),
-            formats=info.get("formats", []),
+            formats=formats,
         )
         return info
 
-    def create_download(self, url: str, format_id: str) -> Task:
+    def create_download(
+        self, url: str, format_id: str, is_member: bool = False
+    ) -> Task:
         """创建下载任务: 解析 → 校验档位 → 入队, 启动调度器.
 
-        解析失败或档位无效时任务标记 failed 并抛出异常 (ResolveError / ValueError),
-        由路由层转为 4xx 响应.
+        校验按身份执行 (T05): 免费用户选择 locked 档位 / 队列超限均拒绝,
+        分别抛 ValueError / QueueLimitError, 由路由层转为 4xx 响应.
         """
-        task = self.create_task(url=url, kind="download")
+        task = self.create_task(url=url, kind="download", is_member=is_member)
         info = self._fill_resolved(task)
-        if not any(f["format_id"] == format_id for f in info.get("formats", [])):
+        fmt = next(
+            (f for f in info.get("formats", []) if f["format_id"] == format_id), None
+        )
+        if fmt is None:
             self.update_status(task.id, STATUS_FAILED, error=f"无效档位: {format_id}")
             raise ValueError(f"无效档位: {format_id}")
+        if self._is_locked(fmt, is_member):
+            self.update_status(task.id, STATUS_FAILED, error="该档位需会员解锁")
+            raise ValueError("该档位需会员解锁")
+        limit = self._queue_limit(is_member)
+        # 按创建者身份计数, 排除当前任务自身 (检查时已处于 resolved 状态, 不应计入)
+        if self._queue_size(is_member, exclude_id=task.id) >= limit:
+            msg = f"队列已满 (上限 {limit} 个任务)"
+            self.update_status(task.id, STATUS_FAILED, error=msg)
+            raise QueueLimitError(msg)
         self.update_status(task.id, STATUS_QUEUED, format_id=format_id)
         self.ensure_scheduler()
         return self.get_task(task.id)
+
+    @staticmethod
+    def _is_locked(fmt: dict[str, Any], is_member: bool) -> bool:
+        """档位对指定身份是否锁定: 免费用户 >720p 档位锁定 (PRD §5)."""
+        return not is_member and (fmt.get("height") or 0) > FREE_MAX_HEIGHT
+
+    def _queue_size(self, is_member: bool, exclude_id: int | None = None) -> int:
+        """当前指定身份的未完成下载任务数 (队列占用, 终态不占位).
+
+        按任务创建者身份分别计数: 免费档上限只约束免费用户自己的任务,
+        不被排队中的会员任务挤占 (反之亦然). exclude_id 排除创建中的新任务,
+        避免自占位.
+        """
+        with self._lock:
+            return sum(
+                1
+                for t in self._tasks.values()
+                if t.kind == "download"
+                and t.is_member == is_member
+                and t.id != exclude_id
+                and t.status not in (STATUS_COMPLETED, STATUS_FAILED, STATUS_EXPIRED)
+            )
+
+    def _queue_limit(self, is_member: bool) -> int:
+        """队列上限按身份计算 (免费 5 / 会员 50)."""
+        return MEMBER_QUEUE_LIMIT if is_member else FREE_QUEUE_LIMIT
+
+    @staticmethod
+    def _concurrency_limit(is_member: bool) -> int:
+        """并发槽位上限按身份计算 (免费 1 / 会员 3)."""
+        return MEMBER_CONCURRENCY if is_member else FREE_CONCURRENCY
 
     def ensure_scheduler(self) -> None:
         """确保后台调度线程运行 (daemon, 首次入队时惰性启动)."""
@@ -156,15 +219,17 @@ class TaskManager:
         self._scheduler_stop.set()
 
     def _scheduler_loop(self) -> None:
-        """周期扫描: 有空闲并发槽时, 把排队任务派发给执行线程."""
+        """周期扫描: 有空闲并发槽时, 把排队任务派发给执行线程.
+
+        并发槽按身份独立计算 (免费 1 / 会员 3), 槽位空闲才派发对应身份的任务.
+        """
         while not self._scheduler_stop.is_set():
             task = None
             with self._lock:
-                if self._active < CONCURRENCY:
-                    task = self._next_queued()
-                    if task:
-                        self._active += 1
-                        self.update_status(task.id, STATUS_DOWNLOADING)
+                task = self._next_queued()
+                if task:
+                    self._active[task.is_member] += 1
+                    self.update_status(task.id, STATUS_DOWNLOADING)
             if task:
                 worker = threading.Thread(
                     target=self._run_download,
@@ -177,18 +242,29 @@ class TaskManager:
                 self._scheduler_stop.wait(_SCHEDULER_INTERVAL)
 
     def _next_queued(self) -> Task | None:
-        """返回队列中最早的排队任务 (FIFO, 按任务 id 升序)."""
-        for t in sorted(self._tasks.values(), key=lambda t: t.id):
+        """返回槽位可用的最早排队任务: 会员优先, 同身份内按任务 id FIFO.
+
+        必须跳过槽位已满的身份 (如会员槽满时队首的会员任务), 否则该身份
+        槽位空闲的其他任务 (免费任务) 会被队首任务永久阻塞 (队首阻塞饥饿).
+        """
+        for t in sorted(self._tasks.values(), key=lambda t: (not t.is_member, t.id)):
             if t.status == STATUS_QUEUED:
-                return t
+                limit = self._concurrency_limit(t.is_member)
+                if self._active[t.is_member] < limit:
+                    return t
         return None
 
     def _run_download(self, task_id: int) -> None:
-        """执行下载并更新任务状态 (独立线程, 完成后释放并发槽)."""
+        """执行下载并更新任务状态 (独立线程, 完成后释放并发槽).
+
+        执行前重校验档位访问权 (PRD §5 强制校验点 3): 即使创建时被绕过
+        (伪造请求 / 内部篡改), 非会员任务的锁定档位也会在下载前被拒绝.
+        """
         try:
             task = self.get_task(task_id)
             if task is None:  # 理论上不可达 (worker 仅处理入队任务), 防御式处理
                 raise RuntimeError(f"task {task_id} not found")
+            self._validate_download_access(task)
             path = downloader.download(
                 task.url,
                 task.format_id,
@@ -204,11 +280,23 @@ class TaskManager:
             )
         except downloader.DownloadError as e:
             self.update_status(task_id, STATUS_FAILED, error=str(e))
+        except ValueError as e:  # 档位访问重校验失败: 明确错误而非泛化「下载异常」
+            self.update_status(task_id, STATUS_FAILED, error=str(e))
         except Exception as e:  # 引擎外异常 (磁盘/中断等): 标记失败而非悬挂
             self.update_status(task_id, STATUS_FAILED, error=f"下载异常: {e}")
         finally:
             with self._lock:
-                self._active -= 1
+                task = self._tasks.get(task_id)
+                if task is not None:
+                    self._active[task.is_member] -= 1
+
+    def _validate_download_access(self, task: Task) -> None:
+        """下载前档位重校验: 非会员任务选择锁定档位 → 拒绝 (纵深防御)."""
+        if task.is_member:
+            return
+        fmt = next((f for f in task.formats if f["format_id"] == task.format_id), None)
+        if fmt is not None and self._is_locked(fmt, task.is_member):
+            raise ValueError("该档位需会员解锁")
 
     def _progress_hook(self, task_id: int):
         """yt-dlp 进度回调: 转发到任务 progress / message (上限 99, 完成时置 100)."""
