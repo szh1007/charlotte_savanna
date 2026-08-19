@@ -1,0 +1,199 @@
+/* ==========================================================================
+   设计令牌 (Design Tokens) — 全站主题系统
+   规范来源: PRD §10 / DESIGN §6, 参考 ai.codefather.cn/painting 粉紫渐变风格
+   ========================================================================== */
+:root {
+  /* 色板 */
+  --primary: #eb2f96; /* 品红粉, 主色 */
+  --primary-soft: rgba(235, 47, 150, 0.12); /* 主色浅底 (徽章/高亮背景) */
+  --violet: #722ed1; /* 紫, 渐变终点 */
+  --gradient: linear-gradient(135deg, #eb2f96, #722ed1); /* 按钮 / Hero 高光 */
+  --bg-deep: #0d0a1a; /* 深紫黑, 全局背景 */
+  --bg-page: #120e24; /* 页面次级背景 */
+  --card: #1a1530; /* 深色卡片 */
+  --card-hover: #201a3a;
+  --border: rgba(255, 255, 255, 0.08); /* 卡片描边 */
+  --text-main: #f5f3ff; /* 主文字 */
+  --text-sub: #a89fc8; /* 次级文字 */
+  --text-dim: #6f6791; /* 弱化文字 */
+  --success: #52c41a;
+  --danger: #ff4d4f;
+  --warning: #faad14;
+
+  /* 圆角 / 阴影 */
+  --radius: 16px; /* 卡片 / 输入框 */
+  --radius-sm: 10px;
+  --shadow-card: 0 8px 30px rgba(0, 0, 0, 0.35);
+  --shadow-glow: 0 8px 40px rgba(235, 47, 150, 0.35); /* 按钮霓虹光晕 */
+
+  /* 字体 */
+  --font-main: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  --font-mono: 'SF Mono', 'Cascadia Code', Consolas, 'Courier New', monospace; /* 数字等宽 */
+
+  /* 布局 */
+  --container: 1080px;
+  --nav-height: 64px;
+}
+
+/* ==========================================================================
+   基础重置与全局样式
+   ========================================================================== */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: var(--font-main);
+  background: var(--bg-deep);
+  color: var(--text-main);
+  -webkit-font-smoothing: antialiased;
+  min-height: 100vh;
+  /* 全局深色底上叠加极淡的紫粉光斑, 与 Hero 呼应 */
+  background-image:
+    radial-gradient(600px 400px at 85% -5%, rgba(114, 46, 209, 0.18), transparent 65%),
+    radial-gradient(500px 350px at -10% 10%, rgba(235, 47, 150, 0.12), transparent 60%);
+  background-attachment: fixed;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+  border: none;
+  background: none;
+  color: inherit;
+}
+
+input {
+  font-family: inherit;
+}
+
+img {
+  display: block;
+  max-width: 100%;
+}
+
+.container {
+  max-width: var(--container);
+  margin: 0 auto;
+  padding: 0 20px;
+}
+
+/* ==========================================================================
+   通用组件类
+   ========================================================================== */
+
+/* 粉紫渐变主按钮 */
+.btn-gradient {
+  background: var(--gradient);
+  color: #fff;
+  border-radius: 999px;
+  font-weight: 600;
+  transition:
+    transform 0.2s ease,
+    box-shadow 0.2s ease,
+    filter 0.2s ease;
+}
+
+.btn-gradient:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-glow);
+  filter: brightness(1.08);
+}
+
+.btn-gradient:active {
+  transform: translateY(0);
+}
+
+.btn-gradient:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+  filter: none;
+}
+
+/* 渐变描边按钮 (会员入口等) */
+.btn-outline-gradient {
+  position: relative;
+  border-radius: 999px;
+  color: var(--text-main);
+  font-weight: 600;
+  background:
+    linear-gradient(var(--bg-deep), var(--bg-deep)) padding-box,
+    var(--gradient) border-box;
+  border: 1.5px solid transparent;
+  transition:
+    transform 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+.btn-outline-gradient:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 24px rgba(235, 47, 150, 0.3);
+}
+
+/* 状态徽章 */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.6;
+  background: var(--primary-soft);
+  color: var(--primary);
+  white-space: nowrap;
+}
+
+.badge--plain {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-sub);
+}
+
+/* 入场动画 (解析结果卡 / 区块浮现) */
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.fade-up {
+  animation: fade-up 0.45s ease both;
+}
+
+/* 节律: 区块间距 */
+.section {
+  padding: 64px 0;
+}
+
+/* ==========================================================================
+   响应式
+   ========================================================================== */
+@media (max-width: 640px) {
+  .section {
+    padding: 40px 0;
+  }
+
+  .container {
+    padding: 0 16px;
+  }
+}
