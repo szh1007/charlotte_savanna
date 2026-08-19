@@ -248,6 +248,15 @@ completed/expired → expired（交付链接过期，文件被清理）
 - **用户注册登录 / 云存储 / 视频转码 / 音频提取等衍生能力**：超出本 PRD 范围
 - **数据库引入**：明确不做（ADR-0003）
 
+## 代码规范约定（源自项目级 CLAUDE.md 4.5，所有 Python 代码统一遵循）
+
+- **Ruff**：配置在 `pyproject.toml`，`line-length = 88`，target `py313`；启用 isort 排序、flake8-simplify、pyupgrade 等规则
+- **pre-commit**：`.pre-commit-config.yaml` 定义 hooks —— ruff（--fix + format）、codespell 拼写检查、conventional-commits 提交信息校验、trailing-whitespace / end-of-file 等基础检查
+- **注释书写规范**：
+  - 中英混排：中文与英文单词/标识符之间留一个空格
+  - 标点一律英文：注释中的逗号、句号、括号、冒号等使用 `,` `.` `(` `)` `:`，符号后按英文风格空一格
+  - 行宽：代码与注释每行 ≤ 88 字符（Black 风格），超长必须换行，避免 pre-commit 的 ruff format 报错
+
 ## Further Notes
 
 - **版权与风险**：尊重版权；yt-dlp 不破解 DRM；平台存在封号风险，页面免责声明用户自担；项目定位为个人学习用途
