@@ -12,14 +12,17 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from . import config
 from .downloader import list_sites
-from .routers import resolve
+from .routers import downloads, resolve
+from .task_manager import manager
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 交付文件目录 (T02+ 落盘), 启动即创建
+    # 交付文件目录 (下载落盘), 启动即创建
     config.DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
     yield
+    # 服务退出: 停止后台调度线程 (daemon, 进程结束即终止, 显式停止以防残留)
+    manager.stop_scheduler()
 
 
 app = FastAPI(
@@ -37,6 +40,7 @@ app.add_middleware(
 )
 
 app.include_router(resolve.router)
+app.include_router(downloads.router)
 
 
 @app.get("/api/health")

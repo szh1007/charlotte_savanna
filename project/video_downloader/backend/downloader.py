@@ -1,11 +1,13 @@
-"""yt-dlp 引擎封装: 集中所有 yt_dlp 调用, 解析结果可 mock (ADR-0001).
+"""yt-dlp 引擎封装: 集中所有 yt_dlp 调用, 解析/下载结果可 mock (ADR-0001).
 
 领域边界: 只下载不破解, 引擎能力即为领域能力边界.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 from yt_dlp import YoutubeDL
@@ -87,12 +89,54 @@ def resolve(url: str) -> dict[str, Any]:
     }
 
 
-def _friendly_message(e: DownloadError) -> str:
+def _friendly_message(e: DownloadError, fallback: str = "解析失败") -> str:
     """去掉引擎异常的 ERROR: 前缀, 保留可读原因."""
     msg = str(e)
     if msg.startswith("ERROR: "):
         msg = msg[len("ERROR: ") :]
-    return msg or "解析失败"
+    return msg or fallback
+
+
+def _download(
+    url: str,
+    format_id: str,
+    out_dir: Path,
+    progress_hook: Callable[[dict[str, Any]], None] | None = None,
+) -> str:
+    """调用 yt-dlp 下载视频到 out_dir, 返回最终文件路径.
+
+    独立的引擎调用点: 测试通过替换本函数 mock 下载过程.
+    merge_output_format=mp4 保证输出单一 MP4 文件 (音视频分离流由 ffmpeg 合并).
+    """
+    opts: dict[str, Any] = {
+        "format": format_id,
+        "merge_output_format": "mp4",
+        "outtmpl": str(out_dir / "%(id)s_%(format_id)s.%(ext)s"),
+        "quiet": True,
+        "no_warnings": True,
+    }
+    if progress_hook:
+        opts["progress_hooks"] = [progress_hook]
+    with YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+    downloads_info = info.get("requested_downloads") or []
+    if downloads_info and downloads_info[0].get("filepath"):
+        return downloads_info[0]["filepath"]
+    # 不带 ERROR: 前缀 (外层 download() 不再 strip 自有异常)
+    raise DownloadError("下载完成但无法定位输出文件")
+
+
+def download(
+    url: str,
+    format_id: str,
+    out_dir: Path,
+    progress_hook: Callable[[dict[str, Any]], None] | None = None,
+) -> str:
+    """下载视频为单一 MP4 文件, 返回文件路径; 失败抛 DownloadError (原因透传)."""
+    try:
+        return _download(url, format_id, out_dir, progress_hook)
+    except DownloadError as e:
+        raise DownloadError(_friendly_message(e, fallback="下载失败")) from e
 
 
 # 主流平台展示清单 (名称 + 图标 + yt-dlp extractor key)

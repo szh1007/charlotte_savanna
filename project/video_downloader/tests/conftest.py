@@ -1,10 +1,13 @@
 """pytest 共享 fixtures: TestClient + yt-dlp 引擎 mock.
 
 测试 seam: HTTP API 层为主, 通过 TestClient 打 HTTP 断言行为,
-引擎调用 (backend.downloader._extract) 被替换为伪数据, 不触网.
+引擎调用 (backend.downloader._extract / _download) 被替换为伪数据, 不触网.
 """
 
 from __future__ import annotations
+
+import threading
+from pathlib import Path
 
 import pytest
 from backend import main
@@ -65,8 +68,10 @@ FAKE_INFO: dict = {
 
 @pytest.fixture(autouse=True)
 def clean_tasks():
-    """每个测试前清空任务存储, 保证断言基于干净状态."""
+    """每个测试前清空任务存储、序号与活跃下载数, 保证断言基于干净状态."""
     tm.manager._tasks.clear()
+    tm.manager._seq = 0
+    tm.manager._active = 0
     yield
 
 
@@ -92,3 +97,38 @@ def fake_extract(monkeypatch):
 
     monkeypatch.setattr("backend.downloader._extract", _fake_extract)
     return seen
+
+
+@pytest.fixture
+def fake_download(monkeypatch, tmp_path):
+    """替换引擎下载调用: 默认放行, 可阻塞 / 上报进度 / 产出伪文件.
+
+    返回 (call_args, release): call_args 记录 (url, format_id, out_dir) 调用,
+    release 为 threading.Event (测试可 clear 阻塞下载以观察中间状态).
+    进度 hook 在阻塞前触发, 保证下载期间任务 progress 已更新.
+    """
+
+    release = threading.Event()
+    release.set()  # 默认放行, 需要观察中间状态的测试手动 clear
+    call_args: list[tuple[str, str, Path]] = []
+
+    def _fake_download(url: str, format_id: str, out_dir, progress_hook=None) -> str:
+        call_args.append((url, format_id, str(out_dir)))
+        if progress_hook:
+            progress_hook(
+                {
+                    "status": "downloading",
+                    "downloaded_bytes": 50,
+                    "total_bytes": 100,
+                }
+            )
+        release.wait(timeout=5.0)
+        path = tmp_path / "output.mp4"
+        path.write_bytes(b"fake-video-content")
+        if progress_hook:
+            progress_hook({"status": "finished"})
+        return str(path)
+
+    monkeypatch.setattr("backend.downloader._download", _fake_download)
+    yield call_args, release
+    release.set()  # 兜底放行, 避免阻塞后台调度线程

@@ -22,3 +22,46 @@ class ResolveResponse(BaseModel):
     duration: float | None = None
     site: str | None = None
     formats: list[FormatOut]
+
+
+class DownloadRequest(BaseModel):
+    url: str = Field(..., min_length=1, description="视频页面链接")
+    format_id: str = Field(..., min_length=1, description="选定档位 format_id")
+
+
+class DownloadResponse(BaseModel):
+    task_id: int
+    status: str
+
+
+class TaskOut(BaseModel):
+    task_id: int
+    kind: str
+    status: str
+    title: str = ""
+    cover: str | None = None
+    duration: float | None = None
+    site: str | None = None
+    formats: list[FormatOut] = Field(default_factory=list)
+    progress: float = 0.0
+    message: str | None = None
+    error: str | None = None
+    created_at: float
+
+
+def task_to_out(task) -> TaskOut:
+    """Task (dataclass) → TaskOut, 供任务列表 / 单任务 / SSE 事件流共用."""
+    return TaskOut(
+        task_id=task.id,
+        kind=task.kind,
+        status=task.status,
+        title=task.title or "",
+        cover=task.cover,
+        duration=task.duration,
+        site=task.site,
+        formats=[FormatOut(**f) for f in task.formats],
+        progress=task.progress,
+        message=task.message,
+        error=task.error,
+        created_at=task.created_at,
+    )

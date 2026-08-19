@@ -1,2 +1,5 @@
 # 交付文件（TTL 清理的临时资产，不入库）
 downloads/
+
+# pytest 缓存
+.pytest_cache/
