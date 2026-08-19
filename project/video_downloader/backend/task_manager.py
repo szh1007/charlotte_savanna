@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from . import config, downloader
+from .events import bus, task_event
 
 # 任务状态常量 (领域状态机)
 STATUS_PENDING = "pending"
@@ -78,6 +79,8 @@ class TaskManager:
             for key, value in fields.items():
                 setattr(task, key, value)
             task.updated_at = time.time()
+            # 状态变化即广播 (SSE 订阅者消费); 锁内 publish, 事件为当前状态快照
+            bus.publish(task.id, task_event(task))
             return task
 
     def get_task(self, task_id: int) -> Task | None:

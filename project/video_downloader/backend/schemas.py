@@ -50,7 +50,10 @@ class TaskOut(BaseModel):
 
 
 def task_to_out(task) -> TaskOut:
-    """Task (dataclass) → TaskOut, 供任务列表 / 单任务 / SSE 事件流共用."""
+    """Task (dataclass) → TaskOut, 供任务列表 / 单任务共用.
+
+    SSE 事件负载见 events.task_event (字段子集 + 派生的直链 url, 与任务列表契约不同).
+    """
     return TaskOut(
         task_id=task.id,
         kind=task.kind,
