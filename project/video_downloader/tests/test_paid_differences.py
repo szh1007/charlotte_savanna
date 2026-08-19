@@ -60,7 +60,8 @@ def wait_events(
 
 VIDEO_URL = "https://www.bilibili.com/video/av-t05"
 
-# conftest.FAKE_INFO 档位: 18(360p) / 22(720p) / 999(1080p) / best(1080p)
+# conftest.FAKE_INFO 档位: 18(360p) / 22(720p) / 999(1080p)
+# / 999(最佳画质=最高档真实 id, bugfix/0003)
 FORMAT_720P = "22"
 FORMAT_1080P = "999"
 
@@ -86,12 +87,13 @@ def test_free_resolve_marks_high_formats_locked(
     resp = client.post("/api/resolve", json={"url": VIDEO_URL})
     assert resp.status_code == 200
     body = resp.json()
-    assert {f["format_id"]: f["locked"] for f in body["formats"]} == {
-        "18": False,  # 360p
-        "22": False,  # 720p
-        "999": True,  # 1080p
-        "best": True,  # 最佳画质 (1080p)
-    }
+    # 最佳画质档位指向最高档真实 id (999, bugfix/0003), 与 1080p 档位 id 相同
+    assert [(f["format_id"], f["locked"]) for f in body["formats"]] == [
+        ("18", False),  # 360p
+        ("22", False),  # 720p
+        ("999", True),  # 1080p
+        ("999", True),  # 最佳画质 (1080p)
+    ]
     assert body["member_limited"] is True
 
 

@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import threading
-from pathlib import Path
 
 import pytest
 from backend import config, main
@@ -44,7 +43,7 @@ FAKE_INFO: dict = {
             "vcodec": "avc1",
             "acodec": "mp4a",
         },
-        # 1080p 无音频 MP4
+        # 1080p 无音频 MP4 (DASH video-only, has_audio=False → 下载时合并音频流)
         {
             "format_id": "137",
             "height": 1080,
@@ -132,10 +131,12 @@ def fake_download(monkeypatch, tmp_path):
 
     release = threading.Event()
     release.set()  # 默认放行, 需要观察中间状态的测试手动 clear
-    call_args: list[tuple[str, str, Path]] = []
+    call_args: list[tuple[str, str, str, bool]] = []
 
-    def _fake_download(url: str, format_id: str, out_dir, progress_hook=None) -> str:
-        call_args.append((url, format_id, str(out_dir)))
+    def _fake_download(
+        url: str, format_id: str, out_dir, progress_hook=None, merge_audio: bool = False
+    ) -> str:
+        call_args.append((url, format_id, str(out_dir), merge_audio))
         if progress_hook:
             progress_hook(
                 {

@@ -2,6 +2,9 @@
 
 from pydantic import BaseModel, Field
 
+from . import config
+from .task_manager import STATUS_COMPLETED
+
 
 def ensure_http_url(url: str) -> str:
     """校验并规范化视频链接 (仅 http/https), 非法时抛 ValueError.
@@ -24,6 +27,7 @@ class FormatOut(BaseModel):
     height: int | None
     ext: str
     locked: bool = False  # 该档位对该用户是否锁定 (免费用户 >720p, T05)
+    has_audio: bool = True  # 是否含音频 (DASH 分离流 False: 下载时自动合并音频流)
 
 
 class ResolveResponse(BaseModel):
@@ -71,9 +75,11 @@ class TaskOut(BaseModel):
     duration: float | None = None
     site: str | None = None
     formats: list[FormatOut] = Field(default_factory=list)
+    format_id: str | None = None  # 选定档位 (标题旁清晰度标注用)
     progress: float = 0.0
     message: str | None = None
     error: str | None = None
+    expires_at: float | None = None  # 交付过期时刻 (仅 completed, 前端倒计时)
     created_at: float
 
 
@@ -91,8 +97,15 @@ def task_to_out(task) -> TaskOut:
         duration=task.duration,
         site=task.site,
         formats=[FormatOut(**f) for f in task.formats],
+        format_id=task.format_id,
         progress=task.progress,
         message=task.message,
         error=task.error,
+        # 交付过期时刻 = 完成时刻 + 身份 TTL; 仅 completed 有交付资产, 其余为 None
+        expires_at=(
+            task.completed_at + config.delivery_ttl(task.is_member)
+            if task.status == STATUS_COMPLETED and task.completed_at
+            else None
+        ),
         created_at=task.created_at,
     )

@@ -14,6 +14,8 @@ import threading
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from . import config
+
 if TYPE_CHECKING:
     from .task_manager import Task
 
@@ -77,14 +79,26 @@ def _enqueue(sub: Subscriber, event: dict) -> None:
 
 
 def task_event(task: Task) -> dict:
-    """Task → SSE 事件负载 (API 契约: task_id/status/progress/message/url?/error?)."""
+    """Task → SSE 事件负载 (API 契约: task_id/status/title/cover/progress/...).
+
+    title/cover 为解析完成的元信息 (resolving 阶段为空, 前端据此补全卡片);
+    expires_at 仅完成时刻携带 (前端倒计时起点); 移除事件见 task_manager
+    remove_task (status=removed, 独立负载无本函数字段).
+    """
     return {
         "task_id": task.id,
         "status": task.status,
+        "title": task.title or "",
+        "cover": task.cover,
         "progress": task.progress,
         "message": task.message,
         "url": f"/api/files/{task.id}" if task.file_path else None,
         "error": task.error,
+        "expires_at": (
+            task.completed_at + config.delivery_ttl(task.is_member)
+            if task.completed_at
+            else None
+        ),
     }
 
 

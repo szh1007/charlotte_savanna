@@ -46,7 +46,7 @@ project/video_downloader/
 │   ├── schemas.py         # Pydantic 模型（任务/解析结果/会员）
 │   ├── downloader.py      # yt_dlp 封装：解析 + 下载 + 进度回调
 │   ├── task_manager.py    # 内存态任务存储 + 队列调度 + 并发控制
-│   ├── cleaner.py         # TTL 后台清理（文件删除 + 状态过期）
+│   ├── cleaner.py         # TTL 后台清理 + 手动清除记录（文件删除 + 任务移除 + 孤儿文件）
 │   ├── auth.py            # 会员密钥校验依赖
 │   └── routers/
 │       ├── resolve.py     # POST /api/resolve
@@ -74,13 +74,17 @@ project/video_downloader/
 | POST | `/api/downloads` | 创建下载任务 | `{url, format_id}` → `{task_id}` |
 | GET | `/api/tasks` | 任务列表（降序） | → `{tasks: Task[]}` |
 | GET | `/api/tasks/{id}` | 单任务详情 | → `Task` |
+| DELETE | `/api/tasks/{id}` | 清除任务记录（删文件+移除任务; 进行中任务取消下载） | → 204（不存在 404 / 文件占用 409） |
+| POST | `/api/tasks/purge-unfinished` | 一键清除全部未完成记录（排队中/下载中/失败/过期, 含孤儿文件） | → `{removed: int[]}` |
 | GET | `/api/events` | SSE 进度流 | `?task_ids=1,2` → 事件流 |
-| GET | `/api/files/{id}` | 交付直链下载 | → 文件流（404 若过期） |
+| GET | `/api/files/{id}` | 交付直链下载 | → 文件流（404 若过期 / 410 已过期清理） |
 | POST | `/api/member` | 提交会员密钥 | `{key}` → `{is_member, expires_at}` |
 | GET | `/api/member/status` | 会话会员状态 | → `{is_member}` |
 | GET | `/api/sites` | 支持平台列表 | → `{sites: [{name, icon}]}` |
 
-**SSE 事件**（`event: task-update`）：`{task_id, status, progress, message, url?, error?}`
+**SSE 事件**（`event: task-update`）：`{task_id, status, title, cover, progress, message, url?, error?, expires_at?}`（title/cover 为解析完成的元信息，前端据此补全卡片）；任务清除记录时广播 `{task_id, status: "removed"}`（非状态机状态，前端据此移除卡片）
+
+**任务对象**（`Task`）：`{task_id, kind, status, title, cover, duration, site, formats[], format_id, progress, message, error, expires_at?, created_at}`——`format_id` 为选定档位（标题旁清晰度标注），`expires_at` 仅 completed 携带（交付过期时刻 = 完成时刻 + 身份 TTL，前端倒计时）
 
 ## 5. 付费差异（后端强制）
 

@@ -55,8 +55,11 @@ async function request(path, options = {}) {
     } catch {
       /* 响应体非 JSON 时保留默认提示 */
     }
-    throw new Error(detail)
+    const err = new Error(detail)
+    err.status = res.status // 调用方按状态码区分 (如清除记录 404 = 任务已不存在)
+    throw err
   }
+  if (res.status === 204) return null // 无响应体 (如 DELETE 成功)
   try {
     return await res.json()
   } catch {
@@ -82,6 +85,16 @@ export function createDownload(url, formatId) {
 /** 查询任务列表 (创建时间降序), 页面恢复时使用. */
 export function fetchTasks() {
   return request('/tasks')
+}
+
+/** 清除单条任务记录: 删除视频文件 + 移除任务 (未过期时的二次确认由调用方负责). */
+export function deleteTask(taskId) {
+  return request(`/tasks/${taskId}`, { method: 'DELETE' })
+}
+
+/** 一键清除所有未完成记录 (排队中/下载中/失败/过期, 后端同时清理孤儿文件). */
+export function purgeUnfinishedTasks() {
+  return request('/tasks/purge-unfinished', { method: 'POST' })
 }
 
 /** 查询支持平台列表. */

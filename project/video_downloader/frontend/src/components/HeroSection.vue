@@ -1,5 +1,6 @@
 <script setup>
 import { ref } from 'vue'
+import ErrorAlert from './ErrorAlert.vue'
 
 // Hero 解析区: 大标题 + 链接输入框 + 解析按钮
 // + 平台标签云
@@ -74,7 +75,7 @@ const tags = [
         </button>
       </form>
 
-      <p v-if="apiError || error" class="hero__error" role="alert">{{ apiError || error }}</p>
+      <ErrorAlert :message="apiError || error" class="hero__error" />
 
       <ul class="hero__tags">
         <li v-for="tag in tags" :key="tag" class="hero__tag">{{ tag }}</li>
@@ -205,8 +206,6 @@ const tags = [
 
 .hero__error {
   margin-top: 14px;
-  color: var(--danger);
-  font-size: 14px;
 }
 
 /* 平台标签云 */

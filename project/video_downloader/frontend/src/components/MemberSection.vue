@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import ErrorAlert from './ErrorAlert.vue'
 
 // 会员营销区 (T09): 免费/会员功能对比表 + 限时倒计时 + 密钥输入
 // 密钥由父组件 (Home) 提交并管理全站会员状态, 本组件纯展示与输入
@@ -135,7 +136,7 @@ const expiresText = computed(() =>
             {{ submitting ? '解锁中…' : '立即解锁' }}
           </button>
         </form>
-        <p v-if="error" class="member__error" role="alert">{{ error }}</p>
+        <ErrorAlert :message="error" class="member__error" />
       </template>
 
       <div v-else class="member__unlocked" role="status">
@@ -346,8 +347,6 @@ const expiresText = computed(() =>
 
 .member__error {
   margin-top: 12px;
-  font-size: 13px;
-  color: var(--danger);
 }
 
 /* 解锁中旋转指示 */

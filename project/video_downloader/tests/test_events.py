@@ -85,6 +85,9 @@ def test_events_pushes_status_updates(
     assert completed["message"] == "下载完成"
     assert completed["url"] == f"/api/files/{task_id}"
     assert completed["error"] is None
+    # 元信息随事件携带 (前端据此补全卡片标题/封面, bugfix/0006)
+    assert completed["title"] == "测试视频标题"
+    assert completed["cover"] == "https://example.com/cover.jpg"
     stream.close()
 
 

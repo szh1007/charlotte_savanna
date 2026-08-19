@@ -1,5 +1,6 @@
 <script setup>
 import { computed, ref } from 'vue'
+import ErrorAlert from './ErrorAlert.vue'
 
 // 解析结果卡: 封面 + 标题 + 平台徽章 + 时长
 // + 清晰度下拉 (锁定档带 🔒) + 「开始下载」按钮 (T08)
@@ -18,10 +19,13 @@ const props = defineProps({
 
 const emit = defineEmits(['download', 'go-member'])
 
-// 默认选中最高可用档: 后端按高度升序排列 (formats[0] 是最低档 360p),
-// 反向找第一个未锁定档 = 最高档 (免费取最高免费档, 会员取 best)
+// 档位倒序 (高清晰度在上, 用户反馈 bugfix/0006): 后端按高度升序排列
+const formatsDesc = computed(() => [...props.result.formats].reverse())
+
+// 默认选中最高可用档: 倒序找第一个未锁定档 = 最高档
+// (免费取最高免费档, 会员取 best)
 const selectedFormat = ref(
-  ([...props.result.formats].reverse().find((f) => !f.locked) ??
+  (formatsDesc.value.find((f) => !f.locked) ??
     props.result.formats[0])?.format_id ?? '',
 )
 
@@ -63,7 +67,15 @@ function handleDownload() {
 <template>
   <section class="result fade-up" aria-label="解析结果">
     <div class="result__cover">
-      <img v-if="result.cover" :src="result.cover" :alt="result.title" loading="lazy" />
+      <!-- referrerpolicy: 图床防盗链 (B 站等拒绝第三方 Referer, 403 不显示);
+           不发 Referer 头即放行 (见 bugfix/0001) -->
+      <img
+        v-if="result.cover"
+        :src="result.cover"
+        :alt="result.title"
+        loading="lazy"
+        referrerpolicy="no-referrer"
+      />
       <div v-else class="result__cover-placeholder">🎬</div>
     </div>
 
@@ -87,8 +99,9 @@ function handleDownload() {
       <div class="result__formats">
         <span class="result__formats-label">选择清晰度</span>
         <select v-model="selectedFormat" class="result__select">
+          <!-- 倒序渲染: 最高画质在第一位 (bugfix/0006) -->
           <option
-            v-for="f in result.formats"
+            v-for="f in formatsDesc"
             :key="f.format_id"
             :value="f.format_id"
             :disabled="f.locked"
@@ -107,9 +120,7 @@ function handleDownload() {
           <span v-if="downloading" class="result__spinner" aria-hidden="true"></span>
           {{ downloading ? '创建中…' : '开始下载' }}
         </button>
-        <p v-if="downloadError" class="result__error" role="alert">
-          {{ downloadError }}
-        </p>
+        <ErrorAlert :message="downloadError" />
       </div>
     </div>
   </section>
@@ -224,12 +235,6 @@ function handleDownload() {
   padding: 7px 16px;
   font-size: 13px;
   margin-left: auto;
-}
-
-.result__error {
-  flex-basis: 100%;
-  color: var(--danger);
-  font-size: 13px;
 }
 
 /* 创建中旋转指示 */

@@ -2,10 +2,11 @@
 
 import time
 
+import pytest
 from backend import task_manager as tm
 from backend.task_manager import STATUS_COMPLETED, STATUS_DOWNLOADING, STATUS_FAILED
 from fastapi.testclient import TestClient
-from helpers import create_download, find_task, wait_until
+from helpers import create_download, find_task, member_headers, wait_until
 from yt_dlp.utils import DownloadError
 
 
@@ -59,6 +60,71 @@ def test_create_download_resolve_failure_returns_400(
     assert task.status == STATUS_FAILED
 
 
+def test_best_quality_download_uses_real_format_id(
+    client: TestClient, fake_download, monkeypatch
+) -> None:
+    """B 站全 DASH 分离流: 「最佳画质」档位指向真实最高档 id, 下载链路可用.
+
+    回归 bugfix/0003: 旧实现最佳画质 format_id 为字面 "best", yt-dlp 将其
+    作为格式选择表达式只匹配合一格式, 全分离流下匹配为空下载报
+    "Requested format is not available".
+    """
+    dash_info = {
+        "id": "dash-only",
+        "title": "DASH 分离流视频",
+        "thumbnail": "https://example.com/c.jpg",
+        "extractor_key": "BiliBili",
+        "formats": [
+            # B 站真实结构: 纯音频流 + DASH video-only 视频流, 无合一格式
+            {"format_id": "30216", "vcodec": "none", "acodec": "mp4a", "ext": "m4a"},
+            {
+                "format_id": "30016",
+                "height": 360,
+                "vcodec": "avc1",
+                "acodec": "none",
+                "ext": "mp4",
+            },
+            {
+                "format_id": "30064",
+                "height": 720,
+                "vcodec": "avc1",
+                "acodec": "none",
+                "ext": "mp4",
+            },
+            {
+                "format_id": "30080",
+                "height": 1080,
+                "vcodec": "avc1",
+                "acodec": "none",
+                "ext": "mp4",
+            },
+        ],
+    }
+    monkeypatch.setattr("backend.downloader._extract", lambda url: dash_info)
+
+    # 解析 → 取「最佳画质」档位 (列表末尾, 与最高档同真实 id)
+    resp = client.post(
+        "/api/resolve", json={"url": "https://www.bilibili.com/video/BV-best"}
+    )
+    formats = resp.json()["formats"]
+    assert formats[-1]["label"] == "最佳画质 - 1080p"
+    best_id = formats[-1]["format_id"]
+    assert best_id == "30080"  # 真实最高档 id, 而非字面 "best"
+    # DASH video-only 档位标记无音频 → 下载时合并音频流 (bugfix/0003)
+    assert formats[-1]["has_audio"] is False
+
+    # 选最佳画质创建下载 → 引擎收到真实 id + merge_audio=True, 任务完成
+    task_id = client.post(
+        "/api/downloads",
+        json={"url": "https://www.bilibili.com/video/BV-best", "format_id": best_id},
+        headers=member_headers(client),
+    ).json()["task_id"]
+    assert wait_until(lambda: find_task(client, task_id)["status"] == STATUS_COMPLETED)
+    call_args, _release = fake_download
+    assert call_args[-1][1] == "30080"
+    assert call_args[-1][3] is True  # DASH 分离流: 合并音频流
+
+
 def test_download_flow_status_machine(
     client: TestClient, fake_extract: list[str], fake_download
 ) -> None:
@@ -80,7 +146,9 @@ def test_download_failure_marks_task_failed(
 ) -> None:
     """下载执行失败: 任务标记 failed 并携带引擎错误原因."""
 
-    def _fail(url: str, format_id: str, out_dir: str, progress_hook=None) -> str:
+    def _fail(
+        url: str, format_id: str, out_dir: str, progress_hook=None, merge_audio=False
+    ) -> str:
         raise DownloadError("ERROR: The uploader has not made this video available")
 
     monkeypatch.setattr("backend.downloader._download", _fail)
@@ -96,7 +164,9 @@ def test_download_unexpected_error_marks_failed(
 ) -> None:
     """引擎外异常 (如磁盘错误): 任务标记 failed, 不悬挂在 downloading."""
 
-    def _boom(url: str, format_id: str, out_dir: str, progress_hook=None) -> str:
+    def _boom(
+        url: str, format_id: str, out_dir: str, progress_hook=None, merge_audio=False
+    ) -> str:
         raise OSError("disk full")
 
     monkeypatch.setattr("backend.downloader._download", _boom)
@@ -219,3 +289,59 @@ def test_files_not_ready_returns_404(
     release.set()
     assert wait_until(lambda: find_task(client, task_id)["status"] == STATUS_COMPLETED)
     assert client.get(f"/api/files/{task_id}").status_code == 200
+
+
+def test_merged_download_progress_averaged_across_streams(
+    client: TestClient, monkeypatch, tmp_path
+) -> None:
+    """合并下载 (DASH 档位): 视频/音频流进度均分合成整体, 单调不减不回退.
+
+    回归 bugfix/0004: yt-dlp 对合并表达式先后下载视频流与音频流, 各自独立
+    上报进度; 修复前音频流会把整体进度重置回 0, 前端进度条来回跳.
+    """
+    history: list[float] = []
+
+    def _fake(
+        url: str, format_id: str, out_dir, progress_hook=None, merge_audio=False
+    ) -> str:
+        path = tmp_path / "merged.mp4"
+        path.write_bytes(b"fake-video")
+        # 模拟 yt-dlp 双流进度: 视频流 0→100%, 音频流 0→100% (各 3 帧)
+        for fmt_id, pcts in (("30064", (10, 50, 100)), ("30280", (10, 50, 100))):
+            for pct in pcts:
+                progress_hook(
+                    {
+                        "status": "downloading",
+                        "downloaded_bytes": pct,
+                        "total_bytes": 100,
+                        "info_dict": {"format_id": fmt_id},
+                    }
+                )
+                history.append(tm.manager.list_tasks()[0].progress)
+        progress_hook({"status": "finished"})
+        return str(path)
+
+    dash_info = {
+        "id": "dash-av14",
+        "title": "DASH 分离流视频",
+        "thumbnail": "https://example.com/c.jpg",
+        "extractor_key": "BiliBili",
+        "formats": [
+            {"format_id": "30216", "vcodec": "none", "acodec": "mp4a", "ext": "m4a"},
+            {
+                "format_id": "30064",
+                "height": 720,
+                "vcodec": "avc1",
+                "acodec": "none",
+                "ext": "mp4",
+            },
+        ],
+    }
+    monkeypatch.setattr("backend.downloader._extract", lambda url: dash_info)
+    monkeypatch.setattr("backend.downloader._download", _fake)
+    # 30064 为 DASH video-only 档位 (720p, 免费可选, merge_audio=True)
+    task_id = create_download(client, "https://www.bilibili.com/video/av14", "30064")
+    assert wait_until(lambda: find_task(client, task_id)["status"] == STATUS_COMPLETED)
+    # 均分合成: 视频流 10/50/100% → 整体 5/25/50%, 音频流 10/50/100% → 55/75/99
+    # (99 为下载中上限, 完成时置 100); 全程单调不减, 无回退跳变
+    assert history == pytest.approx([5.0, 25.0, 50.0, 55.0, 75.0, 99.0])

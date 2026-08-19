@@ -28,7 +28,7 @@ def test_resolve_valid_link_returns_metadata(
         "360p MP4",
         "720p MP4",
         "1080p WEBM",
-        "最佳画质 (1080p)",
+        "最佳画质 - 1080p",
     ]
     # 免费用户: >720p 档位标记 locked, member_limited 为 True (T05)
     assert formats[0] == {
@@ -37,11 +37,14 @@ def test_resolve_valid_link_returns_metadata(
         "ext": "mp4",
         "label": "360p MP4",
         "locked": False,
+        "has_audio": True,  # 合一格式 (含音频, 下载无需合并)
     }
     assert formats[2]["format_id"] == "999"  # 1080p 含音频的 WEBM 胜出
     assert formats[2]["locked"] is True
-    assert formats[3]["format_id"] == "best"
-    assert body["member_limited"] is True
+    # 最佳画质指向最高档真实 id (bugfix/0003: 字面 "best" 是 yt-dlp 表达式,
+    # 对全 DASH 分离流平台匹配为空会下载报错)
+    assert formats[3]["format_id"] == "999"
+    assert formats[3]["locked"] is True
 
 
 def test_resolve_status_flows_pending_resolving_resolved(
@@ -96,3 +99,20 @@ def test_resolve_failure_marks_task_failed(client: TestClient, monkeypatch) -> N
     task = tm.manager.list_tasks()[0]
     assert task.status == STATUS_FAILED
     assert task.error == "Unable to download webpage: timeout"
+
+
+def test_resolve_upgrades_http_cover_to_https(client: TestClient, monkeypatch) -> None:
+    """引擎返回 http 缩略图: 响应 cover 升级为 https (混合内容策略兼容)."""
+
+    def _http_cover(url: str) -> dict:
+        return {
+            "title": "测试标题",
+            "thumbnail": "http://i1.hdslb.com/bfs/archive/x.jpg",
+            "extractor_key": "BiliBili",
+            "formats": [],
+        }
+
+    monkeypatch.setattr("backend.downloader._extract", _http_cover)
+    resp = client.post("/api/resolve", json={"url": "https://www.bilibili.com/video/x"})
+    assert resp.status_code == 200
+    assert resp.json()["cover"] == "https://i1.hdslb.com/bfs/archive/x.jpg"

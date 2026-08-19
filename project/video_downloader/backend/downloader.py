@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import shutil
 from collections.abc import Callable
 from functools import lru_cache
 from pathlib import Path
@@ -58,19 +59,46 @@ def _to_formats(info: dict[str, Any]) -> list[dict[str, Any]]:
                 "height": height,
                 "ext": ext,
                 "label": f"{height}p {ext.upper()}",
+                # 是否含音频: 合一格式 True; DASH 分离流 (B 站等) video-only
+                # False → 下载时需合并音频流才有声音 (见 _format_spec)
+                "has_audio": f.get("acodec") not in (None, "none"),
             }
         )
     if formats:
-        best_height = formats[-1]["height"]
+        best = formats[-1]
+        # 最佳画质指向最高档的真实 format_id, 而非字面 "best":
+        # "best" 是 yt-dlp 格式选择表达式, 只匹配音视频合一的单一格式,
+        # B 站等平台返回全 DASH 分离流时匹配为空 → 下载报
+        # "Requested format is not available" (见 bugfix/0003)
         formats.append(
             {
-                "format_id": "best",
-                "height": best_height,
+                "format_id": best["format_id"],
+                "height": best["height"],
                 "ext": "mp4",
-                "label": f"最佳画质 ({best_height}p)",
+                "label": f"最佳画质 - {best['height']}p",
+                "has_audio": best["has_audio"],
             }
         )
     return formats
+
+
+def _cover_url(info: dict[str, Any]) -> str | None:
+    """取封面 URL: 优先顶层 thumbnail, 缺失时回退 thumbnails 列表首个.
+
+    国内平台 (B 站等) 缩略图常返回 http:// 链接, 统一升级为 https://:
+    https 页面加载 http 图片会被浏览器混合内容策略 (Mixed Content) 拦截,
+    封面显示失败. 主流平台图床均支持 https, 升级不会引入新的失败.
+    """
+    raw = info.get("thumbnail")
+    if not raw:
+        thumbnails = info.get("thumbnails") or []
+        if thumbnails and thumbnails[0].get("url"):
+            raw = thumbnails[0]["url"]
+    if not raw:
+        return None
+    if raw.startswith("http://"):
+        raw = "https://" + raw[len("http://") :]
+    return raw
 
 
 def resolve(url: str) -> dict[str, Any]:
@@ -82,7 +110,7 @@ def resolve(url: str) -> dict[str, Any]:
         raise ResolveError(_friendly_message(e)) from e
     return {
         "title": info.get("title") or "未知标题",
-        "cover": info.get("thumbnail"),
+        "cover": _cover_url(info),
         "duration": info.get("duration"),
         "site": info.get("extractor_key"),
         "formats": _to_formats(info),
@@ -97,19 +125,43 @@ def _friendly_message(e: DownloadError, fallback: str = "解析失败") -> str:
     return msg or fallback
 
 
+def _format_spec(format_id: str, merge_audio: bool) -> str:
+    """构造传给 yt-dlp 的 format 参数.
+
+    merge_audio=True (所选档位为 DASH 分离视频流, 无音频): 指定视频流 +
+    最佳音频流合并, 输出有声文件; 斜杠后为回退 (平台无音频流时退回单流,
+    避免整个格式选择失败). 合一格式档位不合并, 保持原样.
+    """
+    if merge_audio:
+        return f"{format_id}+bestaudio*/{format_id}"
+    return format_id
+
+
+def _has_ffmpeg() -> bool:
+    """yt-dlp 音视频合并依赖 ffmpeg 可执行文件 (PATH 或 FFMPEG_LOCATION)."""
+    return shutil.which("ffmpeg") is not None
+
+
 def _download(
     url: str,
     format_id: str,
     out_dir: Path,
     progress_hook: Callable[[dict[str, Any]], None] | None = None,
+    merge_audio: bool = False,
 ) -> str:
     """调用 yt-dlp 下载视频到 out_dir, 返回最终文件路径.
 
     独立的引擎调用点: 测试通过替换本函数 mock 下载过程.
-    merge_output_format=mp4 保证输出单一 MP4 文件 (音视频分离流由 ffmpeg 合并).
+    merge_audio=True 时视频流与最佳音频流合并 (需 ffmpeg),
+    merge_output_format=mp4 保证输出单一 MP4 文件.
     """
+    if merge_audio and not _has_ffmpeg():
+        # 预先检测而非等 yt-dlp 下载完再失败: 提示安装, 避免浪费流量
+        raise DownloadError(
+            "该档位为音视频分离流, 需要 ffmpeg 合并: 请安装 ffmpeg 并加入 PATH"
+        )
     opts: dict[str, Any] = {
-        "format": format_id,
+        "format": _format_spec(format_id, merge_audio),
         "merge_output_format": "mp4",
         "outtmpl": str(out_dir / "%(id)s_%(format_id)s.%(ext)s"),
         "quiet": True,
@@ -131,10 +183,11 @@ def download(
     format_id: str,
     out_dir: Path,
     progress_hook: Callable[[dict[str, Any]], None] | None = None,
+    merge_audio: bool = False,
 ) -> str:
     """下载视频为单一 MP4 文件, 返回文件路径; 失败抛 DownloadError (原因透传)."""
     try:
-        return _download(url, format_id, out_dir, progress_hook)
+        return _download(url, format_id, out_dir, progress_hook, merge_audio)
     except DownloadError as e:
         raise DownloadError(_friendly_message(e, fallback="下载失败")) from e
 

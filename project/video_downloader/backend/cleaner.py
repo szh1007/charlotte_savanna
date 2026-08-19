@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 from . import config
-from .task_manager import STATUS_EXPIRED, TaskManager, manager
+from .task_manager import STATUS_COMPLETED, STATUS_EXPIRED, TaskManager, manager
 
 # 清理扫描周期 (秒): 后台线程每周期全量扫描一次 (PRD 设计值约 60s)
 _CLEANER_INTERVAL = 60
@@ -92,10 +92,79 @@ class DeliveryCleaner:
             expired.append(task.id)
         return expired
 
+    def purge_unfinished(self) -> list[int]:
+        """清除全部未完成记录 (用户一键触发): 移除任务 + 删除残留文件.
+
+        未完成 = 无有效交付资产: expired / failed / 排队中 / 下载中 (取消) /
+        已超 TTL 的 completed (周期清理未及处理); 仅保留可交付的 completed.
+        下载中任务经 remove_task 置取消信号, 引擎中断并清理临时文件.
+        顺带清理孤儿文件: DOWNLOADS_DIR 中无任何任务引用且超过 24h
+        未修改的文件 (手动清除时删除失败 / 进程崩溃残留的 .part 等).
+        返回被移除的任务 id 列表, 幂等.
+        """
+        removed: list[int] = []
+        now = _now()
+        for task in self._manager.list_all():
+            if task.status == STATUS_COMPLETED and not self._is_overdue(task, now):
+                continue  # 已完成且未过期: 保留 (其余状态均视为未完成)
+            self._delete_file(task)
+            self._manager.remove_task(task.id)  # 移除即广播 removed; 下载中置取消信号
+            removed.append(task.id)
+        self._cleanup_orphan_files(now)
+        return removed
+
+    def _is_overdue(self, task, now: float) -> bool:
+        """completed 任务是否已超 TTL (expired 状态无需判定, 直接清除)."""
+        return (
+            task.completed_at is not None
+            and now - task.completed_at >= self._delivery_ttl(task.is_member)
+        )
+
+    @staticmethod
+    def _delete_file(task) -> None:
+        """删除任务交付文件 (锁外 IO, 幂等; 失败仅记录日志, 任务照常移除)."""
+        if not task.file_path:
+            return
+        try:
+            Path(task.file_path).unlink(missing_ok=True)
+        except OSError as e:
+            logger.warning(
+                "删除交付文件失败 task=%s path=%s: %s", task.id, task.file_path, e
+            )
+
+    def _cleanup_orphan_files(self, now: float) -> None:
+        """删除无任务引用的孤儿文件 (超过 24h 未修改).
+
+        覆盖场景: 手动清除记录时文件删除失败 / 进程崩溃残留的 .part 等.
+        年龄门槛 (24h) 保护正在下载的文件 — 下载中任务 file_path 未回填,
+        无引用但文件在活跃写入, mtime 为近期不会误删.
+        """
+        referenced = {
+            Path(t.file_path)
+            for t in self._manager.list_all()
+            if t.file_path is not None
+        }
+        try:
+            files = list(config.DOWNLOADS_DIR.iterdir())
+        except OSError:
+            return  # 目录不存在等: 无文件可清理
+        for path in files:
+            if path in referenced:
+                continue
+            try:
+                age = now - path.stat().st_mtime
+            except OSError:
+                continue
+            if age > config.FREE_DELIVERY_TTL:
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError as e:
+                    logger.warning("清理孤儿文件失败 path=%s: %s", path, e)
+
     @staticmethod
     def _delivery_ttl(is_member: bool) -> float:
         """交付直链有效期按身份计算 (免费 24h / 会员 72h, PRD §5)."""
-        return config.MEMBER_DELIVERY_TTL if is_member else config.FREE_DELIVERY_TTL
+        return config.delivery_ttl(is_member)
 
 
 # 模块级单例: main lifespan 启动, 路由 / 测试共享

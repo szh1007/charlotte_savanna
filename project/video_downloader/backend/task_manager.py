@@ -14,6 +14,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from yt_dlp.utils import DownloadError
+
 from . import config, downloader
 from .events import bus, task_event
 
@@ -26,6 +28,10 @@ STATUS_DOWNLOADING = "downloading"
 STATUS_COMPLETED = "completed"
 STATUS_FAILED = "failed"
 STATUS_EXPIRED = "expired"
+
+# 移除事件标记 (非状态机状态): 任务从存储清除 (清除记录), SSE 广播后前端
+# 从列表移除卡片. 不进状态机: 移除即不存在, 无需落任务状态
+STATUS_REMOVED = "removed"
 
 # 付费差异 (T05, PRD §5): 免费/会员能力边界, 后端强制, 非 UI 摆设
 FREE_MAX_HEIGHT = 720  # 免费档清晰度上限: >720p 档位标记锁定
@@ -55,6 +61,7 @@ class Task:
     site: str | None = None
     formats: list[dict[str, Any]] = field(default_factory=list)
     format_id: str | None = None
+    merge_audio: bool = False  # 档位为 DASH 分离流 (video-only): 下载时合并音频流
     progress: float = 0.0
     message: str | None = None
     file_path: str | None = None
@@ -62,6 +69,8 @@ class Task:
     completed_at: float | None = None  # 完成时刻 (TTL 过期起点, T06)
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
+    # 取消信号: 清除记录时置位, 下载中任务的 progress hook 检查后中断引擎
+    cancel_event: threading.Event = field(default_factory=threading.Event)
 
 
 class TaskManager:
@@ -83,9 +92,12 @@ class TaskManager:
             self._tasks[task.id] = task
             return task
 
-    def update_status(self, task_id: int, status: str, **fields: Any) -> Task:
+    def update_status(self, task_id: int, status: str, **fields: Any) -> Task | None:
         with self._lock:
-            task = self._tasks[task_id]
+            task = self._tasks.get(task_id)
+            if task is None:
+                # 任务已被清除记录 (取消下载): 收尾更新跳过, 不广播
+                return None
             task.status = status
             for key, value in fields.items():
                 setattr(task, key, value)
@@ -107,6 +119,27 @@ class TaskManager:
         """全部 completed 任务 (TTL 清理扫描范围, 不设列表上限, T06)."""
         with self._lock:
             return [t for t in self._tasks.values() if t.status == STATUS_COMPLETED]
+
+    def list_all(self) -> list[Task]:
+        """全部任务快照 (清除过期记录 / 孤儿文件对照用, 无列表上限)."""
+        with self._lock:
+            return list(self._tasks.values())
+
+    def remove_task(self, task_id: int) -> Task | None:
+        """从存储移除任务 (清除记录) 并广播 removed 事件, 不存在返回 None.
+
+        下载中任务先置取消信号: worker 的 progress hook 检查后抛异常中断
+        引擎 (yt-dlp 清理临时文件, 任务 file_path 未回填无残留); 广播
+        removed 后所有 SSE 订阅端 (多标签页) 同步移除该任务卡片.
+        文件删除是路由层的锁外 IO, 不在本方法内执行.
+        """
+        with self._lock:
+            task = self._tasks.pop(task_id, None)
+            if task is not None:
+                task.cancel_event.set()
+        if task is not None:
+            bus.publish(task.id, {"task_id": task.id, "status": STATUS_REMOVED})
+        return task
 
     def resolve(self, url: str, is_member: bool = False) -> Task:
         """同步解析链接: 任务状态 pending → resolving → resolved / failed.
@@ -164,13 +197,17 @@ class TaskManager:
         if self._is_locked(fmt, is_member):
             self.update_status(task.id, STATUS_FAILED, error="该档位需会员解锁")
             raise ValueError("该档位需会员解锁")
+        # DASH 分离流档位 (video-only, has_audio=False): 下载时合并音频流 (bugfix/0003)
+        merge_audio = not fmt.get("has_audio", True)
         limit = self._queue_limit(is_member)
         # 按创建者身份计数, 排除当前任务自身 (检查时已处于 resolved 状态, 不应计入)
         if self._queue_size(is_member, exclude_id=task.id) >= limit:
             msg = f"队列已满 (上限 {limit} 个任务)"
             self.update_status(task.id, STATUS_FAILED, error=msg)
             raise QueueLimitError(msg)
-        self.update_status(task.id, STATUS_QUEUED, format_id=format_id)
+        self.update_status(
+            task.id, STATUS_QUEUED, format_id=format_id, merge_audio=merge_audio
+        )
         self.ensure_scheduler()
         return self.get_task(task.id)
 
@@ -239,7 +276,7 @@ class TaskManager:
             if task:
                 worker = threading.Thread(
                     target=self._run_download,
-                    args=(task.id,),
+                    args=(task.id, task.is_member),
                     name=f"download-worker-{task.id}",
                     daemon=True,
                 )
@@ -260,22 +297,29 @@ class TaskManager:
                     return t
         return None
 
-    def _run_download(self, task_id: int) -> None:
+    def _run_download(self, task_id: int, is_member: bool) -> None:
         """执行下载并更新任务状态 (独立线程, 完成后释放并发槽).
 
         执行前重校验档位访问权 (PRD §5 强制校验点 3): 即使创建时被绕过
         (伪造请求 / 内部篡改), 非会员任务的锁定档位也会在下载前被拒绝.
+        任务清除记录后 (取消): 引擎 hook 抛异常退出, 收尾更新由 update_status
+        防御跳过; is_member 在派发时捕获 (任务可能已被移除, 槽位按此释放).
         """
         try:
             task = self.get_task(task_id)
-            if task is None:  # 理论上不可达 (worker 仅处理入队任务), 防御式处理
-                raise RuntimeError(f"task {task_id} not found")
+            if task is None:  # 任务已被清除记录 (取消), worker 直接退出
+                return
             self._validate_download_access(task)
             path = downloader.download(
                 task.url,
                 task.format_id,
                 config.DOWNLOADS_DIR,
-                self._progress_hook(task_id),
+                self._progress_hook(
+                    task_id,
+                    merge_audio=task.merge_audio,
+                    cancel_event=task.cancel_event,
+                ),
+                merge_audio=task.merge_audio,
             )
             self.update_status(
                 task_id,
@@ -293,9 +337,8 @@ class TaskManager:
             self.update_status(task_id, STATUS_FAILED, error=f"下载异常: {e}")
         finally:
             with self._lock:
-                task = self._tasks.get(task_id)
-                if task is not None:
-                    self._active[task.is_member] -= 1
+                # 任务可能已被清除 (取消): 槽位始终按派发时的身份释放
+                self._active[is_member] -= 1
 
     def _validate_download_access(self, task: Task) -> None:
         """下载前档位重校验: 非会员任务选择锁定档位 → 拒绝 (纵深防御)."""
@@ -305,16 +348,43 @@ class TaskManager:
         if fmt is not None and self._is_locked(fmt, task.is_member):
             raise ValueError("该档位需会员解锁")
 
-    def _progress_hook(self, task_id: int):
-        """yt-dlp 进度回调: 转发到任务 progress / message (上限 99, 完成时置 100)."""
+    def _progress_hook(
+        self,
+        task_id: int,
+        merge_audio: bool = False,
+        cancel_event: threading.Event | None = None,
+    ):
+        """yt-dlp 进度回调: 转发到任务 progress / message (上限 99, 完成时置 100).
+
+        合并下载 (merge_audio) 时 yt-dlp 先后下载视频流与音频流, 各自独立上报
+        进度; 直接透传会让音频流把整体进度重置回 0 (前端进度条来回跳, bugfix/0004).
+        按流均分合成整体进度: 首个流 0~50%, 第二个流 50~100%, 全程单调不减.
+        """
+
+        stream_keys: list[str] = []  # 已出现的流标识 (format_id, 合并场景最多 2 流)
 
         def hook(d: dict[str, Any]) -> None:
+            # 清除记录已置取消信号: hook 抛异常中断引擎下载 (yt-dlp 官方
+            # 取消方式), 临时文件由引擎清理; 任务已从存储移除, 收尾更新
+            # 由 update_status 防御跳过 (bugfix/0007)
+            if cancel_event is not None and cancel_event.is_set():
+                raise DownloadError("已取消")
             if d.get("status") != "downloading":
                 return
             # 未知总量时引擎提供 total_bytes_estimate, 兜底避免进度恒为 0
             total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
             done = d.get("downloaded_bytes") or 0
             percent = (done / total * 100) if total else 0.0
+            if merge_audio:
+                key = (d.get("info_dict") or {}).get("format_id") or ""
+                if key and key not in stream_keys:
+                    stream_keys.append(key)
+                if stream_keys:
+                    idx = stream_keys.index(key) if key in stream_keys else 0
+                    # 首个流下载期间未知后续流数, 按双流均分占位; 无音频平台
+                    # 回退单流时下载完成即置 100 (完成瞬间补满, 仅该场景跳变)
+                    n = max(len(stream_keys), 2)
+                    percent = (idx + percent / 100) / n * 100
             self.update_status(
                 task_id,
                 STATUS_DOWNLOADING,

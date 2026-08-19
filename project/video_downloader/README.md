@@ -121,8 +121,10 @@ npm run dev        # 默认 http://localhost:5173, /api 代理到 127.0.0.1:8000
 |------|------|------|
 | POST | `/api/resolve` | 解析链接元信息（标题 / 封面 / 时长 / 站点 / 档位列表, 档位含锁定标记） |
 | POST | `/api/downloads` | 创建下载任务（队列超限 429 / 无效档位 400） |
-| GET | `/api/tasks` | 任务列表（按创建时间降序） |
+| GET | `/api/tasks` | 任务列表（按创建时间降序, 含 format_id / expires_at） |
 | GET | `/api/tasks/{id}` | 单任务详情（不存在 404） |
+| DELETE | `/api/tasks/{id}` | 清除任务记录（删文件 + 移除任务; 任意状态可清除, 进行中任务取消下载） |
+| POST | `/api/tasks/purge-unfinished` | 一键清除全部未完成记录（排队中/下载中/失败/过期, 含孤儿文件清理） |
 | GET | `/api/events` | SSE 进度流（`task-update` 事件 + 约 15s 心跳, 客户端断开自动清理） |
 | GET | `/api/files/{id}` | 交付直链下载（未完成 404 / 已过期 410） |
 | POST | `/api/member` | 提交会员密钥（正确 200 + token / 错误 401） |
@@ -130,7 +132,7 @@ npm run dev        # 默认 http://localhost:5173, /api 代理到 127.0.0.1:8000
 | GET | `/api/sites` | 支持平台列表（含每平台支持格式） |
 | GET | `/api/health` | 健康检查 |
 
-**SSE 事件协议**（`event: task-update`）：`{task_id, status, progress, message, url?, error?}`
+**SSE 事件协议**（`event: task-update`）：`{task_id, status, title, cover, progress, message, url?, error?, expires_at?}`（title/cover 为解析完成的元信息，前端据此补全卡片）；任务清除记录时广播 `{task_id, status: "removed"}`（前端移除卡片）
 
 ---
 
@@ -138,7 +140,7 @@ npm run dev        # 默认 http://localhost:5173, /api 代理到 127.0.0.1:8000
 
 ```bash
 # 自动化测试（HTTP seam, 引擎 mock, 无真实网络依赖, 约 15s）
-python -m pytest -q                       # 54 passed
+python -m pytest -q                       # 75 passed
 
 # 真实链接 E2E（起服务 → 解析 → 选档下载 → 直链取回 → 校验 MP4）
 python scripts/e2e_download.py [url] [format_id]

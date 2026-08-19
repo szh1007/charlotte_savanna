@@ -22,6 +22,17 @@ FORMAT_720P = "22"  # 免费可下载档位
 FORMAT_1080P = "999"  # 会员档位 (会员任务创建用, 免费档不可选)
 
 
+@pytest.fixture(autouse=True)
+def default_ttl(monkeypatch):
+    """固定 TTL 为默认契约值 (24h/72h): 断言不依赖运行环境配置.
+
+    本地 .env 的演示配置 (60s/120s) 会破坏本模块的过期判定假设
+    (如 1h << 24h 的未过期断言), 测试显式覆盖与运行环境解耦.
+    """
+    monkeypatch.setattr(config, "FREE_DELIVERY_TTL", 24 * 3600)
+    monkeypatch.setattr(config, "MEMBER_DELIVERY_TTL", 72 * 3600)
+
+
 @pytest.fixture
 def clock(monkeypatch):
     """可注入时钟 (cleaner._now): 推进时间越过 TTL 断言过期.
