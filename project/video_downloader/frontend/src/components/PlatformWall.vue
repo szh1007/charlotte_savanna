@@ -3,17 +3,15 @@ import { onMounted, ref } from 'vue'
 import { fetchSites } from '../api/client.js'
 
 // 平台墙 (T09): 彩色卡片网格 (icon + 名称 + 支持格式)
-// 数据来自平台接口 /api/sites (引擎支持性过滤 + 全量支持数),
-// 卡片粉彩描边 hover 上浮
+// 数据来自平台接口 /api/sites; 范围收缩后 (ADR-0004) 仅展示哔哩哔哩,
+// 其他平台为预留扩展点
 const sites = ref([])
-const total = ref(0)
 const loadError = ref('')
 
 onMounted(async () => {
   try {
     const body = await fetchSites()
     sites.value = body.sites
-    total.value = body.total
   } catch (e) {
     loadError.value = e.message
   }
@@ -24,9 +22,7 @@ onMounted(async () => {
   <section class="sites fade-up" aria-label="支持平台">
     <div class="sites__head">
       <h2 class="sites__title">支持平台</h2>
-      <p class="sites__subtitle">
-        引擎原生支持 <strong class="sites__total">{{ total || '2000+' }}</strong> 个网站, 以下为精选
-      </p>
+      <p class="sites__subtitle">仅支持哔哩哔哩免费公开视频（非会员、非充电内容）</p>
     </div>
 
     <p v-if="loadError" class="sites__error" role="alert">
@@ -63,10 +59,6 @@ onMounted(async () => {
   color: var(--text-sub);
 }
 
-.sites__total {
-  color: var(--primary);
-}
-
 .sites__error {
   margin-top: 14px;
   text-align: center;
@@ -92,7 +84,7 @@ onMounted(async () => {
   padding: 22px 12px 18px;
   border-radius: var(--radius);
   background: var(--card);
-  border: 1px solid rgba(235, 47, 150, 0.22);
+  border: 1px solid rgba(0, 174, 236, 0.25);
   transition:
     transform 0.25s ease,
     border-color 0.25s ease,
@@ -101,8 +93,8 @@ onMounted(async () => {
 
 .site-card:hover {
   transform: translateY(-5px);
-  border-color: rgba(235, 47, 150, 0.6);
-  box-shadow: 0 12px 32px rgba(235, 47, 150, 0.18);
+  border-color: rgba(0, 174, 236, 0.55);
+  box-shadow: 0 12px 32px rgba(0, 174, 236, 0.16);
 }
 
 .site-card__icon {

@@ -46,18 +46,30 @@ def test_create_download_resolve_failure_returns_400(
     """创建下载时解析失败: 400 + 引擎错误原因透传."""
 
     def _fail(url: str) -> dict:
-        raise DownloadError("ERROR: Unsupported URL: https://example.com/v")
+        raise DownloadError("ERROR: Unable to download webpage: timeout")
 
     monkeypatch.setattr("backend.downloader._extract", _fail)
     resp = client.post(
         "/api/downloads",
-        json={"url": "https://example.com/v", "format_id": "18"},
+        json={"url": "https://www.bilibili.com/video/av-fail", "format_id": "18"},
     )
     assert resp.status_code == 400
-    assert resp.json()["detail"] == "Unsupported URL: https://example.com/v"
+    assert resp.json()["detail"] == "Unable to download webpage: timeout"
 
     task = tm.manager.list_tasks()[0]
     assert task.status == STATUS_FAILED
+
+
+def test_create_download_rejects_non_bilibili_domain_422(
+    client: TestClient,
+) -> None:
+    """创建下载时非哔哩哔哩域名: 前置域名白名单拒绝 (422), 不触达引擎 (ADR-0004)."""
+    resp = client.post(
+        "/api/downloads",
+        json={"url": "https://www.youtube.com/watch?v=test", "format_id": "18"},
+    )
+    assert resp.status_code == 422
+    assert "仅支持哔哩哔哩" in resp.json()["detail"]
 
 
 def test_best_quality_download_uses_real_format_id(

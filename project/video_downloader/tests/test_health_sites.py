@@ -21,9 +21,8 @@ def test_sites_returns_non_empty_site_list(client: TestClient) -> None:
         "name" in s and "icon" in s and "formats" in s and s["formats"]
         for s in body["sites"]
     )
-    # 引擎全量支持数 (营销文案「支持 2000+ 平台」的数据来源)
+    # 引擎全量支持数 (接口保留, 前端不再宣传)
     assert body["total"] > 0
-    # 平台墙核心站点应存在 (B 站 / YouTube)
+    # 范围收缩后 (ADR-0004): 平台墙仅剩哔哩哔哩一项
     names = {s["name"] for s in body["sites"]}
-    assert "B 站" in names
-    assert "YouTube" in names
+    assert names == {"B 站"}

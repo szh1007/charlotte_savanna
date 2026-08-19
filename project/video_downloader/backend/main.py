@@ -29,7 +29,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="万能视频下载站",
+    title="BilibiliDownloader",
     version="0.1.0",
     lifespan=lifespan,
 )

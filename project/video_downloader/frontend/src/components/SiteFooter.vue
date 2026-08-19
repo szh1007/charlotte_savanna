@@ -8,8 +8,8 @@ const year = new Date().getFullYear()
   <footer class="footer">
     <div class="container footer__inner">
       <div class="footer__brand">
-        <span class="footer__logo">🚀 极速下载</span>
-        <p class="footer__copy">© {{ year }} 极速下载 · 保留所有权利</p>
+        <span class="footer__logo">🅱️ BilibiliDownloader</span>
+        <p class="footer__copy">© {{ year }} BilibiliDownloader · 保留所有权利</p>
       </div>
       <div class="footer__disclaimer">
         <p class="footer__disclaimer-title">免责声明</p>
@@ -29,7 +29,7 @@ const year = new Date().getFullYear()
   margin-top: 72px;
   padding: 36px 0 28px;
   border-top: 1px solid var(--border);
-  background: rgba(13, 10, 26, 0.9);
+  background: rgba(255, 255, 255, 0.85);
 }
 
 .footer__inner {

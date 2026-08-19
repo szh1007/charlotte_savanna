@@ -1,6 +1,7 @@
 # PRD — 万能视频下载站 (video-downloader)
 
 > Status: `ready-for-agent`
+> 修订（2026-08-20）：产品范围已收缩为仅支持哔哩哔哩免费公开视频（非会员、非充电），见 `.scratch/video-downloader/issues/11-bilibili-only-scope-change.md` 与 `project/video_downloader/docs/adr/0004-only-bilibili-free-videos.md`。本 PRD 其余部分为历史需求记录。
 > 来源：`/grill-with-docs` 方案商讨（2026-08-19 人工确认）
 > 领域术语表：`project/video_downloader/CONTEXT.md`；架构决策：`project/video_downloader/docs/adr/`（ADR-0001 ~ 0003）
 > 本文件为需求/产品规格说明书，实现细节以开发时的最新方案为准

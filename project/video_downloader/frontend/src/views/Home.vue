@@ -4,7 +4,6 @@ import ConfirmDialog from '../components/ConfirmDialog.vue'
 import HeroSection from '../components/HeroSection.vue'
 import MemberSection from '../components/MemberSection.vue'
 import NavBar from '../components/NavBar.vue'
-import PlatformWall from '../components/PlatformWall.vue'
 import ResolveResult from '../components/ResolveResult.vue'
 import SiteFooter from '../components/SiteFooter.vue'
 import TaskPanel from '../components/TaskPanel.vue'
@@ -17,7 +16,8 @@ import {
   resolveUrl,
 } from '../api/client.js'
 
-// 单页布局 (PRD §10): 导航 → Hero → 解析结果 → 任务面板 → 平台墙 → 会员区 → 页脚
+// 单页布局 (PRD §10): 导航 → Hero → 解析结果 → 任务面板 → 页脚
+// (平台墙已移除, 会员区改弹窗由导航栏触发)
 const resolving = ref(false)
 const result = ref(null)
 const apiError = ref('')
@@ -46,8 +46,8 @@ const {
   },
 })
 
-// 会员区组件实例: 滚动定位后聚焦密钥输入框
-const memberSection = ref(null)
+// 会员弹窗显隐: 导航栏会员入口 / 结果卡解锁引导 (US 35) 均打开弹窗
+const memberDialogVisible = ref(false)
 
 // SSE 连接: 任务进度实时推送 (无轮询)
 let eventSource = null
@@ -149,14 +149,10 @@ async function handleDownload({ url, formatId }) {
   }
 }
 
-// 导航栏会员入口 / 结果卡解锁引导 (US 35): 滚动到会员营销区,
-// 未解锁时聚焦密钥输入框
-function scrollToMember() {
-  memberSection.value?.$el.scrollIntoView({ behavior: 'smooth', block: 'start' })
-  if (!isMember.value) {
-    // 平滑滚动时长不定, 等滚动完成后聚焦输入框
-    setTimeout(() => memberSection.value?.focusInput(), 400)
-  }
+// 导航栏会员入口 / 结果卡解锁引导 (US 35): 打开会员弹窗
+// (未解锁态弹窗自动聚焦密钥输入框, 已解锁态查看权益详情)
+function openMemberDialog() {
+  memberDialogVisible.value = true
 }
 
 // SSE task-update: 合并状态字段到已有任务; 未知任务 (竞态先于
@@ -238,7 +234,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <NavBar :is-member="isMember" @go-member="scrollToMember" />
+  <NavBar :is-member="isMember" @go-member="openMemberDialog" />
   <HeroSection
     :resolving="resolving"
     :api-error="apiError"
@@ -252,24 +248,23 @@ onBeforeUnmount(() => {
       :downloading="downloading"
       :download-error="downloadError"
       @download="handleDownload"
-      @go-member="scrollToMember"
+      @go-member="openMemberDialog"
     />
     <TaskPanel
       :tasks="tasks"
       @clear="handleClearTask"
       @clear-unfinished="handleClearUnfinished"
     />
-    <PlatformWall />
-    <MemberSection
-      ref="memberSection"
-      :is-member="isMember"
-      :expires-at="memberExpires"
-      :submitting="memberSubmitting"
-      :error="memberError"
-      @unlock="handleUnlock"
-    />
   </main>
   <SiteFooter />
+  <MemberSection
+    v-model:visible="memberDialogVisible"
+    :is-member="isMember"
+    :expires-at="memberExpires"
+    :submitting="memberSubmitting"
+    :error="memberError"
+    @unlock="handleUnlock"
+  />
   <ConfirmDialog
     v-model:visible="errorDialog.visible"
     :title="errorDialog.title"

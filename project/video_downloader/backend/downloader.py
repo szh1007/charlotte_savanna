@@ -193,26 +193,12 @@ def download(
 
 
 # 主流平台展示清单 (名称 + 图标 + 支持格式 + yt-dlp extractor key)
-# key 以引擎实际 ie_key() 为准 (如 Youtube / Iqiyi / VQQVideo), 不支持的平台不展示;
+# 范围收缩 (ADR-0004): 仅保留哔哩哔哩一项. 其他平台为预留扩展点,
+# 未来如需恢复, 在此追加条目并同步放行 schemas.ensure_bilibili_url
+# 的域名白名单 (接口只接受 B 站 URL, 平台墙数据同步由后端收窄)
 # formats 为平台墙营销标注 (T09), 静态维护, 不随引擎动态探测
 POPULAR_SITES: list[dict[str, str]] = [
     {"name": "B 站", "icon": "🅱️", "formats": "MP4 / FLV / 4K", "extractor": "BiliBili"},
-    {"name": "抖音", "icon": "🎵", "formats": "MP4", "extractor": "Douyin"},
-    {
-        "name": "YouTube",
-        "icon": "▶️",
-        "formats": "MP4 / WebM / 4K",
-        "extractor": "Youtube",
-    },
-    {"name": "小红书", "icon": "📕", "formats": "MP4", "extractor": "XiaoHongShu"},
-    {"name": "微博", "icon": "📢", "formats": "MP4 / FLV", "extractor": "Weibo"},
-    {"name": "腾讯视频", "icon": "📺", "formats": "MP4 / FLV", "extractor": "VQQVideo"},
-    {"name": "优酷", "icon": "🌀", "formats": "MP4 / FLV", "extractor": "Youku"},
-    {"name": "爱奇艺", "icon": "💜", "formats": "MP4 / FLV", "extractor": "Iqiyi"},
-    {"name": "西瓜视频", "icon": "🍉", "formats": "MP4", "extractor": "Ixigua"},
-    {"name": "TikTok", "icon": "🎶", "formats": "MP4", "extractor": "TikTok"},
-    {"name": "Instagram", "icon": "📷", "formats": "MP4", "extractor": "Instagram"},
-    {"name": "X (Twitter)", "icon": "🐦", "formats": "MP4", "extractor": "Twitter"},
 ]
 
 

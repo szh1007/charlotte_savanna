@@ -1,16 +1,17 @@
-# 万能视频下载站（video_downloader）
+# BilibiliDownloader（哔哩哔哩下载器, video_downloader）
 
-> 基于 **FastAPI + yt-dlp + Vue 3** 的视频下载网站：粘贴链接 → 一键解析 → 选择清晰度 → 批量下载 → 临时直链交付。
+> 基于 **FastAPI + yt-dlp + Vue 3** 的哔哩哔哩免费视频下载网站：粘贴链接 → 一键解析 → 选择清晰度 → 批量下载 → 临时直链交付。
 > 需求与验收：`.scratch/video-downloader/PRD.md`（总需求）与 `.scratch/video-downloader/issues/`（分步实施记录）。
 
 ---
 
 ## 一、项目简介
 
-`project/video_downloader` 是一个以学习为目的的视频下载网站，实践「方案确认 → 文档先行（CONTEXT/ADR/PRD）→ 分步实现 → 测试验收」的工程模式：
+`project/video_downloader` 是一个以学习为目的的哔哩哔哩视频下载网站，实践「方案确认 → 文档先行（CONTEXT/ADR/PRD）→ 分步实现 → 测试验收」的工程模式：
 
 - **核心流程**：粘贴视频链接 → 解析元信息与可用清晰度档位 → 选择档位发起下载 → 任务队列顺序执行 → 生成临时直链 → 手机/电脑随时保存文件。
-- **下载引擎**：直接嵌入开源项目 **yt-dlp**（Unlicense，支持约 2000 个平台），零代码改动继承引擎能力；音视频分离流由 **ffmpeg** 合并输出单一 MP4。
+- **支持范围**：仅支持哔哩哔哩免费公开视频（非会员、非充电内容），URL 域名白名单校验（bilibili.com 主域/子域 + b23.tv 短链），其余平台在引擎调用前拒绝；其他平台预留扩展点（ADR-0004）。
+- **下载引擎**：直接嵌入开源项目 **yt-dlp**（Unlicense），零代码改动继承引擎能力；音视频分离流由 **ffmpeg** 合并输出单一 MP4。
 - **付费差异（后端强制）**：免费档限 720p / 1 并发 / 队列 5 / 直链 24h；会员（密钥解锁）全部清晰度 / 3 并发 / 队列 50 / 直链 72h。
 - **无数据库**：任务 / 队列 / 会员会话全部内存态，交付文件 TTL 过期自动清理（ADR-0003）。
 - **批量下载**：一次提交多个任务，队列顺序执行 + 并发槽调度（会员任务优先）。
@@ -42,11 +43,11 @@ project/video_downloader/
 │   │                             #   PlatformWall / MemberSection / SiteFooter
 │   └── vite.config.js            # dev server + /api 代理到 127.0.0.1:8000
 ├── scripts/e2e_download.py       # 真实链接 E2E 脚本（解析 → 下载 → 直链取回）
-├── tests/                        # HTTP seam 自动化测试（54 个, 引擎 mock, 无网络依赖）
+├── tests/                        # HTTP seam 自动化测试（96 个, 引擎 mock, 无网络依赖）
 ├── docs/
 │   ├── CONTEXT.md                # 领域术语表（Ubiquitous Language）
 │   ├── DESIGN.md                 # 设计方案
-│   └── adr/                      # ADR-0001 ~ 0003（下载引擎 / 会员密钥 / 内存态 TTL 存储）
+│   └── adr/                      # ADR-0001 ~ 0004（下载引擎 / 会员密钥 / 内存态 TTL 存储 / 仅 B 站范围收缩）
 └── downloads/                    # 交付文件目录（.gitignore, TTL 到期自动清理）
 ```
 
@@ -129,7 +130,7 @@ npm run dev        # 默认 http://localhost:5173, /api 代理到 127.0.0.1:8000
 | GET | `/api/files/{id}` | 交付直链下载（未完成 404 / 已过期 410） |
 | POST | `/api/member` | 提交会员密钥（正确 200 + token / 错误 401） |
 | GET | `/api/member/status` | 当前会话会员状态 |
-| GET | `/api/sites` | 支持平台列表（含每平台支持格式） |
+| GET | `/api/sites` | 支持平台列表（当前仅哔哩哔哩, total 为引擎全量支持数） |
 | GET | `/api/health` | 健康检查 |
 
 **SSE 事件协议**（`event: task-update`）：`{task_id, status, title, cover, progress, message, url?, error?, expires_at?}`（title/cover 为解析完成的元信息，前端据此补全卡片）；任务清除记录时广播 `{task_id, status: "removed"}`（前端移除卡片）
@@ -140,11 +141,11 @@ npm run dev        # 默认 http://localhost:5173, /api 代理到 127.0.0.1:8000
 
 ```bash
 # 自动化测试（HTTP seam, 引擎 mock, 无真实网络依赖, 约 15s）
-python -m pytest -q                       # 75 passed
+python -m pytest -q                       # 96 passed
 
 # 真实链接 E2E（起服务 → 解析 → 选档下载 → 直链取回 → 校验 MP4）
 python scripts/e2e_download.py [url] [format_id]
-# 默认 B 站公开 MV（YouTube 需 cookies 验证, 不适合无头 E2E）
+# 默认 B 站公开 MV（仅支持哔哩哔哩域名, 见 ADR-0004）
 ```
 
 **测试 seam 约定（PRD Testing Decisions）**：只测外部行为（HTTP 请求 → 响应 / SSE 事件），不直接测内部函数；yt-dlp 调用集中在引擎封装层（`backend/downloader.py`），测试中 mock 该层。
@@ -165,7 +166,7 @@ python scripts/e2e_download.py [url] [format_id]
 | 文档 | 位置 |
 |------|------|
 | 总需求（PRD） | `.scratch/video-downloader/PRD.md` |
-| 分步实施 issue（T01 ~ T10） | `.scratch/video-downloader/issues/` |
+| 分步实施 issue（T01 ~ T11） | `.scratch/video-downloader/issues/` |
 | 领域术语表 | `project/video_downloader/docs/CONTEXT.md` |
 | 设计方案 | `project/video_downloader/docs/DESIGN.md` |
-| 架构决策记录 | `project/video_downloader/docs/adr/`（ADR-0001 下载引擎 / 0002 会员密钥 / 0003 内存态 TTL 存储） |
+| 架构决策记录 | `project/video_downloader/docs/adr/`（ADR-0001 下载引擎 / 0002 会员密钥 / 0003 内存态 TTL 存储 / 0004 仅 B 站范围收缩） |

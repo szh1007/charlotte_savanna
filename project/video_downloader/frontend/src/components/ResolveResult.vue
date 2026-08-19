@@ -142,7 +142,7 @@ function handleDownload() {
   flex: 0 0 240px;
   border-radius: var(--radius-sm);
   overflow: hidden;
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(31, 35, 41, 0.04);
   aspect-ratio: 16 / 9;
 }
 
@@ -212,7 +212,7 @@ function handleDownload() {
 }
 
 .result__select:focus {
-  box-shadow: 0 0 0 2px rgba(235, 47, 150, 0.35);
+  box-shadow: 0 0 0 2px rgba(0, 174, 236, 0.35);
 }
 
 .result__formats-empty {
@@ -241,8 +241,8 @@ function handleDownload() {
 .result__spinner {
   width: 13px;
   height: 13px;
-  border: 2px solid rgba(255, 255, 255, 0.4);
-  border-top-color: #fff;
+  border: 2px solid rgba(31, 35, 41, 0.3);
+  border-top-color: #1f2329;
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }

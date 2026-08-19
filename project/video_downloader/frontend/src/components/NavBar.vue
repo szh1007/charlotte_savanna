@@ -1,6 +1,6 @@
 <script setup>
 // 顶部导航栏: Logo + 会员入口 (渐变描边按钮, T09 接通会员功能)
-// 未解锁: 点击滚动到会员营销区; 已解锁: 展示会员身份徽章
+// 未解锁: 点击打开会员弹窗输入密钥; 已解锁: 展示会员身份徽章
 const props = defineProps({
   // 当前会话是否会员 (由 Home 统一管理, 刷新后经状态接口恢复)
   isMember: { type: Boolean, default: false },
@@ -9,7 +9,7 @@ const props = defineProps({
 const emit = defineEmits(['go-member'])
 
 function handleClick() {
-  // 已解锁时点击仍回到会员区 (可查看权益详情)
+  // 已解锁时点击仍可打开弹窗查看权益详情
   emit('go-member')
 }
 </script>
@@ -18,8 +18,8 @@ function handleClick() {
   <header class="nav">
     <div class="container nav__inner">
       <a href="#" class="nav__logo">
-        <span class="nav__logo-icon">🚀</span>
-        <span class="nav__logo-text">极速下载</span>
+        <span class="nav__logo-icon">🅱️</span>
+        <span class="nav__logo-text">BilibiliDownloader</span>
       </a>
       <button
         class="btn-outline-gradient nav__member"
@@ -40,7 +40,7 @@ function handleClick() {
   top: 0;
   z-index: 100;
   height: var(--nav-height);
-  background: rgba(13, 10, 26, 0.8);
+  background: rgba(255, 255, 255, 0.85);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border-bottom: 1px solid var(--border);

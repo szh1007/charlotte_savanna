@@ -52,7 +52,7 @@ def test_resolve_status_flows_pending_resolving_resolved(
 ) -> None:
     """状态机流转: 解析期间为 resolving, 完成后为 resolved."""
     resp = client.post(
-        "/api/resolve", json={"url": "https://www.youtube.com/watch?v=test"}
+        "/api/resolve", json={"url": "https://www.bilibili.com/video/state-flow"}
     )
     assert resp.status_code == 200
     # 引擎执行时任务应处于 resolving 状态
@@ -72,17 +72,11 @@ def test_resolve_invalid_url_returns_422(client: TestClient) -> None:
     assert "http" in resp.json()["detail"]
 
 
-def test_resolve_unsupported_site_returns_400(client: TestClient, monkeypatch) -> None:
-    """引擎不支持的链接: 4xx + 引擎错误原因透传."""
-
-    def _fail(url: str) -> dict:
-        raise DownloadError("ERROR: Unsupported URL: https://example.com/v")
-
-    monkeypatch.setattr("backend.downloader._extract", _fail)
+def test_resolve_rejects_non_bilibili_domain_422(client: TestClient) -> None:
+    """非哔哩哔哩域名: 前置域名白名单直接拒绝 (422), 不触达引擎 (ADR-0004)."""
     resp = client.post("/api/resolve", json={"url": "https://example.com/v"})
-    assert resp.status_code == 400
-    # 错误信息以引擎异常为准透传, 去掉 ERROR: 前缀
-    assert resp.json()["detail"] == "Unsupported URL: https://example.com/v"
+    assert resp.status_code == 422
+    assert "仅支持哔哩哔哩" in resp.json()["detail"]
 
 
 def test_resolve_failure_marks_task_failed(client: TestClient, monkeypatch) -> None:
@@ -92,7 +86,9 @@ def test_resolve_failure_marks_task_failed(client: TestClient, monkeypatch) -> N
         raise DownloadError("ERROR: Unable to download webpage: timeout")
 
     monkeypatch.setattr("backend.downloader._extract", _fail)
-    resp = client.post("/api/resolve", json={"url": "https://example.com/v"})
+    resp = client.post(
+        "/api/resolve", json={"url": "https://www.bilibili.com/video/timeout"}
+    )
     assert resp.status_code == 400
     assert resp.json()["detail"] == "Unable to download webpage: timeout"
 

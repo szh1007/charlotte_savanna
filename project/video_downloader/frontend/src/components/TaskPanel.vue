@@ -374,7 +374,7 @@ async function copyLink(task) {
 
 .task-card:hover {
   transform: translateY(-2px);
-  border-color: rgba(235, 47, 150, 0.35);
+  border-color: rgba(0, 174, 236, 0.35);
 }
 
 /* 已过期卡片 (视图判定, 倒计时归零立即生效): 红色底色 + 边框 (bugfix/0006) */
@@ -387,7 +387,7 @@ async function copyLink(task) {
   flex: 0 0 120px;
   border-radius: var(--radius-sm);
   overflow: hidden;
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(31, 35, 41, 0.04);
   aspect-ratio: 16 / 9;
 }
 
@@ -440,7 +440,7 @@ async function copyLink(task) {
   font-size: 11px;
   font-weight: 500;
   color: var(--text-sub);
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(31, 35, 41, 0.06);
   vertical-align: 2px;
   white-space: nowrap;
 }
@@ -495,7 +495,7 @@ async function copyLink(task) {
   flex: 1;
   height: 6px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(31, 35, 41, 0.08);
   overflow: hidden;
 }
 

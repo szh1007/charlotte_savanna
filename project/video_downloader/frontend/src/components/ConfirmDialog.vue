@@ -85,7 +85,7 @@ function onKeydown(e) {
   align-items: center;
   justify-content: center;
   padding: 20px;
-  background: rgba(10, 6, 20, 0.6);
+  background: rgba(31, 35, 41, 0.45);
   backdrop-filter: blur(2px);
 }
 

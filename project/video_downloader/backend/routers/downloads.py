@@ -13,7 +13,7 @@ from ..schemas import (
     DownloadRequest,
     DownloadResponse,
     TaskOut,
-    ensure_http_url,
+    ensure_bilibili_url,
     task_to_out,
 )
 from ..task_manager import STATUS_COMPLETED, STATUS_EXPIRED, QueueLimitError, manager
@@ -29,7 +29,7 @@ def create_download(
     member: MemberSession | None = Depends(get_member),
 ) -> DownloadResponse:
     try:
-        url = ensure_http_url(req.url)
+        url = ensure_bilibili_url(req.url)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
     try:

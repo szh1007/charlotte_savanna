@@ -3,7 +3,6 @@ import { ref } from 'vue'
 import ErrorAlert from './ErrorAlert.vue'
 
 // Hero 解析区: 大标题 + 链接输入框 + 解析按钮
-// + 平台标签云
 // 解析动作交由父组件执行 (Home.vue),
 // 本组件仅负责输入与加载态
 const props = defineProps({
@@ -31,22 +30,6 @@ function handleResolve() {
   error.value = ''
   emit('resolve', trimmed)
 }
-
-// 平台标签云: 精选平台静态展示 (PRD §9), 平台墙接口数据见 T09
-const tags = [
-  '哔哩哔哩',
-  '抖音',
-  'YouTube',
-  '小红书',
-  '微博',
-  '快手',
-  '西瓜视频',
-  '腾讯视频',
-  '优酷',
-  '爱奇艺',
-  'Twitch',
-  'Vimeo',
-]
 </script>
 
 <template>
@@ -56,8 +39,8 @@ const tags = [
     <div class="hero__glow hero__glow--2" aria-hidden="true"></div>
 
     <div class="container hero__content">
-      <h1 class="hero__title">全网视频，<span class="hero__title-accent">一键下载</span></h1>
-      <p class="hero__subtitle">支持 2000+ 平台 · 批量下载 · 高清任选</p>
+      <h1 class="hero__title">哔哩哔哩视频，<span class="hero__title-accent">一键下载</span></h1>
+      <p class="hero__subtitle">免费视频 · 高清任选 · 批量下载</p>
 
       <form class="hero__form" @submit.prevent="handleResolve">
         <input
@@ -65,7 +48,7 @@ const tags = [
           class="hero__input"
           type="url"
           inputmode="url"
-          placeholder="粘贴视频链接, 如 https://b23.tv/xxxxxx"
+          placeholder="粘贴视频链接"
           autocomplete="off"
           spellcheck="false"
         />
@@ -76,10 +59,6 @@ const tags = [
       </form>
 
       <ErrorAlert :message="apiError || error" class="hero__error" />
-
-      <ul class="hero__tags">
-        <li v-for="tag in tags" :key="tag" class="hero__tag">{{ tag }}</li>
-      </ul>
     </div>
   </section>
 </template>
@@ -91,7 +70,7 @@ const tags = [
   padding: 88px 0 64px;
   text-align: center;
   background:
-    linear-gradient(180deg, rgba(13, 10, 26, 0.4) 0%, rgba(18, 14, 36, 0.6) 100%),
+    linear-gradient(180deg, rgba(255, 245, 248, 0.6) 0%, rgba(235, 248, 255, 0.8) 100%),
     var(--bg-deep);
 }
 
@@ -109,7 +88,7 @@ const tags = [
   top: -180px;
   left: 50%;
   transform: translateX(-50%);
-  background: rgba(235, 47, 150, 0.28);
+  background: rgba(251, 114, 153, 0.22);
 }
 
 .hero__glow--2 {
@@ -117,7 +96,7 @@ const tags = [
   height: 420px;
   bottom: -220px;
   left: -120px;
-  background: rgba(114, 46, 209, 0.3);
+  background: rgba(0, 174, 236, 0.25);
 }
 
 .hero__content {
@@ -175,7 +154,7 @@ const tags = [
 }
 
 .hero__input:focus {
-  box-shadow: 0 0 0 2px rgba(235, 47, 150, 0.35) inset;
+  box-shadow: 0 0 0 2px rgba(0, 174, 236, 0.35) inset;
 }
 
 .hero__btn {
@@ -192,8 +171,8 @@ const tags = [
 .hero__btn-spinner {
   width: 14px;
   height: 14px;
-  border: 2px solid rgba(255, 255, 255, 0.4);
-  border-top-color: #fff;
+  border: 2px solid rgba(31, 35, 41, 0.3);
+  border-top-color: #1f2329;
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
@@ -206,35 +185,6 @@ const tags = [
 
 .hero__error {
   margin-top: 14px;
-}
-
-/* 平台标签云 */
-.hero__tags {
-  margin-top: 28px;
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 10px;
-  list-style: none;
-}
-
-.hero__tag {
-  padding: 5px 14px;
-  border-radius: 999px;
-  font-size: 13px;
-  color: var(--text-sub);
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid var(--border);
-  transition:
-    color 0.2s ease,
-    border-color 0.2s ease,
-    transform 0.2s ease;
-}
-
-.hero__tag:hover {
-  color: var(--primary);
-  border-color: rgba(235, 47, 150, 0.5);
-  transform: translateY(-2px);
 }
 
 @media (max-width: 640px) {

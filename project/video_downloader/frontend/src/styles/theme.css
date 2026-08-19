@@ -3,19 +3,19 @@
    规范来源: PRD §10 / DESIGN §6, 参考 ai.codefather.cn/painting 粉紫渐变风格
    ========================================================================== */
 :root {
-  /* 色板 */
-  --primary: #eb2f96; /* 品红粉, 主色 */
-  --primary-soft: rgba(235, 47, 150, 0.12); /* 主色浅底 (徽章/高亮背景) */
-  --violet: #722ed1; /* 紫, 渐变终点 */
-  --gradient: linear-gradient(135deg, #eb2f96, #722ed1); /* 按钮 / Hero 高光 */
-  --bg-deep: #0d0a1a; /* 深紫黑, 全局背景 */
-  --bg-page: #120e24; /* 页面次级背景 */
-  --card: #1a1530; /* 深色卡片 */
-  --card-hover: #201a3a;
-  --border: rgba(255, 255, 255, 0.08); /* 卡片描边 */
-  --text-main: #f5f3ff; /* 主文字 */
-  --text-sub: #a89fc8; /* 次级文字 */
-  --text-dim: #6f6791; /* 弱化文字 */
+  /* 色板 (B 站品牌粉蓝浅色主题, ADR-0004; 主粉 #FB7299 + 主蓝 #00AEEC) */
+  --primary: #fb7299; /* B 站粉, 主色 */
+  --primary-soft: rgba(251, 114, 153, 0.12); /* 主色浅底 (徽章/高亮背景) */
+  --blue: #00aeec; /* B 站蓝, 渐变终点 */
+  --gradient: linear-gradient(135deg, #fb7299, #00aeec); /* 按钮 / Hero 高光 */
+  --bg-deep: #fff5f8; /* 浅粉, 全局背景 */
+  --bg-page: #ebf8ff; /* 浅蓝, 页面次级背景 */
+  --card: #ffffff; /* 白卡 */
+  --card-hover: #ffffff;
+  --border: rgba(31, 35, 41, 0.1); /* 卡片描边 */
+  --text-main: #1f2329; /* 主文字 */
+  --text-sub: #61666d; /* 次级文字 */
+  --text-dim: #8a9099; /* 弱化文字 */
   --success: #52c41a;
   --danger: #ff4d4f;
   --warning: #faad14;
@@ -23,8 +23,8 @@
   /* 圆角 / 阴影 */
   --radius: 16px; /* 卡片 / 输入框 */
   --radius-sm: 10px;
-  --shadow-card: 0 8px 30px rgba(0, 0, 0, 0.35);
-  --shadow-glow: 0 8px 40px rgba(235, 47, 150, 0.35); /* 按钮霓虹光晕 */
+  --shadow-card: 0 8px 30px rgba(31, 35, 41, 0.08);
+  --shadow-glow: 0 8px 40px rgba(0, 174, 236, 0.25); /* 按钮霓虹光晕 */
 
   /* 字体 */
   --font-main: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
@@ -57,10 +57,11 @@ body {
   color: var(--text-main);
   -webkit-font-smoothing: antialiased;
   min-height: 100vh;
-  /* 全局深色底上叠加极淡的紫粉光斑, 与 Hero 呼应 */
+  /* 浅粉 → 浅蓝渐变底 + 极淡粉蓝光斑 (B 站品牌色) */
   background-image:
-    radial-gradient(600px 400px at 85% -5%, rgba(114, 46, 209, 0.18), transparent 65%),
-    radial-gradient(500px 350px at -10% 10%, rgba(235, 47, 150, 0.12), transparent 60%);
+    linear-gradient(180deg, #fff5f8 0%, #ebf8ff 100%),
+    radial-gradient(600px 400px at 85% -5%, rgba(0, 174, 236, 0.1), transparent 65%),
+    radial-gradient(500px 350px at -10% 10%, rgba(251, 114, 153, 0.1), transparent 60%);
   background-attachment: fixed;
 }
 
@@ -143,7 +144,7 @@ img {
 
 .btn-outline-gradient:hover {
   transform: translateY(-2px);
-  box-shadow: 0 4px 24px rgba(235, 47, 150, 0.3);
+  box-shadow: 0 4px 24px rgba(0, 174, 236, 0.25);
 }
 
 /* 状态徽章 */
@@ -162,7 +163,7 @@ img {
 }
 
 .badge--plain {
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(31, 35, 41, 0.06);
   color: var(--text-sub);
 }
 
