@@ -14,7 +14,7 @@ from ..schemas import (
     ensure_http_url,
     task_to_out,
 )
-from ..task_manager import STATUS_COMPLETED, QueueLimitError, manager
+from ..task_manager import STATUS_COMPLETED, STATUS_EXPIRED, QueueLimitError, manager
 
 router = APIRouter(tags=["downloads"])
 
@@ -47,6 +47,9 @@ def get_delivery_file(task_id: int) -> FileResponse:
     task = manager.get_task(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="任务不存在")
+    if task.status == STATUS_EXPIRED:
+        # 曾存在但已移除: 410 Gone 语义 + 明确提示 (验收标准, T06)
+        raise HTTPException(status_code=410, detail="交付链接已过期, 文件已清理")
     if task.status != STATUS_COMPLETED or not task.file_path:
         raise HTTPException(status_code=404, detail="文件未就绪或任务未完成")
     path = Path(task.file_path)

@@ -22,7 +22,7 @@
 pending → resolving → resolved → queued → downloading → completed
                               ↘                ↘
                                failed            failed
-completed/expired → expired（交付链接过期，文件被清理）
+completed → expired（交付链接过期，文件被清理；failed 无交付资产，保持终态）
 ```
 
 - `pending` 新建待解析；`resolved` 已解析等待入队；`queued` 排队中；`downloading` 执行中；`completed` 文件已就绪；`failed` 出错（含超时、引擎拒绝）；`expired` 交付链接过期。

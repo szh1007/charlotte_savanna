@@ -10,11 +10,15 @@ import threading
 from pathlib import Path
 
 import pytest
-from backend import main
+from backend import config, main
 from backend import task_manager as tm
 from backend.auth import member_manager
+from backend.cleaner import cleaner as delivery_cleaner
 from backend.events import bus
 from fastapi.testclient import TestClient
+
+# 测试统一会员密钥 (真实密钥仅存在于 .env, 不入库)
+MEMBER_KEY = "test-member-key-2026"
 
 # 伪解析结果 (模拟 yt-dlp extract_info 返回)
 FAKE_INFO: dict = {
@@ -72,8 +76,12 @@ FAKE_INFO: dict = {
 def clean_state():
     """每个测试前清空内存态存储 (任务/序号/并发计数/会员会话/SSE 订阅).
 
-    保证断言基于干净状态.
+    保证断言基于干净状态. TTL 清理线程先停止并 join (周期测试缩短过间隔),
+    再清空任务存储, 防止残留线程扫描时更新已清空的任务抛 KeyError.
     """
+    delivery_cleaner.stop()
+    if delivery_cleaner._thread is not None:
+        delivery_cleaner._thread.join(timeout=1.0)
     tm.manager._tasks.clear()
     tm.manager._seq = 0
     tm.manager._active = {False: 0, True: 0}  # 免费/会员并发槽占用 (T05 按身份拆分)
@@ -86,6 +94,12 @@ def clean_state():
 @pytest.fixture
 def client():
     return TestClient(main.app)
+
+
+@pytest.fixture(autouse=True)
+def member_key(monkeypatch):
+    """会员相关测试统一使用已知密钥 (真实密钥仅存在于 .env, 不入库)."""
+    monkeypatch.setattr(config, "MEMBER_KEY", MEMBER_KEY)
 
 
 @pytest.fixture
@@ -131,7 +145,8 @@ def fake_download(monkeypatch, tmp_path):
                 }
             )
         release.wait(timeout=5.0)
-        path = tmp_path / "output.mp4"
+        # 文件名派生自档位, 贴近生产 outtmpl (同测试多任务产出独立文件, T06)
+        path = tmp_path / f"{format_id}.mp4"
         path.write_bytes(b"fake-video-content")
         if progress_hook:
             progress_hook({"status": "finished"})

@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import config
+from .cleaner import cleaner
 from .downloader import list_sites
 from .routers import downloads, events, member, resolve
 from .task_manager import manager
@@ -20,9 +21,11 @@ from .task_manager import manager
 async def lifespan(app: FastAPI):
     # 交付文件目录 (下载落盘), 启动即创建
     config.DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    cleaner.start()  # TTL 清理线程: 周期扫描过期交付, 删文件 + 标记 expired (T06)
     yield
-    # 服务退出: 停止后台调度线程 (daemon, 进程结束即终止, 显式停止以防残留)
+    # 服务退出: 停止后台调度 + 清理线程 (daemon, 进程结束即终止, 显式停止防残留)
     manager.stop_scheduler()
+    cleaner.stop()
 
 
 app = FastAPI(

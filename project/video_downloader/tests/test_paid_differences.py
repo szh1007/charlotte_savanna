@@ -9,8 +9,7 @@ import json
 import time
 from collections.abc import Callable
 
-import pytest
-from backend import config, main
+from backend import main
 from backend import task_manager as tm
 from backend.task_manager import (
     STATUS_COMPLETED,
@@ -19,7 +18,13 @@ from backend.task_manager import (
     STATUS_QUEUED,
 )
 from fastapi.testclient import TestClient
-from helpers import create_download, find_task, wait_downloads_settle, wait_until
+from helpers import (
+    create_download,
+    find_task,
+    member_headers,
+    wait_downloads_settle,
+    wait_until,
+)
 from sse_client import SseStream
 
 
@@ -53,25 +58,11 @@ def wait_events(
     raise AssertionError(f"SSE 事件在 {timeout}s 内未满足谓词, 已收到 {len(events)} 帧")
 
 
-MEMBER_KEY = "test-member-key-2026"
 VIDEO_URL = "https://www.bilibili.com/video/av-t05"
 
 # conftest.FAKE_INFO 档位: 18(360p) / 22(720p) / 999(1080p) / best(1080p)
 FORMAT_720P = "22"
 FORMAT_1080P = "999"
-
-
-@pytest.fixture(autouse=True)
-def member_key(monkeypatch):
-    """会员测试统一使用已知密钥 (真实密钥仅存在于 .env, 不入库)."""
-    monkeypatch.setattr(config, "MEMBER_KEY", MEMBER_KEY)
-
-
-def member_headers(client: TestClient) -> dict[str, str]:
-    """提交密钥换取会话 token, 返回会员请求头."""
-    resp = client.post("/api/member", json={"key": MEMBER_KEY})
-    assert resp.status_code == 200
-    return {"X-Member-Token": resp.json()["token"]}
 
 
 def create_with(

@@ -4,7 +4,7 @@
     pending → resolving → resolved → queued → downloading → completed
                               ↘                ↘
                                failed            failed
-    completed/failed → expired
+    completed → expired (交付链接过期, 文件被清理; failed 无交付资产, 保持终态)
 """
 
 from __future__ import annotations
@@ -59,6 +59,7 @@ class Task:
     message: str | None = None
     file_path: str | None = None
     error: str | None = None
+    completed_at: float | None = None  # 完成时刻 (TTL 过期起点, T06)
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
@@ -101,6 +102,11 @@ class TaskManager:
         with self._lock:
             tasks = sorted(self._tasks.values(), key=lambda t: t.id, reverse=True)
             return tasks[:limit]
+
+    def list_completed(self) -> list[Task]:
+        """全部 completed 任务 (TTL 清理扫描范围, 不设列表上限, T06)."""
+        with self._lock:
+            return [t for t in self._tasks.values() if t.status == STATUS_COMPLETED]
 
     def resolve(self, url: str, is_member: bool = False) -> Task:
         """同步解析链接: 任务状态 pending → resolving → resolved / failed.
@@ -277,6 +283,7 @@ class TaskManager:
                 file_path=path,
                 progress=100.0,
                 message="下载完成",
+                completed_at=time.time(),  # TTL 起点: 文件就绪时刻 (T06)
             )
         except downloader.DownloadError as e:
             self.update_status(task_id, STATUS_FAILED, error=str(e))

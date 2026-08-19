@@ -179,7 +179,7 @@ def test_files_returns_attachment(
     resp = client.get(f"/api/files/{task_id}")
     assert resp.status_code == 200
     assert resp.headers["content-disposition"].startswith("attachment;")
-    assert "output.mp4" in resp.headers["content-disposition"]
+    assert "22.mp4" in resp.headers["content-disposition"]  # 文件名派生自 format_id
     assert resp.headers["content-type"] == "video/mp4"
     assert resp.content == b"fake-video-content"
 

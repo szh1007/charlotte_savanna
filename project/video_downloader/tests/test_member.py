@@ -6,19 +6,11 @@
 
 import time
 
-import pytest
 from backend import auth as auth_mod
 from backend import config
 from backend.auth import MEMBER_SESSION_TTL
+from conftest import MEMBER_KEY
 from fastapi.testclient import TestClient
-
-MEMBER_KEY = "test-member-key-2026"
-
-
-@pytest.fixture(autouse=True)
-def member_key(monkeypatch):
-    """会员测试统一使用已知密钥 (真实密钥仅存在于 .env, 不入库)."""
-    monkeypatch.setattr(config, "MEMBER_KEY", MEMBER_KEY)
 
 
 def test_member_valid_key_returns_session(client: TestClient) -> None:

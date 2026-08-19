@@ -5,6 +5,7 @@ import time
 from collections.abc import Callable
 
 from backend import task_manager as tm
+from conftest import MEMBER_KEY
 from fastapi.testclient import TestClient
 
 
@@ -40,6 +41,13 @@ def create_download(client: TestClient, url: str, format_id: str) -> int:
     resp = client.post("/api/downloads", json={"url": url, "format_id": format_id})
     assert resp.status_code == 200
     return resp.json()["task_id"]
+
+
+def member_headers(client: TestClient) -> dict[str, str]:
+    """提交会员密钥换取会话 token, 返回会员请求头 (密钥见 conftest.MEMBER_KEY)."""
+    resp = client.post("/api/member", json={"key": MEMBER_KEY})
+    assert resp.status_code == 200
+    return {"X-Member-Token": resp.json()["token"]}
 
 
 def find_task(client: TestClient, task_id: int) -> dict:
