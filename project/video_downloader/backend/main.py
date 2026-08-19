@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from . import config
 from .downloader import list_sites
-from .routers import downloads, events, resolve
+from .routers import downloads, events, member, resolve
 from .task_manager import manager
 
 
@@ -42,6 +42,7 @@ app.add_middleware(
 app.include_router(resolve.router)
 app.include_router(downloads.router)
 app.include_router(events.router)
+app.include_router(member.router)
 
 
 @app.get("/api/health")

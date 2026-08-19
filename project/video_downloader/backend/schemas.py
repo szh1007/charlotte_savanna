@@ -3,6 +3,17 @@
 from pydantic import BaseModel, Field
 
 
+def ensure_http_url(url: str) -> str:
+    """校验并规范化视频链接 (仅 http/https), 非法时抛 ValueError.
+
+    领域规则「合法链接」集中定义, resolve / downloads 路由共用.
+    """
+    url = url.strip()
+    if not (url.startswith("http://") or url.startswith("https://")):
+        raise ValueError("链接必须以 http:// 或 https:// 开头")
+    return url
+
+
 class ResolveRequest(BaseModel):
     url: str = Field(..., min_length=1, description="视频页面链接")
 
@@ -32,6 +43,21 @@ class DownloadRequest(BaseModel):
 class DownloadResponse(BaseModel):
     task_id: int
     status: str
+
+
+class MemberRequest(BaseModel):
+    key: str = Field(..., min_length=1, description="会员密钥")
+
+
+class MemberResponse(BaseModel):
+    is_member: bool
+    expires_at: float
+    token: str
+
+
+class MemberStatusResponse(BaseModel):
+    is_member: bool
+    expires_at: float | None = None
 
 
 class TaskOut(BaseModel):

@@ -3,7 +3,7 @@
 from fastapi import APIRouter, HTTPException
 
 from ..downloader import ResolveError
-from ..schemas import FormatOut, ResolveRequest, ResolveResponse
+from ..schemas import FormatOut, ResolveRequest, ResolveResponse, ensure_http_url
 from ..task_manager import manager
 
 router = APIRouter(tags=["resolve"])
@@ -23,11 +23,10 @@ def _to_response(task) -> ResolveResponse:
 
 @router.post("/api/resolve", response_model=ResolveResponse)
 def resolve_video(req: ResolveRequest) -> ResolveResponse:
-    url = req.url.strip()
-    if not (url.startswith("http://") or url.startswith("https://")):
-        raise HTTPException(
-            status_code=422, detail="链接必须以 http:// 或 https:// 开头"
-        )
+    try:
+        url = ensure_http_url(req.url)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
     try:
         task = manager.resolve(url)
     except ResolveError as e:

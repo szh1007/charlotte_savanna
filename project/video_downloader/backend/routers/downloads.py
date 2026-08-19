@@ -6,7 +6,13 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 
 from ..downloader import ResolveError
-from ..schemas import DownloadRequest, DownloadResponse, TaskOut, task_to_out
+from ..schemas import (
+    DownloadRequest,
+    DownloadResponse,
+    TaskOut,
+    ensure_http_url,
+    task_to_out,
+)
 from ..task_manager import STATUS_COMPLETED, manager
 
 router = APIRouter(tags=["downloads"])
@@ -14,11 +20,10 @@ router = APIRouter(tags=["downloads"])
 
 @router.post("/api/downloads", response_model=DownloadResponse)
 def create_download(req: DownloadRequest) -> DownloadResponse:
-    url = req.url.strip()
-    if not (url.startswith("http://") or url.startswith("https://")):
-        raise HTTPException(
-            status_code=422, detail="链接必须以 http:// 或 https:// 开头"
-        )
+    try:
+        url = ensure_http_url(req.url)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
     try:
         task = manager.create_download(url, req.format_id)
     except (ResolveError, ValueError) as e:

@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 from backend import main
 from backend import task_manager as tm
+from backend.auth import member_manager
 from backend.events import bus
 from fastapi.testclient import TestClient
 
@@ -68,11 +69,15 @@ FAKE_INFO: dict = {
 
 
 @pytest.fixture(autouse=True)
-def clean_tasks():
-    """每个测试前清空任务存储、序号、活跃下载数与 SSE 订阅, 保证断言基于干净状态."""
+def clean_state():
+    """每个测试前清空内存态存储 (任务/序号/并发计数/会员会话/SSE 订阅).
+
+    保证断言基于干净状态.
+    """
     tm.manager._tasks.clear()
     tm.manager._seq = 0
     tm.manager._active = 0
+    member_manager._sessions.clear()
     with bus._lock:  # 测试中断时 collector 可能未关闭, 清理订阅防串扰
         bus._subs.clear()
     yield
