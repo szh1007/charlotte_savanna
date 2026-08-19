@@ -1,15 +1,25 @@
 <script setup>
 import { computed, ref } from 'vue'
 
-// 解析结果卡: 封面 + 标题 + 平台徽章 + 时长 + 清晰度下拉 (锁定档带 🔒)
-// 「开始下载」动作属于 T08, 本组件先完成结果展示与档位选择
+// 解析结果卡: 封面 + 标题 + 平台徽章 + 时长
+// + 清晰度下拉 (锁定档带 🔒)
+// 「开始下载」动作属于 T08,
+// 本组件先完成结果展示与档位选择
 const props = defineProps({
-  result: { type: Object, required: true }, // ResolveResponse: task_id/title/cover/duration/site/formats/member_limited
+  // ResolveResponse 字段:
+  // task_id/title/cover/duration/site/formats/member_limited
+  result: { type: Object, required: true },
 })
 
-const selectedFormat = ref(props.result.formats[0]?.format_id ?? '')
+// 默认选中最高免费档 (后端按高度升序排列,
+// formats[0] 是最低档 360p)
+const selectedFormat = ref(
+  (props.result.formats.find((f) => !f.locked) ?? props.result.formats[0])
+    ?.format_id ?? '',
+)
 
-// 时长格式化: 秒 → "mm:ss" / "h:mm:ss"; 无时长返回空串
+// 时长格式化: 秒 → "mm:ss" / "h:mm:ss";
+// 无时长返回空串
 function formatDuration(seconds) {
   if (seconds == null || Number.isNaN(seconds)) return ''
   const total = Math.max(0, Math.round(seconds))
@@ -23,10 +33,10 @@ function formatDuration(seconds) {
 
 const durationText = computed(() => formatDuration(props.result.duration))
 
-// 清晰度档位展示文案: "1080p · MP4" (高度未知时仅容器)
+// 档位展示文案: 后端 label 已含清晰度 + 容器
+// (如 "1080p MP4"), 此处直接展示
 function formatLabel(f) {
-  const quality = f.label
-  return `${quality} · ${f.ext.toUpperCase()}`
+  return f.label
 }
 </script>
 

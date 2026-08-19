@@ -5,7 +5,8 @@ import HeroSection from '../components/HeroSection.vue'
 import ResolveResult from '../components/ResolveResult.vue'
 import { resolveUrl } from '../api/client.js'
 
-// 单页布局 (PRD §10): 导航 → Hero → 解析结果 (任务面板/平台墙/会员区/页脚见 T08/T09)
+// 单页布局 (PRD §10): 导航 → Hero → 解析结果
+// (任务面板/平台墙/会员区/页脚见 T08/T09)
 const resolving = ref(false)
 const result = ref(null)
 const apiError = ref('')

@@ -1,17 +1,21 @@
 <script setup>
 import { ref } from 'vue'
 
-// Hero 解析区: 大标题 + 链接输入框 + 解析按钮 + 平台标签云
-// 解析动作交由父组件执行 (Home.vue), 本组件仅负责输入与加载态
+// Hero 解析区: 大标题 + 链接输入框 + 解析按钮
+// + 平台标签云
+// 解析动作交由父组件执行 (Home.vue),
+// 本组件仅负责输入与加载态
 const props = defineProps({
   resolving: { type: Boolean, default: false },
-  apiError: { type: String, default: '' }, // 接口级错误 (由父组件传入, 解析失败提示)
+  // 接口级错误 (解析失败提示, 父组件传入)
+  apiError: { type: String, default: '' },
 })
 
 const emit = defineEmits(['resolve'])
 
 const url = ref('')
-const error = ref('') // 输入级校验错误 (空链接/非 http 前缀)
+// 输入级校验错误 (空链接 / 非 http 前缀)
+const error = ref('')
 
 function handleResolve() {
   const trimmed = url.value.trim()
@@ -27,7 +31,7 @@ function handleResolve() {
   emit('resolve', trimmed)
 }
 
-// 平台标签云: 精选平台静态展示 (PRD §9), 平台墙 (接口数据) 见 T09
+// 平台标签云: 精选平台静态展示 (PRD §9), 平台墙接口数据见 T09
 const tags = [
   '哔哩哔哩',
   '抖音',
@@ -60,7 +64,7 @@ const tags = [
           class="hero__input"
           type="url"
           inputmode="url"
-          placeholder="粘贴视频链接, 如 https://www.bilibili.com/video/BV..."
+          placeholder="粘贴视频链接, 如 https://b23.tv/xxxxxx"
           autocomplete="off"
           spellcheck="false"
         />

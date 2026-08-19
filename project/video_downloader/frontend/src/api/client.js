@@ -1,5 +1,6 @@
 // 后端 API 客户端: fetch 封装, 统一错误解析
-// 开发期经 Vite 代理同源访问 (vite.config.js), 生产由反向代理处理
+// 开发期经 Vite 代理同源访问 (vite.config.js),
+// 生产由反向代理处理
 const BASE = '/api'
 
 /**
@@ -20,7 +21,8 @@ async function request(path, options = {}) {
   }
 
   if (!res.ok) {
-    // 后端错误统一为 {detail: "..."} (FastAPI HTTPException)
+    // 后端错误统一为 {detail: "..."}
+    // (FastAPI HTTPException 响应)
     let detail = `请求失败 (${res.status})`
     try {
       const body = await res.json()
@@ -30,7 +32,13 @@ async function request(path, options = {}) {
     }
     throw new Error(detail)
   }
-  return res.json()
+  try {
+    return await res.json()
+  } catch {
+    // 2xx 但响应体非 JSON (如代理返回 HTML),
+    // 统一为可读错误而非原始 SyntaxError
+    throw new Error('服务器返回了无法解析的响应')
+  }
 }
 
 /** 解析视频链接元信息 (标题 / 封面 / 时长 / 站点 / 清晰度档位). */
