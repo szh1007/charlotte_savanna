@@ -7,6 +7,9 @@
   (非原始转录), 输出 {title, chapters} 与总结 chapters 同构, 前端直接渲染
 - ask_stream(transcript, summary, question) -> Iterator[str]: AI 问答增量
   (上下文 = 转录 + 总结)
+- polish_subtitle_stream(chunk_text, start, end) -> Iterator[str]: 字幕重排
+  精修增量 (模型生成字幕增强, 按口播风格重塑 + 生成线性均匀时间戳), 消费方
+  块结束后调 parse_polished_lines 解析回 [{start, end, text}]
 
 openai SDK 惰性 import: 未安装 / 未配置 key 时模块可导入, 调用才报错
 (测试用 mock 替换本模块, 无需真实 LLM 依赖).
@@ -352,3 +355,97 @@ def _parse_json(content: str) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise LLMError("LLM 返回结构非法 (应为 JSON 对象)")
     return data
+
+
+# 字幕重排 (模型生成字幕增强): LLM 按视频口播风格重塑 ASR 粗稿, 并顺带
+# 生成线性均匀时间戳 (每行 "MM:SS ~ MM:SS 文本"), 块范围由调用方注入
+# (noqa RUF001: 提示词原文使用全角标点, 系用户确认的交付文案)
+_SUBTITLE_POLISH_SYSTEM = (
+    "你是专业的视频字幕编辑。用户会给你一段视频语音识别（ASR）生成的字幕粗稿，"  # noqa: RUF001
+    "请把它重塑为通顺、自然、符合视频口播风格的精修字幕。"
+)
+
+# 重排字幕行时间戳正则: "MM:SS ~ MM:SS 文本" (分钟 1~3 位, 兼容全角破折号)
+# (noqa RUF001: 字符类中的全角破折号为有意匹配)
+_POLISHED_TS_RE = re.compile(
+    r"^\s*(\d{1,3}):(\d{2})\s*[~\-～—]\s*(\d{1,3}):(\d{2})\s*(.*)$"  # noqa: RUF001
+)
+
+
+def polish_subtitle_stream(chunk_text: str, start: float, end: float) -> Iterator[str]:
+    """LLM 重排字幕粗稿 (模型生成字幕增强): yield 精修文本增量, 失败抛 LLMError.
+
+    start/end 为块对应的视频时间范围 (秒): LLM 按最终行数在该范围内生成
+    线性均匀时间戳, 输出每行 "MM:SS ~ MM:SS 文本"; 消费方块结束后调
+    parse_polished_lines 解析回 [{start, end, text}].
+    """
+    # (noqa RUF001: 提示词原文使用全角标点, 系用户确认的交付文案)
+    prompt = (
+        "这是一篇视频语音识别（ASR）后的字幕粗稿，请按照视频口播的风格重塑这段字幕，"  # noqa: RUF001
+        f"输出精修后的字幕文本。本段字幕对应的视频时间段为 {int(start)} ~ {int(end)} 秒。\n\n"  # noqa: E501
+        "重塑要求：\n"  # noqa: RUF001
+        "1. 语句通顺自然：修正识别错误、错别字与断句问题，补齐缺失的标点\n"  # noqa: RUF001
+        "2. 保持口播风格：保留说话者自然的口语表达与语气，不要改成书面语腔调\n"  # noqa: RUF001
+        "3. 精简冗余：删除“嗯”“啊”“呃”等语气词、口头禅、无意义重复（如“就是就是”“然后然后”）；"  # noqa: RUF001, E501
+        "信息必须完整保留，不做过度删减\n"  # noqa: RUF001
+        "4. 忠实原意：不增删任何事实信息；数字、专有名词、人名、品牌名等不确定的识别内容"  # noqa: RUF001, E501
+        "保留原文，不要擅自修改\n"  # noqa: RUF001
+        "5. 合理断句：按语义断句，一句一个完整意思；过长的句子拆成两句，零碎片段适当合并"  # noqa: RUF001, E501
+        "（最多合并 3 句），句数保持与原文同一量级\n\n"  # noqa: RUF001
+        "时间戳要求：\n"  # noqa: RUF001
+        f"- 根据最终生成的字幕行数，在 {int(start)} ~ {int(end)} 秒范围内自动计算生成线性均匀的时间戳\n"  # noqa: RUF001, E501
+        "- 每行格式：MM:SS ~ MM:SS 字幕文本（如 00:05 ~ 00:12 大家好，欢迎观看本期视频）\n"  # noqa: RUF001, E501
+        f"- 首行从 {int(start)} 秒开始，末行在 {int(end)} 秒结束\n\n"  # noqa: RUF001
+        "输出格式：\n"  # noqa: RUF001
+        "- 每行按上述时间戳格式，按原文顺序排列\n"  # noqa: RUF001
+        "- 不要编号，不要任何解释，只输出字幕文本\n"  # noqa: RUF001
+        "- 不输出除字幕以外的任何内容\n\n"
+        f"字幕粗稿：\n{chunk_text}"  # noqa: RUF001
+    )
+    yield from _chat_stream(
+        [
+            {"role": "system", "content": _SUBTITLE_POLISH_SYSTEM},
+            {"role": "user", "content": prompt},
+        ]
+    )
+
+
+def parse_polished_lines(text: str, start: float, end: float) -> list[dict[str, Any]]:
+    """解析重排字幕文本 → [{start, end, text}] (缺失/越界时间戳线性插值兜底).
+
+    LLM 输出按提示词为每行 "MM:SS ~ MM:SS 文本"; 格式不符或时间戳越界
+    (超出 [start, end] 范围) 的行按行序号在块范围内线性均匀插值, 保证
+    下游 (总结/导出) 拿到的字幕行时间戳始终有效.
+    """
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    segments: list[dict[str, Any]] = []
+    for idx, line in enumerate(lines):
+        m = _POLISHED_TS_RE.match(line)
+        body = m.group(5).strip() if m else line
+        if not body:
+            continue
+        if m:
+            seg_start = float(m.group(1)) * 60 + float(m.group(2))
+            seg_end = float(m.group(3)) * 60 + float(m.group(4))
+            if start <= seg_start < seg_end <= end + 1.0:  # 合法且在块范围内
+                segments.append(
+                    {
+                        "start": round(seg_start, 2),
+                        "end": round(seg_end, 2),
+                        "text": body,
+                    }
+                )
+                continue
+        seg_start, seg_end = _interpolate_times(idx, len(lines), start, end)
+        segments.append({"start": seg_start, "end": seg_end, "text": body})
+    return segments
+
+
+def _interpolate_times(
+    idx: int, total: int, start: float, end: float
+) -> tuple[float, float]:
+    """线性均匀插值: 第 idx 行 (共 total 行) 的时间区间 = [start, end] 均分."""
+    span = end - start
+    seg_start = start + span * idx / total
+    seg_end = start + span * (idx + 1) / total
+    return round(seg_start, 2), round(seg_end, 2)

@@ -10,6 +10,7 @@ import {
   fetchSummary,
   fetchTranscript,
   streamSummary,
+  streamTranscript,
 } from '../api/client.js'
 
 // AI 总结内嵌面板 (取代 SummaryDialog 弹窗): 四标签 (总结/转录/思维导图/问答)
@@ -39,6 +40,54 @@ const activeTab = ref('transcript') // 默认字幕: 转录先完成即可先查
 function subStatus(name) {
   return props.task.subtasks?.[name]?.status || 'pending'
 }
+
+// ---- 字幕重排流式 (模型生成增强): 订阅 /transcript/stream 实时展示精修增量 ----
+// 帧协议同总结流: snapshot 首帧累积全文 → delta 追加 → done 收尾. 断线不
+// 重连 (重排为增强展示): done 后由 fetchTranscript 拉取完整结果兜底.
+const transcriptStreamText = ref('')
+const transcriptStreamCtrl = ref(null) // 当前流 AbortController
+
+function closeTranscriptStream() {
+  transcriptStreamCtrl.value?.abort()
+  transcriptStreamCtrl.value = null
+}
+
+function openTranscriptStream({ reset = false } = {}) {
+  transcriptStreamCtrl.value?.abort() // 关闭上一路流 (重跑时旧流已断开, abort 无副作用)
+  if (reset) transcriptStreamText.value = '' // 新任务清空, 重连保留旧文本等 snapshot 覆盖
+  const ctrl = new AbortController()
+  transcriptStreamCtrl.value = ctrl
+  streamTranscript(props.task.task_id, {
+    signal: ctrl.signal,
+    onFrame: (event, data) => {
+      if (event === 'snapshot' || event === 'delta') {
+        transcriptStreamText.value += data.text
+      } else if (event === 'done') {
+        // 流自然结束: done 帧到达时若字幕尚未拉取 (SSE 端点与事件总线竞态),
+        // 直接拉取不等 watch 触发 (与总结流同模式)
+        transcriptStreamCtrl.value = null
+        if (!transcript.value) loadTranscript()
+      }
+    },
+  }).catch(() => {
+    if (ctrl.signal.aborted) return
+    if (transcriptStreamCtrl.value === ctrl) transcriptStreamCtrl.value = null
+  })
+}
+
+// 转录子任务 running → 开流 (打字机); 离开 running (done/failed/blocked) →
+// 关闭 (done 后由完整字幕渲染接管); immediate 恢复刷新页面时的进行中任务
+watch(
+  () => subStatus('transcript'),
+  (s) => {
+    if (s === 'running') {
+      openTranscriptStream({ reset: true })
+    } else {
+      closeTranscriptStream()
+    }
+  },
+  { immediate: true },
+)
 
 function subError(name) {
   return props.task.subtasks?.[name]?.error || ''
@@ -346,6 +395,7 @@ onMounted(() => document.addEventListener('fullscreenchange', onFsChange))
 onBeforeUnmount(() => {
   document.removeEventListener('fullscreenchange', onFsChange)
   closeSummaryStream() // 断开总结流 + 清重连定时器
+  closeTranscriptStream() // 断开字幕重排流
   qaAbort.value?.abort() // 中断进行中的回答流
 })
 </script>
@@ -408,10 +458,14 @@ onBeforeUnmount(() => {
           class="tab-pane"
           :ref="(el) => (fsTargets.transcript = el)"
         >
-          <!-- 转录进行中: 进度条 + 文案显示在本 tab 内容区顶部 (用户反馈) -->
+          <!-- 转录进行中: 进度条 + 文案显示在本 tab 内容区顶部 (用户反馈);
+               模型生成路径重排阶段 (LLM 精修) 流式展示增量字幕 -->
           <div v-if="subStatus('transcript') === 'running'" class="tab-pane__progress">
             <div class="bar bar--indeterminate"><span class="bar__fill"></span></div>
-            <p>字幕获取中......</p>
+            <p>{{ transcriptStreamText ? '字幕精修中……' : '字幕获取中......' }}</p>
+            <div v-if="transcriptStreamText" class="summary__transcript summary__stream">
+              {{ transcriptStreamText }}
+            </div>
           </div>
           <div v-else-if="subStatus('transcript') === 'pending'" class="tab-pane__wait">
             等待任务调度…

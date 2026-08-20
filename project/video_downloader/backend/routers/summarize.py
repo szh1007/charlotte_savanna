@@ -6,6 +6,8 @@
 - GET  /api/tasks/{id}/summary → 结构化总结 (章节时间线 + 要点)
 - GET  /api/tasks/{id}/summary/stream → 总结生成过程流式输出 (SSE, ADR-0007:
   snapshot 首帧累积全文 / delta 增量 / done / error, 空闲 15s heartbeat)
+- GET  /api/tasks/{id}/transcript/stream → 字幕重排过程流式输出 (SSE, 帧协议
+  同总结流: 精修增量实时可见, done 后前端拉取完整结果)
 - GET  /api/tasks/{id}/transcript → 带时间戳转录文本 (转录子任务完成即可访问)
 - GET  /api/tasks/{id}/mindmap → 思维导图结构 (独立 LLM 生成)
 - POST /api/tasks/{id}/qa {question} → SSE 流式回答 (ADR-0007: delta 增量 →
@@ -173,6 +175,44 @@ async def stream_summary(task_id: int) -> StreamingResponse:
         last_yield = time.monotonic()
         while True:
             snap = manager.summary_stream_snapshot(task_id)
+            if snap is None:  # 任务已被清除记录
+                yield _stream_frame("error", {"message": "任务已清除"})
+                return
+            status, error, chunks = snap
+            if sent == 0:
+                yield _stream_frame("snapshot", {"text": "".join(chunks)})
+            elif len(chunks) > sent:
+                yield _stream_frame("delta", {"text": "".join(chunks[sent:])})
+            sent = len(chunks)
+            last_yield = time.monotonic()
+            if status == ST_DONE:
+                yield _stream_frame("done", {})
+                return
+            if status in (ST_FAILED, ST_BLOCKED):
+                yield _stream_frame("error", {"message": error or status})
+                return
+            if time.monotonic() - last_yield >= SUMMARY_STREAM_HEARTBEAT:
+                yield _stream_frame("heartbeat", {})
+            await asyncio.sleep(SUMMARY_STREAM_POLL)
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+@router.get("/api/tasks/{task_id}/transcript/stream")
+async def stream_transcript(task_id: int) -> StreamingResponse:
+    """字幕重排过程流式输出 (SSE): 帧协议同总结流 (snapshot → delta → done/error).
+
+    模型生成字幕重排期间 (转录子任务 running, 精修阶段 80~99) 实时推送
+    精修文本增量; done 收尾后前端拉取完整结果 (GET /transcript). 官方字幕
+    快路径无重排阶段, 转录瞬时 done, 本端点首轮即发 done.
+    """
+    _require_summary_task(task_id)
+
+    async def gen() -> AsyncIterator[str]:
+        sent = 0  # 已推送 chunk 游标 (服务端记账, 客户端零状态)
+        last_yield = time.monotonic()
+        while True:
+            snap = manager.transcript_stream_snapshot(task_id)
             if snap is None:  # 任务已被清除记录
                 yield _stream_frame("error", {"message": "任务已清除"})
                 return

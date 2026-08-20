@@ -273,6 +273,11 @@ export function streamSummary(taskId, { signal, onFrame }) {
   return readSseStream(`/tasks/${taskId}/summary/stream`, { signal, onFrame })
 }
 
+/** 订阅字幕重排流 (SSE, 帧协议同总结流): 模型生成字幕精修增量实时可见. */
+export function streamTranscript(taskId, { signal, onFrame }) {
+  return readSseStream(`/tasks/${taskId}/transcript/stream`, { signal, onFrame })
+}
+
 /** 针对视频内容提问, SSE 流式回答 (ADR-0007): delta 增量 → done 收尾; 超配额 429. */
 export function askQuestionStream(taskId, question, { signal, onFrame }) {
   return readSseStream(`/tasks/${taskId}/qa`, {

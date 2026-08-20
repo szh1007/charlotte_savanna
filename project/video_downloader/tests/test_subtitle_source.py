@@ -59,13 +59,30 @@ def fake_meta(monkeypatch):
     )
 
 
+def _fmt_ts(sec: float) -> str:
+    """秒 → MM:SS (与 LLM 重排时间戳格式一致)."""
+    m, s = divmod(int(sec), 60)
+    return f"{m:02d}:{s:02d}"
+
+
+def _fake_polish_stream(chunk_text: str, start: float, end: float):
+    """透传字幕重排: 原行保留, 时间戳按行序在块范围内均匀插值 (不触网)."""
+    lines = [ln for ln in chunk_text.splitlines() if ln.strip()]
+    total = max(len(lines), 1)
+    for idx, line in enumerate(lines):
+        seg_start = start + (end - start) * idx / total
+        seg_end = start + (end - start) * (idx + 1) / total
+        yield f"{_fmt_ts(seg_start)} ~ {_fmt_ts(seg_end)} {line}\n"
+
+
 @pytest.fixture
 def fake_llm(monkeypatch):
-    """替换 LLM 总结流 (不触网)."""
+    """替换 LLM 总结流 + 字幕重排流 (不触网)."""
 
     monkeypatch.setattr(
         "backend.llm.summarize_stream", lambda text, meta: iter([FAKE_SUMMARY_MD])
     )
+    monkeypatch.setattr("backend.llm.polish_subtitle_stream", _fake_polish_stream)
 
 
 @pytest.fixture
@@ -273,8 +290,8 @@ def test_model_source_cache_hit_refunds_quota(
     assert len(calls) == 1  # 缓存命中, 未再转写
     # 命中退还: 两次总结只净消耗 1 次配额 (创建扣 2 → 命中退 1)
     assert daily_quota._usages["test-client"].summary_count == 1
-    # 命中时转录子任务 message 区分缓存来源
-    assert task["subtasks"]["transcript"]["message"] == "字幕获取完成"
+    # 命中时转录子任务 message 区分缓存来源 (缓存内容即精修结果)
+    assert task["subtasks"]["transcript"]["message"] == "字幕精修完成"
 
 
 def test_model_source_cache_miss_transcribes(

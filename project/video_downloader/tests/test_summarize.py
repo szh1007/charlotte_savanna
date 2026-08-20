@@ -144,9 +144,25 @@ def fake_asr(monkeypatch):
     return calls, gate
 
 
+def _fmt_ts(sec: float) -> str:
+    """秒 → MM:SS (与 LLM 重排时间戳格式一致)."""
+    m, s = divmod(int(sec), 60)
+    return f"{m:02d}:{s:02d}"
+
+
+def _fake_polish_stream(chunk_text: str, start: float, end: float):
+    """透传字幕重排: 原行保留, 时间戳按行序在块范围内均匀插值 (不触网)."""
+    lines = [ln for ln in chunk_text.splitlines() if ln.strip()]
+    total = max(len(lines), 1)
+    for idx, line in enumerate(lines):
+        seg_start = start + (end - start) * idx / total
+        seg_end = start + (end - start) * (idx + 1) / total
+        yield f"{_fmt_ts(seg_start)} ~ {_fmt_ts(seg_end)} {line}\n"
+
+
 @pytest.fixture
 def fake_llm(monkeypatch):
-    """替换 LLM 三层: summarize_stream / generate_mindmap / ask_stream 返回伪流."""
+    """替换 LLM 四层: summarize_stream / generate_mindmap / ask_stream / 字幕重排."""
 
     monkeypatch.setattr(
         "backend.llm.summarize_stream",
@@ -156,6 +172,7 @@ def fake_llm(monkeypatch):
         "backend.llm.generate_mindmap", lambda summary, meta: dict(FAKE_MINDMAP)
     )
     monkeypatch.setattr("backend.llm.ask_stream", lambda t, s, q: iter([f"回答: {q}"]))
+    monkeypatch.setattr("backend.llm.polish_subtitle_stream", _fake_polish_stream)
 
 
 @pytest.fixture(autouse=True)

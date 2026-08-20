@@ -174,11 +174,19 @@ def _load_model():
             return _model
         try:
             from funasr import AutoModel
-        except ImportError as e:
+        except ModuleNotFoundError as e:
+            if e.name == "funasr":
+                raise TranscriptError(
+                    "ASR SDK (funasr) 未安装, 请执行 pip install funasr "
+                    "(首次使用自动下载 SenseVoice 模型约 1GB)"
+                ) from e
+            # funasr 已装但其依赖缺失 (如 torchaudio): 报真实缺失模块, 避免误导
             raise TranscriptError(
-                "ASR SDK (funasr) 未安装, 请执行 pip install funasr "
-                "(首次使用自动下载 SenseVoice 模型约 1GB)"
+                f"ASR SDK (funasr) 依赖缺失: 未找到模块 {e.name}, "
+                "请安装对应依赖 (如 pip install torchaudio)"
             ) from e
+        except ImportError as e:
+            raise TranscriptError(f"ASR SDK (funasr) 导入失败: {e}") from e
         try:
             # 优先加载项目 models/ 本地模型 (ADR-0006 预下载产物, funasr
             # AutoModel 支持本地路径), 未下载时回退 modelscope 模型 id

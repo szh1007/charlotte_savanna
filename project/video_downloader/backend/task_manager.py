@@ -87,6 +87,10 @@ MEMBER_QUEUE_LIMIT = 50  # 会员档批量队列上限
 # 调度器扫描间隔 (秒): 把 queued 任务分配到空闲槽位 (PRD 设计值约 0.5s)
 _SCHEDULER_INTERVAL = 0.5
 
+# 字幕重排分块字符上限 (LLM 单次调用输入量): 超长转录按块逐次重排,
+# 块范围 = 块内首/末句时间戳 (重排输出时间戳线性均匀分布在此范围内)
+POLISH_CHUNK_CHARS = 1500
+
 
 class QueueLimitError(Exception):
     """队列超限 (路由层转为 429 + 明确提示)."""
@@ -139,6 +143,9 @@ class Task:
     # 总结流式缓冲 (ADR-0007): worker 锁内 append 增量 chunk, SSE 端点锁内
     # 快照轮询 (summary_stream_snapshot); 重试/重跑前清空
     summary_stream: list[str] = field(default_factory=list)
+    # 字幕重排流式缓冲 (模型生成增强): 重排期间 LLM 增量实时写入, SSE 端点
+    # 快照轮询 (transcript_stream_snapshot); 重排失败降级时清空
+    transcript_stream: list[str] = field(default_factory=list)
     # 四子任务状态 (kind=summary; 下载任务为空 dict), 事件负载逐 tab 推送
     subtasks: dict[str, Subtask] = field(default_factory=dict)
     # 四标签独立进度 (旁路字段, 兼容旧契约): subtasks 状态的平铺镜像,
@@ -277,6 +284,26 @@ class TaskManager:
                 sub.status if sub is not None else ST_PENDING,
                 sub.error,
                 list(task.summary_stream),
+            )
+
+    def transcript_stream_snapshot(
+        self,
+        task_id: int,
+    ) -> tuple[str, str | None, list[str]] | None:
+        """字幕重排流快照: (转录子任务状态, 错误, 缓冲 chunk 副本); 任务不存在返回 None.
+
+        SSE 端点每轮轮询调用, 语义与 summary_stream_snapshot 一致 (ADR-0007):
+        状态推进与文本 append 同锁, 返回副本避免端点持有期间被 worker 改写.
+        """
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None:
+                return None
+            sub = task.subtasks.get(SUBTASK_TRANSCRIPT)
+            return (
+                sub.status if sub is not None else ST_PENDING,
+                sub.error,
+                list(task.transcript_stream),
             )
 
     def list_tasks(self, limit: int = 50) -> list[Task]:
@@ -780,10 +807,15 @@ class TaskManager:
                 progress=1.0,
                 message="无官方字幕, 切换模型生成",
             )
-            segments = self._transcribe_with_cache(task, auto_download=False)
+            segments, polished_ok = self._transcribe_with_cache(
+                task, auto_download=False
+            )
         else:
-            segments = self._transcribe_with_cache(task, auto_download=True)
-        self._finish_transcript(task, segments, message="字幕获取完成")
+            segments, polished_ok = self._transcribe_with_cache(
+                task, auto_download=True
+            )
+        message = "字幕精修完成" if polished_ok else "字幕精修失败, 使用原始转写"
+        self._finish_transcript(task, segments, message=message)
 
     def _finish_transcript(
         self, task: Task, segments: list[dict[str, Any]], message: str
@@ -798,20 +830,23 @@ class TaskManager:
 
     def _transcribe_with_cache(
         self, task: Task, auto_download: bool
-    ) -> list[dict[str, Any]]:
-        """模型生成路径: 缓存优先 → 模型就绪保障 → 转写 → 写缓存.
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """模型生成路径: 缓存优先 → 模型就绪保障 → 转写 → LLM 重排 → 写缓存.
+
+        返回 (segments, polished_ok): polished_ok=False 表示重排失败降级
+        (使用原始转写段, subtask message 已标注, 不阻塞转录/总结).
 
         auto_download=True (显式选模型生成): 模型缺失自动触发下载并等待
         (进度 0~50 可见, 下载失败 → 转录 failed); False (官方字幕回退):
         仅校验模型存在, 缺失 → failed 提示先下载模型 (不自动触发下载,
         避免回退路径隐性消耗 1GB 流量). 缓存命中返回缓存段 (创建时已扣
-        配额, 命中退还 → 净消耗 0), 未命中转写后落盘 (BV 号解析失败则
-        跳过写缓存, 不阻塞转录).
+        配额, 命中退还 → 净消耗 0), 未命中转写 → 重排 → 落盘 (重排失败
+        时落原始段, 均为最终交付字幕; BV 号解析失败则跳过写缓存).
         """
         cached = subtitle_cache.get(task.url)
         if cached is not None:
             self._refund_quota_on_cache_hit(task)
-            return cached
+            return cached, True
         if not model_downloader.is_ready():
             if not auto_download:
                 raise asr.TranscriptError("无官方字幕且模型未下载, 请先下载模型后重试")
@@ -821,8 +856,65 @@ class TaskManager:
             self._transcript_progress(task.id, task.cancel_event),
             task.cancel_event,
         )
-        subtitle_cache.put(task.url, segments, task.is_member)
-        return segments
+        try:
+            polished = self._polish_segments(task, segments)
+        except llm.LLMError as e:
+            # 重排为增强步骤: 失败降级用原始段, 不影响字幕可用性
+            logger.warning("字幕重排失败, 降级使用原始转写: %s", e)
+            self.update_subtask(
+                task.id,
+                SUBTASK_TRANSCRIPT,
+                ST_RUNNING,
+                progress=99.0,
+                message="字幕精修失败, 使用原始转写",
+            )
+            polished, polished_ok = segments, False
+        else:
+            polished_ok = True
+        subtitle_cache.put(task.url, polished, task.is_member)
+        return polished, polished_ok
+
+    def _polish_segments(
+        self, task: Task, segments: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """LLM 重排字幕 (模型生成增强): 逐块流式精修 → transcript_stream 缓冲.
+
+        块间检查取消信号 (置位抛 TranscriptError, 语义同 ASR 转写取消);
+        单块 LLM 失败抛 LLMError (调用方降级). 重排成功返回新段列表,
+        时间戳由 LLM 在块范围内线性均匀生成 (parse_polished_lines 兜底).
+        进度: 80~99 (转写阶段占 55~80, 见 _transcript_progress).
+        """
+        with self._lock:
+            if task.id in self._tasks:
+                task.transcript_stream.clear()
+        chunks = _split_polish_chunks(segments, POLISH_CHUNK_CHARS)
+        if not chunks:
+            return segments
+        polished: list[dict[str, Any]] = []
+        for idx, (start, end, text) in enumerate(chunks):
+            if task.cancel_event.is_set():
+                raise asr.TranscriptError("已取消")
+            try:
+                buf: list[str] = []
+                for delta in llm.polish_subtitle_stream(text, start, end):
+                    buf.append(delta)
+                    # 增量实时可见: worker append 与端点快照同锁, 边跑边读
+                    with self._lock:
+                        if task.id in self._tasks:
+                            task.transcript_stream.append(delta)
+                polished.extend(llm.parse_polished_lines("".join(buf), start, end))
+            except (llm.LLMError, asr.TranscriptError):
+                raise
+            except Exception as e:  # 引擎异常统一为 LLM 错误: 调用方降级
+                raise llm.LLMError(f"字幕重排异常: {e}") from e
+            self.update_subtask(
+                task.id,
+                SUBTASK_TRANSCRIPT,
+                ST_RUNNING,
+                progress=min(80.0 + (idx + 1) / len(chunks) * 19.0, 99.0),
+                message=f"字幕精修中 {idx + 1}/{len(chunks)}",
+            )
+        return polished
 
     def _wait_model_ready(self, task: Task) -> None:
         """等待模型就绪 (ADR-0006): 触发下载 (幂等) + 轮询进度映射 0~50.
@@ -942,13 +1034,14 @@ class TaskManager:
         def cb(stage: str, pct: float, msg: str) -> None:
             if cancel_event is not None and cancel_event.is_set():
                 return  # 取消由 asr 内部检查中断, 此处仅停止上报
-            # 阶段映射 (ADR-0006): 模型下载 0~50 → 音频下载 50~55 → 转写 55~100
-            progress = 50.0 + pct * 5.0 if stage == "audio" else 55.0 + pct * 45.0
+            # 阶段映射: 模型下载 0~50 → 音频下载 50~55 → 转写 55~80 →
+            # 字幕精修 80~99 (重排由 _polish_segments 推进) → done 100
+            progress = 50.0 + pct * 5.0 if stage == "audio" else 55.0 + pct * 25.0
             self.update_subtask(
                 task_id,
                 SUBTASK_TRANSCRIPT,
                 ST_RUNNING,
-                progress=min(progress, 99.0),
+                progress=min(progress, 79.9),
                 message=msg,
             )
 
@@ -1016,6 +1109,35 @@ def segments_to_text(segments: list[dict[str, Any]]) -> str:
         mm, ss = divmod(int(seg["start"]), 60)
         lines.append(f"[{mm:02d}:{ss:02d}] {seg['text']}")
     return "\n".join(lines)
+
+
+def _split_polish_chunks(
+    segments: list[dict[str, Any]], max_chars: int
+) -> list[tuple[float, float, str]]:
+    """字幕段按累计字符切块 → [(start, end, 拼接文本)] (块范围 = 首/末句时间).
+
+    空文本段跳过 (ASR 清洗后可能残留空串); 拼接以换行分隔, 保留断句结构
+    供 LLM 参考. 块的时间范围随块内容走, 重排输出的时间戳均匀分布其内.
+    """
+    chunks: list[tuple[float, float, str]] = []
+    buf: list[dict[str, Any]] = []
+    count = 0
+    for seg in segments:
+        text = (seg.get("text") or "").strip()
+        if not text:
+            continue
+        if buf and count + len(text) > max_chars:
+            chunks.append(
+                (buf[0]["start"], buf[-1]["end"], "\n".join(s["text"] for s in buf))
+            )
+            buf, count = [], 0
+        buf.append(seg)
+        count += len(text)
+    if buf:
+        chunks.append(
+            (buf[0]["start"], buf[-1]["end"], "\n".join(s["text"] for s in buf))
+        )
+    return chunks
 
 
 # 模块级单例: 路由与测试共享同一任务存储

@@ -211,7 +211,7 @@ SSE 事件协议不变（`task-update`）, 新增 `transcribing` / `summarizing`
 | 依赖 | 用途 | 说明 |
 |------|------|------|
 | `openai` | DeepSeek LLM 调用（兼容 SDK） | 轻量 |
-| `funasr` | SenseVoice 转写 | 依赖已装的 torch / modelscope; 模型下载约 1GB |
+| `funasr` | SenseVoice 转写 | 依赖已装的 torch / torchaudio / modelscope; 模型下载约 1GB |
 | `yt-dlp`（已有） | 字幕提取 / 音频流下载 | 引擎层扩展 |
 
 ## 10. 字幕来源与模型下载（Phase 3, ADR-0006）

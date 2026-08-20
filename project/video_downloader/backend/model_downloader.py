@@ -64,17 +64,46 @@ def _snapshot_download(
     """modelscope 下载模型到指定目录, 回调进度 (文件名, 已下载, 总数).
 
     独立的引擎调用点: 测试通过替换本函数 mock 下载过程 (写文件 + 报进度),
-    不依赖真实 modelscope 与网络. ADR-0006 确认本机 modelscope 1.39.1
-    的 snapshot_download 支持 local_dir 直落与进度回调.
+    不依赖真实 modelscope 与网络. modelscope 1.39.1 的 snapshot_download
+    进度参数为 progress_callbacks (ProgressCallback 子类列表, 按文件实例化
+    callback_cls(filename, file_size), update(size) 报字节增量), 非 callback;
+    本函数把外部 callback 适配成 ProgressCallback 子类传入.
     """
     from modelscope import snapshot_download
+    from modelscope.hub.callback import ProgressCallback
+
+    if callback is None:
+        snapshot_download(model_id, local_dir=str(local_dir))
+        return
+
+    class _ProgressAdapter(ProgressCallback):
+        """modelscope 按文件进度 → (filename, done, total) 回调.
+
+        update(size) 为字节增量, 各文件从 0 累计到文件大小 (模型文件较大,
+        其余配置文件秒下, 进度以 model.pt 为主); 大小未知 (<= 0) 不报进度.
+        """
+
+        def __init__(self, filename: str, file_size: int) -> None:
+            super().__init__(filename, file_size)
+            self._done = 0
+
+        def update(self, size: int) -> None:
+            if self.file_size <= 0:
+                return
+            self._done += size
+            callback(self.filename, self._done, self.file_size)
+
+        def end(self) -> None:
+            if self.file_size <= 0:
+                return
+            callback(self.filename, self.file_size, self.file_size)
 
     snapshot_download(
         model_id,
         local_dir=str(local_dir),
         allow_file_pattern=None,
         ignore_file_pattern=None,
-        callback=callback,
+        progress_callbacks=[_ProgressAdapter],
     )
 
 
