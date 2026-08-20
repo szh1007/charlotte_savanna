@@ -14,6 +14,7 @@ from backend import task_manager as tm
 from backend.auth import member_manager
 from backend.cleaner import cleaner as delivery_cleaner
 from backend.events import bus
+from backend.quota import quota as daily_quota
 from fastapi.testclient import TestClient
 
 # 测试统一会员密钥 (真实密钥仅存在于 .env, 不入库)
@@ -85,6 +86,7 @@ def clean_state():
     tm.manager._seq = 0
     tm.manager._active = {False: 0, True: 0}  # 免费/会员并发槽占用 (T05 按身份拆分)
     member_manager._sessions.clear()
+    daily_quota._usages.clear()  # 每日配额计数 (ADR-0005): 测试间隔离
     with bus._lock:  # 测试中断时 collector 可能未关闭, 清理订阅防串扰
         bus._subs.clear()
     yield

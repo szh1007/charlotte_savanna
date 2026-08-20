@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from dataclasses import dataclass, field
@@ -16,8 +17,10 @@ from typing import Any
 
 from yt_dlp.utils import DownloadError
 
-from . import config, downloader
+from . import asr, config, downloader, llm, subtitle
 from .events import bus, task_event
+
+logger = logging.getLogger(__name__)
 
 # 任务状态常量 (领域状态机)
 STATUS_PENDING = "pending"
@@ -28,6 +31,9 @@ STATUS_DOWNLOADING = "downloading"
 STATUS_COMPLETED = "completed"
 STATUS_FAILED = "failed"
 STATUS_EXPIRED = "expired"
+# 总结任务专属状态 (ADR-0005): 获取转录文本 (字幕/ASR) / LLM 生成总结
+STATUS_TRANSCRIBING = "transcribing"
+STATUS_SUMMARIZING = "summarizing"
 
 # 移除事件标记 (非状态机状态): 任务从存储清除 (清除记录), SSE 广播后前端
 # 从列表移除卡片. 不进状态机: 移除即不存在, 无需落任务状态
@@ -52,7 +58,7 @@ class QueueLimitError(Exception):
 class Task:
     id: int
     url: str
-    kind: str  # "resolve" | "download"
+    kind: str  # "resolve" | "download" | "summary"
     is_member: bool = False  # 创建者会员身份快照 (档位锁定/并发/队列按此计算)
     status: str = STATUS_PENDING
     title: str | None = None
@@ -69,6 +75,9 @@ class Task:
     completed_at: float | None = None  # 完成时刻 (TTL 过期起点, T06)
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
+    # 总结任务结果 (ADR-0005): transcript = [{start, end, text}], summary = 结构化 JSON
+    transcript: list[dict[str, Any]] | None = None
+    summary: dict[str, Any] | None = None
     # 取消信号: 清除记录时置位, 下载中任务的 progress hook 检查后中断引擎
     cancel_event: threading.Event = field(default_factory=threading.Event)
 
@@ -211,6 +220,31 @@ class TaskManager:
         self.ensure_scheduler()
         return self.get_task(task.id)
 
+    def create_summary(self, url: str, is_member: bool = False) -> Task:
+        """创建总结任务 (kind=summary, ADR-0005): 解析元信息 → 入队, 启动调度器.
+
+        元信息解析 (标题/封面/时长) 供任务卡片展示, 失败不阻塞总结
+        (转录与总结不依赖标题, 记日志不静默). 配额已在路由层检查 (免费
+        按 client_id), 总结任务不受批量队列上限约束 (每日配额已限制滥用),
+        与下载任务共享并发槽位 (CPU 密集, 复用调度器).
+        """
+        task = self.create_task(url=url, kind="summary", is_member=is_member)
+        try:  # 轻量解析: 卡片元信息, 失败不阻塞总结 (总结流程不依赖标题)
+            info = downloader.resolve(url)
+            self.update_status(
+                task.id,
+                STATUS_PENDING,
+                title=info["title"],
+                cover=info.get("cover"),
+                duration=info.get("duration"),
+                site=info.get("site"),
+            )
+        except downloader.ResolveError as e:
+            logger.warning("总结任务元信息解析失败 task=%s: %s", task.id, e)
+        self.update_status(task.id, STATUS_QUEUED)
+        self.ensure_scheduler()
+        return self.get_task(task.id)
+
     @staticmethod
     def _is_locked(fmt: dict[str, Any], is_member: bool) -> bool:
         """档位对指定身份是否锁定: 免费用户 >720p 档位锁定 (PRD §5)."""
@@ -265,6 +299,8 @@ class TaskManager:
         """周期扫描: 有空闲并发槽时, 把排队任务派发给执行线程.
 
         并发槽按身份独立计算 (免费 1 / 会员 3), 槽位空闲才派发对应身份的任务.
+        派发状态按任务类型区分: 下载 → downloading; 总结 → transcribing
+        (ADR-0005), 避免总结卡片闪「下载中」.
         """
         while not self._scheduler_stop.is_set():
             task = None
@@ -272,12 +308,21 @@ class TaskManager:
                 task = self._next_queued()
                 if task:
                     self._active[task.is_member] += 1
-                    self.update_status(task.id, STATUS_DOWNLOADING)
+                    status = (
+                        STATUS_TRANSCRIBING
+                        if task.kind == "summary"
+                        else STATUS_DOWNLOADING
+                    )
+                    self.update_status(task.id, status)
             if task:
+                # 按任务类型分派 worker: 下载 / 总结 (ADR-0005) 共用并发槽
+                runner = (
+                    self._run_summary if task.kind == "summary" else self._run_download
+                )
                 worker = threading.Thread(
-                    target=self._run_download,
+                    target=runner,
                     args=(task.id, task.is_member),
-                    name=f"download-worker-{task.id}",
+                    name=f"{task.kind}-worker-{task.id}",
                     daemon=True,
                 )
                 worker.start()
@@ -340,6 +385,75 @@ class TaskManager:
                 # 任务可能已被清除 (取消): 槽位始终按派发时的身份释放
                 self._active[is_member] -= 1
 
+    def _run_summary(self, task_id: int, is_member: bool) -> None:
+        """执行总结并更新任务状态 (独立线程, 完成后释放并发槽, ADR-0005).
+
+        流程: 转录 (字幕快路径 → ASR 回退) → LLM 生成结构化总结 → completed.
+        任一步失败标记 failed 并透传原因; 任务清除记录 (取消) 时收尾更新
+        由 update_status 防御跳过, 槽位始终按派发时的身份释放.
+        """
+        try:
+            task = self.get_task(task_id)
+            if task is None:  # 任务已被清除记录 (取消), worker 直接退出
+                return
+            cancel = task.cancel_event
+            # 转录: 字幕优先 (秒级), 无字幕/失败回退 SenseVoice 转写
+            # (派发时已置 transcribing, 此处直接开始获取字幕)
+            segments = subtitle.get_subtitles(task.url)
+            if segments is None:
+                self.update_status(
+                    task_id,
+                    STATUS_TRANSCRIBING,
+                    progress=5.0,
+                    message="无可用字幕, 正在转写音频",
+                )
+                segments = asr.transcribe(
+                    task.url, self._transcript_progress(task_id, cancel), cancel
+                )
+            # 总结: LLM 结构化输出 (章节时间线 + 要点, 供思维导图/问答复用)
+            self.update_status(
+                task_id, STATUS_SUMMARIZING, progress=65.0, message="正在生成总结"
+            )
+            summary = llm.summarize(
+                segments_to_text(segments),
+                {
+                    "title": task.title,
+                    "duration": task.duration,
+                    "site": task.site,
+                },
+            )
+            self.update_status(
+                task_id,
+                STATUS_COMPLETED,
+                transcript=segments,
+                summary=summary,
+                progress=100.0,
+                message="总结完成",
+                completed_at=time.time(),  # TTL 起点: 结果就绪时刻 (与下载一致)
+            )
+        except (asr.TranscriptError, llm.LLMError) as e:  # 转录/LLM 明确异常: 透传原因
+            self.update_status(task_id, STATUS_FAILED, error=str(e))
+        except Exception as e:  # 其余异常 (磁盘/中断等): 标记失败而非悬挂
+            self.update_status(task_id, STATUS_FAILED, error=f"总结异常: {e}")
+        finally:
+            with self._lock:
+                # 任务可能已被清除 (取消): 槽位始终按派发时的身份释放
+                self._active[is_member] -= 1
+
+    def _transcript_progress(self, task_id: int, cancel_event: threading.Event):
+        """ASR 阶段进度回调 → 任务进度 (0~60 映射, 与下载进度同口径)."""
+
+        def cb(stage: str, pct: float, msg: str) -> None:
+            if cancel_event is not None and cancel_event.is_set():
+                return  # 取消由 asr 内部检查中断, 此处仅停止上报
+            # 阶段映射: 音频下载 5~10%, 转写 10~60%
+            progress = 5.0 + pct * 5.0 if stage == "audio" else 10.0 + pct * 50.0
+            self.update_status(
+                task_id, STATUS_TRANSCRIBING, progress=min(progress, 99.0), message=msg
+            )
+
+        return cb
+
     def _validate_download_access(self, task: Task) -> None:
         """下载前档位重校验: 非会员任务选择锁定档位 → 拒绝 (纵深防御)."""
         if task.is_member:
@@ -393,6 +507,15 @@ class TaskManager:
             )
 
         return hook
+
+
+def segments_to_text(segments: list[dict[str, Any]]) -> str:
+    """转录段 → "[MM:SS] 文本" 组合文本 (LLM 输入 / 响应 / 导出共用)."""
+    lines = []
+    for seg in segments:
+        mm, ss = divmod(int(seg["start"]), 60)
+        lines.append(f"[{mm:02d}:{ss:02d}] {seg['text']}")
+    return "\n".join(lines)
 
 
 # 模块级单例: 路由与测试共享同一任务存储

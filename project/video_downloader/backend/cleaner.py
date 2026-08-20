@@ -82,12 +82,18 @@ class DeliveryCleaner:
                         task.file_path,
                         e,
                     )
-            # file_path 置 None: 事件负载 url 随即失效, 直链路由亦已拒绝
+            # file_path 置 None: 事件负载 url 随即失效, 直链路由亦已拒绝;
+            # 过期消息按任务类型区分 (总结无交付文件, 语义不同)
+            message = (
+                "总结结果已过期清理"
+                if task.kind == "summary"
+                else "交付链接已过期, 文件已清理"
+            )
             self._manager.update_status(
                 task.id,
                 STATUS_EXPIRED,
                 file_path=None,
-                message="交付链接已过期, 文件已清理",
+                message=message,
             )
             expired.append(task.id)
         return expired

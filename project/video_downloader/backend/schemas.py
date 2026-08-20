@@ -99,6 +99,46 @@ class TaskOut(BaseModel):
     created_at: float
 
 
+class SummarizeRequest(BaseModel):
+    url: str = Field(..., min_length=1, description="视频页面链接")
+
+
+class TranscriptSegment(BaseModel):
+    start: float
+    end: float
+    text: str
+
+
+class SummaryOut(BaseModel):
+    """总结结果 (契约 ADR-0005): 结构化总结 JSON + 元信息."""
+
+    task_id: int
+    status: str
+    title: str = ""
+    cover: str | None = None
+    duration: float | None = None
+    summary: dict | None = None
+    created_at: float
+
+
+class TranscriptOut(BaseModel):
+    """转录文本: 时间戳段列表 + 组合文本 (复制/导出用)."""
+
+    task_id: int
+    status: str
+    segments: list[TranscriptSegment]
+    text: str
+
+
+class QARequest(BaseModel):
+    question: str = Field(..., min_length=1, description="针对视频内容的问题")
+
+
+class QAResponse(BaseModel):
+    task_id: int
+    answer: str
+
+
 def task_to_out(task) -> TaskOut:
     """Task (dataclass) → TaskOut, 供任务列表 / 单任务共用.
 

@@ -7,6 +7,21 @@ const BASE = '/api'
 // 页面刷新后仍通过该 token 向后端恢复会员状态 (T09)
 export const MEMBER_TOKEN_KEY = 'vd_member_token'
 
+// 匿名客户端身份存储键 (localStorage): 免费档每日配额按此计数 (ADR-0005)
+export const CLIENT_ID_KEY = 'vd_client_id'
+
+/** 读取匿名客户端 ID, 不存在则生成并持久化 (配额身份, 刷新后保持不变). */
+export function getClientId() {
+  let id = localStorage.getItem(CLIENT_ID_KEY)
+  if (!id) {
+    id = crypto.randomUUID
+      ? crypto.randomUUID()
+      : `c-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    localStorage.setItem(CLIENT_ID_KEY, id)
+  }
+  return id
+}
+
 /** 读取本地会员 token (无则返回 null). */
 export function getMemberToken() {
   return localStorage.getItem(MEMBER_TOKEN_KEY)
@@ -36,6 +51,8 @@ async function request(path, options = {}) {
     res = await fetch(`${BASE}${path}`, {
       headers: {
         'Content-Type': 'application/json',
+        // 免费档每日配额按匿名客户端身份计数 (ADR-0005); 其它接口忽略该头
+        'X-Client-Id': getClientId(),
         ...(token ? { 'X-Member-Token': token } : {}),
         ...(options.headers || {}),
       },
@@ -110,4 +127,29 @@ export function fetchMemberStatus() {
 /** 提交会员密钥: 通过则返回会话 token (由调用方持久化到 localStorage). */
 export function submitMemberKey(key) {
   return request('/member', { method: 'POST', body: JSON.stringify({ key }) })
+}
+
+// ---- AI 视频总结 (ADR-0005): 字幕/ASR 转录 + LLM 结构化总结 ----
+
+/** 创建总结任务 (kind=summary): 免费档超每日配额时后端 429 拒绝. */
+export function createSummarize(url) {
+  return request('/summarize', { method: 'POST', body: JSON.stringify({ url }) })
+}
+
+/** 查询结构化总结 (概述 / 章节时间线 / 要点, 思维导图数据源). */
+export function fetchSummary(taskId) {
+  return request(`/tasks/${taskId}/summary`)
+}
+
+/** 查询带时间戳转录全文 (查看 / 复制 / 导出原料). */
+export function fetchTranscript(taskId) {
+  return request(`/tasks/${taskId}/transcript`)
+}
+
+/** 针对视频内容提问 (免费档超每日配额时后端 429 拒绝). */
+export function askQuestion(taskId, question) {
+  return request(`/tasks/${taskId}/qa`, {
+    method: 'POST',
+    body: JSON.stringify({ question }),
+  })
 }

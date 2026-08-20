@@ -3,26 +3,29 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import ConfirmDialog from './ConfirmDialog.vue'
 import ErrorAlert from './ErrorAlert.vue'
 
-// 下载任务面板 (T08): 任务卡片列表
+// 任务面板 (T08): 任务卡片列表 (下载 + AI 总结, ADR-0005)
 // 卡片: 封面缩略图 + 标题 + 清晰度 + 状态徽章 + 进度条 + 失败原因
-// completed 显示「下载到手机/电脑」+「复制链接」+ 交付过期倒计时
+// 下载 completed 显示「下载到手机/电脑」+「复制链接」+ 交付过期倒计时;
+// 总结 completed 显示「查看总结」入口 (结果视图见 SummaryDialog)
 // 任意状态卡均可清除记录 (进行中任务 = 取消下载, bugfix/0007)
 // 状态与进度由 Home 经 SSE 实时更新, 清除记录事件 (clear/clear-unfinished)
 // 由 Home 调用后端后移除卡片 (本组件负责二次确认 UI)
 const props = defineProps({
-  // 下载任务列表 (kind=download, 按 task_id 降序)
+  // 任务列表 (kind=download|summary, 按 task_id 降序)
   tasks: { type: Array, default: () => [] },
 })
 
-const emit = defineEmits(['clear', 'clear-unfinished'])
+const emit = defineEmits(['clear', 'clear-unfinished', 'view-summary'])
 
-// 状态 → 中文文案 (状态机见 CONTEXT.md)
+// 状态 → 中文文案 (状态机见 CONTEXT.md; 总结任务额外两态 ADR-0005)
 const STATUS_TEXT = {
   pending: '待解析',
   resolving: '解析中',
   resolved: '已解析',
   queued: '排队中',
   downloading: '下载中',
+  transcribing: '转写中',
+  summarizing: '生成总结中',
   completed: '已完成',
   failed: '失败',
   expired: '已过期',
@@ -31,10 +34,23 @@ const STATUS_TEXT = {
 // 状态 → 徽章着色类 (scoped 样式按类定义)
 const STATUS_TONE = {
   downloading: 'badge--active',
+  transcribing: 'badge--active',
+  summarizing: 'badge--active',
   completed: 'badge--success',
   failed: 'badge--danger',
   expired: 'badge--danger',
 }
+
+// 进行中状态集合 (含总结任务两态): 进度条 / 弹窗取消提示共用
+const RUNNING_STATUSES = [
+  'pending',
+  'resolving',
+  'resolved',
+  'queued',
+  'downloading',
+  'transcribing',
+  'summarizing',
+]
 
 // 倒计时基准时刻 (每秒 tick, 驱动剩余时间与本地过期判定)
 const now = ref(Date.now())
@@ -97,9 +113,6 @@ function statusTone(task) {
 // kind: 'clear' (单条) | 'clear-unfinished' (批量清除未完成)
 const confirmState = ref(null)
 const confirmVisible = ref(false)
-
-// 进行中状态集合: 弹窗文案提示「清除将取消下载」
-const RUNNING_STATUSES = ['pending', 'resolving', 'resolved', 'queued', 'downloading']
 
 // 清除记录: 无交付资产的终态 (failed / expired) 直接清除 (无需确认,
 // 无文件可删); 其余状态弹二次确认 — 进行中任务确认后取消下载,
@@ -208,8 +221,12 @@ async function copyLink(task) {
           <div class="task-card__head">
             <h3 class="task-card__title">
               <!-- 占位序号按列表顺序 (#1 起), 不用全局 task_id:
-                   resolve 任务会占掉初始序号, 从 #2 开始 (用户反馈) -->
-              {{ task.title || `下载任务 #${index + 1}` }}
+                   resolve 任务会占掉初始序号, 从 #2 开始 (用户反馈);
+                   总结任务未解析出标题时按类型占位 (ADR-0005) -->
+              {{
+                task.title ||
+                (task.kind === 'summary' ? '视频总结' : '下载任务') + ` #${index + 1}`
+              }}
               <span v-if="formatLabel(task)" class="task-card__format">
                 {{ formatLabel(task) }}
               </span>
@@ -239,9 +256,9 @@ async function copyLink(task) {
             </div>
           </div>
 
-          <!-- 进度条仅下载中显示: 完成后信息由倒计时/操作按钮替代 (bugfix/0006) -->
+          <!-- 进度条进行中显示 (下载 + 总结任务转录/总结阶段, 完成由倒计时/操作替代) -->
           <div
-            v-if="task.status === 'downloading'"
+            v-if="RUNNING_STATUSES.includes(task.status)"
             class="task-card__progress"
           >
             <div class="task-card__bar">
@@ -254,7 +271,7 @@ async function copyLink(task) {
           </div>
 
           <p
-            v-if="task.status === 'downloading' && task.message"
+            v-if="RUNNING_STATUSES.includes(task.status) && task.message"
             class="task-card__message"
           >
             {{ task.message }}
@@ -265,22 +282,33 @@ async function copyLink(task) {
             message="交付链接已过期, 文件已清理, 如需请重新下载"
           />
 
+          <!-- 完成操作: 下载任务 → 直链/复制; 总结任务 → 查看总结视图 -->
           <div
             v-if="task.status === 'completed' && !isExpiredView(task)"
             class="task-card__actions"
           >
-            <a class="btn-outline-gradient task-card__btn" :href="fileUrl(task)">
-              ⬇ 下载到手机/电脑
-            </a>
-            <button class="btn-outline-gradient task-card__btn" @click="copyLink(task)">
-              {{
-                copyState === 'copied'
-                  ? '✓ 已复制'
-                  : copyState === 'failed'
-                    ? '复制失败, 请手动复制'
-                    : '复制链接'
-              }}
-            </button>
+            <template v-if="task.kind === 'summary'">
+              <button
+                class="btn-outline-gradient task-card__btn"
+                @click="emit('view-summary', task)"
+              >
+                📄 查看总结
+              </button>
+            </template>
+            <template v-else>
+              <a class="btn-outline-gradient task-card__btn" :href="fileUrl(task)">
+                ⬇ 下载到手机/电脑
+              </a>
+              <button class="btn-outline-gradient task-card__btn" @click="copyLink(task)">
+                {{
+                  copyState === 'copied'
+                    ? '✓ 已复制'
+                    : copyState === 'failed'
+                      ? '复制失败, 请手动复制'
+                      : '复制链接'
+                }}
+              </button>
+            </template>
           </div>
         </div>
       </li>

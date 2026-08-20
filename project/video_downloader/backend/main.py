@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from . import config
 from .cleaner import cleaner
 from .downloader import list_sites
-from .routers import downloads, events, member, resolve
+from .routers import downloads, events, member, resolve, summarize
 from .task_manager import manager
 
 
@@ -46,6 +46,7 @@ app.include_router(resolve.router)
 app.include_router(downloads.router)
 app.include_router(events.router)
 app.include_router(member.router)
+app.include_router(summarize.router)
 
 
 @app.get("/api/health")

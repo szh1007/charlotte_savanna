@@ -6,10 +6,12 @@ import MemberSection from '../components/MemberSection.vue'
 import NavBar from '../components/NavBar.vue'
 import ResolveResult from '../components/ResolveResult.vue'
 import SiteFooter from '../components/SiteFooter.vue'
+import SummaryDialog from '../components/SummaryDialog.vue'
 import TaskPanel from '../components/TaskPanel.vue'
 import { useMember } from '../composables/useMember.js'
 import {
   createDownload,
+  createSummarize,
   deleteTask,
   fetchTasks,
   purgeUnfinishedTasks,
@@ -24,6 +26,12 @@ const apiError = ref('')
 const downloading = ref(false)
 const downloadError = ref('')
 const tasks = ref([])
+
+// AI 总结 (ADR-0005): 创建中防重复点击, 免费档每日配额用尽 (429) 透传提示
+const summarizing = ref(false)
+const summarizeError = ref('')
+// 总结视图弹窗: 打开的目标任务 (TaskPanel「查看总结」触发)
+const summaryTask = ref(null)
 
 // 最近一次解析的链接 (「开始下载」发起请求用; 会员解锁后自动重新解析)
 const lastUrl = ref('')
@@ -65,7 +73,8 @@ async function refreshTasks() {
     // (bugfix/0004)
     const merged = new Map(tasks.value.map((t) => [t.task_id, t]))
     for (const t of list) {
-      if (t.kind !== 'download') continue
+      // 面板展示下载 + 总结任务 (ADR-0005), 排除瞬时 resolve 短任务
+      if (t.kind === 'resolve') continue
       const local = merged.get(t.task_id)
       merged.set(t.task_id, local ? { ...t, ...local } : t)
     }
@@ -95,6 +104,47 @@ async function handleResolve(url, { keepOld = false } = {}) {
   } finally {
     resolving.value = false
   }
+}
+
+async function handleSummarize(url) {
+  summarizing.value = true
+  summarizeError.value = ''
+  try {
+    const { task_id } = await createSummarize(url)
+    // 本地构造总结任务卡片 (元信息来自解析结果, 状态/进度由 SSE 覆盖;
+    // 与下载任务同模式, 见 handleDownload 竞态说明)
+    const meta = {
+      title: result.value?.title ?? '',
+      cover: result.value?.cover,
+      duration: result.value?.duration,
+      site: result.value?.site,
+    }
+    const idx = tasks.value.findIndex((t) => t.task_id === task_id)
+    if (idx >= 0) {
+      tasks.value[idx] = { ...tasks.value[idx], ...meta }
+    } else {
+      tasks.value.unshift({
+        task_id,
+        kind: 'summary',
+        status: 'queued',
+        ...meta,
+        progress: 0,
+        message: null,
+        error: null,
+      })
+    }
+  } catch (e) {
+    // 免费档每日配额用尽等 (429 detail 透传, 提示明日再试)
+    summarizeError.value = e.message
+    // 创建失败时后端任务已落库 (failed), 补拉列表使其上卡
+    scheduleRefresh()
+  } finally {
+    summarizing.value = false
+  }
+}
+
+function handleViewSummary(task) {
+  summaryTask.value = task
 }
 
 async function handleDownload({ url, formatId }) {
@@ -220,7 +270,8 @@ onMounted(async () => {
   // 初始快照只更新状态字段, 不会覆盖列表详情
   try {
     const { tasks: list } = await fetchTasks()
-    tasks.value = list.filter((t) => t.kind === 'download')
+    // 面板展示下载 + 总结任务, 排除瞬时 resolve 短任务 (与 refreshTasks 一致)
+    tasks.value = list.filter((t) => t.kind !== 'resolve')
   } catch {
     // 后端不可用时页面主体仍可用, 任务列表留空即可
   }
@@ -247,13 +298,17 @@ onBeforeUnmount(() => {
       :url="lastUrl"
       :downloading="downloading"
       :download-error="downloadError"
+      :summarizing="summarizing"
+      :summarize-error="summarizeError"
       @download="handleDownload"
       @go-member="openMemberDialog"
+      @summarize="handleSummarize"
     />
     <TaskPanel
       :tasks="tasks"
       @clear="handleClearTask"
       @clear-unfinished="handleClearUnfinished"
+      @view-summary="handleViewSummary"
     />
   </main>
   <SiteFooter />
@@ -270,5 +325,11 @@ onBeforeUnmount(() => {
     :title="errorDialog.title"
     :message="errorDialog.message"
     hide-cancel
+  />
+  <!-- 总结视图: v-if 控制挂载 (null = 关闭销毁), close 事件重置 -->
+  <SummaryDialog
+    v-if="summaryTask"
+    :task="summaryTask"
+    @close="summaryTask = null"
   />
 </template>

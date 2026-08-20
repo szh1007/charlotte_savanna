@@ -15,9 +15,13 @@ const props = defineProps({
   // 创建下载任务失败的错误信息 (父组件透传,
   // 如队列超限/档位锁定)
   downloadError: { type: String, default: '' },
+  // AI 总结任务创建中 (防重复点击)
+  summarizing: { type: Boolean, default: false },
+  // 创建总结任务失败的错误信息 (免费档每日配额用尽 429 等, 父组件透传)
+  summarizeError: { type: String, default: '' },
 })
 
-const emit = defineEmits(['download', 'go-member'])
+const emit = defineEmits(['download', 'go-member', 'summarize'])
 
 // 档位倒序 (高清晰度在上, 用户反馈 bugfix/0006): 后端按高度升序排列
 const formatsDesc = computed(() => [...props.result.formats].reverse())
@@ -61,6 +65,11 @@ function formatLabel(f) {
 function handleDownload() {
   if (!selectedFormat.value || props.downloading) return
   emit('download', { url: props.url, formatId: selectedFormat.value })
+}
+
+function handleSummarize() {
+  if (props.summarizing) return
+  emit('summarize', props.url)
 }
 </script>
 
@@ -120,7 +129,16 @@ function handleDownload() {
           <span v-if="downloading" class="result__spinner" aria-hidden="true"></span>
           {{ downloading ? '创建中…' : '开始下载' }}
         </button>
+        <button
+          class="btn-outline-gradient result__summarize"
+          :disabled="summarizing"
+          @click="handleSummarize"
+        >
+          <span v-if="summarizing" class="result__spinner" aria-hidden="true"></span>
+          {{ summarizing ? '总结中…' : '✨ AI 总结' }}
+        </button>
         <ErrorAlert :message="downloadError" />
+        <ErrorAlert :message="summarizeError" />
       </div>
     </div>
   </section>
@@ -221,6 +239,17 @@ function handleDownload() {
 }
 
 .result__download {
+  height: 42px;
+  padding: 0 24px;
+  font-size: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+/* AI 总结入口 (与下载按钮并排, 渐变描边区分主次) */
+.result__summarize {
   height: 42px;
   padding: 0 24px;
   font-size: 14px;

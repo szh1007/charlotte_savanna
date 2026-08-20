@@ -29,3 +29,30 @@ def delivery_ttl(is_member: bool) -> float:
     复制身份分支导致判定漂移.
     """
     return MEMBER_DELIVERY_TTL if is_member else FREE_DELIVERY_TTL
+
+
+# ----- AI 总结 (ADR-0005) -----
+
+# 服务端自备 B 站 cookie (字幕快路径, 可选): 配置且有效时优先提取官方字幕,
+# 留空 / 无字幕 / 失败自动回退 SenseVoice 转写. 敏感信息, 仅 .env 维护,
+# 不收集用户任何凭据
+BILI_COOKIE = os.getenv("BILI_COOKIE", "")
+
+# LLM 调用 (DeepSeek, openai 兼容 SDK): 子项目 .env 未配置 LLM_* 时回退
+# DEEPSEEK_* (可复用仓库根 .env 的 key, 与 LangChain 生态同源)
+LLM_API_KEY = os.getenv("LLM_API_KEY", os.getenv("DEEPSEEK_API_KEY", ""))
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.deepseek.com")
+LLM_MODEL = os.getenv(
+    "LLM_MODEL", os.getenv("DEEPSEEK_MODEL_NAME", "deepseek-v4-flash")
+)
+
+# ASR 转写模型 (SenseVoice): 首次使用自动下载 (约 1GB, 落 modelscope 缓存)
+ASR_MODEL = os.getenv("ASR_MODEL", "iic/SenseVoiceSmall")
+
+# ASR 分片长度 (秒): 每片转写后上报一次进度, 长音频避免单次调用内存峰值
+ASR_CHUNK_SECONDS = float(os.getenv("ASR_CHUNK_SECONDS", 600))
+
+# 免费档每日配额 (按匿名 client_id + 日窗口计数, 内存态重启清零, ADR-0005):
+# 会员不限; 与「免费档真实受限」哲学一致
+FREE_SUMMARY_DAILY = int(os.getenv("FREE_SUMMARY_DAILY", 3))
+FREE_QA_DAILY = int(os.getenv("FREE_QA_DAILY", 10))

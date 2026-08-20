@@ -142,7 +142,72 @@ project/video_downloader/
 
 ## 8. 明确不做（Phase 2 计划）
 
-- 视频总结 / 字幕翻译（LLM 能力）— 已列入后续需求计划，本次不开发
+- 字幕翻译（LLM 能力）— 已从需求中移除（原 Phase 2 计划项, 当前不规划）
 - 真实支付 / 账号体系 — 密钥模拟（ADR-0002）
 - 多实例部署 / 任务持久化 — 内存态（ADR-0003）
 - DRM 破解 / 会员视频绕过 — 领域红线，永不涉及
+
+## 9. AI 视频总结能力（Phase 2, ADR-0005）
+
+> 需求与验收：`.scratch/video-downloader/issues/12-ai-video-summary.md`；架构决策：ADR-0005。
+
+### 9.1 能力清单
+
+| 能力 | 说明 |
+|------|------|
+| 视频总结 | LLM 生成结构化总结：章节时间线 + 要点大纲（JSON） |
+| 转录全文 | 带时间戳的视频文字内容（Transcript）, 可查看 / 复制 / 导出 |
+| 思维导图 | 从总结结构化数据渲染的树形图（前端手写 CSS, 零 UI 库） |
+| AI 问答 | 针对视频内容对话（上下文 = 转录 + 总结, 单次塞入, 不建向量库） |
+
+### 9.2 内容获取管线（字幕优先 + ASR 回退）
+
+```
+POST /api/summarize {url}
+  → 总结任务 (kind=summary, 并入任务体系)
+  → transcribing:
+      字幕快路径 (秒级): BILI_COOKIE 配置且有效 → 提取官方字幕
+        未配置 / 无字幕 / 失败 ──► 兜底: 下载音频流 → SenseVoice 转写
+        (1h 视频 CPU 约 5~15 分钟, SSE 进度可见)
+  → summarizing: DeepSeek (openai SDK) 生成结构化总结
+  → completed: {transcript, summary_json, mindmap 数据} 随任务保存
+```
+
+- **不收集用户凭据**：`BILI_COOKIE` 为服务端自备（.env, 不提交）, 留空则跳过字幕直走 ASR
+- **付费差异（后端强制）**：免费每日配额（总结 3 / 问答 10, 按匿名 client_id + 日窗口计数, 内存态重启清零）, 会员无限
+- **结果保留**：转录与总结随任务 TTL 清理（复用 cleaner）; 导出 Markdown / TXT 供用户永久保存
+
+### 9.3 新增 API
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/summarize` | 创建总结任务 `{url}` → `{task_id}`; 免费超每日配额 429 |
+| GET | `/api/tasks/{id}/summary` | 结构化总结（章节时间线 + 要点, JSON） |
+| GET | `/api/tasks/{id}/transcript` | 带时间戳转录文本 |
+| POST | `/api/tasks/{id}/qa` | AI 问答 `{question}` → `{answer}`; 免费超每日配额 429 |
+| GET | `/api/tasks/{id}/export` | 导出总结 / 转录为 Markdown / TXT |
+
+### 9.4 状态机扩展
+
+```
+总结任务 (kind=summary):
+pending → queued → transcribing → summarizing → completed
+                ↘                ↘
+                 failed            failed
+completed → expired（转录与总结随 TTL 清理; 用户可导出永久保存）
+```
+
+状态与下载任务复用同一调度器：`pending` 内同步做轻量元信息解析（不落档位,
+不经过 `resolving`, 失败不阻塞总结）, 入队后由调度线程派发——按 kind 分流为
+`transcribing`（总结）或 `downloading`（下载）。
+
+SSE 事件协议不变（`task-update`）, 新增 `transcribing` / `summarizing` 状态,
+进度消息含 ASR 百分比; 前端任务面板按 kind 区分下载卡片与总结卡片。
+
+### 9.5 新增依赖
+
+| 依赖 | 用途 | 说明 |
+|------|------|------|
+| `openai` | DeepSeek LLM 调用（兼容 SDK） | 轻量 |
+| `funasr` | SenseVoice 转写 | 依赖已装的 torch / modelscope; 模型下载约 1GB |
+| `yt-dlp`（已有） | 字幕提取 / 音频流下载 | 引擎层扩展 |

@@ -1,6 +1,6 @@
 # BilibiliDownloader（哔哩哔哩下载器, video_downloader）
 
-> 基于 **FastAPI + yt-dlp + Vue 3** 的哔哩哔哩免费视频下载网站：粘贴链接 → 一键解析 → 选择清晰度 → 批量下载 → 临时直链交付。
+> 基于 **FastAPI + yt-dlp + Vue 3** 的哔哩哔哩免费视频下载网站：粘贴链接 → 一键解析 → 选择清晰度 → 批量下载 → 临时直链交付；**AI 视频总结**（转录 / 结构化总结 / 思维导图 / AI 问答, ADR-0005）。
 > 需求与验收：`.scratch/video-downloader/PRD.md`（总需求）与 `.scratch/video-downloader/issues/`（分步实施记录）。
 
 ---
@@ -12,7 +12,7 @@
 - **核心流程**：粘贴视频链接 → 解析元信息与可用清晰度档位 → 选择档位发起下载 → 任务队列顺序执行 → 生成临时直链 → 手机/电脑随时保存文件。
 - **支持范围**：仅支持哔哩哔哩免费公开视频（非会员、非充电内容），URL 域名白名单校验（bilibili.com 主域/子域 + b23.tv 短链），其余平台在引擎调用前拒绝；其他平台预留扩展点（ADR-0004）。
 - **下载引擎**：直接嵌入开源项目 **yt-dlp**（Unlicense），零代码改动继承引擎能力；音视频分离流由 **ffmpeg** 合并输出单一 MP4。
-- **付费差异（后端强制）**：免费档限 720p / 1 并发 / 队列 5 / 直链 24h；会员（密钥解锁）全部清晰度 / 3 并发 / 队列 50 / 直链 72h。
+- **付费差异（后端强制）**：免费档限 720p / 1 并发 / 队列 5 / 直链 24h / AI 总结每日 3 次 / 问答 10 次；会员（密钥解锁）全部清晰度 / 3 并发 / 队列 50 / 直链 72h / AI 能力无限。
 - **无数据库**：任务 / 队列 / 会员会话全部内存态，交付文件 TTL 过期自动清理（ADR-0003）。
 - **批量下载**：一次提交多个任务，队列顺序执行 + 并发槽调度（会员任务优先）。
 
@@ -23,31 +23,35 @@
 ```
 project/video_downloader/
 ├── .env                          # 环境变量（不提交，模板见 .env.example）
-├── .env.example                  # 环境变量模板（MEMBER_KEY / TTL / 下载目录）
+├── .env.example                  # 环境变量模板（MEMBER_KEY / TTL / 下载目录 / BILI_COOKIE / LLM_*）
 ├── backend/                      # FastAPI 后端
 │   ├── main.py                   # 应用入口（路由注册 + CORS + lifespan 启动调度/清理线程）
 │   ├── config.py                 # 从 .env 读取配置（TTL / MEMBER_KEY / 下载目录）
 │   ├── auth.py                   # 会员密钥校验 + 会话 token（内存态, 24h TTL）
-│   ├── task_manager.py           # 任务存储 + 状态机 + 并发调度（线程安全, 免费 1 / 会员 3 并发）
+│   ├── task_manager.py           # 任务存储 + 状态机 + 并发调度（线程安全, 免费 1 / 会员 3 并发; kind=summary 分流）
 │   ├── downloader.py             # yt-dlp 引擎封装（解析 / 下载 / 进度回调 / 平台列表）
+│   ├── subtitle.py               # 字幕快路径（BILI_COOKIE 取官方字幕, JSON/VTT/SRT 解析）
+│   ├── asr.py                    # SenseVoice 转写兜底（funasr, 音频流 → 16k 单声道分块）
+│   ├── llm.py                    # DeepSeek 调用（openai SDK, 总结 JSON + 问答, 15 万字符截断）
+│   ├── quota.py                  # 免费每日配额（总结 3 / 问答 10, 按匿名 client_id 内存计数）
 │   ├── cleaner.py                # TTL 后台清理线程（过期删文件 + 标记 expired）
 │   ├── events.py                 # SSE 事件总线（task-update / 心跳）
 │   ├── schemas.py                # Pydantic 请求 / 响应模型
-│   └── routers/                  # resolve / downloads / events / member 四组路由
+│   └── routers/                  # resolve / downloads / events / member / summarize 五组路由
 ├── frontend/                     # Vue 3 + Vite 前端（独立工程, 零 UI 库）
 │   ├── src/
 │   │   ├── App.vue / main.js
 │   │   ├── api/client.js         # fetch 封装（自动附加 X-Member-Token）+ EventSource
 │   │   ├── composables/useMember.js  # 会员状态 composable（解锁 / 恢复 / 清除）
 │   │   └── components/           # NavBar / HeroSection / ResolveResult / TaskPanel /
-│   │                             #   PlatformWall / MemberSection / SiteFooter
+│   │                             #   PlatformWall / MemberSection / SiteFooter / SummaryDialog
 │   └── vite.config.js            # dev server + /api 代理到 127.0.0.1:8000
 ├── scripts/e2e_download.py       # 真实链接 E2E 脚本（解析 → 下载 → 直链取回）
-├── tests/                        # HTTP seam 自动化测试（96 个, 引擎 mock, 无网络依赖）
+├── tests/                        # HTTP seam 自动化测试（119 个, 引擎 mock, 无网络依赖）
 ├── docs/
 │   ├── CONTEXT.md                # 领域术语表（Ubiquitous Language）
 │   ├── DESIGN.md                 # 设计方案
-│   └── adr/                      # ADR-0001 ~ 0004（下载引擎 / 会员密钥 / 内存态 TTL 存储 / 仅 B 站范围收缩）
+│   └── adr/                      # ADR-0001 ~ 0005（下载引擎 / 会员密钥 / 内存态 TTL 存储 / 仅 B 站范围收缩 / AI 总结）
 └── downloads/                    # 交付文件目录（.gitignore, TTL 到期自动清理）
 ```
 
@@ -96,6 +100,12 @@ npm run dev        # 默认 http://localhost:5173, /api 代理到 127.0.0.1:8000
 | `DOWNLOADS_DIR` | `downloads/` | 交付文件目录 |
 | `FREE_DELIVERY_TTL` | `86400`（24h） | 免费用户交付直链有效期（秒） |
 | `MEMBER_DELIVERY_TTL` | `259200`（72h） | 会员用户交付直链有效期（秒） |
+| `BILI_COOKIE` | （空） | 服务端自备 B 站登录 Cookie, 仅用于取官方字幕（不收集用户 cookie）; 空 = 跳过字幕直走 ASR 转写 |
+| `LLM_API_KEY` | （空） | DeepSeek API Key（AI 总结必需; 未配置时回退 `DEEPSEEK_API_KEY`） |
+| `LLM_BASE_URL` | `https://api.deepseek.com` | LLM 端点 |
+| `LLM_MODEL` | `deepseek-chat` | LLM 模型名 |
+| `ASR_MODEL` | `iic/SenseVoiceSmall` | SenseVoice 转写模型（首次使用自动下载至缓存） |
+| `ASR_CHUNK_SECONDS` | `600` | 转写分块时长（秒）, 控制峰值内存 |
 
 > 演示 TTL 清理可用缩短配置, 如 `FREE_DELIVERY_TTL=5`。
 
@@ -109,10 +119,22 @@ npm run dev        # 默认 http://localhost:5173, /api 代理到 127.0.0.1:8000
 | 并发下载 | 1 | 3 |
 | 批量队列上限 | 5 | 50（超限返回 429） |
 | 交付直链有效期 | 24h | 72h |
+| AI 视频总结（转录 / 总结 / 思维导图 / 问答） | 每日总结 3 次 + 问答 10 次（按匿名身份, 超限 429） | 无限 |
 
 **后端强制（非 UI 摆设）**：解析结果中 >720p 档位按身份标记锁定；免费用户选择锁定档位被拒（400）；下载执行前重新校验档位访问权（防绕过）；并发 / 队列 / TTL 均按任务创建者身份后端计算。
 
 **会员鉴权**：前端输入密钥 → `POST /api/member` 校验 → 通过签发内存态会话 token（24h）→ 后续请求以 `X-Member-Token` header 携带（前端 localStorage 持久化, 刷新可恢复）。
+
+**AI 视频总结（ADR-0005）**：解析结果卡点击「AI 总结」→ 创建总结任务（免费档超每日配额 429）→ 后端获取转录文本（**字幕快路径优先**：`.env` 配置 `BILI_COOKIE` 且有效时提取官方字幕, 秒级; 否则回退 SenseVoice 转写, CPU 约 5~15 分钟/小时视频）→ DeepSeek 生成结构化总结 → 完成弹窗展示四个能力：
+
+| 能力 | 说明 |
+|------|------|
+| 转录全文 | 带时间戳 `[MM:SS]` 的视频文字内容, 可查看 / 复制 |
+| 视频总结 | 章节时间线 + 要点大纲（JSON, 思维导图同源数据） |
+| 思维导图 | 由总结结构化数据直接渲染的树形图（手写 CSS, 零 UI 库） |
+| AI 问答 | 针对视频内容对话（上下文 = 转录 + 总结, 单次塞入, 不建向量库） |
+
+结果随任务 TTL 清理（免费 24h / 会员 72h）, 可导出 **Markdown（总结）/ TXT（转录）** 永久保存; 字幕快路径仅用服务端自备 cookie, 不收集用户任何凭据。
 
 ---
 
@@ -130,6 +152,11 @@ npm run dev        # 默认 http://localhost:5173, /api 代理到 127.0.0.1:8000
 | GET | `/api/files/{id}` | 交付直链下载（未完成 404 / 已过期 410） |
 | POST | `/api/member` | 提交会员密钥（正确 200 + token / 错误 401） |
 | GET | `/api/member/status` | 当前会话会员状态 |
+| POST | `/api/summarize` | 创建 AI 总结任务 `{url}` → `{task_id}`（免费超每日配额 429） |
+| GET | `/api/tasks/{id}/summary` | 结构化总结（章节时间线 + 要点 JSON, 思维导图数据源） |
+| GET | `/api/tasks/{id}/transcript` | 带时间戳转录全文 |
+| POST | `/api/tasks/{id}/qa` | AI 问答 `{question}` → `{answer}`（免费超每日配额 429） |
+| GET | `/api/tasks/{id}/export?format=md\|txt` | 导出总结 Markdown / 转录 TXT（与 TTL 无关） |
 | GET | `/api/sites` | 支持平台列表（当前仅哔哩哔哩, total 为引擎全量支持数） |
 | GET | `/api/health` | 健康检查 |
 
@@ -140,15 +167,15 @@ npm run dev        # 默认 http://localhost:5173, /api 代理到 127.0.0.1:8000
 ## 七、测试与端到端验证
 
 ```bash
-# 自动化测试（HTTP seam, 引擎 mock, 无真实网络依赖, 约 15s）
-python -m pytest -q                       # 96 passed
+# 自动化测试（HTTP seam, 引擎 / 字幕 / ASR / LLM mock, 无真实网络依赖, 约 30s）
+python -m pytest -q                       # 119 passed
 
 # 真实链接 E2E（起服务 → 解析 → 选档下载 → 直链取回 → 校验 MP4）
 python scripts/e2e_download.py [url] [format_id]
 # 默认 B 站公开 MV（仅支持哔哩哔哩域名, 见 ADR-0004）
 ```
 
-**测试 seam 约定（PRD Testing Decisions）**：只测外部行为（HTTP 请求 → 响应 / SSE 事件），不直接测内部函数；yt-dlp 调用集中在引擎封装层（`backend/downloader.py`），测试中 mock 该层。
+**测试 seam 约定（PRD Testing Decisions）**：只测外部行为（HTTP 请求 → 响应 / SSE 事件），不直接测内部函数；yt-dlp 调用集中在引擎封装层（`backend/downloader.py`），字幕 / ASR / LLM 各一层 mock（`test_summarize.py`）。
 
 ---
 
@@ -166,7 +193,7 @@ python scripts/e2e_download.py [url] [format_id]
 | 文档 | 位置 |
 |------|------|
 | 总需求（PRD） | `.scratch/video-downloader/PRD.md` |
-| 分步实施 issue（T01 ~ T11） | `.scratch/video-downloader/issues/` |
+| 分步实施 issue（T01 ~ T15） | `.scratch/video-downloader/issues/` |
 | 领域术语表 | `project/video_downloader/docs/CONTEXT.md` |
 | 设计方案 | `project/video_downloader/docs/DESIGN.md` |
-| 架构决策记录 | `project/video_downloader/docs/adr/`（ADR-0001 下载引擎 / 0002 会员密钥 / 0003 内存态 TTL 存储 / 0004 仅 B 站范围收缩） |
+| 架构决策记录 | `project/video_downloader/docs/adr/`（ADR-0001 下载引擎 / 0002 会员密钥 / 0003 内存态 TTL 存储 / 0004 仅 B 站范围收缩 / 0005 AI 视频总结） |
