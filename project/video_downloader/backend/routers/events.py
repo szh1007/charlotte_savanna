@@ -13,7 +13,8 @@ from collections.abc import AsyncIterator
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
-from ..events import bus, task_event
+from ..events import bus, model_update_event, task_event
+from ..model_downloader import model_downloader
 from ..task_manager import manager
 
 router = APIRouter(tags=["events"])
@@ -23,8 +24,13 @@ HEARTBEAT_INTERVAL = 15.0
 
 
 def _sse_frame(event: dict) -> str:
-    """单事件帧: event + data (JSON, 中文不转义), 空行结尾."""
-    return f"event: task-update\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+    """单事件帧: event + data (JSON, 中文不转义), 空行结尾.
+
+    event 名为事件负载的 "event" 键 (task-update / model-update, ADR-0006),
+    不硬编码 — 模型进度是全局资产事件, 无事件名标记的旧负载缺省 task-update.
+    """
+    name = event.get("event", "task-update")
+    return f"event: {name}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
 
 
 def _heartbeat_frame() -> str:
@@ -54,6 +60,10 @@ async def task_events(
             for task in manager.list_tasks():
                 if sub.accepts(task.id):
                     yield _sse_frame(task_event(task))
+            # 模型状态快照 (ADR-0006): 全局资产, 连接建立即推当前状态
+            # (前端由此恢复下载按钮/进度条显示, 不依赖事件时序)
+            st = model_downloader.status()
+            yield _sse_frame(model_update_event(st["status"], st["progress"]))
             while True:
                 try:
                     event = await asyncio.wait_for(

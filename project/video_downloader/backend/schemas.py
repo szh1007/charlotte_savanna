@@ -115,6 +115,7 @@ class TaskOut(BaseModel):
     summary_progress: float = 0.0
     # 四子任务状态 (kind=summary; 下载任务为空 dict), 前端逐 tab 驱动
     subtasks: dict[str, SubtaskOut] = Field(default_factory=dict)
+    subtitle_source: str = "official"  # 字幕来源快照 (ADR-0006, 创建时固化)
     message: str | None = None
     error: str | None = None
     expires_at: float | None = None  # 交付过期时刻 (仅 completed, 前端倒计时)
@@ -123,6 +124,10 @@ class TaskOut(BaseModel):
 
 class SummarizeRequest(BaseModel):
     url: str = Field(..., min_length=1, description="视频页面链接")
+    # 字幕来源 (ADR-0006): official = 官方字幕快路径 (默认) / model = 模型生成
+    subtitle_source: str = Field(
+        default="official", pattern="^(official|model)$", description="字幕来源"
+    )
 
 
 class RetryRequest(BaseModel):
@@ -206,6 +211,7 @@ def task_to_out(task) -> TaskOut:
             )
             for name, sub in task.subtasks.items()
         },
+        subtitle_source=task.subtitle_source,  # 字幕来源快照 (ADR-0006)
         message=task.message,
         error=task.error,
         # 交付过期时刻 = 完成时刻 + 身份 TTL; 仅 completed 有交付资产, 其余为 None

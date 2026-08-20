@@ -17,8 +17,10 @@ from typing import Any
 
 from yt_dlp.utils import DownloadError
 
-from . import asr, config, downloader, llm, subtitle
+from . import asr, config, downloader, llm, model_downloader, subtitle, subtitle_cache
 from .events import bus, task_event
+from .quota import SUMMARY as QUOTA_KIND_SUMMARY
+from .quota import quota as daily_quota
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +47,10 @@ SUBTASK_SUMMARY = "summary"
 SUBTASK_MINDMAP = "mindmap"
 SUBTASK_QA = "qa"
 SUBTASK_NAMES = (SUBTASK_TRANSCRIPT, SUBTASK_SUMMARY, SUBTASK_MINDMAP, SUBTASK_QA)
+
+# 字幕来源 (ADR-0006 创建者快照): official = 官方字幕快路径 / model = 模型生成
+SUBTITLE_SOURCE_OFFICIAL = "official"
+SUBTITLE_SOURCE_MODEL = "model"
 
 # 子任务状态 (独立于任务级状态机, 前端逐 tab 驱动)
 ST_PENDING = "pending"  # 未开始 (含重试重置)
@@ -111,7 +117,7 @@ class Task:
     formats: list[dict[str, Any]] = field(default_factory=list)
     format_id: str | None = None
     # 「最佳画质」伪档 (format_id="best") 映射的真实最高档 id, 创建时固化
-    # (会员任务展示列表已裁剪该伪档, worker 无法从 formats 回溯, 见 _visible_formats)
+    # (任务展示列表已裁剪该伪档, worker 无法从 formats 回溯, 见 _visible_formats)
     real_format_id: str | None = None
     merge_audio: bool = False  # 档位为 DASH 分离流 (video-only): 下载时合并音频流
     progress: float = 0.0
@@ -140,6 +146,13 @@ class Task:
     # 瞬时置 100) / 总结生成中置 30, 完成置 100
     transcript_progress: float = 0.0
     summary_progress: float = 0.0
+    # 字幕来源快照 (ADR-0006): official = 官方字幕快路径 / model = 模型生成,
+    # 创建者选择在创建时固化, 重试沿用
+    subtitle_source: str = SUBTITLE_SOURCE_OFFICIAL
+    # 创建者匿名身份 (字幕缓存命中退还配额用, 会员为空)
+    client_id: str | None = None
+    # 缓存命中配额是否已退还 (幂等: 重试不重复退还)
+    quota_refunded: bool = False
     # 取消信号: 清除记录时置位, 下载中任务的 progress hook 检查后中断引擎
     cancel_event: threading.Event = field(default_factory=threading.Event)
 
@@ -167,6 +180,9 @@ class TaskManager:
         self._active: dict[bool, int] = {False: 0, True: 0}
         self._scheduler: threading.Thread | None = None
         self._scheduler_stop = threading.Event()
+        # 已派发 worker 线程追踪 (测试隔离 join 用): 残留 worker 可能在
+        # 上一测试 monkeypatch 撤销后继续运行 (转录线程触发真实 ASR 下载)
+        self._workers: set[threading.Thread] = set()
 
     def create_task(self, url: str, kind: str, is_member: bool = False) -> Task:
         with self._lock:
@@ -355,7 +371,7 @@ class TaskManager:
             raise ValueError("该档位需会员解锁")
         # DASH 分离流档位 (video-only, has_audio=False): 下载时合并音频流 (bugfix/0003)
         merge_audio = not fmt.get("has_audio", True)
-        # 「最佳画质」伪档: 真实档位 id 固化到任务 (会员任务展示列表已裁剪
+        # 「最佳画质」伪档: 真实档位 id 固化到任务 (任务展示列表已裁剪
         # 该伪档, worker 无法从 formats 回溯, 见 _visible_formats)
         real_format_id = fmt.get("real_format_id") if format_id == "best" else None
         limit = self._queue_limit(is_member)
@@ -374,15 +390,27 @@ class TaskManager:
         self.ensure_scheduler()
         return self.get_task(task.id)
 
-    def create_summary(self, url: str, is_member: bool = False) -> Task:
+    def create_summary(
+        self,
+        url: str,
+        is_member: bool = False,
+        subtitle_source: str = SUBTITLE_SOURCE_OFFICIAL,
+        client_id: str | None = None,
+    ) -> Task:
         """创建总结任务 (kind=summary, ADR-0005): 解析元信息 → 入队, 启动调度器.
 
         元信息解析 (标题/封面/时长) 供任务卡片展示, 失败不阻塞总结
         (转录与总结不依赖标题, 记日志不静默). 配额已在路由层检查 (免费
         按 client_id), 总结任务不受批量队列上限约束 (每日配额已限制滥用),
         与下载任务共享并发槽位 (CPU 密集, 复用调度器).
+
+        subtitle_source 为创建者选择快照 (ADR-0006 决策 1: 全局设置创建时
+        固化), 转录子任务按此走官方快路径或模型生成; client_id 用于字幕
+        缓存命中时退还配额 (创建时先扣, 命中净消耗 0, 防滥用).
         """
         task = self.create_task(url=url, kind="summary", is_member=is_member)
+        task.subtitle_source = subtitle_source
+        task.client_id = client_id
         try:  # 轻量解析: 卡片元信息 + 档位列表, 失败不阻塞总结 (总结流程不依赖标题)
             info = downloader.resolve(url)
             # 档位回填: 仅 AI 总结不下载时, 下载区仍展示各清晰度 (锁定状态, 用户
@@ -457,11 +485,10 @@ class TaskManager:
     def _visible_formats(
         formats: list[dict[str, Any]], is_member: bool
     ) -> list[dict[str, Any]]:
-        """档位列表按身份裁剪: 会员不展示「最佳画质」伪档 (与真实最高档重复,
-        用户反馈), 免费档保留 (锁定引导); 裁剪仅影响展示列表, 下载校验与
-        real_format_id 映射仍走引擎全量 (downloader._to_formats 不动)."""
-        if not is_member:
-            return formats
+        """档位列表按身份裁剪: 一律不展示「最佳画质」伪档 (与真实最高档重复,
+        用户反馈; 免费档保留锁定档位作解锁引导, 但伪档本身不展示);
+        裁剪仅影响展示列表, 下载校验与 real_format_id 映射仍走引擎全量
+        (downloader._to_formats 不动)."""
         return [f for f in formats if f.get("format_id") != "best"]
 
     @staticmethod
@@ -514,6 +541,19 @@ class TaskManager:
         """
         self._scheduler_stop.set()
 
+    def join_workers(self, timeout: float = 1.0) -> None:
+        """等待已派发 worker 全部退出 (测试隔离用).
+
+        残留 worker 的子任务线程 (如取消任务中轮询等待的转录线程) 可能在
+        上一测试 monkeypatch 撤销后继续运行, 触发真实引擎调用 (ASR 下载
+        33MB 音频 / 模型下载). 调用方应先 stop_scheduler 停止新派发,
+        再 join 存量 worker; worker 等待子任务线程退出, join 即等其收尾.
+        """
+        with self._lock:
+            workers = list(self._workers)
+        for t in workers:
+            t.join(timeout=timeout)
+
     def _scheduler_loop(self) -> None:
         """周期扫描: 有空闲并发槽时, 把排队任务派发给执行线程.
 
@@ -544,6 +584,8 @@ class TaskManager:
                     name=f"{task.kind}-worker-{task.id}",
                     daemon=True,
                 )
+                with self._lock:
+                    self._workers.add(worker)
                 worker.start()
             else:
                 self._scheduler_stop.wait(_SCHEDULER_INTERVAL)
@@ -577,7 +619,7 @@ class TaskManager:
             # 「最佳画质」档 (format_id="best") 是记录用独立 id, 实际下载用
             # real_format_id (真实最高档 id): 字面 "best" 是 yt-dlp 表达式,
             # B 站全 DASH 分离流下匹配为空 (bugfix/0003); 真实 id 在任务创建时
-            # 固化 (会员任务 formats 已裁剪最佳画质伪档, 见 _visible_formats)
+            # 固化 (任务 formats 已裁剪最佳画质伪档, 见 _visible_formats)
             format_id = task.real_format_id or task.format_id
             path = downloader.download(
                 task.url,
@@ -608,6 +650,7 @@ class TaskManager:
             with self._lock:
                 # 任务可能已被清除 (取消): 槽位始终按派发时的身份释放
                 self._active[is_member] -= 1
+                self._workers.discard(threading.current_thread())
 
     def _run_summary_worker(self, task_id: int, is_member: bool) -> None:
         """四子任务 DAG 执行 (独立线程, 完成后释放并发槽, ADR-0005).
@@ -645,6 +688,7 @@ class TaskManager:
             with self._lock:
                 # 任务可能已被清除 (取消): 槽位始终按派发时的身份释放
                 self._active[is_member] -= 1
+                self._workers.discard(threading.current_thread())
 
     def _spawn_subtask(self, task_id: int, name: str) -> threading.Thread:
         """启动单个子任务线程并标记 running (worker 循环与动态解锁复用)."""
@@ -715,32 +759,109 @@ class TaskManager:
             self.update_subtask(task_id, name, ST_FAILED, error=f"{name} 异常: {e}")
 
     def _run_transcript_subtask(self, task: Task) -> None:
-        """转录子任务: 字幕快路径 (秒级) → 无字幕回退 SenseVoice 转写."""
-        cancel = task.cancel_event
-        segments = subtitle.get_subtitles(task.url)
-        if segments is None:
+        """转录子任务 (ADR-0006 双路径): 官方字幕快路径 / 模型生成 (缓存优先).
+
+        official: 官方字幕秒级提取 (不写缓存, 秒级获取无需缓存), 为空
+        回退模型生成 — 仅校验模型存在, 缺失 → failed 提示先下载 (不自动
+        触发 1GB 下载, 验收硬性要求); 回退语义同 model 路径 (查缓存 →
+        转写 → 写缓存). model: 优先命中字幕缓存 (全局共享, 命中不另扣
+        配额), 未命中 → 模型缺失自动触发下载 (进度可见, 任务取消不中断
+        下载) → 转写 → 写缓存.
+        """
+        if task.subtitle_source == SUBTITLE_SOURCE_OFFICIAL:
+            segments = subtitle.get_subtitles(task.url)
+            if segments is not None:
+                self._finish_transcript(task, segments, message="字幕获取完成")
+                return
             self.update_subtask(
                 task.id,
                 SUBTASK_TRANSCRIPT,
                 ST_RUNNING,
-                progress=5.0,
-                message="无可用字幕, 正在转写音频",
+                progress=1.0,
+                message="无官方字幕, 切换模型生成",
             )
-            segments = asr.transcribe(
-                task.url,
-                self._transcript_progress(task.id, cancel),
-                cancel,
-            )
+            segments = self._transcribe_with_cache(task, auto_download=False)
+        else:
+            segments = self._transcribe_with_cache(task, auto_download=True)
+        self._finish_transcript(task, segments, message="字幕获取完成")
+
+    def _finish_transcript(
+        self, task: Task, segments: list[dict[str, Any]], message: str
+    ) -> None:
+        """转录成功收尾: 子任务置 done + 结果落 task (锁内写, 防与重试竞态)."""
         self.update_subtask(
-            task.id,
-            SUBTASK_TRANSCRIPT,
-            ST_DONE,
-            progress=100.0,
-            message="字幕获取完成",
+            task.id, SUBTASK_TRANSCRIPT, ST_DONE, progress=100.0, message=message
         )
         with self._lock:
             if task.id in self._tasks:
                 task.transcript = segments
+
+    def _transcribe_with_cache(
+        self, task: Task, auto_download: bool
+    ) -> list[dict[str, Any]]:
+        """模型生成路径: 缓存优先 → 模型就绪保障 → 转写 → 写缓存.
+
+        auto_download=True (显式选模型生成): 模型缺失自动触发下载并等待
+        (进度 0~50 可见, 下载失败 → 转录 failed); False (官方字幕回退):
+        仅校验模型存在, 缺失 → failed 提示先下载模型 (不自动触发下载,
+        避免回退路径隐性消耗 1GB 流量). 缓存命中返回缓存段 (创建时已扣
+        配额, 命中退还 → 净消耗 0), 未命中转写后落盘 (BV 号解析失败则
+        跳过写缓存, 不阻塞转录).
+        """
+        cached = subtitle_cache.get(task.url)
+        if cached is not None:
+            self._refund_quota_on_cache_hit(task)
+            return cached
+        if not model_downloader.is_ready():
+            if not auto_download:
+                raise asr.TranscriptError("无官方字幕且模型未下载, 请先下载模型后重试")
+            self._wait_model_ready(task)
+        segments = asr.transcribe(
+            task.url,
+            self._transcript_progress(task.id, task.cancel_event),
+            task.cancel_event,
+        )
+        subtitle_cache.put(task.url, segments, task.is_member)
+        return segments
+
+    def _wait_model_ready(self, task: Task) -> None:
+        """等待模型就绪 (ADR-0006): 触发下载 (幂等) + 轮询进度映射 0~50.
+
+        下载为全局资产: 幂等触发 (可能已被其他任务/手动触发), 已就绪即
+        返回; 轮询期间转录子任务进度 = 模型下载进度 x 50% (0~50 区间,
+        50 之后留给音频下载/转写), 任务取消抛 TranscriptError 退出 (下载
+        线程独立于任务, 取消不中断). 下载失败 (状态回 missing) 抛错 → 转录
+        failed, 用户可重试.
+        """
+        model_downloader.download()  # 幂等: 缺失启动线程 / 下载中 / 已就绪
+        while not model_downloader.is_ready():
+            if task.cancel_event.is_set():
+                raise asr.TranscriptError("已取消")
+            status = model_downloader.status()
+            if status["status"] == model_downloader.STATUS_MISSING:
+                # 触发后仍 missing = 下载线程已失败回退 (download() 同步置
+                # downloading, 只有失败路径才回 missing)
+                raise asr.TranscriptError("模型下载失败, 请稍后重试")
+            self.update_subtask(
+                task.id,
+                SUBTASK_TRANSCRIPT,
+                ST_RUNNING,
+                progress=min(status["progress"] * 0.5, 49.9),
+                message=f"模型下载中 {status['progress']:.0f}%",
+            )
+            time.sleep(0.5)
+
+    def _refund_quota_on_cache_hit(self, task: Task) -> None:
+        """字幕缓存命中退还配额 (ADR-0006): 创建时先扣, 命中净消耗 0.
+
+        仅免费用户退还 (会员不限量无需退); quota_refunded 标志保证幂等
+        (重试命中缓存不重复退还). 退还与转录结果解耦, 缓存命中与否由
+        转录线程判定的语义一致.
+        """
+        if task.is_member or task.client_id is None or task.quota_refunded:
+            return
+        daily_quota.refund(task.client_id, QUOTA_KIND_SUMMARY)
+        task.quota_refunded = True
 
     def _run_llm_subtask(self, task: Task, name: str) -> None:
         """LLM 生成子任务: summary 结构化总结 / mindmap 导图结构 (独立调用).
@@ -821,8 +942,8 @@ class TaskManager:
         def cb(stage: str, pct: float, msg: str) -> None:
             if cancel_event is not None and cancel_event.is_set():
                 return  # 取消由 asr 内部检查中断, 此处仅停止上报
-            # 阶段映射: 音频下载 5~10%, 转写 10~100%
-            progress = 5.0 + pct * 5.0 if stage == "audio" else 10.0 + pct * 90.0
+            # 阶段映射 (ADR-0006): 模型下载 0~50 → 音频下载 50~55 → 转写 55~100
+            progress = 50.0 + pct * 5.0 if stage == "audio" else 55.0 + pct * 45.0
             self.update_subtask(
                 task_id,
                 SUBTASK_TRANSCRIPT,

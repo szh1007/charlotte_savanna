@@ -66,7 +66,8 @@ def test_events_pushes_status_updates(
     events = wait_events(
         stream, lambda e: e.get("data", {}).get("status") == STATUS_COMPLETED
     )
-    task_events = [e["data"] for e in events if e["data"]["task_id"] == task_id]
+    # 跳过 model-update 帧 (ADR-0006): 模型进度同流广播, 无 task_id
+    task_events = [e["data"] for e in events if "task_id" in e["data"]]
     statuses = [e["status"] for e in task_events]
     # 状态流转顺序: resolving → queued → downloading → completed
     # (连接时无任务, 全部事件来自推送)
@@ -99,8 +100,8 @@ def test_events_initial_snapshot(
     assert wait_until(lambda: find_task(client, task_id)["status"] == STATUS_COMPLETED)
 
     stream = SseStream(main.app, "/api/events")
-    events = wait_events(stream, lambda e: "data" in e)
-    assert events[0]["event"] == "task-update"
+    # 等任务事件帧 (初始快照含模型状态帧 model-update, ADR-0006, 跳过)
+    events = wait_events(stream, lambda e: e.get("event") == "task-update")
     assert events[0]["data"]["task_id"] == task_id
     assert events[0]["data"]["status"] == STATUS_COMPLETED
     stream.close()
@@ -154,8 +155,9 @@ def test_events_task_ids_filter(
             and e["data"]["status"] == STATUS_COMPLETED
         ),
     )
-    # 推送到连接的事件全部属于任务 1 (任务 2 的事件被过滤, 不投递)
-    assert all(e["data"]["task_id"] == id1 for e in events if "data" in e)
+    # 推送到连接的事件全部属于任务 1 (任务 2 的事件被过滤, 不投递;
+    # model-update 帧为全局广播无 task_id, ADR-0006, 跳过)
+    assert all(e["data"]["task_id"] == id1 for e in events if "task_id" in e["data"])
     stream.close()
 
 

@@ -118,7 +118,9 @@ def test_download_outtmpl_uses_bvid_spec(monkeypatch, tmp_path) -> None:
     """输出文件名: BV号_清晰度_视频流ID_音频流ID (用户反馈).
 
     requested_formats.N 是 yt-dlp 对 DASH 分离流 (视频流在前, 音频流在后)
-    的模板字段访问; 单流复合格式无独立音频 id, 渲染 NA 占位.
+    的模板字段访问; 单流复合格式无独立音频 id, 渲染 NA 占位. 头部用 %(id)s
+    而非 %(bvid)s: 新版 BiliBiliIE 不提供 bvid 字段, 缺失渲染 NA 占位
+    (用户反馈: NA_360p_30016_30280.mp4), id 即 BV 号.
     """
     captured: dict = {}
 
@@ -139,7 +141,7 @@ def test_download_outtmpl_uses_bvid_spec(monkeypatch, tmp_path) -> None:
     _download("https://www.bilibili.com/video/BV1xx411c7mD", "30080", tmp_path)
     tmpl = captured["opts"]["outtmpl"]
     assert tmpl.endswith(
-        "%(bvid)s_%(height)sp_%(requested_formats.0.format_id)s_"
+        "%(id)s_%(height)sp_%(requested_formats.0.format_id)s_"
         "%(requested_formats.1.format_id)s.%(ext)s"
     )
 

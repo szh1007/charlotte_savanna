@@ -1,17 +1,21 @@
 <script setup>
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import HeroSection from '../components/HeroSection.vue'
 import MemberSection from '../components/MemberSection.vue'
 import NavBar from '../components/NavBar.vue'
 import ResolveResult from '../components/ResolveResult.vue'
 import SiteFooter from '../components/SiteFooter.vue'
+import SubtitleSourceBar from '../components/SubtitleSourceBar.vue'
 import TaskPanel from '../components/TaskPanel.vue'
 import { useMember } from '../composables/useMember.js'
 import {
+  SUBTITLE_SOURCE_KEY,
   createDownload,
   createSummarize,
   deleteTask,
+  downloadModel,
+  fetchModelStatus,
   fetchTasks,
   purgeUnfinishedTasks,
   resolveUrl,
@@ -29,6 +33,37 @@ const tasks = ref([])
 // AI 总结 (ADR-0005): 创建中防重复点击, 免费档每日配额用尽 (429) 透传提示
 const summarizing = ref(false)
 const summarizeError = ref('')
+
+// 字幕来源全局设置 (ADR-0006): localStorage 持久化, 默认官方字幕
+// (official 快路径; 无官方字幕自动回退模型生成, model 生成缓存优先)
+const subtitleSource = ref(localStorage.getItem(SUBTITLE_SOURCE_KEY) === 'model' ? 'model' : 'official')
+watch(subtitleSource, (v) => localStorage.setItem(SUBTITLE_SOURCE_KEY, v))
+
+// 语音转写模型状态 (ADR-0006): 初始拉取 + SSE model-update 增量更新
+// (下载中进度 / 完成 / 失败回 missing 均经该事件广播, 与任务事件同流)
+const modelStatus = ref({ status: 'missing', progress: 0, has_official_subtitle: false })
+const modelDownloading = ref(false)
+const modelError = ref('')
+
+async function refreshModelStatus() {
+  try {
+    modelStatus.value = await fetchModelStatus()
+  } catch {
+    // 后端不可用: 保持默认 missing, 设置区显示下载引导
+  }
+}
+
+async function handleDownloadModel() {
+  modelDownloading.value = true
+  modelError.value = ''
+  try {
+    modelStatus.value = await downloadModel()
+  } catch (e) {
+    modelError.value = e.message
+  } finally {
+    modelDownloading.value = false
+  }
+}
 
 // 总结禁用判定 (ADR-0005 + 用户反馈: 已 AI 总结过的视频不可再次总结):
 // 返回 '' 可总结 / 'active' 已有进行中任务 (queued/running) / 'done' 已总结过
@@ -132,7 +167,8 @@ async function handleSummarize(url) {
   summarizing.value = true
   summarizeError.value = ''
   try {
-    const { task_id } = await createSummarize(url)
+    // 携带全局字幕来源设置 (ADR-0006): official 官方字幕 / model 模型生成
+    const { task_id } = await createSummarize(url, subtitleSource.value)
     // 本地构造总结任务卡片 (元信息来自解析结果或同 url 已有任务兜底,
     // 状态/进度由 SSE 覆盖; 与下载任务同模式, 见 handleDownload 竞态说明)
     // url 字段注入: TaskPanel 按 source_url||url 分组, 本地卡立即归组
@@ -298,10 +334,23 @@ async function handleClearUnfinished() {
   }
 }
 
+// SSE model-update (ADR-0006): 模型下载进度 / 完成 / 失败回 missing
+// 增量合并到 modelStatus (保留 has_official_subtitle 等静态字段)
+function handleModelUpdate(evt) {
+  let data
+  try {
+    data = JSON.parse(evt.data)
+  } catch {
+    return
+  }
+  modelStatus.value = { ...modelStatus.value, ...data }
+}
+
 function connectEvents() {
   // EventSource 断线自动重连, 重连后服务端先推快照恢复现场
   eventSource = new EventSource('/api/events')
   eventSource.addEventListener('task-update', handleTaskUpdate)
+  eventSource.addEventListener('model-update', handleModelUpdate)
 }
 
 onMounted(async () => {
@@ -315,6 +364,7 @@ onMounted(async () => {
     // 后端不可用时页面主体仍可用, 任务列表留空即可
   }
   restoreMember()
+  refreshModelStatus()
   connectEvents()
 })
 
@@ -331,6 +381,13 @@ onBeforeUnmount(() => {
     @resolve="handleResolve"
   />
   <main class="container">
+    <SubtitleSourceBar
+      v-model="subtitleSource"
+      :model-status="modelStatus"
+      :model-downloading="modelDownloading"
+      :model-error="modelError"
+      @download-model="handleDownloadModel"
+    />
     <ResolveResult
       v-if="result"
       :result="result"

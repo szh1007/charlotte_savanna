@@ -246,6 +246,8 @@ def test_summary_sse_status_flow(client, fake_subtitle, fake_llm) -> None:
             line for line in frame.split("\n") if line.startswith("data: ")
         )
         evt = json.loads(data_line.removeprefix("data: "))
+        if evt.get("event") == "model-update":
+            continue  # 模型进度帧 (ADR-0006): 同流广播, 无任务字段
         statuses.append(evt["status"])
         subs = evt.get("subtasks") or {}
         # 四子任务独立状态随事件携带 (前端四 tab 数据源)
@@ -823,6 +825,8 @@ def test_sse_event_carries_tab_progress(client, fake_subtitle, fake_llm) -> None
             line for line in frame.split("\n") if line.startswith("data: ")
         )
         evt = json.loads(data_line.removeprefix("data: "))
+        if evt.get("event") == "model-update":
+            continue  # 模型进度帧 (ADR-0006): 同流广播, 无任务字段
         assert "source_url" in evt
         assert "transcript_progress" in evt
         assert "summary_progress" in evt

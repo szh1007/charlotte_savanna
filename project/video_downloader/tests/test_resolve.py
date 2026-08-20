@@ -22,13 +22,13 @@ def test_resolve_valid_link_returns_metadata(
     assert body["duration"] == 125.5
     assert body["site"] == "BiliBili"
 
-    # 档位列表: 360p / 720p / 1080p (同高度优先含音频 → WEBM) + 最佳画质
+    # 档位列表: 360p / 720p / 1080p (同高度优先含音频 → WEBM);
+    # 「最佳画质」伪档一律不展示 (与真实最高档重复, 用户反馈, 免费/会员同规则)
     formats = body["formats"]
     assert [f["label"] for f in formats] == [
         "360p MP4",
         "720p MP4",
         "1080p WEBM",
-        "最佳画质 - 1080p",
     ]
     # 免费用户: >720p 档位标记 locked, member_limited 为 True (T05)
     assert formats[0] == {
@@ -42,11 +42,6 @@ def test_resolve_valid_link_returns_metadata(
     }
     assert formats[2]["format_id"] == "999"  # 1080p 含音频的 WEBM 胜出
     assert formats[2]["locked"] is True
-    # 最佳画质独立 id "best" (区分普通最高档, 用户反馈); real_format_id 内部
-    # 字段被 FormatOut 过滤不外传 (字面 "best" 表达式对全 DASH 分离流会匹配
-    # 为空, bugfix/0003, 下载时由后端映射)
-    assert formats[3]["format_id"] == "best"
-    assert formats[3]["locked"] is True
 
 
 def test_resolve_status_flows_pending_resolving_resolved(

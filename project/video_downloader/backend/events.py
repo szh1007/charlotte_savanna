@@ -65,6 +65,21 @@ class EventBus:
         """广播事件: 后台线程调用, 经目标 loop 线程安全投递, 不阻塞."""
         with self._lock:
             subs = [s for s in self._subs if s.accepts(task_id)]
+        self._deliver(subs, event)
+
+    def publish_all(self, event: dict) -> None:
+        """广播给全部订阅者 (不受 task_id 过滤影响, ADR-0006 model-update).
+
+        模型进度是全局资产状态, 订阅者即使只关注指定任务也应收到的
+        模型进度事件走此通道; 其余语义同 publish.
+        """
+        with self._lock:
+            subs = list(self._subs)
+        self._deliver(subs, event)
+
+    @staticmethod
+    def _deliver(subs: list[Subscriber], event: dict) -> None:
+        """投递事件到订阅者队列 (队列满由 _enqueue 丢弃, 不阻塞调用方)."""
         for sub in subs:
             if sub.loop.is_closed():
                 continue  # 服务停机中: 丢弃广播 (worker 线程处于退出阶段)
@@ -83,9 +98,11 @@ def task_event(task: Task) -> dict:
 
     title/cover 为解析完成的元信息 (resolving 阶段为空, 前端据此补全卡片);
     expires_at 仅完成时刻携带 (前端倒计时起点); 移除事件见 task_manager
-    remove_task (status=removed, 独立负载无本函数字段).
+    remove_task (status=removed, 独立负载无本函数字段). event 键为 SSE
+    event 名标记 (路由帧编码用), 不随 data 透传.
     """
     return {
+        "event": "task-update",
         "task_id": task.id,
         "status": task.status,
         "title": task.title or "",
@@ -119,6 +136,11 @@ def task_event(task: Task) -> dict:
             else None
         ),
     }
+
+
+def model_update_event(status: str, progress: float) -> dict:
+    """模型状态 → SSE 事件负载 (ADR-0006): event 名标记 + 状态 + 进度."""
+    return {"event": "model-update", "status": status, "progress": progress}
 
 
 # 模块级单例: task_manager 状态更新后 publish, SSE 路由订阅

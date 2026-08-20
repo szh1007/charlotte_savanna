@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from . import config
 from .cleaner import cleaner
 from .downloader import list_sites
-from .routers import downloads, events, member, resolve, summarize
+from .routers import downloads, events, member, model, resolve, summarize
 from .task_manager import manager
 
 
@@ -21,6 +21,10 @@ from .task_manager import manager
 async def lifespan(app: FastAPI):
     # 交付文件目录 (下载落盘), 启动即创建
     config.DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    # 模型目录 (ADR-0006): 语音转写模型本体 + 字幕缓存 (持久资产/缓存分离),
+    # 启动即创建, 避免首次触发下载/缓存时才 mkdir (模型状态按文件判定)
+    config.MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    config.SUBTITLES_DIR.mkdir(parents=True, exist_ok=True)
     cleaner.start()  # TTL 清理线程: 周期扫描过期交付, 删文件 + 标记 expired (T06)
     yield
     # 服务退出: 停止后台调度 + 清理线程 (daemon, 进程结束即终止, 显式停止防残留)
@@ -47,6 +51,7 @@ app.include_router(downloads.router)
 app.include_router(events.router)
 app.include_router(member.router)
 app.include_router(summarize.router)
+app.include_router(model.router)
 
 
 @app.get("/api/health")

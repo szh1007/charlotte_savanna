@@ -10,6 +10,10 @@ export const MEMBER_TOKEN_KEY = 'vd_member_token'
 // 匿名客户端身份存储键 (localStorage): 免费档每日配额按此计数 (ADR-0005)
 export const CLIENT_ID_KEY = 'vd_client_id'
 
+// AI 总结字幕来源存储键 (localStorage): official 官方字幕 / model 模型生成
+// (ADR-0006, 默认官方字幕; 未配置 B 站 Cookie 时官方字幕不可用)
+export const SUBTITLE_SOURCE_KEY = 'vd_subtitle_source'
+
 /** 读取匿名客户端 ID, 不存在则生成并持久化 (配额身份, 刷新后保持不变). */
 export function getClientId() {
   let id = localStorage.getItem(CLIENT_ID_KEY)
@@ -131,9 +135,30 @@ export function submitMemberKey(key) {
 
 // ---- AI 视频总结 (ADR-0005): 字幕/ASR 转录 + LLM 结构化总结 ----
 
-/** 创建总结任务 (kind=summary): 免费档超每日配额时后端 429 拒绝. */
-export function createSummarize(url) {
-  return request('/summarize', { method: 'POST', body: JSON.stringify({ url }) })
+/**
+ * 创建总结任务 (kind=summary): 免费档超每日配额时后端 429 拒绝.
+ * @param {string} url 视频链接
+ * @param {'official'|'model'} subtitleSource 字幕来源 (ADR-0006):
+ *   official 官方字幕 (快路径, 无字幕自动回退模型生成) / model 模型生成
+ *   (缓存优先, 模型缺失自动触发下载)
+ */
+export function createSummarize(url, subtitleSource = 'official') {
+  return request('/summarize', {
+    method: 'POST',
+    body: JSON.stringify({ url, subtitle_source: subtitleSource }),
+  })
+}
+
+// ---- 语音转写模型 (ADR-0006): 全局状态 / 手动下载 ----
+
+/** 查询语音转写模型状态: {status, progress, has_official_subtitle}. */
+export function fetchModelStatus() {
+  return request('/model/status')
+}
+
+/** 下载语音转写模型 (幂等): 已就绪/下载中不重复触发, 进度经 SSE model-update 广播. */
+export function downloadModel() {
+  return request('/model/download', { method: 'POST' })
 }
 
 /** 查询结构化总结 (概述 / 章节时间线 / 要点, 思维导图数据源). */

@@ -30,7 +30,7 @@ const emit = defineEmits(['download', 'go-member', 'summarize'])
 const formatsDesc = computed(() => [...props.result.formats].reverse())
 
 // 默认选中最高可用档: 倒序找第一个未锁定档 = 最高档
-// (免费取最高免费档, 会员取 best)
+// (免费取最高免费档, 会员取最高真实档; 最佳画质伪档后端已裁剪)
 const selectedFormat = ref(
   (formatsDesc.value.find((f) => !f.locked) ??
     props.result.formats[0])?.format_id ?? '',
@@ -38,7 +38,7 @@ const selectedFormat = ref(
 
 // 档位列表原地更新时 (会员解锁后 keepOld 重解析, result 引用替换但组件
 // 不重建, setup 只初始化一次) 重置默认选中: 保持与非会员一致的设计 —
-// 默认选中最高可用档 (解锁后自动切到最佳画质)
+// 默认选中最高可用档 (解锁后自动切到最高真实档)
 watch(
   () => props.result.formats,
   (formats) => {

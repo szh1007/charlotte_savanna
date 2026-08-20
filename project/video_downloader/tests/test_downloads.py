@@ -75,11 +75,12 @@ def test_create_download_rejects_non_bilibili_domain_422(
 def test_best_quality_download_uses_real_format_id(
     client: TestClient, fake_download, monkeypatch
 ) -> None:
-    """B 站全 DASH 分离流: 「最佳画质」档位独立 id "best", 下载链路可用.
+    """「最佳画质」伪档不进入展示列表; 下载 API 仍接受 format_id="best" (兼容).
 
     回归 bugfix/0003: 字面 "best" 是 yt-dlp 格式选择表达式, 只匹配合一格式,
     全分离流下匹配为空下载报 "Requested format is not available". 独立 id
-    "best" 记录用户选择, 下载时后端映射为 real_format_id (真实最高档 id).
+    "best" 记录用户选择 (历史任务/API 兼容), 下载时后端映射为 real_format_id
+    (真实最高档 id). 展示列表一律裁剪该伪档 (与真实最高档重复, 用户反馈).
     """
     dash_info = {
         "id": "dash-only",
@@ -114,21 +115,28 @@ def test_best_quality_download_uses_real_format_id(
     }
     monkeypatch.setattr("backend.downloader._extract", lambda url: dash_info)
 
-    # 解析 → 取「最佳画质」档位 (列表末尾, 独立 id "best")
+    # 免费解析: 展示列表不含「最佳画质」伪档, 仅真实档位 (用户反馈)
     resp = client.post(
         "/api/resolve", json={"url": "https://www.bilibili.com/video/BV-best"}
     )
     formats = resp.json()["formats"]
-    assert formats[-1]["label"] == "最佳画质 - 1080p"
-    best_id = formats[-1]["format_id"]
-    assert best_id == "best"  # 独立 id, 区分普通最高档 (real_format_id 不外传)
+    assert [f["label"] for f in formats] == ["360p MP4", "720p MP4", "1080p MP4"]
+    assert "best" not in [f["format_id"] for f in formats]
     # DASH video-only 档位标记无音频 → 下载时合并音频流 (bugfix/0003)
-    assert formats[-1]["has_audio"] is False
+    assert formats[2]["has_audio"] is False
 
-    # 选最佳画质创建下载 → 引擎收到真实 id + merge_audio=True, 任务完成
+    # 免费用户选 best 仍受锁定防线约束 (best 映射 1080p, 超过免费上限): 400
+    resp = client.post(
+        "/api/downloads",
+        json={"url": "https://www.bilibili.com/video/BV-best", "format_id": "best"},
+    )
+    assert resp.status_code == 400
+    assert "会员" in resp.json()["detail"]
+
+    # 会员选 best 创建下载 → 引擎收到真实 id + merge_audio=True, 任务完成
     task_id = client.post(
         "/api/downloads",
-        json={"url": "https://www.bilibili.com/video/BV-best", "format_id": best_id},
+        json={"url": "https://www.bilibili.com/video/BV-best", "format_id": "best"},
         headers=member_headers(client),
     ).json()["task_id"]
     assert wait_until(lambda: find_task(client, task_id)["status"] == STATUS_COMPLETED)

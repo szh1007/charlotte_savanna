@@ -12,7 +12,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import config
+from . import config, subtitle_cache
 from .task_manager import STATUS_COMPLETED, STATUS_EXPIRED, TaskManager, manager
 
 # 清理扫描周期 (秒): 后台线程每周期全量扫描一次 (PRD 设计值约 60s)
@@ -64,6 +64,10 @@ class DeliveryCleaner:
         (权限/占用等异常) 记录日志但不阻塞过期标记, 避免任务永驻 completed
         且清理线程被异常杀死 (无人复活).
         """
+        # 字幕缓存过期清理 (ADR-0006): 按文件内创建者身份 TTL (免费 24h /
+        # 会员 72h, 与交付 TTL 同源); 模型本体不在缓存目录, 天然不清理
+        # (持久资产, 独立目录 SUBTITLES_DIR ≠ MODELS_DIR)
+        subtitle_cache.cleanup_expired()
         expired: list[int] = []
         for task in self._manager.list_completed():
             if task.completed_at is None:

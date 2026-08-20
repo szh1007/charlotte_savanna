@@ -10,6 +10,7 @@ import threading
 
 import pytest
 from backend import config, main
+from backend import model_downloader as model_dl
 from backend import task_manager as tm
 from backend.auth import member_manager
 from backend.cleaner import cleaner as delivery_cleaner
@@ -86,6 +87,15 @@ def clean_state():
     delivery_cleaner.stop()
     if delivery_cleaner._thread is not None:
         delivery_cleaner._thread.join(timeout=1.0)
+    # 停止并 join 任务调度线程 + 已派发 worker: 跨测试存活的调度线程会
+    # 继续派发任务, 残留 worker 的子任务线程 (如取消任务中轮询等待的转录
+    # 线程) 可能在上一测试 monkeypatch 撤销后运行 (读到真实 MODELS_DIR /
+    # 真实 asr), 导致真实下载与状态串扰 (ADR-0006 测试稳定性). join 在
+    # _active 重置前: 残留 worker 收尾的槽位释放减到旧值, 重置后归零
+    tm.manager.stop_scheduler()
+    if tm.manager._scheduler is not None:
+        tm.manager._scheduler.join(timeout=1.0)
+    tm.manager.join_workers(timeout=1.0)
     tm.manager._tasks.clear()
     tm.manager._seq = 0
     tm.manager._active = {False: 0, True: 0}  # 免费/会员并发槽占用 (T05 按身份拆分)
@@ -93,12 +103,42 @@ def clean_state():
     daily_quota._usages.clear()  # 每日配额计数 (ADR-0005): 测试间隔离
     with bus._lock:  # 测试中断时 collector 可能未关闭, 清理订阅防串扰
         bus._subs.clear()
+    # 模型下载状态机重置 (ADR-0006): 残留的 downloading/ready 状态不串扰
+    # (线程句柄保留: is_alive() 判定防双线程; 旧线程收尾的状态覆盖无害,
+    # 下次 status()/download() 以文件为准重新同步)
+    model_dl.model_downloader._status = model_dl.STATUS_MISSING
+    model_dl.model_downloader._progress = 0.0
     yield
 
 
 @pytest.fixture
 def client():
     return TestClient(main.app)
+
+
+@pytest.fixture(autouse=True)
+def model_assets(monkeypatch, tmp_path):
+    """模型资产目录隔离 (ADR-0006): MODELS_DIR/SUBTITLES_DIR 指向 tmp 目录.
+
+    预置 ready 模型文件 (config.yaml + model.pt): 现有 ASR 回退路径测试
+    依赖模型就绪才能走到转写 (缺失会 failed「请先下载模型」), ready 以
+    真实文件判定, 无需 mock is_ready. 模型下载/状态/缓存测试按需删文件
+    或注入伪下载引擎驱动状态流转; SUBTITLES_DIR 落在 MODELS_DIR 下
+    (与生产布局一致, 缓存与模型本体目录分离).
+    """
+    models_dir = tmp_path / "models"
+    subtitles_dir = models_dir / "subtitles"
+    model_dir = models_dir / config.MODEL_DIR_NAME
+    model_dir.mkdir(parents=True)
+    (model_dir / "config.yaml").write_text("model: fake\n", encoding="utf-8")
+    (model_dir / "model.pt").write_bytes(b"fake-model-weights")
+    monkeypatch.setattr(config, "MODELS_DIR", models_dir)
+    monkeypatch.setattr(config, "SUBTITLES_DIR", subtitles_dir)
+    return {
+        "models_dir": models_dir,
+        "subtitles_dir": subtitles_dir,
+        "model_dir": model_dir,
+    }
 
 
 @pytest.fixture(autouse=True)

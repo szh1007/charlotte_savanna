@@ -180,7 +180,12 @@ def _load_model():
                 "(首次使用自动下载 SenseVoice 模型约 1GB)"
             ) from e
         try:
-            _model = AutoModel(model=config.ASR_MODEL, device="cpu")
+            # 优先加载项目 models/ 本地模型 (ADR-0006 预下载产物, funasr
+            # AutoModel 支持本地路径), 未下载时回退 modelscope 模型 id
+            # (旧行为: 自动下载到 modelscope 缓存)
+            model_dir = config.MODELS_DIR / config.MODEL_DIR_NAME
+            model_ref = str(model_dir) if model_dir.is_dir() else config.ASR_MODEL
+            _model = AutoModel(model=model_ref, device="cpu")
         except Exception as e:
             raise TranscriptError(f"ASR 模型加载失败: {e}") from e
         return _model

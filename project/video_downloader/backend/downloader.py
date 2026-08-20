@@ -190,9 +190,13 @@ def _download(
         "merge_output_format": "mp4",
         # 文件名: BV号_清晰度_视频流ID_音频流ID (用户反馈). requested_formats.N
         # 为 DASH 分离流 (视频流在前音频流在后) 的格式 id; 单流复合格式 (低清
-        # 自带音频) 无独立音频 id, 渲染为 NA 占位 (缺失键默认值, 可接受)
+        # 自带音频) 无独立音频 id, 渲染为 NA 占位 (缺失键默认值, 可接受).
+        # 头部用 %(id)s 而非 %(bvid)s: yt-dlp 新版 BiliBiliIE 的 info dict 不再
+        # 提供 bvid 字段 (video_id 内部即 bvid), %(bvid)s 缺失渲染 NA 占位
+        # (用户反馈: 文件名 NA_360p_30016_30280.mp4); id 为必填字段, 单视频即
+        # BV 号, 多 P 选集带 _p{N} 后缀避免同名覆盖
         "outtmpl": str(
-            out_dir / "%(bvid)s_%(height)sp_%(requested_formats.0.format_id)s_"
+            out_dir / "%(id)s_%(height)sp_%(requested_formats.0.format_id)s_"
             "%(requested_formats.1.format_id)s.%(ext)s"
         ),
         "quiet": True,

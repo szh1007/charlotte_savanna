@@ -14,6 +14,12 @@ load_dotenv(BASE_DIR / ".env")
 # 交付文件目录 (TTL 清理范围, T02+ 使用)
 DOWNLOADS_DIR = Path(os.getenv("DOWNLOADS_DIR", BASE_DIR / "downloads"))
 
+# 模型下载目录 (ADR-0006): 语音转写模型本体, 持久资产不清理 (env 可覆盖)
+MODELS_DIR = Path(os.getenv("MODELS_DIR", BASE_DIR / "models"))
+
+# 模型字幕缓存目录 (ADR-0006): 转录段 JSON 按 TTL 清理, 与交付 TTL 同源
+SUBTITLES_DIR = Path(os.getenv("SUBTITLES_DIR", MODELS_DIR / "subtitles"))
+
 # 会员密钥: 校验通过解锁会员档能力 (空 = 未配置, 拒绝一切提交)
 MEMBER_KEY = os.getenv("MEMBER_KEY", "")
 
@@ -46,8 +52,11 @@ LLM_MODEL = os.getenv(
     "LLM_MODEL", os.getenv("DEEPSEEK_MODEL_NAME", "deepseek-v4-flash")
 )
 
-# ASR 转写模型 (SenseVoice): 首次使用自动下载 (约 1GB, 落 modelscope 缓存)
+# ASR 转写模型 (SenseVoice): 下载到项目 models/ 目录 (ADR-0006), 模型未下载时
+# 回退 modelscope 模型 id (自动下载缓存, 旧行为)
 ASR_MODEL = os.getenv("ASR_MODEL", "iic/SenseVoiceSmall")
+# 本地模型目录名 (models/SenseVoiceSmall/ 下 config.yaml + model.pt 即 ready)
+MODEL_DIR_NAME = "SenseVoiceSmall"
 
 # ASR 分片长度 (秒): 每片转写后上报一次进度, 长音频避免单次调用内存峰值
 ASR_CHUNK_SECONDS = float(os.getenv("ASR_CHUNK_SECONDS", 600))

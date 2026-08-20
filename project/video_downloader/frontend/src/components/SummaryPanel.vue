@@ -229,9 +229,16 @@ function bvidOf(url) {
   return m ? m[0] : ''
 }
 
+// 源链接: SSE 事件把 url 键让给文件直链, 源链接走 source_url;
+// 列表/本地任务则 url 即源链接 (bugfix: 任务经 SSE 同步后 url 被覆盖,
+// bvidOf 取不到 BV 号, 下载文件名退化回 mindmap_标题)
+function sourceUrl() {
+  return props.task.source_url || props.task.url || ''
+}
+
 // 导出文件名: 有 BV 号 → "BV号.扩展名"; 无 BV → 兜底 "{kind}_{task_id}.{ext}" 原命名
 function fileName(kind, ext) {
-  const b = bvidOf(props.task.url)
+  const b = bvidOf(sourceUrl())
   return b ? `${b}.${ext}` : `${kind}_${props.task.task_id}.${ext}`
 }
 
@@ -242,7 +249,7 @@ function exportPdf() {
   const win = window.open('', '_blank')
   if (!win) return
   const docTitle = String(
-    bvidOf(props.task.url) ||
+    bvidOf(sourceUrl()) ||
       summary.value.title ||
       props.task.title ||
       '未知标题',
@@ -587,7 +594,7 @@ onBeforeUnmount(() => {
               v-if="activeTab === 'mindmap' && chapters.length"
               :title="mindmapTitle"
               :chapters="chapters"
-              :filename="bvidOf(props.task.url)"
+              :filename="bvidOf(sourceUrl())"
             />
             <div v-else-if="loadErrors.mindmap" class="tab-pane__error">
               <ErrorAlert :message="loadErrors.mindmap" />

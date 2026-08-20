@@ -125,7 +125,15 @@ def create_summarize(
             quota.check(x_client_id or "", SUMMARY)
         except QuotaExceededError as e:
             raise HTTPException(status_code=429, detail=str(e)) from e
-    task = manager.create_summary(url, is_member=member is not None)
+    task = manager.create_summary(
+        url,
+        is_member=member is not None,
+        # 字幕来源创建者选择快照 (ADR-0006 决策 1: 全局设置创建时固化,
+        # 转录子任务按此走官方快路径或模型生成)
+        subtitle_source=req.subtitle_source,
+        # 匿名身份透传: 字幕缓存命中时退还配额 (创建时已扣, 命中净消耗 0)
+        client_id=x_client_id,
+    )
     if member is None:
         quota.use(x_client_id or "", SUMMARY)  # 任务创建成功才计数
     return {"task_id": task.id, "status": task.status}

@@ -213,3 +213,49 @@ SSE 事件协议不变（`task-update`）, 新增 `transcribing` / `summarizing`
 | `openai` | DeepSeek LLM 调用（兼容 SDK） | 轻量 |
 | `funasr` | SenseVoice 转写 | 依赖已装的 torch / modelscope; 模型下载约 1GB |
 | `yt-dlp`（已有） | 字幕提取 / 音频流下载 | 引擎层扩展 |
+
+## 10. 字幕来源与模型下载（Phase 3, ADR-0006）
+
+> 需求与验收：`.scratch/video-downloader/issues/13-subtitle-source-model-download.md`；架构决策：ADR-0006。
+
+### 10.1 能力清单
+
+| 能力 | 说明 |
+|------|------|
+| 字幕来源全局设置 | 官方字幕 / 模型生成字幕二选一（localStorage 持久化, 默认官方字幕）, 创建总结任务时作为快照传参 |
+| 模型预下载 | 语音转写模型（约 1GB）可提前下载, 状态机 missing / downloading / ready, 幂等触发 |
+| 模型字幕缓存 | 模型生成的字幕按 BV 号缓存（分 P 加 `_pN` 后缀）, 全局共享命中, 命中不另扣配额 |
+| 自动下载联动 | 选模型生成且模型缺失时转录子任务自动触发下载（进度可见, 任务取消不中断） |
+
+### 10.2 转录双路径
+
+```
+POST /api/summarize {url, subtitle_source: official|model}
+  → 总结任务 → transcribing:
+      官方字幕 (subtitle_source=official, 默认):
+        提取官方字幕 (秒级, 不写缓存)
+        空 ──► 回退模型生成: 仅校验模型存在, 缺失 → 转录 failed
+              提示「请先下载模型」(不自动触发 1GB 下载)
+      模型生成 (subtitle_source=model):
+        查字幕缓存 (全局共享, 命中退还配额) → 未命中:
+          模型缺失 ──► 自动触发下载 (转录进度 0~50 显示「模型下载中 x%」)
+          → 转写 (进度 50~55 音频 / 55~100 转写) → 写缓存
+```
+
+- 进度映射（ADR-0006）: 模型下载 0~50 → 音频下载 50~55 → 转写 55~100
+- 缓存键 = BV 号（创建时轻量解析, 失败跳过缓存不阻塞转录）; TTL 按创建者身份: 免费 24h / 会员 72h, 与交付 TTL 同源
+- 模型是全局持久资产（`models/` 目录, .gitignore）: 不随 TTL 清理, 任务取消不中断下载
+
+### 10.3 新增 API
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/model/status` | 模型状态 `{status: missing\|downloading\|ready, progress, has_official_subtitle}`（ready = config.yaml + model.pt 存在; has_official_subtitle = 服务端是否配置 BILI_COOKIE） |
+| POST | `/api/model/download` | 下载模型（幂等）: 缺失启动后台线程, 下载中返回当前进度, 已就绪不动作 |
+
+SSE 新增 `model-update` 事件: `{status, progress}`, 与任务事件同流广播（`publish_all`, 不受 task_id 过滤）; 前端据此更新模型状态区（下载进度 / 完成 / 失败回 missing）。
+
+### 10.4 前端
+
+- 全局设置条（解析区与任务面板之间）: 字幕来源 radio + 模型状态区（缺失 → 下载按钮; 下载中 → 进度条; 就绪 → 绿标）+ 未配置 Cookie 提示（选官方字幕且 `has_official_subtitle=false` 时提示将自动回退）
+- 字幕来源选择 localStorage 持久化（`vd_subtitle_source`）, 创建任务时随请求携带

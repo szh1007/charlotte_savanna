@@ -103,6 +103,19 @@ class QuotaManager:
             field_name, _, _ = _spec(kind)
             setattr(usage, field_name, getattr(usage, field_name) + 1)
 
+    def refund(self, client_id: str, kind: str) -> None:
+        """退还一次用量 (ADR-0006: 字幕缓存命中不另扣配额).
+
+        创建时先扣 (防滥用占队列), 转录命中缓存后退还 → 净消耗 0;
+        由调用方保证幂等 (task 记录已退还标志), 计数下限 0.
+        """
+        if not client_id:
+            return
+        with self._lock:
+            usage = self._get(client_id)
+            field_name, _, _ = _spec(kind)
+            setattr(usage, field_name, max(0, getattr(usage, field_name) - 1))
+
     @staticmethod
     def _limit(kind: str) -> int:
         """配额上限按类型从 config 读取 (免费 3 总结 / 10 问答, ADR-0005)."""
