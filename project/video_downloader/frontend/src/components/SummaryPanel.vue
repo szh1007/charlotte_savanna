@@ -4,11 +4,12 @@ import { marked } from 'marked'
 import ErrorAlert from './ErrorAlert.vue'
 import MindMapCanvas from './MindMapCanvas.vue'
 import {
-  askQuestion,
+  askQuestionStream,
   exportUrl,
   fetchMindmap,
   fetchSummary,
   fetchTranscript,
+  streamSummary,
 } from '../api/client.js'
 
 // AI 总结内嵌面板 (取代 SummaryDialog 弹窗): 四标签 (总结/转录/思维导图/问答)
@@ -102,6 +103,71 @@ watch(
   { deep: true, immediate: true },
 )
 
+// ---- 总结流式渲染 (ADR-0007/0008): 订阅 /summary/stream 展示 Markdown 文档增量 ----
+// 帧协议: snapshot 首帧累积全文 (重连恢复现场, 覆盖旧文本) → delta 追加 →
+// done 收尾; 断线且子任务仍 running 时指数退避重连 (1s/2s/4s 封顶 10s,
+// snapshot 兜底不丢文本); tab 离开 / 卸载 abort 断开 (fetch 信号取消).
+// 流式期间 marked 实时渲染 (ADR-0008), 完成切换完成态 Markdown 无感.
+const summaryStreamText = ref('')
+const summaryStreamCtrl = ref(null) // 当前流 AbortController
+const summaryRetryTimer = ref(null) // 重连定时器 (关闭/卸载时清除)
+let summaryRetryMs = 0 // 退避基数 (上次延迟), 成功后归零
+
+function closeSummaryStream() {
+  clearTimeout(summaryRetryTimer.value)
+  summaryRetryTimer.value = null
+  summaryStreamCtrl.value?.abort()
+  summaryStreamCtrl.value = null
+  summaryRetryMs = 0
+}
+
+function scheduleSummaryReconnect() {
+  const delay = summaryRetryMs ? Math.min(summaryRetryMs * 2, 10000) : 1000
+  summaryRetryMs = delay
+  summaryRetryTimer.value = setTimeout(openSummaryStream, delay)
+}
+
+function openSummaryStream({ reset = false } = {}) {
+  summaryStreamCtrl.value?.abort() // 关闭上一路流 (重连时旧流已断开, abort 无副作用)
+  if (reset) summaryStreamText.value = '' // 新任务清空, 重连保留旧文本等 snapshot 覆盖
+  const ctrl = new AbortController()
+  summaryStreamCtrl.value = ctrl
+  streamSummary(props.task.task_id, {
+    signal: ctrl.signal,
+    onFrame: (event, data) => {
+      if (event === 'snapshot' || event === 'delta') {
+        summaryStreamText.value += data.text
+      } else if (event === 'done') {
+        // 流自然结束: 关闭标记 (无重连); 竞态兜底 — done 帧到达时若总结
+        // 尚未拉取 (SSE 端点与事件总线竞态), 直接拉取不等 watch 触发
+        summaryStreamCtrl.value = null
+        summaryRetryMs = 0
+        if (!summary.value) loadSummary()
+      }
+    },
+  }).catch(() => {
+    // AbortError (主动关闭) 不重连; 仅子任务仍 running 时退避重连
+    if (ctrl.signal.aborted) return
+    if (subStatus('summary') === 'running' && summaryStreamCtrl.value === ctrl) {
+      scheduleSummaryReconnect()
+    }
+  })
+}
+
+// summary 子任务 running → 开流 (打字机); 离开 running (done/failed/blocked)
+// → 关闭 (done 后由 Markdown 渲染接管); immediate 恢复刷新页面时的进行中任务
+watch(
+  () => subStatus('summary'),
+  (s) => {
+    if (s === 'running') {
+      openSummaryStream({ reset: true })
+    } else {
+      closeSummaryStream()
+    }
+  },
+  { immediate: true },
+)
+
 // ---- 重试: failed/blocked 子任务单独重跑 (父组件调后端, 不扣配额) ----
 function retry(name) {
   emit('retry', name)
@@ -144,20 +210,45 @@ function buildMarkdown(s) {
 const mdHtml = computed(() =>
   summary.value ? marked.parse(buildMarkdown(summary.value)) : '',
 )
+// 流式期间 Markdown 实时渲染 (ADR-0008): 打字机效果, 完成切换 mdHtml 无感
+const streamMdHtml = computed(() =>
+  summaryStreamText.value ? marked.parse(summaryStreamText.value) : '',
+)
+// 问答消息 Markdown 渲染 (ADR-0008): assistant 回答实时渲染, user 消息走插值
+function renderMarkdown(text) {
+  return text ? marked.parse(text) : ''
+}
 
 // 转录 tab: 本 tab 内滑动查看 (用户反馈: 复制全文/展开全文按钮已移除,
 // 转录文本直接完整展示, 容器内滚动)
 // 总结 tab: 全文直接展示 (用户反馈: 收起按钮已移除)
 
+// 从 B 站链接提取 BV 号 (下载文件默认命名, 用户反馈); 短链/av 号无 BV 返回 ''
+function bvidOf(url) {
+  const m = (url || '').match(/BV[0-9A-Za-z]{10}/)
+  return m ? m[0] : ''
+}
+
+// 导出文件名: 有 BV 号 → "BV号.扩展名"; 无 BV → 兜底 "{kind}_{task_id}.{ext}" 原命名
+function fileName(kind, ext) {
+  const b = bvidOf(props.task.url)
+  return b ? `${b}.${ext}` : `${kind}_${props.task.task_id}.${ext}`
+}
+
 // ---- PDF 导出: 新窗口渲染 Markdown 后打印 (与 MindMapCanvas.exportPdf 同模式) ----
+// 窗口标题默认用 BV 号 (浏览器「另存为 PDF」默认文件名取自 title, 用户反馈)
 function exportPdf() {
   if (!summary.value) return
   const win = window.open('', '_blank')
   if (!win) return
+  const docTitle = String(
+    bvidOf(props.task.url) ||
+      summary.value.title ||
+      props.task.title ||
+      '未知标题',
+  ).replace(/[<>&"]/g, '')
   win.document.write(
-    `<html><head><meta charset="utf-8"><title>视频总结: ${String(
-      summary.value.title || props.task.title || '未知标题',
-    ).replace(/[<>&"]/g, '')}</title><style>` +
+    `<html><head><meta charset="utf-8"><title>${docTitle}</title><style>` +
       `body{font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;` +
       `line-height:1.8;max-width:720px;margin:0 auto;padding:24px;color:#1f2329}` +
       `h1{font-size:22px}h2{color:#fb7299;font-size:18px;margin-top:24px}` +
@@ -176,6 +267,7 @@ const question = ref('')
 const asking = ref(false)
 const qaError = ref('')
 const qaBox = ref(null)
+const qaAbort = ref(null) // 当前回答流 AbortController (卸载时 abort)
 
 async function sendQuestion() {
   const q = question.value.trim()
@@ -184,21 +276,42 @@ async function sendQuestion() {
   question.value = ''
   asking.value = true
   qaError.value = ''
+  const ctrl = new AbortController()
+  qaAbort.value = ctrl
+  // 空文本占位消息: 流式增量 (delta 帧) 直接追加, 替代「思考中」spinner (ADR-0007).
+  // 流式期间 marked 实时渲染 (ADR-0008); 必须用 reactive 包装: 普通对象
+  // push 进 ref 数组后, 原变量改属性不触发响应
+  const placeholder = reactive({ role: 'assistant', text: '' })
+  messages.value.push(placeholder)
   try {
-    const { answer } = await askQuestion(props.task.task_id, q)
-    messages.value.push({ role: 'assistant', text: answer })
+    await askQuestionStream(props.task.task_id, q, {
+      signal: ctrl.signal,
+      onFrame: (event, data) => {
+        if (event === 'delta') {
+          placeholder.text += data.text
+        } else if (event === 'error') {
+          throw new Error(data.message || '回答失败, 请重试')
+        }
+      },
+    })
   } catch (e) {
-    // 429 (每日问答配额用尽) 等: 保留问题, 提示重试或明日再问
-    qaError.value = e.message || '提问失败, 请稍后重试'
+    // 主动取消 (tab 切换/卸载) 静默; 否则 429 / LLM 失败: 移除空气泡,
+    // 保留问题 (输入框未被清空前的重试入口), 提示稍后重试
+    if (!ctrl.signal.aborted) {
+      messages.value = messages.value.filter((m) => m !== placeholder)
+      qaError.value = e.message || '提问失败, 请稍后重试'
+    }
   } finally {
     asking.value = false
+    qaAbort.value = null
     nextTick(() => {
       qaBox.value?.scrollTo({ top: qaBox.value.scrollHeight, behavior: 'smooth' })
     })
   }
 }
 
-// 导图数据源: mindmap 接口独立返回 {title, chapters} (与总结 chapters 同构)
+// 导图数据源: mindmap 接口返回 {title, chapters} (LLM 基于总结生成, 结构与
+// 总结 chapters 同构; DAG 上 mindmap 依赖 summary, 总结完成才解锁)
 const chapters = computed(() => mindmap.value?.mindmap?.chapters || [])
 const mindmapTitle = computed(() => mindmap.value?.title || props.task.title || '视频')
 
@@ -223,7 +336,11 @@ function onFsChange() {
 }
 
 onMounted(() => document.addEventListener('fullscreenchange', onFsChange))
-onBeforeUnmount(() => document.removeEventListener('fullscreenchange', onFsChange))
+onBeforeUnmount(() => {
+  document.removeEventListener('fullscreenchange', onFsChange)
+  closeSummaryStream() // 断开总结流 + 清重连定时器
+  qaAbort.value?.abort() // 中断进行中的回答流
+})
 </script>
 
 <template>
@@ -330,7 +447,7 @@ onBeforeUnmount(() => document.removeEventListener('fullscreenchange', onFsChang
                     :key="f"
                     class="tool-btn"
                     :href="exportUrl(props.task.task_id, f)"
-                    :download="`transcript_${props.task.task_id}.${f}`"
+                    :download="fileName('transcript', f)"
                   >
                     ⬇ {{ f.toUpperCase() }}
                   </a>
@@ -364,6 +481,8 @@ onBeforeUnmount(() => document.removeEventListener('fullscreenchange', onFsChang
           <div v-if="subStatus('summary') === 'running'" class="tab-pane__progress">
             <div class="bar bar--indeterminate"><span class="bar__fill"></span></div>
             <p>总结生成中......</p>
+            <!-- 流式渲染 (ADR-0008): Markdown 文档增量 marked 实时渲染, 完成切换 Markdown -->
+            <div class="md summary__stream" v-html="streamMdHtml"></div>
           </div>
           <div v-else-if="subStatus('summary') === 'pending'" class="tab-pane__wait">
             等待转录完成…
@@ -403,7 +522,7 @@ onBeforeUnmount(() => document.removeEventListener('fullscreenchange', onFsChang
                   <a
                     class="tool-btn"
                     :href="exportUrl(props.task.task_id, 'md')"
-                    :download="`summary_${props.task.task_id}.md`"
+                    :download="fileName('summary', 'md')"
                   >
                     ⬇ MD
                   </a>
@@ -432,14 +551,14 @@ onBeforeUnmount(() => document.removeEventListener('fullscreenchange', onFsChang
           </template>
         </section>
 
-        <!-- 思维导图 (独立 LLM 生成, Canvas: 缩放/平移/全屏/导出 PDF/PNG/SVG) -->
+        <!-- 思维导图 (基于总结生成, Canvas: 缩放/平移/全屏/导出 PDF/PNG/SVG) -->
         <section v-show="activeTab === 'mindmap'" class="tab-pane">
           <div v-if="subStatus('mindmap') === 'running'" class="tab-pane__progress">
             <div class="bar bar--indeterminate"><span class="bar__fill"></span></div>
             <p>思维导图生成中......</p>
           </div>
           <div v-else-if="subStatus('mindmap') === 'pending'" class="tab-pane__wait">
-            等待转录完成…
+            等待总结完成…
           </div>
           <div v-else-if="subStatus('mindmap') === 'blocked'" class="tab-pane__error">
             <ErrorAlert :message="subError('mindmap') || '依赖子任务失败, 等待重试'" />
@@ -468,6 +587,7 @@ onBeforeUnmount(() => document.removeEventListener('fullscreenchange', onFsChang
               v-if="activeTab === 'mindmap' && chapters.length"
               :title="mindmapTitle"
               :chapters="chapters"
+              :filename="bvidOf(props.task.url)"
             />
             <div v-else-if="loadErrors.mindmap" class="tab-pane__error">
               <ErrorAlert :message="loadErrors.mindmap" />
@@ -498,13 +618,15 @@ onBeforeUnmount(() => document.removeEventListener('fullscreenchange', onFsChang
                   msg.role === 'user' ? 'qa__msg--user' : 'qa__msg--assistant'
                 "
               >
-                {{ msg.text }}
+                <template v-if="msg.role === 'user'">{{ msg.text }}</template>
+                <!-- 回答流式期间实时渲染 Markdown (ADR-0008) -->
+                <div
+                  v-else
+                  class="qa__msg-markdown"
+                  v-html="renderMarkdown(msg.text)"
+                ></div>
               </div>
-              <div v-if="asking" class="qa__msg qa__msg--assistant">
-                <span class="summary__spinner summary__spinner--small" aria-hidden="true"></span>
-                思考中…
-              </div>
-              <p v-if="messages.length === 0 && !asking" class="qa__empty">
+              <p v-if="messages.length === 0" class="qa__empty">
                 还没有提问, 试试问「核心知识点有哪些?」
               </p>
             </div>
@@ -698,12 +820,16 @@ onBeforeUnmount(() => document.removeEventListener('fullscreenchange', onFsChang
 }
 
 /* 各 tab 内加载提示: 显示在内容区顶部 (用户反馈: 提示词放该 tab 区域
-   最上面, 不垂直居中; 每个提示词留在属于自己的 tab 页) */
+   最上面, 不垂直居中; 每个提示词留在属于自己的 tab 页).
+   flex:1 + min-height:0: 定高 .tab-pane 内占满剩余, 流式文本容器
+   (.summary__stream) 才有高度上限可内部滚动, 不撑出 tab 区域 (ADR-0007) */
 .tab-pane__progress {
   display: flex;
   flex-direction: column;
   gap: 10px;
   padding: 16px 0 8px;
+  flex: 1;
+  min-height: 0;
 }
 
 .tab-pane__progress p {
@@ -758,26 +884,31 @@ onBeforeUnmount(() => document.removeEventListener('fullscreenchange', onFsChang
   line-height: 1.8;
 }
 
-.md :deep(h1) {
+/* 元素排版: 总结 (md) 与问答回答 (qa__msg-markdown) 共用一套 */
+.md :deep(h1),
+.qa__msg-markdown :deep(h1) {
   font-size: 17px;
   font-weight: 700;
   margin-bottom: 8px;
 }
 
-.md :deep(h2) {
+.md :deep(h2),
+.qa__msg-markdown :deep(h2) {
   font-size: 15px;
   font-weight: 700;
   margin: 14px 0 6px;
   color: var(--primary);
 }
 
-.md :deep(h3) {
+.md :deep(h3),
+.qa__msg-markdown :deep(h3) {
   font-size: 13px;
   font-weight: 700;
   margin: 10px 0 4px;
 }
 
-.md :deep(blockquote) {
+.md :deep(blockquote),
+.qa__msg-markdown :deep(blockquote) {
   margin: 6px 0;
   padding: 4px 10px;
   border-left: 3px solid var(--blue);
@@ -785,21 +916,25 @@ onBeforeUnmount(() => document.removeEventListener('fullscreenchange', onFsChang
   font-size: 12px;
 }
 
-.md :deep(ul) {
+.md :deep(ul),
+.qa__msg-markdown :deep(ul) {
   margin: 4px 0;
   padding-left: 18px;
   list-style: disc;
 }
 
-.md :deep(li) {
+.md :deep(li),
+.qa__msg-markdown :deep(li) {
   margin: 2px 0;
 }
 
-.md :deep(strong) {
+.md :deep(strong),
+.qa__msg-markdown :deep(strong) {
   font-weight: 700;
 }
 
-.md :deep(p) {
+.md :deep(p),
+.qa__msg-markdown :deep(p) {
   margin: 6px 0;
 }
 
@@ -845,34 +980,16 @@ onBeforeUnmount(() => document.removeEventListener('fullscreenchange', onFsChang
   white-space: pre-wrap;
 }
 
+/* 总结流式渲染 (ADR-0008): 复用 .md 完成态样式, 仅微调进度条下方间距 */
+.summary__stream {
+  margin-top: 4px;
+}
+
 /* 全屏: 操作条 + 内容区整体铺满 (参照思维导图全屏, Esc / 按钮退出) */
 .tab-pane:fullscreen {
   height: 100vh;
   padding: 20px;
   background: #fff;
-}
-
-/* 加载中 (拉取中的小提示) */
-.summary__spinner {
-  width: 16px;
-  height: 16px;
-  border: 2px solid rgba(31, 35, 41, 0.3);
-  border-top-color: #1f2329;
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-}
-
-.summary__spinner--small {
-  width: 12px;
-  height: 12px;
-  display: inline-block;
-  vertical-align: -2px;
-}
-
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
 }
 
 /* 已过期 */
@@ -919,6 +1036,7 @@ onBeforeUnmount(() => document.removeEventListener('fullscreenchange', onFsChang
   align-self: flex-start;
   color: var(--text-main);
   background: rgba(31, 35, 41, 0.06);
+  white-space: normal; /* Markdown 渲染接管排版, 关闭基类 pre-wrap (防空行) */
 }
 
 .qa__empty {

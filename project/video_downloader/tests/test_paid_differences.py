@@ -106,6 +106,8 @@ def test_member_resolve_unlocks_all_formats(client: TestClient, fake_extract) ->
     body = resp.json()
     assert all(not f["locked"] for f in body["formats"])
     assert body["member_limited"] is False
+    # 会员不展示「最佳画质」伪档 (与真实最高档重复, 用户反馈): 仅真实档位
+    assert "best" not in [f["format_id"] for f in body["formats"]]
 
 
 # ---- 锁定档位选择被拒 (强制校验点 2) ----

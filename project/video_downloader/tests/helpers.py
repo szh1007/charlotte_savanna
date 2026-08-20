@@ -1,5 +1,6 @@
 """测试共享工具函数 (fixtures 见 conftest.py)."""
 
+import json
 import threading
 import time
 from collections.abc import Callable
@@ -7,6 +8,25 @@ from collections.abc import Callable
 from backend import task_manager as tm
 from conftest import MEMBER_KEY
 from fastapi.testclient import TestClient
+
+
+def parse_sse_frames(text: str) -> list[tuple[str, dict]]:
+    """SSE 响应文本 → [(event, data_dict)] 帧列表 (流式接口断言用).
+
+    仅收集带 data 的帧; 无 event 行时按 SSE 默认事件名 message.
+    """
+    frames = []
+    for frame in text.split("\n\n"):
+        event = "message"
+        data = None
+        for line in frame.split("\n"):
+            if line.startswith("event: "):
+                event = line[len("event: ") :].strip()
+            elif line.startswith("data: "):
+                data = json.loads(line[len("data: ") :])
+        if data is not None:
+            frames.append((event, data))
+    return frames
 
 
 def wait_until(cond: Callable[[], bool], timeout: float = 2.0) -> bool:

@@ -155,7 +155,7 @@ project/video_downloader/
 
 | 能力 | 说明 |
 |------|------|
-| 视频总结 | LLM 生成结构化总结：章节时间线 + 要点大纲（JSON） |
+| 视频总结 | LLM 生成 Markdown 总结文档，后端解析回结构化数据（章节时间线 + 要点, ADR-0008） |
 | 转录全文 | 带时间戳的视频文字内容（Transcript）, 可查看 / 复制 / 导出 |
 | 思维导图 | 从总结结构化数据渲染的树形图（前端手写 CSS, 零 UI 库） |
 | AI 问答 | 针对视频内容对话（上下文 = 转录 + 总结, 单次塞入, 不建向量库） |
@@ -169,8 +169,9 @@ POST /api/summarize {url}
       字幕快路径 (秒级): BILI_COOKIE 配置且有效 → 提取官方字幕
         未配置 / 无字幕 / 失败 ──► 兜底: 下载音频流 → SenseVoice 转写
         (1h 视频 CPU 约 5~15 分钟, SSE 进度可见)
-  → summarizing: DeepSeek (openai SDK) 生成结构化总结
-  → completed: {transcript, summary_json, mindmap 数据} 随任务保存
+  → summarizing: DeepSeek (openai SDK) 流式生成 Markdown 总结文档 (ADR-0008)
+     流式期间前端 marked 实时渲染, 流结束 parse_summary_text 解析回结构化 dict
+  → completed: {transcript, summary_dict, mindmap 数据} 随任务保存
 ```
 
 - **不收集用户凭据**：`BILI_COOKIE` 为服务端自备（.env, 不提交）, 留空则跳过字幕直走 ASR
@@ -182,9 +183,10 @@ POST /api/summarize {url}
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | POST | `/api/summarize` | 创建总结任务 `{url}` → `{task_id}`; 免费超每日配额 429 |
-| GET | `/api/tasks/{id}/summary` | 结构化总结（章节时间线 + 要点, JSON） |
+| GET | `/api/tasks/{id}/summary` | 结构化总结（Markdown 解析回章节时间线 + 要点, ADR-0008） |
+| GET | `/api/tasks/{id}/summary/stream` | 总结生成过程流式输出（SSE, ADR-0007/0008）: Markdown 文档增量, `snapshot` 首帧累积全文 → `delta` 增量 → `done`/`error`, 空闲 15s `heartbeat` |
 | GET | `/api/tasks/{id}/transcript` | 带时间戳转录文本 |
-| POST | `/api/tasks/{id}/qa` | AI 问答 `{question}` → `{answer}`; 免费超每日配额 429 |
+| POST | `/api/tasks/{id}/qa` | AI 问答流式回答（SSE, ADR-0007）: `{question}` → `delta` 增量 → `done`/`error` 收尾; 免费超每日配额 429（流开始前以 HTTP 状态返回） |
 | GET | `/api/tasks/{id}/export` | 导出总结 / 转录为 Markdown / TXT |
 
 ### 9.4 状态机扩展

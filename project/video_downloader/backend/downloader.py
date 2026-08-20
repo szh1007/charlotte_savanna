@@ -188,7 +188,13 @@ def _download(
     opts: dict[str, Any] = {
         "format": _format_spec(format_id, merge_audio),
         "merge_output_format": "mp4",
-        "outtmpl": str(out_dir / "%(id)s_%(format_id)s.%(ext)s"),
+        # 文件名: BV号_清晰度_视频流ID_音频流ID (用户反馈). requested_formats.N
+        # 为 DASH 分离流 (视频流在前音频流在后) 的格式 id; 单流复合格式 (低清
+        # 自带音频) 无独立音频 id, 渲染为 NA 占位 (缺失键默认值, 可接受)
+        "outtmpl": str(
+            out_dir / "%(bvid)s_%(height)sp_%(requested_formats.0.format_id)s_"
+            "%(requested_formats.1.format_id)s.%(ext)s"
+        ),
         "quiet": True,
         "no_warnings": True,
     }

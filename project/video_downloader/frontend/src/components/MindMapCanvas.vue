@@ -1,5 +1,5 @@
 <script setup>
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Transformer } from 'markmap-lib'
 import { Markmap } from 'markmap-view'
 import { zoomTransform } from 'd3'
@@ -15,6 +15,16 @@ const props = defineProps({
   title: { type: String, default: '' },
   // 章节: [{start, end, title, points: [string]}]
   chapters: { type: Array, default: () => [] },
+  // 导出文件基名 (用户反馈: 下载文件默认用 BV 号); 为空时回退标题派生
+  filename: { type: String, default: '' },
+})
+
+// 导出文件名基名: 有 BV 号直接用 (用户反馈); 否则保留原命名
+// mindmap_{标题清洗} (非法字符替换 + 截断 40 字)
+const fileBase = computed(() => {
+  if (props.filename) return props.filename
+  const safe = String(props.title || 'video').replace(/[\\/:*?"<>|]/g, '_').slice(0, 40)
+  return `mindmap_${safe}`
 })
 
 // 导出画布四周留白 (px, 布局 rect 外扩)
@@ -126,8 +136,7 @@ function exportSvg() {
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
-  const safe = String(props.title || 'video').replace(/[\\/:*?"<>|]/g, '_').slice(0, 40)
-  a.download = `mindmap_${safe}.svg`
+  a.download = `${fileBase.value}.svg`
   document.body.appendChild(a)
   a.click()
   a.remove()
@@ -137,11 +146,16 @@ function exportSvg() {
 // SVG → PNG Blob (foreignObject 由浏览器原生渲染, 白底合成).
 // bugfix: 不用 toDataURL 下载 — 大图 data URL 超出浏览器下载上限 (Chrome ~2MB)
 // 会静默失败; toBlob 直接产出二进制无此限制
+// bugfix: data URL 而非 blob URL 加载 SVG — Chrome/Edge 对含 foreignObject 的
+// blob URL SVG 绘制到 canvas 会标记 tainted (Blink 历史行为), toBlob 抛
+// SecurityError; data URL 视为同源, 各浏览器一致不 taint
 function svgToPngBlob() {
   return new Promise((resolve, reject) => {
     const { svg, width: w, height: h } = buildExportSvg()
     const img = new Image()
-    const url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }))
+    // 导出仅加载一次, 无需对象 URL 生命周期管理; encodeURIComponent 转义
+    // #/&/引号等, 避免 data URL 解析歧义
+    const url = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg)
     img.onload = () => {
       const canvas = document.createElement('canvas')
       canvas.width = w
@@ -150,14 +164,12 @@ function svgToPngBlob() {
       ctx.fillStyle = '#ffffff'
       ctx.fillRect(0, 0, w, h) // 防边缘锯齿露白 (SVG 已含白底 rect, 双保险)
       ctx.drawImage(img, 0, 0, w, h)
-      URL.revokeObjectURL(url)
       canvas.toBlob(
         (blob) => (blob ? resolve(blob) : reject(new Error('PNG 编码失败'))),
         'image/png',
       )
     }
     img.onerror = () => {
-      URL.revokeObjectURL(url)
       reject(new Error('思维导图 PNG 渲染失败'))
     }
     img.src = url
@@ -170,8 +182,7 @@ async function exportPng() {
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    const safe = String(props.title || 'video').replace(/[\\/:*?"<>|]/g, '_').slice(0, 40)
-    a.download = `mindmap_${safe}.png`
+    a.download = `${fileBase.value}.png`
     // bugfix: 未挂载的 <a>.click() 在 Firefox 不触发下载, 先挂载再移除
     document.body.appendChild(a)
     a.click()
@@ -190,8 +201,10 @@ async function exportPdf() {
     // (点击事件链内 window.open, 避免浏览器弹窗拦截)
     const win = window.open('', '_blank')
     if (!win) return
+    // 窗口标题 = 文件基名 (浏览器「另存为 PDF」默认文件名取自 title); BV 号
+    // 仅含字母数字, 其余标题字符转义防 HTML 注入
     win.document.write(
-      `<html><head><title>思维导图: ${String(props.title || '视频').replace(/[<>&"]/g, '')}</title></head>` +
+      `<html><head><title>${String(fileBase.value).replace(/[<>&"]/g, '')}</title></head>` +
         `<body style="margin:0;display:flex;justify-content:center">` +
         `<img src="${url}" style="max-width:100%;height:auto"/>` +
         `<script>window.onload=()=>window.print()<\/script></body></html>`,
@@ -268,9 +281,9 @@ onBeforeUnmount(() => {
       <button class="tool-btn" type="button" @click="toggleFullscreen">
         {{ isFullscreen ? '退出全屏' : '⛶ 全屏' }}
       </button>
-      <button class="tool-btn" type="button" @click="exportPdf">⬇ 导出 PDF</button>
       <button class="tool-btn" type="button" @click="exportPng">⬇ PNG</button>
       <button class="tool-btn" type="button" @click="exportSvg">⬇ SVG</button>
+      <button class="tool-btn" type="button" @click="exportPdf">⬇ PDF</button>
     </div>
     <p v-if="errMsg" class="mindmap-error">{{ errMsg }}</p>
     <!-- markmap 渲染容器: 定宽定高 (SDK 内部处理缩放/平移/折叠) -->

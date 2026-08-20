@@ -31,7 +31,7 @@ STATUS_DOWNLOADING = "downloading"
 STATUS_COMPLETED = "completed"
 STATUS_FAILED = "failed"
 STATUS_EXPIRED = "expired"
-# 总结任务运行态 (ADR-0005): 四子任务 (转录/总结/导图/问答) 并行推进,
+# 总结任务运行态 (ADR-0005): 四子任务按依赖链推进 (转录→总结→导图/问答),
 # 任务级仅标记「运行中」, 各子任务进度独立 (见 Subtask)
 STATUS_RUNNING = "running"
 
@@ -53,12 +53,13 @@ ST_DONE = "done"  # 成功
 ST_FAILED = "failed"  # 自身失败 (可重试)
 ST_BLOCKED = "blocked"  # 依赖子任务失败, 依赖恢复后自动重跑
 
-# 子任务 DAG 依赖: transcript 无依赖; summary/mindmap 依赖转录;
-# qa 依赖转录 + 总结 (上下文就绪后解锁交互问答)
+# 子任务 DAG 依赖 (用户反馈: 导图用总结后的数据, 不再直接用字幕):
+# transcript 无依赖; summary 依赖转录 (字幕 → 总结); mindmap 依赖总结
+# (总结 → 导图); qa 依赖转录 + 总结, 总结完成后即解锁 (无需等导图)
 SUBTASK_DEPS: dict[str, frozenset[str]] = {
     SUBTASK_TRANSCRIPT: frozenset(),
     SUBTASK_SUMMARY: frozenset({SUBTASK_TRANSCRIPT}),
-    SUBTASK_MINDMAP: frozenset({SUBTASK_TRANSCRIPT}),
+    SUBTASK_MINDMAP: frozenset({SUBTASK_SUMMARY}),
     SUBTASK_QA: frozenset({SUBTASK_TRANSCRIPT, SUBTASK_SUMMARY}),
 }
 
@@ -109,6 +110,9 @@ class Task:
     site: str | None = None
     formats: list[dict[str, Any]] = field(default_factory=list)
     format_id: str | None = None
+    # 「最佳画质」伪档 (format_id="best") 映射的真实最高档 id, 创建时固化
+    # (会员任务展示列表已裁剪该伪档, worker 无法从 formats 回溯, 见 _visible_formats)
+    real_format_id: str | None = None
     merge_audio: bool = False  # 档位为 DASH 分离流 (video-only): 下载时合并音频流
     progress: float = 0.0
     message: str | None = None
@@ -122,10 +126,13 @@ class Task:
     view_count: int | None = None
     description: str | None = None
     # 总结任务结果 (ADR-0005): transcript = [{start, end, text}],
-    # summary = 结构化总结 JSON, mindmap = 导图结构 JSON (独立 LLM 生成)
+    # summary = 结构化总结 JSON, mindmap = 由总结生成的导图结构 JSON
     transcript: list[dict[str, Any]] | None = None
     summary: dict[str, Any] | None = None
     mindmap: dict[str, Any] | None = None
+    # 总结流式缓冲 (ADR-0007): worker 锁内 append 增量 chunk, SSE 端点锁内
+    # 快照轮询 (summary_stream_snapshot); 重试/重跑前清空
+    summary_stream: list[str] = field(default_factory=list)
     # 四子任务状态 (kind=summary; 下载任务为空 dict), 事件负载逐 tab 推送
     subtasks: dict[str, Subtask] = field(default_factory=dict)
     # 四标签独立进度 (旁路字段, 兼容旧契约): subtasks 状态的平铺镜像,
@@ -236,6 +243,26 @@ class TaskManager:
         with self._lock:
             return self._tasks.get(task_id)
 
+    def summary_stream_snapshot(
+        self,
+        task_id: int,
+    ) -> tuple[str, str | None, list[str]] | None:
+        """总结流快照: (子任务状态, 错误, 缓冲 chunk 副本); 任务不存在返回 None.
+
+        SSE 端点每轮轮询调用: 状态推进与文本 append 同锁, 快照为同一时刻
+        一致视图; 返回副本避免端点持有期间被 worker 改写 (ADR-0007).
+        """
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None:
+                return None
+            sub = task.subtasks.get(SUBTASK_SUMMARY)
+            return (
+                sub.status if sub is not None else ST_PENDING,
+                sub.error,
+                list(task.summary_stream),
+            )
+
     def list_tasks(self, limit: int = 50) -> list[Task]:
         with self._lock:
             tasks = sorted(self._tasks.values(), key=lambda t: t.id, reverse=True)
@@ -289,7 +316,7 @@ class TaskManager:
             self.update_status(task.id, STATUS_FAILED, error=str(e))
             raise
         formats = []
-        for f in info.get("formats", []):
+        for f in self._visible_formats(info.get("formats", []), task.is_member):
             fmt = dict(f)  # 复制, 避免影响引擎返回的原始数据
             fmt["locked"] = self._is_locked(fmt, task.is_member)
             formats.append(fmt)
@@ -328,6 +355,9 @@ class TaskManager:
             raise ValueError("该档位需会员解锁")
         # DASH 分离流档位 (video-only, has_audio=False): 下载时合并音频流 (bugfix/0003)
         merge_audio = not fmt.get("has_audio", True)
+        # 「最佳画质」伪档: 真实档位 id 固化到任务 (会员任务展示列表已裁剪
+        # 该伪档, worker 无法从 formats 回溯, 见 _visible_formats)
+        real_format_id = fmt.get("real_format_id") if format_id == "best" else None
         limit = self._queue_limit(is_member)
         # 按创建者身份计数, 排除当前任务自身 (检查时已处于 resolved 状态, 不应计入)
         if self._queue_size(is_member, exclude_id=task.id) >= limit:
@@ -335,7 +365,11 @@ class TaskManager:
             self.update_status(task.id, STATUS_FAILED, error=msg)
             raise QueueLimitError(msg)
         self.update_status(
-            task.id, STATUS_QUEUED, format_id=format_id, merge_audio=merge_audio
+            task.id,
+            STATUS_QUEUED,
+            format_id=format_id,
+            merge_audio=merge_audio,
+            real_format_id=real_format_id,
         )
         self.ensure_scheduler()
         return self.get_task(task.id)
@@ -355,7 +389,7 @@ class TaskManager:
             # 反馈); 锁定标记与下载任务同规则 (免费 >720p locked, 同 _fill_resolved)
             formats = [
                 {**f, "locked": self._is_locked(f, task.is_member)}
-                for f in info.get("formats", [])
+                for f in self._visible_formats(info.get("formats", []), task.is_member)
             ]
             self.update_status(
                 task.id,
@@ -418,6 +452,17 @@ class TaskManager:
             bus.publish(task.id, task_event(task))
         self.ensure_scheduler()
         return self.get_task(task_id)
+
+    @staticmethod
+    def _visible_formats(
+        formats: list[dict[str, Any]], is_member: bool
+    ) -> list[dict[str, Any]]:
+        """档位列表按身份裁剪: 会员不展示「最佳画质」伪档 (与真实最高档重复,
+        用户反馈), 免费档保留 (锁定引导); 裁剪仅影响展示列表, 下载校验与
+        real_format_id 映射仍走引擎全量 (downloader._to_formats 不动)."""
+        if not is_member:
+            return formats
+        return [f for f in formats if f.get("format_id") != "best"]
 
     @staticmethod
     def _is_locked(fmt: dict[str, Any], is_member: bool) -> bool:
@@ -531,12 +576,9 @@ class TaskManager:
             self._validate_download_access(task)
             # 「最佳画质」档 (format_id="best") 是记录用独立 id, 实际下载用
             # real_format_id (真实最高档 id): 字面 "best" 是 yt-dlp 表达式,
-            # B 站全 DASH 分离流下匹配为空 (bugfix/0003)
-            format_id = task.format_id
-            if format_id == "best":
-                fmt = next((f for f in task.formats if f["format_id"] == "best"), None)
-                if fmt:
-                    format_id = fmt.get("real_format_id") or format_id
+            # B 站全 DASH 分离流下匹配为空 (bugfix/0003); 真实 id 在任务创建时
+            # 固化 (会员任务 formats 已裁剪最佳画质伪档, 见 _visible_formats)
+            format_id = task.real_format_id or task.format_id
             path = downloader.download(
                 task.url,
                 format_id,
@@ -571,11 +613,11 @@ class TaskManager:
         """四子任务 DAG 执行 (独立线程, 完成后释放并发槽, ADR-0005).
 
         每轮扫描「可运行」子任务 (pending/blocked 且依赖全部 done), 并行启动
-        线程执行, 等待期间轮询扫描新解锁子任务并立即启动 (qa 仅依赖转录+
-        总结, 总结完成后无需等 mindmap 结束即解锁问答), 直至无可运行 →
-        汇总终态. 转录先完成即可先行查看; 单子任务失败只标自身 failed,
-        依赖它的子任务标 blocked, 重试后自动解锁. 任务清除记录 (取消) 时
-        收尾更新由 update_subtask 防御跳过, 槽位始终按派发时的身份释放.
+        线程执行, 等待期间轮询扫描新解锁子任务并立即启动 (mindmap/qa 仅
+        依赖总结, 总结完成后无需互相等待即各自解锁), 直至无可运行 → 汇总
+        终态. 转录先完成即可先行查看; 单子任务失败只标自身 failed, 依赖它
+        的子任务标 blocked, 重试后自动解锁. 任务清除记录 (取消) 时收尾更新
+        由 update_subtask 防御跳过, 槽位始终按派发时的身份释放.
         """
         try:
             while True:
@@ -619,8 +661,9 @@ class TaskManager:
     def _runnable_subtasks(self, task_id: int) -> list[str]:
         """锁内判定本轮可运行子任务: pending/blocked 且依赖全部 done.
 
-        依赖存在 failed 而自身 pending 时标 blocked (等重试恢复, 不重复
-        执行). 返回空列表表示 DAG 已无进展 (终态判定).
+        依赖 failed 或 blocked (含传递依赖, 如 mindmap→summary→transcript)
+        而自身 pending 时标 blocked (等重试恢复, 不重复执行). 返回空列表
+        表示 DAG 已无进展 (终态判定).
         """
         with self._lock:
             task = self._tasks.get(task_id)
@@ -635,9 +678,11 @@ class TaskManager:
                 if all(task.subtasks[d].status == ST_DONE for d in deps):
                     runnable.append(name)
                 elif (
-                    any(task.subtasks[d].status == ST_FAILED for d in deps)
+                    any(
+                        task.subtasks[d].status in (ST_FAILED, ST_BLOCKED) for d in deps
+                    )
                     and sub.status == ST_PENDING
-                ):  # 依赖已失败: 标阻塞等重试
+                ):  # 依赖失败/阻塞: 标阻塞等重试, 依赖恢复后自动解锁
                     sub.status = ST_BLOCKED
                     sub.message = "依赖子任务失败, 等待重试"
             return runnable
@@ -700,18 +745,34 @@ class TaskManager:
     def _run_llm_subtask(self, task: Task, name: str) -> None:
         """LLM 生成子任务: summary 结构化总结 / mindmap 导图结构 (独立调用).
 
-        置 progress=30 仅作「生成中」标记 (LLM 无回调, 前端渲染不确定条),
+        summary 输入 = 转录文本: 流式收集, 增量实时写入 task.summary_stream
+        (SSE 端点锁内快照轮询, ADR-0007), 流结束后统一解析结构化结果;
+        mindmap 输入 = 结构化总结 (DAG 保证总结先完成, 用户反馈: 导图用
+        总结后的数据). 置 progress=30 仅作「生成中」标记 (前端渲染不确定条),
         与旧 summary_progress 语义一致; 结果分别存 task.summary / task.mindmap.
         """
         self.update_subtask(
             task.id, name, ST_RUNNING, progress=30.0, message="正在生成"
         )
-        text = segments_to_text(task.transcript or [])
         meta = {"title": task.title, "duration": task.duration, "site": task.site}
         if name == SUBTASK_SUMMARY:
-            result = llm.summarize(text, meta)
+            # 重试/重跑前清空旧流缓冲 (防新旧文本拼接, ADR-0007)
+            with self._lock:
+                if task.id in self._tasks:
+                    task.summary_stream.clear()
+            chunks: list[str] = []
+            for delta in llm.summarize_stream(
+                segments_to_text(task.transcript or []), meta
+            ):
+                chunks.append(delta)
+                # 增量实时可见: worker append 与端点快照同锁, 边跑边读
+                with self._lock:
+                    if task.id in self._tasks:
+                        task.summary_stream.append(delta)
+            # 文本是唯一事实源: 流结束后统一解析 (非法 JSON 抛 LLMError → failed)
+            result = llm.parse_summary_text("".join(chunks))
         else:
-            result = llm.generate_mindmap(text, meta)
+            result = llm.generate_mindmap(task.summary or {}, meta)
         with self._lock:
             if task.id in self._tasks:
                 if name == SUBTASK_SUMMARY:

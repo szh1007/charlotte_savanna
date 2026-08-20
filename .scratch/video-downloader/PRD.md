@@ -5,8 +5,9 @@
 > 修订（2026-08-20）：Phase 2「视频总结（LLM 能力）」启动 —— AI 视频总结（转录 / 总结 / 思维导图 / AI 问答）实施见 `.scratch/video-downloader/issues/12-ai-video-summary.md` 与 `project/video_downloader/docs/adr/0005-ai-video-summary-via-subtitle-and-asr.md`。
 > 修订（2026-08-20）：AI 视频总结已交付（测试 119 全绿）。
 > 修订（2026-08-20）：字幕翻译已从需求中移除（原 Phase 2 计划项, 当前不规划）。
+> 修订（2026-08-21）：Phase 3「字幕来源可选 + 模型预下载 + 模型字幕缓存」—— 全局设置（官方字幕 / 模型生成字幕）+ 模型提前下载 + 模型字幕按 TTL 缓存复用，需求与用户故事见 `.scratch/subtitle-source-model-download/PRD.md`，决策见 `project/video_downloader/docs/adr/0006-subtitle-source-and-model-download.md`。
 > 来源：`/grill-with-docs` 方案商讨（2026-08-19 人工确认）
-> 领域术语表：`project/video_downloader/docs/CONTEXT.md`；架构决策：`project/video_downloader/docs/adr/`（ADR-0001 ~ 0005）
+> 领域术语表：`project/video_downloader/docs/CONTEXT.md`；架构决策：`project/video_downloader/docs/adr/`（ADR-0001 ~ 0006）
 > 本文件为需求/产品规格说明书，实现细节以开发时的最新方案为准
 
 ---

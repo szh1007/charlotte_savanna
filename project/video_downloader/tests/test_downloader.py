@@ -114,6 +114,36 @@ def test_download_requires_ffmpeg_when_merging(monkeypatch, tmp_path) -> None:
         _download("https://example.com/v", "30064", tmp_path, merge_audio=True)
 
 
+def test_download_outtmpl_uses_bvid_spec(monkeypatch, tmp_path) -> None:
+    """输出文件名: BV号_清晰度_视频流ID_音频流ID (用户反馈).
+
+    requested_formats.N 是 yt-dlp 对 DASH 分离流 (视频流在前, 音频流在后)
+    的模板字段访问; 单流复合格式无独立音频 id, 渲染 NA 占位.
+    """
+    captured: dict = {}
+
+    class FakeYDL:
+        def __init__(self, opts: dict) -> None:
+            captured["opts"] = opts
+
+        def __enter__(self) -> "FakeYDL":
+            return self
+
+        def __exit__(self, *args) -> None:
+            return None
+
+        def extract_info(self, url: str, download: bool = True) -> dict:
+            return {"requested_downloads": [{"filepath": str(tmp_path / "out.mp4")}]}
+
+    monkeypatch.setattr("backend.downloader.YoutubeDL", FakeYDL)
+    _download("https://www.bilibili.com/video/BV1xx411c7mD", "30080", tmp_path)
+    tmpl = captured["opts"]["outtmpl"]
+    assert tmpl.endswith(
+        "%(bvid)s_%(height)sp_%(requested_formats.0.format_id)s_"
+        "%(requested_formats.1.format_id)s.%(ext)s"
+    )
+
+
 def test_has_ffmpeg_detects_path(monkeypatch) -> None:
     """ffmpeg 检测: PATH 中存在返回 True."""
     monkeypatch.setattr("backend.downloader.shutil.which", lambda _: "/usr/bin/ffmpeg")

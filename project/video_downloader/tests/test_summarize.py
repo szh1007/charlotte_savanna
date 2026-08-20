@@ -15,10 +15,16 @@ from backend import asr, config, llm
 from backend import cleaner as cleaner_mod
 from backend import subtitle as subtitle_mod
 from backend.quota import quota as daily_quota
-from backend.task_manager import STATUS_EXPIRED
+from backend.task_manager import STATUS_EXPIRED, manager
 from conftest import FAKE_INFO
 from fastapi.testclient import TestClient
-from helpers import create_download, find_task, member_headers, wait_until
+from helpers import (
+    create_download,
+    find_task,
+    member_headers,
+    parse_sse_frames,
+    wait_until,
+)
 from sse_client import SseStream
 
 VIDEO_URL = "https://www.bilibili.com/video/av-summary-test"
@@ -54,6 +60,26 @@ FAKE_MINDMAP = {
     ],
 }
 
+# LLM 流式输出为 Markdown 文档 (ADR-0008): 真实 parse_summary_text 解析后
+# 必须精确还原 FAKE_SUMMARY (test_summary_completes 整 dict 相等契约)
+FAKE_SUMMARY_MD = """# 视频总结: 测试视频标题
+> 时长: 60s
+
+## 视频概述
+视频总结功能的核心流程
+
+## 章节时间线
+### 核心流程 (00:00 ~ 01:00)
+- 字幕优先
+- 无字幕时转写
+
+## 核心要点
+- 字幕优先
+- SenseVoice 转写兜底
+
+## 结论
+总结流程闭环"""
+
 
 @pytest.fixture(autouse=True)
 def fake_meta(monkeypatch):
@@ -66,7 +92,7 @@ def fake_meta(monkeypatch):
 
     monkeypatch.setattr("backend.downloader._extract", lambda url: dict(FAKE_INFO))
     monkeypatch.setattr(
-        "backend.llm.generate_mindmap", lambda text, meta: dict(FAKE_MINDMAP)
+        "backend.llm.generate_mindmap", lambda summary, meta: dict(FAKE_MINDMAP)
     )
 
 
@@ -120,13 +146,16 @@ def fake_asr(monkeypatch):
 
 @pytest.fixture
 def fake_llm(monkeypatch):
-    """替换 LLM 三层: summarize / generate_mindmap / ask 全部返回伪数据."""
+    """替换 LLM 三层: summarize_stream / generate_mindmap / ask_stream 返回伪流."""
 
-    monkeypatch.setattr("backend.llm.summarize", lambda text, meta: dict(FAKE_SUMMARY))
     monkeypatch.setattr(
-        "backend.llm.generate_mindmap", lambda text, meta: dict(FAKE_MINDMAP)
+        "backend.llm.summarize_stream",
+        lambda text, meta: iter([FAKE_SUMMARY_MD]),
     )
-    monkeypatch.setattr("backend.llm.ask", lambda t, s, q: f"回答: {q}")
+    monkeypatch.setattr(
+        "backend.llm.generate_mindmap", lambda summary, meta: dict(FAKE_MINDMAP)
+    )
+    monkeypatch.setattr("backend.llm.ask_stream", lambda t, s, q: iter([f"回答: {q}"]))
 
 
 @pytest.fixture(autouse=True)
@@ -296,17 +325,17 @@ def test_summary_failed_when_asr_errors(client, fake_subtitle, monkeypatch) -> N
 def test_summary_failed_when_llm_errors(client, fake_subtitle, monkeypatch) -> None:
     """总结子任务失败 → 任务 completed (部分完成), 转录仍可访问, 重试后可恢复.
 
-    失败只影响自身: 转录/导图子任务保持 done, 任务级不再整体 failed
-    (部分完成语义, 失败子任务经重试接口补齐).
+    失败只影响自身: 转录保持 done, 依赖总结的导图/问答 blocked, 任务级不再
+    整体 failed (部分完成语义, 失败子任务经重试接口补齐后依赖自动解锁).
     """
     boom = {"active": True}
 
     def _boom(text: str, meta: dict):
         if boom["active"]:
             raise llm.LLMError("LLM 调用失败: 测试超时")
-        return dict(FAKE_SUMMARY)
+        yield FAKE_SUMMARY_MD
 
-    monkeypatch.setattr("backend.llm.summarize", _boom)
+    monkeypatch.setattr("backend.llm.summarize_stream", _boom)
     task_id = create_summary(client)
     assert wait_until(lambda: find_task(client, task_id)["status"] == "completed")
     task = find_task(client, task_id)
@@ -314,20 +343,27 @@ def test_summary_failed_when_llm_errors(client, fake_subtitle, monkeypatch) -> N
     assert subs["summary"]["status"] == "failed"
     assert "LLM 调用失败" in subs["summary"]["error"]
     assert subs["transcript"]["status"] == "done"  # 转录不受影响
-    assert subs["mindmap"]["status"] == "done"
+    # 导图/问答依赖总结: 总结失败 → blocked (等待重试恢复, 不再并行生成)
+    assert subs["mindmap"]["status"] == "blocked"
+    assert subs["qa"]["status"] == "blocked"
     # 转录仍可访问 (转录先完成即先查看, 不依赖总结成功)
     assert client.get(f"/api/tasks/{task_id}/transcript").status_code == 200
-    # 总结接口 409 (子任务未完成)
+    # 总结/导图接口 409 (子任务未完成)
     assert client.get(f"/api/tasks/{task_id}/summary").status_code == 409
+    assert client.get(f"/api/tasks/{task_id}/mindmap").status_code == 409
 
-    # 重试总结子任务: 只重跑 summary, 恢复后接口可用
+    # 重试总结子任务: 只重跑 summary, 恢复后导图/问答自动解锁, 接口可用
     boom["active"] = False
     resp = client.post(f"/api/tasks/{task_id}/retry", json={"subtask": "summary"})
     assert resp.status_code == 200
     assert wait_until(
         lambda: find_task(client, task_id)["subtasks"]["summary"]["status"] == "done"
     )
+    assert wait_until(
+        lambda: find_task(client, task_id)["subtasks"]["mindmap"]["status"] == "done"
+    )
     assert client.get(f"/api/tasks/{task_id}/summary").status_code == 200
+    assert client.get(f"/api/tasks/{task_id}/mindmap").status_code == 200
 
 
 def test_summary_domain_validation(client, fake_subtitle, fake_llm) -> None:
@@ -385,7 +421,7 @@ def test_free_summary_quota_counts_per_client(client, fake_subtitle, fake_llm) -
 
 
 def test_qa_answers_from_video(client, fake_subtitle, fake_llm) -> None:
-    """completed 后提问 → 200 答案 (LLM mock 透传)."""
+    """completed 后提问 → 200 SSE 流, delta 拼接即答案, done 帧收尾."""
     task_id = create_summary(client)
     wait_completed(client, task_id)
     resp = client.post(
@@ -394,7 +430,11 @@ def test_qa_answers_from_video(client, fake_subtitle, fake_llm) -> None:
         headers={"X-Client-Id": "c"},
     )
     assert resp.status_code == 200
-    assert resp.json()["answer"] == "回答: 核心流程是什么?"
+    assert "text/event-stream" in resp.headers["content-type"]
+    frames = parse_sse_frames(resp.text)
+    delta_text = "".join(d["text"] for e, d in frames if e == "delta")
+    assert delta_text == "回答: 核心流程是什么?"
+    assert any(e == "done" for e, _ in frames)
 
 
 def test_qa_quota_free_limited(client, fake_subtitle, fake_llm) -> None:
@@ -430,22 +470,191 @@ def test_qa_requires_ready_context(client, fake_subtitle, fake_llm) -> None:
     wait_completed(client, task_id)
 
 
+def test_qa_stream_error_not_charged(
+    client, fake_subtitle, fake_llm, monkeypatch
+) -> None:
+    """问答流失败: error 帧收尾, 配额不计数 (仅完整输出 done 才计数, ADR-0007)."""
+    monkeypatch.setattr(
+        "backend.llm.ask_stream",
+        lambda t, s, q: (_ for _ in ()).throw(llm.LLMError("LLM 调用失败: 测试")),
+    )
+    task_id = create_summary(client)
+    wait_completed(client, task_id)
+    client_id = "qa-fail-client"
+    resp = client.post(
+        f"/api/tasks/{task_id}/qa",
+        json={"question": "q"},
+        headers={"X-Client-Id": client_id},
+    )
+    assert resp.status_code == 200
+    frames = parse_sse_frames(resp.text)
+    assert any(e == "error" for e, _ in frames)
+    assert not any(e == "done" for e, _ in frames)
+    assert daily_quota._usages[client_id].qa_count == 0  # 失败不计数
+
+
+# ----- 总结流式输出 (ADR-0007: SSE snapshot/delta/done) -----
+
+
+def _sse_frame_parts(frame: str) -> tuple[str, dict]:
+    """解析 SseStream 单帧文本 → (event, data dict)."""
+    event = "message"
+    data = None
+    for line in frame.split("\n"):
+        if line.startswith("event: "):
+            event = line[len("event: ") :].strip()
+        elif line.startswith("data: "):
+            data = json.loads(line[len("data: ") :])
+    assert data is not None, f"帧缺少 data: {frame!r}"
+    return event, data
+
+
+def test_summary_stream_sse_deltas(client, fake_subtitle, monkeypatch) -> None:
+    """总结流式: snapshot(首帧累积全文) → delta(新增量) → done, 拼接为完整 Markdown."""
+    gate = threading.Event()
+    gate.clear()  # 阻塞第二段 yield: 观察 delta 中间态
+
+    def _chunked(text: str, meta: dict):
+        yield "# 视频总结: 测试视频标题\n## 视频概述\n视频总结功能的核"
+        gate.wait(timeout=5.0)
+        yield "心流程\n\n## 章节时间线\n### 核心流程 (00:00 ~ 01:00)\n- 字幕优先"
+
+    monkeypatch.setattr("backend.llm.summarize_stream", _chunked)
+    task_id = create_summary(client)
+
+    def first_chunk_written() -> bool:
+        snap = manager.summary_stream_snapshot(task_id)
+        return bool(snap and snap[2])  # 缓冲已含首段增量再订阅, 避免 snapshot 为空
+
+    assert wait_until(first_chunk_written)
+    stream = SseStream(client.app, f"/api/tasks/{task_id}/summary/stream")
+    stream.wait_headers()
+    event, data = _sse_frame_parts(stream.next())
+    assert event == "snapshot"
+    assert data["text"] == "# 视频总结: 测试视频标题\n## 视频概述\n视频总结功能的核"
+    gate.set()  # 放行第二段: worker 写缓冲, 端点轮询推 delta
+    event, data = _sse_frame_parts(stream.next())
+    assert event == "delta"
+    assert (
+        data["text"]
+        == "心流程\n\n## 章节时间线\n### 核心流程 (00:00 ~ 01:00)\n- 字幕优先"
+    )
+    event, _ = _sse_frame_parts(stream.next())
+    assert event == "done"
+    stream.close()
+    stream.join()
+
+
+def test_summary_stream_snapshot_reconnect(client, fake_subtitle, fake_llm) -> None:
+    """总结完成后新连接: 首帧 snapshot 推完整文本, done 帧收尾 (刷新/重连恢复)."""
+    task_id = create_summary(client)
+    wait_completed(client, task_id)
+    stream = SseStream(client.app, f"/api/tasks/{task_id}/summary/stream")
+    stream.wait_headers()
+    event, data = _sse_frame_parts(stream.next())
+    assert event == "snapshot"
+    assert data["text"] == FAKE_SUMMARY_MD
+    event, _ = _sse_frame_parts(stream.next())
+    assert event == "done"
+    stream.close()
+    stream.join()
+
+
+def test_summary_stream_error_frame(client, fake_subtitle, monkeypatch) -> None:
+    """总结子任务失败: 流式端点 error 帧收尾 (已缓冲的部分文本仍在快照中)."""
+
+    def _boom(text: str, meta: dict):
+        yield "# 视频总结: 测试视频标题\n## 视频概述\n部分文本"
+        raise llm.LLMError("LLM 调用失败: 测试超时")
+
+    monkeypatch.setattr("backend.llm.summarize_stream", _boom)
+    task_id = create_summary(client)
+    assert wait_until(
+        lambda: find_task(client, task_id)["subtasks"]["summary"]["status"] == "failed"
+    )
+    stream = SseStream(client.app, f"/api/tasks/{task_id}/summary/stream")
+    stream.wait_headers()
+    event, data = _sse_frame_parts(stream.next())
+    assert event == "snapshot"
+    assert "视频总结" in data["text"]
+    event, data = _sse_frame_parts(stream.next())
+    assert event == "error"
+    assert "LLM 调用失败" in data["message"]
+    stream.close()
+    stream.join()
+
+
+def test_summary_stream_404_400(client, fake_download) -> None:
+    """summary/stream: 未知任务 404, 下载任务 400 (与其余总结接口一致)."""
+    assert client.get("/api/tasks/999/summary/stream").status_code == 404
+    task_id = create_download(client, VIDEO_URL, "22")
+    assert wait_until(lambda: find_task(client, task_id)["status"] == "completed")
+    assert client.get(f"/api/tasks/{task_id}/summary/stream").status_code == 400
+
+
+def test_summary_stream_retry_clears_buffer(client, fake_subtitle, monkeypatch) -> None:
+    """重试清流缓冲: 首次失败残留的旧文本不与新文本拼接 (ADR-0007)."""
+    boom = {"active": True}
+
+    def _flaky(text: str, meta: dict):
+        if boom["active"]:
+            yield "# 视频总结: 旧文本残留"
+            raise llm.LLMError("生成失败")
+        yield FAKE_SUMMARY_MD
+
+    monkeypatch.setattr("backend.llm.summarize_stream", _flaky)
+    task_id = create_summary(client)
+    assert wait_until(
+        lambda: find_task(client, task_id)["subtasks"]["summary"]["status"] == "failed"
+    )
+    boom["active"] = False
+    resp = client.post(f"/api/tasks/{task_id}/retry", json={"subtask": "summary"})
+    assert resp.status_code == 200
+    assert wait_until(
+        lambda: find_task(client, task_id)["subtasks"]["summary"]["status"] == "done"
+    )
+    stream = SseStream(client.app, f"/api/tasks/{task_id}/summary/stream")
+    stream.wait_headers()
+    event, data = _sse_frame_parts(stream.next())
+    assert event == "snapshot"
+    assert data["text"] == FAKE_SUMMARY_MD
+    assert "旧文本残留" not in data["text"]  # 缓冲已清空, 无新旧拼接
+    event, _ = _sse_frame_parts(stream.next())
+    assert event == "done"
+    stream.close()
+    stream.join()
+
+
 # ----- 导出 -----
 
 
 def test_export_markdown_contains_structure(client, fake_subtitle, fake_llm) -> None:
-    """导出 Markdown: 包含概述 / 章节时间线 / 核心知识点 / 结论."""
+    """导出 Markdown: 包含概述 / 章节时间线 / 核心知识点 / 结论.
+
+    av 链接无 BV 号: 文件名兜底 {kind}_{task_id}.md (用户反馈: BV 优先).
+    """
     task_id = create_summary(client)
     wait_completed(client, task_id)
     resp = client.get(f"/api/tasks/{task_id}/export?format=md")
     assert resp.status_code == 200
     assert "text/markdown" in resp.headers["content-type"]
     assert "attachment" in resp.headers["content-disposition"]
+    assert f"summary_{task_id}.md" in resp.headers["content-disposition"]
     text = resp.text
     assert "# 视频总结" in text
     assert "## 章节时间线" in text
     assert "字幕优先" in text
     assert "## 结论" in text
+
+
+def test_export_filename_uses_bvid(client, fake_subtitle, fake_llm) -> None:
+    """导出文件名默认用 BV 号 (用户反馈): md 与字幕格式均为 BV号.扩展名."""
+    task_id = create_summary(client, url="https://www.bilibili.com/video/BV1xx411c7mD")
+    wait_completed(client, task_id)
+    for fmt, name in [("md", "BV1xx411c7mD.md"), ("txt", "BV1xx411c7mD.txt")]:
+        resp = client.get(f"/api/tasks/{task_id}/export?format={fmt}")
+        assert resp.status_code == 200
+        assert f'filename="{name}"' in resp.headers["content-disposition"]
 
 
 def test_export_txt_contains_transcript(client, fake_subtitle, fake_llm) -> None:
@@ -642,11 +851,11 @@ def test_transcript_accessible_before_summary_ready(
     gate = threading.Event()
     gate.clear()  # 阻塞 LLM 总结: 观察转录先完成
 
-    def _slow(text: str, meta: dict) -> dict:
+    def _slow(text: str, meta: dict):
         gate.wait(timeout=5.0)
-        return dict(FAKE_SUMMARY)
+        yield FAKE_SUMMARY_MD
 
-    monkeypatch.setattr("backend.llm.summarize", _slow)
+    monkeypatch.setattr("backend.llm.summarize_stream", _slow)
     task_id = create_summary(client)
     assert wait_until(
         lambda: find_task(client, task_id)["subtasks"]["transcript"]["status"] == "done"
@@ -659,7 +868,7 @@ def test_transcript_accessible_before_summary_ready(
 
 
 def test_mindmap_endpoint_returns_structure(client, fake_subtitle, fake_llm) -> None:
-    """mindmap 接口: 导图子任务完成后返回独立生成的结构 (与总结解耦)."""
+    """mindmap 接口: 导图子任务完成后返回生成的结构 (数据源为总结)."""
     task_id = create_summary(client)
     wait_completed(client, task_id)
     resp = client.get(f"/api/tasks/{task_id}/mindmap")
@@ -667,6 +876,59 @@ def test_mindmap_endpoint_returns_structure(client, fake_subtitle, fake_llm) -> 
     body = resp.json()
     assert body["mindmap"] == FAKE_MINDMAP
     assert body["title"] == "测试视频标题"
+
+
+def test_mindmap_generated_from_summary(client, fake_subtitle, monkeypatch) -> None:
+    """导图数据源: generate_mindmap 收到结构化总结 (非转录文本).
+
+    用户反馈: 思维导图不用字幕数据, 用总结后的数据. mock 记录调用参数:
+    第一个参数应为 summary dict (含 key_points 等总结特有字段), 转录文本
+    (字符串) 不会传给导图生成.
+    """
+    seen: dict = {}
+
+    def _mindmap(summary: dict, meta: dict) -> dict:
+        seen["input"] = summary
+        return dict(FAKE_MINDMAP)
+
+    monkeypatch.setattr(
+        "backend.llm.summarize_stream",
+        lambda text, meta: iter([FAKE_SUMMARY_MD]),
+    )
+    monkeypatch.setattr("backend.llm.generate_mindmap", _mindmap)
+    task_id = create_summary(client)
+    wait_completed(client, task_id)
+
+    assert seen["input"] == FAKE_SUMMARY  # 输入即 summarize 的结构化总结
+    assert isinstance(seen["input"], dict)
+    assert "key_points" in seen["input"]  # 总结特有字段, 转录文本不会出现
+    resp = client.get(f"/api/tasks/{task_id}/mindmap")
+    assert resp.status_code == 200
+
+
+def test_mindmap_waits_for_summary(client, fake_subtitle, monkeypatch) -> None:
+    """DAG 依赖: 总结完成前导图不启动, 总结完成后导图才生成 (字幕→总结→导图)."""
+    gate = threading.Event()
+    gate.clear()  # 阻塞总结: 观察导图保持 pending
+
+    def _slow(text: str, meta: dict):
+        gate.wait(timeout=5.0)
+        yield FAKE_SUMMARY_MD
+
+    monkeypatch.setattr("backend.llm.summarize_stream", _slow)
+    task_id = create_summary(client)
+    # 转录完成、总结进行中: 导图仍 pending (依赖总结, 不与总结并行)
+    assert wait_until(
+        lambda: find_task(client, task_id)["subtasks"]["summary"]["status"] == "running"
+    )
+    task = find_task(client, task_id)
+    assert task["subtasks"]["transcript"]["status"] == "done"
+    assert task["subtasks"]["mindmap"]["status"] == "pending"
+    gate.set()
+    wait_completed(client, task_id)
+    subs = find_task(client, task_id)["subtasks"]
+    assert subs["summary"]["status"] == "done"
+    assert subs["mindmap"]["status"] == "done"
 
 
 def test_mindmap_409_while_transcribing(client, fake_subtitle, fake_llm) -> None:
@@ -747,10 +1009,10 @@ def test_retry_only_reruns_failed_subtask(client, fake_subtitle, monkeypatch) ->
     def _boom(text: str, meta: dict):
         if boom["active"]:
             raise llm.LLMError("生成失败")
-        return dict(FAKE_SUMMARY)
+        yield FAKE_SUMMARY_MD
 
     monkeypatch.setattr("backend.subtitle.get_subtitles", _counting)
-    monkeypatch.setattr("backend.llm.summarize", _boom)
+    monkeypatch.setattr("backend.llm.summarize_stream", _boom)
     task_id = create_summary(client)
     assert wait_until(lambda: find_task(client, task_id)["status"] == "completed")
     assert calls == [VIDEO_URL]  # 首次转录只取一次字幕
@@ -767,7 +1029,7 @@ def test_retry_only_reruns_failed_subtask(client, fake_subtitle, monkeypatch) ->
 def test_retry_does_not_charge_quota(client, fake_subtitle, monkeypatch) -> None:
     """重试不扣配额: 修复性操作, 免费配额计数不因重试增加."""
     monkeypatch.setattr(
-        "backend.llm.summarize",
+        "backend.llm.summarize_stream",
         lambda t, m: (_ for _ in ()).throw(llm.LLMError("生成失败")),
     )
     task_id = create_summary(client)  # 创建扣 1 次配额
@@ -779,8 +1041,9 @@ def test_retry_does_not_charge_quota(client, fake_subtitle, monkeypatch) -> None
         resp = client.post(f"/api/tasks/{task_id}/retry", json={"subtask": "summary"})
         assert resp.status_code == 200
         assert wait_until(
-            lambda: find_task(client, task_id)["subtasks"]["summary"]["status"]
-            == "failed"
+            lambda: (
+                find_task(client, task_id)["subtasks"]["summary"]["status"] == "failed"
+            )
         )
     assert daily_quota._usages[client_id].summary_count == 1
 

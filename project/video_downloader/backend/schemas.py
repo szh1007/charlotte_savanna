@@ -161,7 +161,7 @@ class TranscriptOut(BaseModel):
 
 
 class MindMapOut(BaseModel):
-    """思维导图结果 (ADR-0005): 独立 LLM 生成的导图结构 JSON."""
+    """思维导图结果 (ADR-0005): 基于结构化总结生成的导图结构 JSON."""
 
     task_id: int
     status: str
@@ -173,11 +173,6 @@ class MindMapOut(BaseModel):
 
 class QARequest(BaseModel):
     question: str = Field(..., min_length=1, description="针对视频内容的问题")
-
-
-class QAResponse(BaseModel):
-    task_id: int
-    answer: str
 
 
 def task_to_out(task) -> TaskOut:

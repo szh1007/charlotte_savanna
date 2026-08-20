@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import ErrorAlert from './ErrorAlert.vue'
 
 // 解析结果卡: 封面 + 标题 + 平台徽章 + 时长
@@ -34,6 +34,18 @@ const formatsDesc = computed(() => [...props.result.formats].reverse())
 const selectedFormat = ref(
   (formatsDesc.value.find((f) => !f.locked) ??
     props.result.formats[0])?.format_id ?? '',
+)
+
+// 档位列表原地更新时 (会员解锁后 keepOld 重解析, result 引用替换但组件
+// 不重建, setup 只初始化一次) 重置默认选中: 保持与非会员一致的设计 —
+// 默认选中最高可用档 (解锁后自动切到最佳画质)
+watch(
+  () => props.result.formats,
+  (formats) => {
+    const firstUnlocked = [...formats].reverse().find((f) => !f.locked)
+    if (firstUnlocked) selectedFormat.value = firstUnlocked.format_id
+  },
+  { deep: true },
 )
 
 // 时长格式化: 秒 → "mm:ss" / "h:mm:ss";

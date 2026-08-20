@@ -146,7 +146,7 @@ export function fetchTranscript(taskId) {
   return request(`/tasks/${taskId}/transcript`)
 }
 
-/** 查询思维导图结构 (独立 LLM 生成, 与总结摘要解耦). */
+/** 查询思维导图结构 (LLM 基于结构化总结生成, mindmap 依赖 summary). */
 export function fetchMindmap(taskId) {
   return request(`/tasks/${taskId}/mindmap`)
 }
@@ -164,10 +164,96 @@ export function exportUrl(taskId, format) {
   return `${BASE}/tasks/${taskId}/export?format=${format}`
 }
 
-/** 针对视频内容提问 (免费档超每日配额时后端 429 拒绝). */
-export function askQuestion(taskId, question) {
-  return request(`/tasks/${taskId}/qa`, {
+/**
+ * SSE 流式读取 (总结流 / 问答流, ADR-0007): fetch 后逐帧解析并回调.
+ *
+ * 帧协议: `event: <name>\ndata: <单行 JSON>\n\n` (后端 json.dumps 保证
+ * data 单行); 无 data 行的帧忽略 (协议扩展预留). 错误语义与 request()
+ * 一致: 非 2xx 抛带 detail/status 的 Error; 网络失败抛明确提示;
+ * AbortError 原样透传, 调用方区分「用户取消」与「断线」.
+ * @param {string} path 以 / 开头的 API 路径
+ * @param {object} [options] { method, body, signal, onFrame }
+ * @param {(event: string, data: any) => void} options.onFrame 每帧回调
+ * @returns {Promise<void>} 流正常结束 (done 帧后服务端关闭) 时 resolve
+ */
+async function readSseStream(path, { method = 'GET', body, signal, onFrame } = {}) {
+  const token = getMemberToken()
+  let res
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      method,
+      signal,
+      headers: {
+        'Content-Type': 'application/json',
+        // 免费档每日配额按匿名客户端身份计数 (ADR-0005)
+        'X-Client-Id': getClientId(),
+        ...(token ? { 'X-Member-Token': token } : {}),
+      },
+      body,
+    })
+  } catch (err) {
+    if (err.name === 'AbortError') throw err // 用户取消, 透传
+    throw new Error('无法连接服务器, 请确认后端服务已启动')
+  }
+  if (!res.ok) {
+    let detail = `请求失败 (${res.status})`
+    try {
+      const body = await res.json()
+      if (body && body.detail) detail = body.detail
+    } catch {
+      /* 响应体非 JSON 时保留默认提示 */
+    }
+    const err = new Error(detail)
+    err.status = res.status // 调用方按状态码区分 (如 409 子任务未就绪)
+    throw err
+  }
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      // 帧以空行分隔; TextDecoder 解码后的帧边界不随网络 chunk 对齐
+      let sep
+      while ((sep = buffer.indexOf('\n\n')) !== -1) {
+        const frame = buffer.slice(0, sep)
+        buffer = buffer.slice(sep + 2)
+        handleFrame(frame, onFrame)
+      }
+    }
+    if (buffer.trim()) handleFrame(buffer, onFrame) // 断流残留的末帧
+  } finally {
+    reader.releaseLock()
+  }
+}
+
+/** 解析单帧 (event/data 行), 回调命名事件与 JSON 数据. */
+function handleFrame(frame, onFrame) {
+  let event = 'message' // SSE 默认事件名
+  let data = null
+  for (const line of frame.split('\n')) {
+    if (line.startsWith('event: ')) {
+      event = line.slice('event: '.length)
+    } else if (line.startsWith('data: ')) {
+      data = JSON.parse(line.slice('data: '.length))
+    }
+  }
+  if (data !== null) onFrame(event, data)
+}
+
+/** 订阅总结生成流 (SSE, ADR-0007): snapshot 首帧累积全文 / delta 增量 / done / error. */
+export function streamSummary(taskId, { signal, onFrame }) {
+  return readSseStream(`/tasks/${taskId}/summary/stream`, { signal, onFrame })
+}
+
+/** 针对视频内容提问, SSE 流式回答 (ADR-0007): delta 增量 → done 收尾; 超配额 429. */
+export function askQuestionStream(taskId, question, { signal, onFrame }) {
+  return readSseStream(`/tasks/${taskId}/qa`, {
     method: 'POST',
     body: JSON.stringify({ question }),
+    signal,
+    onFrame,
   })
 }
