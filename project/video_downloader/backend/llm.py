@@ -102,6 +102,52 @@ def summarize(transcript: str, meta: dict[str, Any]) -> dict[str, Any]:
     return _parse_json(content)
 
 
+# 思维导图输出结构 (与 summary.chapters 同构, 前端 MindMapCanvas 直接消费)
+MINDMAP_SCHEMA_HINT = """{
+  "title": "视频标题",
+  "chapters": [
+    {"start": 0.0, "end": 120.0, "title": "章节标题", "points": ["要点1", "要点2"]}
+  ]
+}"""
+
+
+def generate_mindmap(transcript: str, meta: dict[str, Any]) -> dict[str, Any]:
+    """独立生成思维导图结构 (章节树 + 要点, JSON).
+
+    与 summarize 解耦: 独立 prompt、独立失败、独立重试 (ADR-0005 四子任务).
+    meta: {title, duration, site} 注入上下文; 返回 MINDMAP_SCHEMA_HINT 结构.
+    """
+    title = meta.get("title") or "未知标题"
+    prompt = (
+        f"你是视频学习助手. 下面是视频《{title}》的转录文本"
+        f"(时长 {meta.get('duration') or '未知'} 秒). 请提炼为思维导图结构, "
+        f"严格按如下 JSON 结构输出, 不要输出 JSON 以外的内容:\n"
+        f"{MINDMAP_SCHEMA_HINT}\n\n"
+        f"要求:\n"
+        f"1. chapters 按内容自然分段, start/end 为转录时间戳 (秒, 数值), "
+        f"每章标题 10 字内\n"
+        f"2. 每章 points 为该章 3~8 条要点, 突出知识层级与逻辑关系, 面向思维导图展示\n"
+        f"3. 使用中文, 忠实转录内容, 不编造转录中没有的信息\n\n"
+        f"转录文本:\n{_truncate_transcript(transcript)}"
+    )
+    content = _chat(
+        [
+            {
+                "role": "system",
+                "content": "你是严谨的中文视频思维导图生成助手, 只输出 JSON.",
+            },
+            {"role": "user", "content": prompt},
+        ],
+        json_mode=True,
+    )
+    data = _parse_json(content)
+    # 结构校验 (用户反馈: LLM 偶发返回缺 chapters 的非法结构, 前端导图空白;
+    # 抛错使子任务标 failed 可重试, 而非静默展示空导图)
+    if not isinstance(data.get("chapters"), list):
+        raise LLMError("思维导图结构非法: 缺少 chapters")
+    return data
+
+
 def ask(transcript: str, summary: dict[str, Any], question: str) -> str:
     """针对视频内容回答问题 (上下文 = 转录 + 结构化总结, 单次塞入)."""
     summary_text = json.dumps(summary, ensure_ascii=False, indent=2)
@@ -121,8 +167,40 @@ def ask(transcript: str, summary: dict[str, Any], question: str) -> str:
     ).strip()
 
 
+def _extract_first_object(text: str) -> str | None:
+    """从文本中截取第一个完整 JSON 对象 (平衡括号扫描, 跳过字符串与转义).
+
+    LLM 偶发输出多个 JSON 拼接 / JSON 后跟多余文本 (用户反馈: Extra data),
+    只取首个对象, 其余忽略.
+    """
+    start = text.find("{")
+    if start == -1:
+        return None
+    depth = 0
+    in_str = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+        elif ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    return None  # 括号未闭合: 交给 json.loads 报具体错误
+
+
 def _parse_json(content: str) -> dict[str, Any]:
-    """解析 LLM JSON 输出 (容忍代码块包裹, 失败抛 LLMError)."""
+    """解析 LLM JSON 输出 (容忍代码块包裹 / 多 JSON 拼接, 失败抛 LLMError)."""
     text = content.strip()
     if text.startswith("```"):  # LLM 偶尔用 markdown 代码块包裹 JSON
         start = text.find("{")
@@ -131,8 +209,15 @@ def _parse_json(content: str) -> dict[str, Any]:
             text = text[start : end + 1]
     try:
         data = json.loads(text)
-    except json.JSONDecodeError as e:
-        raise LLMError(f"LLM 返回非法 JSON: {e}") from e
+    except json.JSONDecodeError:
+        # 整段解析失败: 截取第一个完整 JSON 对象再试 (尾部多余文本/第二个 JSON)
+        first = _extract_first_object(text)
+        if first is None:
+            raise LLMError("LLM 返回非法 JSON") from None
+        try:
+            data = json.loads(first)
+        except json.JSONDecodeError as e:
+            raise LLMError(f"LLM 返回非法 JSON: {e}") from e
     if not isinstance(data, dict):
         raise LLMError("LLM 返回结构非法 (应为 JSON 对象)")
     return data

@@ -31,13 +31,44 @@ STATUS_DOWNLOADING = "downloading"
 STATUS_COMPLETED = "completed"
 STATUS_FAILED = "failed"
 STATUS_EXPIRED = "expired"
-# 总结任务专属状态 (ADR-0005): 获取转录文本 (字幕/ASR) / LLM 生成总结
-STATUS_TRANSCRIBING = "transcribing"
-STATUS_SUMMARIZING = "summarizing"
+# 总结任务运行态 (ADR-0005): 四子任务 (转录/总结/导图/问答) 并行推进,
+# 任务级仅标记「运行中」, 各子任务进度独立 (见 Subtask)
+STATUS_RUNNING = "running"
 
 # 移除事件标记 (非状态机状态): 任务从存储清除 (清除记录), SSE 广播后前端
 # 从列表移除卡片. 不进状态机: 移除即不存在, 无需落任务状态
 STATUS_REMOVED = "removed"
+
+# 总结子任务标识 (ADR-0005 四标签): 转录/总结/思维导图/问答上下文
+SUBTASK_TRANSCRIPT = "transcript"
+SUBTASK_SUMMARY = "summary"
+SUBTASK_MINDMAP = "mindmap"
+SUBTASK_QA = "qa"
+SUBTASK_NAMES = (SUBTASK_TRANSCRIPT, SUBTASK_SUMMARY, SUBTASK_MINDMAP, SUBTASK_QA)
+
+# 子任务状态 (独立于任务级状态机, 前端逐 tab 驱动)
+ST_PENDING = "pending"  # 未开始 (含重试重置)
+ST_RUNNING = "running"  # 执行中
+ST_DONE = "done"  # 成功
+ST_FAILED = "failed"  # 自身失败 (可重试)
+ST_BLOCKED = "blocked"  # 依赖子任务失败, 依赖恢复后自动重跑
+
+# 子任务 DAG 依赖: transcript 无依赖; summary/mindmap 依赖转录;
+# qa 依赖转录 + 总结 (上下文就绪后解锁交互问答)
+SUBTASK_DEPS: dict[str, frozenset[str]] = {
+    SUBTASK_TRANSCRIPT: frozenset(),
+    SUBTASK_SUMMARY: frozenset({SUBTASK_TRANSCRIPT}),
+    SUBTASK_MINDMAP: frozenset({SUBTASK_TRANSCRIPT}),
+    SUBTASK_QA: frozenset({SUBTASK_TRANSCRIPT, SUBTASK_SUMMARY}),
+}
+
+# 任务级整体进度加权映射 (旧契约 progress 字段, 各子任务 progress 0-100)
+_SUBTASK_WEIGHTS = {
+    SUBTASK_TRANSCRIPT: 0.4,
+    SUBTASK_SUMMARY: 0.2,
+    SUBTASK_MINDMAP: 0.2,
+    SUBTASK_QA: 0.2,
+}
 
 # 付费差异 (T05, PRD §5): 免费/会员能力边界, 后端强制, 非 UI 摆设
 FREE_MAX_HEIGHT = 720  # 免费档清晰度上限: >720p 档位标记锁定
@@ -52,6 +83,17 @@ _SCHEDULER_INTERVAL = 0.5
 
 class QueueLimitError(Exception):
     """队列超限 (路由层转为 429 + 明确提示)."""
+
+
+@dataclass
+class Subtask:
+    """总结任务子任务状态 (ADR-0005): 四标签独立进度/错误, 独立失败与重试."""
+
+    name: str
+    status: str = ST_PENDING
+    progress: float = 0.0
+    error: str | None = None
+    message: str | None = None
 
 
 @dataclass
@@ -75,11 +117,36 @@ class Task:
     completed_at: float | None = None  # 完成时刻 (TTL 过期起点, T06)
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
-    # 总结任务结果 (ADR-0005): transcript = [{start, end, text}], summary = 结构化 JSON
+    # 视频元信息 (解析时回填, 前端卡片展示: up主/播放量/简介)
+    uploader: str | None = None
+    view_count: int | None = None
+    description: str | None = None
+    # 总结任务结果 (ADR-0005): transcript = [{start, end, text}],
+    # summary = 结构化总结 JSON, mindmap = 导图结构 JSON (独立 LLM 生成)
     transcript: list[dict[str, Any]] | None = None
     summary: dict[str, Any] | None = None
+    mindmap: dict[str, Any] | None = None
+    # 四子任务状态 (kind=summary; 下载任务为空 dict), 事件负载逐 tab 推送
+    subtasks: dict[str, Subtask] = field(default_factory=dict)
+    # 四标签独立进度 (旁路字段, 兼容旧契约): subtasks 状态的平铺镜像,
+    # 由 update_subtask 同步赋值. 转录 0-100 (ASR 回调粒度, 字幕快路径
+    # 瞬时置 100) / 总结生成中置 30, 完成置 100
+    transcript_progress: float = 0.0
+    summary_progress: float = 0.0
     # 取消信号: 清除记录时置位, 下载中任务的 progress hook 检查后中断引擎
     cancel_event: threading.Event = field(default_factory=threading.Event)
+
+
+def _clean_description(info: dict[str, Any]) -> str | None:
+    """简介清洗: 引擎占位值 '-' / 空串视为无简介 (前端两行省略展示).
+
+    B 站部分视频简介为空, yt-dlp 归一化为 '-' 占位, 直接透传会让
+    前端显示无意义的单字符.
+    """
+    desc = (info.get("description") or "").strip()
+    if desc in ("", "-"):
+        return None
+    return desc[:500]
 
 
 class TaskManager:
@@ -98,8 +165,58 @@ class TaskManager:
         with self._lock:
             self._seq += 1
             task = Task(id=self._seq, url=url, kind=kind, is_member=is_member)
+            # 总结任务初始化四子任务 (pending), 供调度器 DAG 扫描派发
+            if kind == "summary":
+                task.subtasks = {name: Subtask(name=name) for name in SUBTASK_NAMES}
             self._tasks[task.id] = task
             return task
+
+    def update_subtask(
+        self,
+        task_id: int,
+        name: str,
+        status: str,
+        progress: float | None = None,
+        error: str | None = None,
+        message: str | None = None,
+    ) -> None:
+        """更新单个子任务状态 + 同步平铺镜像字段 + 广播 SSE (锁内 publish).
+
+        任务被清除记录后静默跳过 (worker 收尾更新, 与 update_status 同款防御).
+        """
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None:
+                return
+            sub = task.subtasks.get(name)
+            if sub is None:
+                return
+            sub.status = status
+            if progress is not None:
+                sub.progress = progress
+            if error is not None:
+                sub.error = error
+            if message is not None:
+                sub.message = message
+            # 平铺镜像: 旧契约字段 (SSE/TaskOut 兼容), 其余子任务不占位
+            if name == SUBTASK_TRANSCRIPT:
+                task.transcript_progress = sub.progress
+            elif name == SUBTASK_SUMMARY:
+                task.summary_progress = sub.progress
+            task.progress = self._weighted_progress(task)
+            task.updated_at = time.time()
+            bus.publish(task.id, task_event(task))
+
+    @staticmethod
+    def _weighted_progress(task: Task) -> float:
+        """任务级整体进度 = 各子任务进度加权和 (兼容旧契约 progress 字段)."""
+        return round(
+            sum(
+                _SUBTASK_WEIGHTS[name] * sub.progress
+                for name, sub in task.subtasks.items()
+            ),
+            1,
+        )
 
     def update_status(self, task_id: int, status: str, **fields: Any) -> Task | None:
         with self._lock:
@@ -183,6 +300,9 @@ class TaskManager:
             cover=info.get("cover"),
             duration=info.get("duration"),
             site=info.get("site"),
+            uploader=info.get("uploader"),
+            view_count=info.get("view_count"),
+            description=_clean_description(info),
             formats=formats,
         )
         return info
@@ -229,8 +349,14 @@ class TaskManager:
         与下载任务共享并发槽位 (CPU 密集, 复用调度器).
         """
         task = self.create_task(url=url, kind="summary", is_member=is_member)
-        try:  # 轻量解析: 卡片元信息, 失败不阻塞总结 (总结流程不依赖标题)
+        try:  # 轻量解析: 卡片元信息 + 档位列表, 失败不阻塞总结 (总结流程不依赖标题)
             info = downloader.resolve(url)
+            # 档位回填: 仅 AI 总结不下载时, 下载区仍展示各清晰度 (锁定状态, 用户
+            # 反馈); 锁定标记与下载任务同规则 (免费 >720p locked, 同 _fill_resolved)
+            formats = [
+                {**f, "locked": self._is_locked(f, task.is_member)}
+                for f in info.get("formats", [])
+            ]
             self.update_status(
                 task.id,
                 STATUS_PENDING,
@@ -238,12 +364,60 @@ class TaskManager:
                 cover=info.get("cover"),
                 duration=info.get("duration"),
                 site=info.get("site"),
+                uploader=info.get("uploader"),
+                view_count=info.get("view_count"),
+                description=_clean_description(info),
+                formats=formats,
             )
         except downloader.ResolveError as e:
             logger.warning("总结任务元信息解析失败 task=%s: %s", task.id, e)
         self.update_status(task.id, STATUS_QUEUED)
         self.ensure_scheduler()
         return self.get_task(task.id)
+
+    def find_active_summary(self, url: str) -> Task | None:
+        """同 url 的活跃总结任务 (queued/running) → 返回 (创建接口幂等去重).
+
+        URL 不归一化, 与前端任务分组键一致; 终态任务 (completed/failed/
+        expired) 允许再次创建.
+        """
+        with self._lock:
+            for t in self._tasks.values():
+                if (
+                    t.kind == "summary"
+                    and t.url == url
+                    and t.status in (STATUS_QUEUED, STATUS_RUNNING)
+                ):
+                    return t
+        return None
+
+    def retry_subtask(self, task_id: int, name: str) -> Task:
+        """重试失败的子任务: 重置 pending 并重新入队, 任务回 queued 重新调度.
+
+        只重跑该子任务 (done 子任务保留结果), 依赖它的 blocked 子任务在
+        DAG 扫描时自动解锁. 仅 failed/blocked 可重试, 运行中/未开始拒绝
+        (杜绝双 worker). 配额已在路由层跳过 (重试不扣).
+        """
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None:
+                raise KeyError(f"任务不存在: {task_id}")
+            if task.kind != "summary":
+                raise ValueError("仅总结任务可重试子任务")
+            sub = task.subtasks.get(name)
+            if sub is None:
+                raise ValueError(f"未知子任务: {name}")
+            if sub.status not in (ST_FAILED, ST_BLOCKED):
+                raise ValueError("子任务未失败, 无需重试")
+            sub.status = ST_PENDING
+            sub.progress = 0.0
+            sub.error = None
+            sub.message = None
+            task.status = STATUS_QUEUED
+            task.updated_at = time.time()
+            bus.publish(task.id, task_event(task))
+        self.ensure_scheduler()
+        return self.get_task(task_id)
 
     @staticmethod
     def _is_locked(fmt: dict[str, Any], is_member: bool) -> bool:
@@ -299,8 +473,8 @@ class TaskManager:
         """周期扫描: 有空闲并发槽时, 把排队任务派发给执行线程.
 
         并发槽按身份独立计算 (免费 1 / 会员 3), 槽位空闲才派发对应身份的任务.
-        派发状态按任务类型区分: 下载 → downloading; 总结 → transcribing
-        (ADR-0005), 避免总结卡片闪「下载中」.
+        派发状态按任务类型区分: 下载 → downloading; 总结 → running
+        (ADR-0005), 避免总结卡片闪「下载中」; 子任务进度走 subtasks 字段.
         """
         while not self._scheduler_stop.is_set():
             task = None
@@ -309,15 +483,15 @@ class TaskManager:
                 if task:
                     self._active[task.is_member] += 1
                     status = (
-                        STATUS_TRANSCRIBING
-                        if task.kind == "summary"
-                        else STATUS_DOWNLOADING
+                        STATUS_RUNNING if task.kind == "summary" else STATUS_DOWNLOADING
                     )
                     self.update_status(task.id, status)
             if task:
                 # 按任务类型分派 worker: 下载 / 总结 (ADR-0005) 共用并发槽
                 runner = (
-                    self._run_summary if task.kind == "summary" else self._run_download
+                    self._run_summary_worker
+                    if task.kind == "summary"
+                    else self._run_download
                 )
                 worker = threading.Thread(
                     target=runner,
@@ -355,9 +529,17 @@ class TaskManager:
             if task is None:  # 任务已被清除记录 (取消), worker 直接退出
                 return
             self._validate_download_access(task)
+            # 「最佳画质」档 (format_id="best") 是记录用独立 id, 实际下载用
+            # real_format_id (真实最高档 id): 字面 "best" 是 yt-dlp 表达式,
+            # B 站全 DASH 分离流下匹配为空 (bugfix/0003)
+            format_id = task.format_id
+            if format_id == "best":
+                fmt = next((f for f in task.formats if f["format_id"] == "best"), None)
+                if fmt:
+                    format_id = fmt.get("real_format_id") or format_id
             path = downloader.download(
                 task.url,
-                task.format_id,
+                format_id,
                 config.DOWNLOADS_DIR,
                 self._progress_hook(
                     task_id,
@@ -385,71 +567,207 @@ class TaskManager:
                 # 任务可能已被清除 (取消): 槽位始终按派发时的身份释放
                 self._active[is_member] -= 1
 
-    def _run_summary(self, task_id: int, is_member: bool) -> None:
-        """执行总结并更新任务状态 (独立线程, 完成后释放并发槽, ADR-0005).
+    def _run_summary_worker(self, task_id: int, is_member: bool) -> None:
+        """四子任务 DAG 执行 (独立线程, 完成后释放并发槽, ADR-0005).
 
-        流程: 转录 (字幕快路径 → ASR 回退) → LLM 生成结构化总结 → completed.
-        任一步失败标记 failed 并透传原因; 任务清除记录 (取消) 时收尾更新
-        由 update_status 防御跳过, 槽位始终按派发时的身份释放.
+        每轮扫描「可运行」子任务 (pending/blocked 且依赖全部 done), 并行启动
+        线程执行, 等待期间轮询扫描新解锁子任务并立即启动 (qa 仅依赖转录+
+        总结, 总结完成后无需等 mindmap 结束即解锁问答), 直至无可运行 →
+        汇总终态. 转录先完成即可先行查看; 单子任务失败只标自身 failed,
+        依赖它的子任务标 blocked, 重试后自动解锁. 任务清除记录 (取消) 时
+        收尾更新由 update_subtask 防御跳过, 槽位始终按派发时的身份释放.
         """
         try:
-            task = self.get_task(task_id)
-            if task is None:  # 任务已被清除记录 (取消), worker 直接退出
-                return
-            cancel = task.cancel_event
-            # 转录: 字幕优先 (秒级), 无字幕/失败回退 SenseVoice 转写
-            # (派发时已置 transcribing, 此处直接开始获取字幕)
-            segments = subtitle.get_subtitles(task.url)
-            if segments is None:
-                self.update_status(
-                    task_id,
-                    STATUS_TRANSCRIBING,
-                    progress=5.0,
-                    message="无可用字幕, 正在转写音频",
-                )
-                segments = asr.transcribe(
-                    task.url, self._transcript_progress(task_id, cancel), cancel
-                )
-            # 总结: LLM 结构化输出 (章节时间线 + 要点, 供思维导图/问答复用)
-            self.update_status(
-                task_id, STATUS_SUMMARIZING, progress=65.0, message="正在生成总结"
-            )
-            summary = llm.summarize(
-                segments_to_text(segments),
-                {
-                    "title": task.title,
-                    "duration": task.duration,
-                    "site": task.site,
-                },
-            )
-            self.update_status(
-                task_id,
-                STATUS_COMPLETED,
-                transcript=segments,
-                summary=summary,
-                progress=100.0,
-                message="总结完成",
-                completed_at=time.time(),  # TTL 起点: 结果就绪时刻 (与下载一致)
-            )
-        except (asr.TranscriptError, llm.LLMError) as e:  # 转录/LLM 明确异常: 透传原因
-            self.update_status(task_id, STATUS_FAILED, error=str(e))
-        except Exception as e:  # 其余异常 (磁盘/中断等): 标记失败而非悬挂
-            self.update_status(task_id, STATUS_FAILED, error=f"总结异常: {e}")
+            while True:
+                runnable = self._runnable_subtasks(task_id)
+                if not runnable:
+                    break
+                threads = []
+                started: set[str] = set()
+                for name in runnable:
+                    threads.append(self._spawn_subtask(task_id, name))
+                    started.add(name)
+                # 等待期间动态解锁: 整体 join 会阻塞到本轮全部子任务结束
+                # (含慢的 mindmap), 导致 qa 必须等思维导图完成才能解锁
+                # (用户反馈). 改为轮询: 依赖完成即启动新解锁子任务
+                while threads:
+                    for name in self._runnable_subtasks(task_id):
+                        if name in started:
+                            continue
+                        started.add(name)
+                        threads.append(self._spawn_subtask(task_id, name))
+                    threads = [t for t in threads if t.is_alive()]
+                    time.sleep(0.05)
+            self._finalize_subtasks(task_id)
         finally:
             with self._lock:
                 # 任务可能已被清除 (取消): 槽位始终按派发时的身份释放
                 self._active[is_member] -= 1
 
+    def _spawn_subtask(self, task_id: int, name: str) -> threading.Thread:
+        """启动单个子任务线程并标记 running (worker 循环与动态解锁复用)."""
+        self.update_subtask(task_id, name, ST_RUNNING, progress=0.0)
+        t = threading.Thread(
+            target=self._run_subtask,
+            args=(task_id, name),
+            name=f"subtask-{name}-{task_id}",
+            daemon=True,
+        )
+        t.start()
+        return t
+
+    def _runnable_subtasks(self, task_id: int) -> list[str]:
+        """锁内判定本轮可运行子任务: pending/blocked 且依赖全部 done.
+
+        依赖存在 failed 而自身 pending 时标 blocked (等重试恢复, 不重复
+        执行). 返回空列表表示 DAG 已无进展 (终态判定).
+        """
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None:
+                return []
+            runnable = []
+            for name in SUBTASK_NAMES:
+                sub = task.subtasks.get(name)
+                if sub is None or sub.status not in (ST_PENDING, ST_BLOCKED):
+                    continue
+                deps = SUBTASK_DEPS[name]
+                if all(task.subtasks[d].status == ST_DONE for d in deps):
+                    runnable.append(name)
+                elif (
+                    any(task.subtasks[d].status == ST_FAILED for d in deps)
+                    and sub.status == ST_PENDING
+                ):  # 依赖已失败: 标阻塞等重试
+                    sub.status = ST_BLOCKED
+                    sub.message = "依赖子任务失败, 等待重试"
+            return runnable
+
+    def _run_subtask(self, task_id: int, name: str) -> None:
+        """执行单个子任务 (独立线程): 转录/LLM 生成/问答上下文就绪标记.
+
+        失败只标自身 failed, 不拖垮其余子任务; 明确异常 (转录/LLM) 透传原因,
+        其余异常统一前缀 (与旧 _run_summary 失败语义一致).
+        """
+        task = self.get_task(task_id)
+        if task is None:  # 任务已被清除记录 (取消), worker 直接退出
+            return
+        try:
+            if name == SUBTASK_TRANSCRIPT:
+                self._run_transcript_subtask(task)
+            elif name in (SUBTASK_SUMMARY, SUBTASK_MINDMAP):
+                self._run_llm_subtask(task, name)
+            else:  # qa: 上下文 (转录+总结) 就绪即完成, 不调 LLM, 提问时实时回答
+                self.update_subtask(
+                    task_id,
+                    name,
+                    ST_DONE,
+                    progress=100.0,
+                    message="问答上下文已就绪",
+                )
+        except (asr.TranscriptError, llm.LLMError) as e:
+            self.update_subtask(task_id, name, ST_FAILED, error=str(e))
+        except Exception as e:
+            self.update_subtask(task_id, name, ST_FAILED, error=f"{name} 异常: {e}")
+
+    def _run_transcript_subtask(self, task: Task) -> None:
+        """转录子任务: 字幕快路径 (秒级) → 无字幕回退 SenseVoice 转写."""
+        cancel = task.cancel_event
+        segments = subtitle.get_subtitles(task.url)
+        if segments is None:
+            self.update_subtask(
+                task.id,
+                SUBTASK_TRANSCRIPT,
+                ST_RUNNING,
+                progress=5.0,
+                message="无可用字幕, 正在转写音频",
+            )
+            segments = asr.transcribe(
+                task.url,
+                self._transcript_progress(task.id, cancel),
+                cancel,
+            )
+        self.update_subtask(
+            task.id,
+            SUBTASK_TRANSCRIPT,
+            ST_DONE,
+            progress=100.0,
+            message="字幕获取完成",
+        )
+        with self._lock:
+            if task.id in self._tasks:
+                task.transcript = segments
+
+    def _run_llm_subtask(self, task: Task, name: str) -> None:
+        """LLM 生成子任务: summary 结构化总结 / mindmap 导图结构 (独立调用).
+
+        置 progress=30 仅作「生成中」标记 (LLM 无回调, 前端渲染不确定条),
+        与旧 summary_progress 语义一致; 结果分别存 task.summary / task.mindmap.
+        """
+        self.update_subtask(
+            task.id, name, ST_RUNNING, progress=30.0, message="正在生成"
+        )
+        text = segments_to_text(task.transcript or [])
+        meta = {"title": task.title, "duration": task.duration, "site": task.site}
+        if name == SUBTASK_SUMMARY:
+            result = llm.summarize(text, meta)
+        else:
+            result = llm.generate_mindmap(text, meta)
+        with self._lock:
+            if task.id in self._tasks:
+                if name == SUBTASK_SUMMARY:
+                    task.summary = result
+                else:
+                    task.mindmap = result
+        self.update_subtask(task.id, name, ST_DONE, progress=100.0, message="生成完成")
+
+    def _finalize_subtasks(self, task_id: int) -> None:
+        """DAG 结束后汇总任务终态: 全 done → completed; 有 done 有失败 →
+        completed (部分完成, 失败子任务可重试); 全 failed/blocked → failed."""
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None:
+                return
+            subs = task.subtasks.values()
+            all_done = all(s.status == ST_DONE for s in subs)
+            any_done = any(s.status == ST_DONE for s in subs)
+            if all_done:
+                self.update_status(
+                    task_id,
+                    STATUS_COMPLETED,
+                    progress=100.0,
+                    message="总结完成",
+                    completed_at=time.time(),  # TTL 起点: 结果就绪时刻 (与下载一致)
+                )
+            elif any_done:
+                # 部分完成: 任务标记完成 (TTL 起点), 失败子任务经重试接口补齐
+                self.update_status(
+                    task_id,
+                    STATUS_COMPLETED,
+                    message="总结完成 (部分子任务失败, 可重试)",
+                    completed_at=time.time(),
+                )
+            else:
+                first_error = next((s.error for s in subs if s.error), "所有子任务失败")
+                self.update_status(
+                    task_id,
+                    STATUS_FAILED,
+                    error=f"总结失败: {first_error}",
+                )
+
     def _transcript_progress(self, task_id: int, cancel_event: threading.Event):
-        """ASR 阶段进度回调 → 任务进度 (0~60 映射, 与下载进度同口径)."""
+        """ASR 阶段进度回调 → 转录子任务进度 (0~100, 四标签进度条数据源)."""
 
         def cb(stage: str, pct: float, msg: str) -> None:
             if cancel_event is not None and cancel_event.is_set():
                 return  # 取消由 asr 内部检查中断, 此处仅停止上报
-            # 阶段映射: 音频下载 5~10%, 转写 10~60%
-            progress = 5.0 + pct * 5.0 if stage == "audio" else 10.0 + pct * 50.0
-            self.update_status(
-                task_id, STATUS_TRANSCRIBING, progress=min(progress, 99.0), message=msg
+            # 阶段映射: 音频下载 5~10%, 转写 10~100%
+            progress = 5.0 + pct * 5.0 if stage == "audio" else 10.0 + pct * 90.0
+            self.update_subtask(
+                task_id,
+                SUBTASK_TRANSCRIPT,
+                ST_RUNNING,
+                progress=min(progress, 99.0),
+                message=msg,
             )
 
         return cb

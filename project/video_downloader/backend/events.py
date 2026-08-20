@@ -91,8 +91,27 @@ def task_event(task: Task) -> dict:
         "title": task.title or "",
         "cover": task.cover,
         "progress": task.progress,
+        # 四标签独立进度 (总结任务; 下载任务恒 0/0)
+        "transcript_progress": task.transcript_progress,
+        "summary_progress": task.summary_progress,
+        # 四子任务状态 (kind=summary; 下载任务为空 dict), 前端逐 tab 驱动
+        "subtasks": {
+            name: {
+                "status": sub.status,
+                "progress": sub.progress,
+                "error": sub.error,
+                "message": sub.message,
+            }
+            for name, sub in task.subtasks.items()
+        },
+        # 视频元信息 (卡片展示)
+        "uploader": task.uploader,
+        "view_count": task.view_count,
+        "description": task.description,
         "message": task.message,
+        # 交付直链 (url 键已被占用, 源链接走 source_url, 前端按它分组)
         "url": f"/api/files/{task.id}" if task.file_path else None,
+        "source_url": task.url,
         "error": task.error,
         "expires_at": (
             task.completed_at + config.delivery_ttl(task.is_member)

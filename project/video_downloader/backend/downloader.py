@@ -20,6 +20,18 @@ class ResolveError(Exception):
     """解析失败 (不支持的平台 / 链接无效 / 网络错误)."""
 
 
+def _clean_description(info: dict[str, Any]) -> str | None:
+    """简介清洗: 引擎占位值 '-' / 空串视为无简介.
+
+    B 站部分视频简介为空, yt-dlp 归一化为 '-' 占位, 直接透传会让
+    前端显示无意义的单字符 (与 task_manager 口径一致).
+    """
+    desc = (info.get("description") or "").strip()
+    if desc in ("", "-"):
+        return None
+    return desc[:500]
+
+
 def _extract(url: str) -> dict[str, Any]:
     """调用 yt-dlp 提取视频元信息 (只提取不下载).
 
@@ -62,21 +74,28 @@ def _to_formats(info: dict[str, Any]) -> list[dict[str, Any]]:
                 # 是否含音频: 合一格式 True; DASH 分离流 (B 站等) video-only
                 # False → 下载时需合并音频流才有声音 (见 _format_spec)
                 "has_audio": f.get("acodec") not in (None, "none"),
+                # 文件大小 (字节): 引擎多数档位提供, 缺失时前端显示「-」
+                "filesize": f.get("filesize") or f.get("filesize_approx"),
             }
         )
     if formats:
         best = formats[-1]
-        # 最佳画质指向最高档的真实 format_id, 而非字面 "best":
-        # "best" 是 yt-dlp 格式选择表达式, 只匹配音视频合一的单一格式,
+        # 最佳画质用独立 format_id "best" 区分普通最高档 (用户反馈: 下载记录里
+        # 「1080p」与「最佳画质 - 1080p」重复且无法追溯选择); 实际下载用
+        # real_format_id (真实最高档 id): 字面 "best" 是 yt-dlp 格式选择表达式,
         # B 站等平台返回全 DASH 分离流时匹配为空 → 下载报
-        # "Requested format is not available" (见 bugfix/0003)
+        # "Requested format is not available" (见 bugfix/0003).
+        # real_format_id 为内部字段, FormatOut 序列化时被过滤, 前端仅按
+        # format_id="best" 判定
         formats.append(
             {
-                "format_id": best["format_id"],
+                "format_id": "best",
+                "real_format_id": best["format_id"],
                 "height": best["height"],
                 "ext": "mp4",
                 "label": f"最佳画质 - {best['height']}p",
                 "has_audio": best["has_audio"],
+                "filesize": best["filesize"],
             }
         )
     return formats
@@ -113,6 +132,12 @@ def resolve(url: str) -> dict[str, Any]:
         "cover": _cover_url(info),
         "duration": info.get("duration"),
         "site": info.get("extractor_key"),
+        # 视频元信息 (前端卡片展示): up主 / 播放量 / 简介 (截断防大字段)
+        "uploader": info.get("uploader"),
+        "view_count": info.get("view_count"),
+        # 占位值清洗: B 站空简介被 yt-dlp 归一化为 "-", 视为无简介
+        # (与 task_manager._clean_description 口径一致)
+        "description": _clean_description(info),
         "formats": _to_formats(info),
     }
 

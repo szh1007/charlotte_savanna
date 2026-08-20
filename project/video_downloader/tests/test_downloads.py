@@ -75,11 +75,11 @@ def test_create_download_rejects_non_bilibili_domain_422(
 def test_best_quality_download_uses_real_format_id(
     client: TestClient, fake_download, monkeypatch
 ) -> None:
-    """B 站全 DASH 分离流: 「最佳画质」档位指向真实最高档 id, 下载链路可用.
+    """B 站全 DASH 分离流: 「最佳画质」档位独立 id "best", 下载链路可用.
 
-    回归 bugfix/0003: 旧实现最佳画质 format_id 为字面 "best", yt-dlp 将其
-    作为格式选择表达式只匹配合一格式, 全分离流下匹配为空下载报
-    "Requested format is not available".
+    回归 bugfix/0003: 字面 "best" 是 yt-dlp 格式选择表达式, 只匹配合一格式,
+    全分离流下匹配为空下载报 "Requested format is not available". 独立 id
+    "best" 记录用户选择, 下载时后端映射为 real_format_id (真实最高档 id).
     """
     dash_info = {
         "id": "dash-only",
@@ -114,14 +114,14 @@ def test_best_quality_download_uses_real_format_id(
     }
     monkeypatch.setattr("backend.downloader._extract", lambda url: dash_info)
 
-    # 解析 → 取「最佳画质」档位 (列表末尾, 与最高档同真实 id)
+    # 解析 → 取「最佳画质」档位 (列表末尾, 独立 id "best")
     resp = client.post(
         "/api/resolve", json={"url": "https://www.bilibili.com/video/BV-best"}
     )
     formats = resp.json()["formats"]
     assert formats[-1]["label"] == "最佳画质 - 1080p"
     best_id = formats[-1]["format_id"]
-    assert best_id == "30080"  # 真实最高档 id, 而非字面 "best"
+    assert best_id == "best"  # 独立 id, 区分普通最高档 (real_format_id 不外传)
     # DASH video-only 档位标记无音频 → 下载时合并音频流 (bugfix/0003)
     assert formats[-1]["has_audio"] is False
 

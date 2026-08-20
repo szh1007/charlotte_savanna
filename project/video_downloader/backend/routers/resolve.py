@@ -18,6 +18,9 @@ def _to_response(task) -> ResolveResponse:
         cover=task.cover,
         duration=task.duration,
         site=task.site,
+        uploader=task.uploader,
+        view_count=task.view_count,
+        description=task.description,
         formats=[FormatOut(**f) for f in task.formats],
         member_limited=any(f["locked"] for f in task.formats),
     )

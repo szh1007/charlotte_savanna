@@ -44,6 +44,16 @@ class FormatOut(BaseModel):
     ext: str
     locked: bool = False  # 该档位对该用户是否锁定 (免费用户 >720p, T05)
     has_audio: bool = True  # 是否含音频 (DASH 分离流 False: 下载时自动合并音频流)
+    filesize: float | None = None  # 文件大小 (字节, 引擎缺失时为 None)
+
+
+class SubtaskOut(BaseModel):
+    """总结子任务状态 (四 tab 独立进度/错误, ADR-0005)."""
+
+    status: str
+    progress: float = 0.0
+    error: str | None = None
+    message: str | None = None
 
 
 class ResolveResponse(BaseModel):
@@ -53,6 +63,9 @@ class ResolveResponse(BaseModel):
     cover: str | None = None
     duration: float | None = None
     site: str | None = None
+    uploader: str | None = None  # up主
+    view_count: int | None = None  # 播放量
+    description: str | None = None  # 简介
     formats: list[FormatOut]
     member_limited: bool = False  # 是否存在会员专属 (锁定) 档位
 
@@ -86,13 +99,22 @@ class TaskOut(BaseModel):
     task_id: int
     kind: str
     status: str
+    url: str = ""  # 源视频链接 (前端按视频分组展示, 同视频多清晰度合并一行)
     title: str = ""
     cover: str | None = None
     duration: float | None = None
     site: str | None = None
+    uploader: str | None = None  # up主
+    view_count: int | None = None  # 播放量
+    description: str | None = None  # 简介
     formats: list[FormatOut] = Field(default_factory=list)
     format_id: str | None = None  # 选定档位 (标题旁清晰度标注用)
     progress: float = 0.0
+    # 四标签独立进度 (总结任务, 下载任务恒 0): 转录 0-100 / 总结生成中 30, 完成 100
+    transcript_progress: float = 0.0
+    summary_progress: float = 0.0
+    # 四子任务状态 (kind=summary; 下载任务为空 dict), 前端逐 tab 驱动
+    subtasks: dict[str, SubtaskOut] = Field(default_factory=dict)
     message: str | None = None
     error: str | None = None
     expires_at: float | None = None  # 交付过期时刻 (仅 completed, 前端倒计时)
@@ -101,6 +123,14 @@ class TaskOut(BaseModel):
 
 class SummarizeRequest(BaseModel):
     url: str = Field(..., min_length=1, description="视频页面链接")
+
+
+class RetryRequest(BaseModel):
+    """重试总结子任务 (ADR-0005): 仅失败/阻塞的子任务可重试."""
+
+    subtask: str = Field(
+        ..., pattern="^(transcript|summary|mindmap|qa)$", description="子任务名"
+    )
 
 
 class TranscriptSegment(BaseModel):
@@ -130,6 +160,17 @@ class TranscriptOut(BaseModel):
     text: str
 
 
+class MindMapOut(BaseModel):
+    """思维导图结果 (ADR-0005): 独立 LLM 生成的导图结构 JSON."""
+
+    task_id: int
+    status: str
+    title: str = ""
+    duration: float | None = None
+    mindmap: dict | None = None
+    created_at: float
+
+
 class QARequest(BaseModel):
     question: str = Field(..., min_length=1, description="针对视频内容的问题")
 
@@ -148,13 +189,28 @@ def task_to_out(task) -> TaskOut:
         task_id=task.id,
         kind=task.kind,
         status=task.status,
+        url=task.url,
         title=task.title or "",
         cover=task.cover,
         duration=task.duration,
         site=task.site,
+        uploader=task.uploader,
+        view_count=task.view_count,
+        description=task.description,
         formats=[FormatOut(**f) for f in task.formats],
         format_id=task.format_id,
         progress=task.progress,
+        transcript_progress=task.transcript_progress,
+        summary_progress=task.summary_progress,
+        subtasks={
+            name: SubtaskOut(
+                status=sub.status,
+                progress=sub.progress,
+                error=sub.error,
+                message=sub.message,
+            )
+            for name, sub in task.subtasks.items()
+        },
         message=task.message,
         error=task.error,
         # 交付过期时刻 = 完成时刻 + 身份 TTL; 仅 completed 有交付资产, 其余为 None

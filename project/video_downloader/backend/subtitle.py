@@ -14,6 +14,7 @@ import http.cookiejar
 import json
 import logging
 import re
+import time
 import urllib.request
 from typing import Any
 
@@ -26,6 +27,11 @@ logger = logging.getLogger(__name__)
 
 # 中文字幕优先顺序 (B 站 AI 字幕 / CC 字幕 lang 键)
 _ZH_LANGS = ("zh-CN", "zh-Hans", "zh", "ai-zh")
+
+# 字幕提取重试 (用户反馈: B 站 API 偶发 502 Bad Gateway, 属临时故障,
+# 重试退避后通常可恢复; 连续失败才回退 ASR, 减少不必要的转写开销)
+_EXTRACT_RETRIES = 3
+_EXTRACT_RETRY_BASE_SLEEP = 2.0  # 重试间隔基数 (秒), 逐次翻倍
 
 _HEADERS = {
     "Referer": "https://www.bilibili.com/",
@@ -88,15 +94,23 @@ def _extract_subtitles(url: str) -> dict[str, Any] | None:
         # yt-dlp 基类 extract_subtitles 需该参数才触发提取, 否则静默返回空
         "writesubtitles": True,
     }
-    try:
-        with YoutubeDL(opts) as ydl:
-            if config.BILI_COOKIE:
-                # 内存注入登录态: 首次访问前赋值覆盖 cached_property
-                #  (见 _parse_cookiejar)
-                ydl.cookiejar = _parse_cookiejar(config.BILI_COOKIE)
-            info = ydl.extract_info(url, download=False)
-    except Exception as e:
-        logger.warning("字幕提取失败 %s: %s (回退 ASR)", url, e)
+    last_error: Exception | None = None
+    for attempt in range(_EXTRACT_RETRIES):
+        try:
+            with YoutubeDL(opts) as ydl:
+                if config.BILI_COOKIE:
+                    # 内存注入登录态: 首次访问前赋值覆盖 cached_property
+                    #  (见 _parse_cookiejar)
+                    ydl.cookiejar = _parse_cookiejar(config.BILI_COOKIE)
+                info = ydl.extract_info(url, download=False)
+            break
+        except Exception as e:
+            last_error = e
+            if attempt < _EXTRACT_RETRIES - 1:
+                # 退避重试 (2s → 4s): B 站 API 临时 502 重试可恢复
+                time.sleep(_EXTRACT_RETRY_BASE_SLEEP * (2**attempt))
+    else:
+        logger.warning("字幕提取失败 %s: %s (回退 ASR)", url, last_error)
         return None
     subs = info.get("subtitles") or {}
     for lang in _ZH_LANGS:

@@ -14,6 +14,7 @@ import pytest
 from backend import asr, config, llm
 from backend import cleaner as cleaner_mod
 from backend import subtitle as subtitle_mod
+from backend.quota import quota as daily_quota
 from backend.task_manager import STATUS_EXPIRED
 from conftest import FAKE_INFO
 from fastapi.testclient import TestClient
@@ -41,6 +42,18 @@ FAKE_SUMMARY = {
     "conclusion": "总结流程闭环",
 }
 
+FAKE_MINDMAP = {
+    "title": "测试视频标题",
+    "chapters": [
+        {
+            "start": 0.0,
+            "end": 60.0,
+            "title": "核心流程",
+            "points": ["字幕优先", "无字幕时转写"],
+        }
+    ],
+}
+
 
 @pytest.fixture(autouse=True)
 def fake_meta(monkeypatch):
@@ -48,9 +61,13 @@ def fake_meta(monkeypatch):
 
     create_summary 内部会同步 downloader.resolve 取标题/封面/时长 (task_manager
     create_summary), 不替换则真实解析 yt-dlp 触网且慢; 替换后返回伪元信息.
+    同时 mock generate_mindmap (四子任务之一, 不 mock 则真实调用 LLM API 触网).
     """
 
     monkeypatch.setattr("backend.downloader._extract", lambda url: dict(FAKE_INFO))
+    monkeypatch.setattr(
+        "backend.llm.generate_mindmap", lambda text, meta: dict(FAKE_MINDMAP)
+    )
 
 
 @pytest.fixture
@@ -103,9 +120,12 @@ def fake_asr(monkeypatch):
 
 @pytest.fixture
 def fake_llm(monkeypatch):
-    """替换 LLM: summarize 返回伪结构化总结, ask 返回伪答案."""
+    """替换 LLM 三层: summarize / generate_mindmap / ask 全部返回伪数据."""
 
     monkeypatch.setattr("backend.llm.summarize", lambda text, meta: dict(FAKE_SUMMARY))
+    monkeypatch.setattr(
+        "backend.llm.generate_mindmap", lambda text, meta: dict(FAKE_MINDMAP)
+    )
     monkeypatch.setattr("backend.llm.ask", lambda t, s, q: f"回答: {q}")
 
 
@@ -182,25 +202,37 @@ def test_summary_task_kind_and_list_visibility(client, fake_subtitle, fake_llm) 
 
 
 def test_summary_sse_status_flow(client, fake_subtitle, fake_llm) -> None:
-    """SSE 事件流含 transcribing → summarizing → completed 全链路."""
+    """SSE 事件流: queued → running → completed, 事件携带 subtasks 且转录先行."""
     stream = SseStream(client.app, "/api/events")
     stream.wait_headers()
     create_summary(client)  # 创建后事件流由调度线程驱动, 无需持有 task_id
 
     statuses: list[str] = []
+    seen_transcript_done = False
+    seen_summary_done = False
     deadline = time.monotonic() + 5.0
     while time.monotonic() < deadline and "completed" not in statuses:
         frame = stream.next()
         data_line = next(
             line for line in frame.split("\n") if line.startswith("data: ")
         )
-        statuses.append(json.loads(data_line.removeprefix("data: "))["status"])
+        evt = json.loads(data_line.removeprefix("data: "))
+        statuses.append(evt["status"])
+        subs = evt.get("subtasks") or {}
+        # 四子任务独立状态随事件携带 (前端四 tab 数据源)
+        assert set(subs) == {"transcript", "summary", "mindmap", "qa"}
+        if subs.get("transcript", {}).get("status") == "done":
+            seen_transcript_done = True
+        if subs.get("summary", {}).get("status") == "done":
+            seen_summary_done = True
     stream.close()
     stream.join()
 
-    assert "transcribing" in statuses
-    assert "summarizing" in statuses
+    assert "running" in statuses
     assert statuses[-1] == "completed"
+    # 依赖序: 转录先完成, 总结 (依赖转录) 后完成
+    assert seen_transcript_done
+    assert seen_summary_done
 
 
 def test_summary_falls_back_to_asr(client, fake_subtitle, fake_asr, fake_llm) -> None:
@@ -219,26 +251,27 @@ def test_summary_falls_back_to_asr(client, fake_subtitle, fake_asr, fake_llm) ->
 def test_summary_transcribing_progress_reported(
     client, fake_subtitle, fake_asr, fake_llm
 ) -> None:
-    """ASR 转写进度: 中间态 progress 落 10~60 区间 (验收 2 含 ASR 百分比)."""
+    """ASR 转写进度: 转录子任务 progress 落 10~100 区间 (四 tab 进度条数据源)."""
     _, holder = fake_subtitle
     holder["no_subtitle"] = True
     _, gate = fake_asr
-    gate.clear()  # 阻塞 ASR 返回: 观察 transcribing 中间进度
+    gate.clear()  # 阻塞 ASR 返回: 观察转写中间进度
 
     task_id = create_summary(client)
 
     def reached() -> bool:
         task = find_task(client, task_id)
-        return task["status"] == "transcribing" and task["progress"] >= 10.0
+        sub = task["subtasks"]["transcript"]
+        return sub["status"] == "running" and sub["progress"] >= 10.0
 
     assert wait_until(reached)
-    assert find_task(client, task_id)["progress"] < 60.0
+    assert find_task(client, task_id)["subtasks"]["transcript"]["progress"] < 100.0
     gate.set()
     wait_completed(client, task_id)
 
 
 def test_summary_failed_when_asr_errors(client, fake_subtitle, monkeypatch) -> None:
-    """ASR 转写失败 → 任务 failed, 原因透传 (TranscriptError, 验收 2)."""
+    """转录失败 → 转录子任务 failed, 依赖它的子任务 blocked, 任务 failed."""
     _, holder = fake_subtitle
     holder["no_subtitle"] = True
 
@@ -248,19 +281,53 @@ def test_summary_failed_when_asr_errors(client, fake_subtitle, monkeypatch) -> N
     monkeypatch.setattr("backend.asr.transcribe", _boom)
     task_id = create_summary(client)
     assert wait_until(lambda: find_task(client, task_id)["status"] == "failed")
-    assert "音频下载失败" in find_task(client, task_id)["error"]
+    task = find_task(client, task_id)
+    assert "音频下载失败" in task["error"]
+    # 子任务语义: 转录自身失败, 依赖转录的其余子任务 blocked (等重试恢复)
+    subs = task["subtasks"]
+    assert subs["transcript"]["status"] == "failed"
+    assert subs["summary"]["status"] == "blocked"
+    assert subs["mindmap"]["status"] == "blocked"
+    assert subs["qa"]["status"] == "blocked"
+    # 转录不可访问 (子任务未完成)
+    assert client.get(f"/api/tasks/{task_id}/transcript").status_code == 409
 
 
 def test_summary_failed_when_llm_errors(client, fake_subtitle, monkeypatch) -> None:
-    """LLM 生成总结失败 → 任务 failed, 原因透传 (LLMError, 验收 2)."""
+    """总结子任务失败 → 任务 completed (部分完成), 转录仍可访问, 重试后可恢复.
+
+    失败只影响自身: 转录/导图子任务保持 done, 任务级不再整体 failed
+    (部分完成语义, 失败子任务经重试接口补齐).
+    """
+    boom = {"active": True}
 
     def _boom(text: str, meta: dict):
-        raise llm.LLMError("LLM 调用失败: 测试超时")
+        if boom["active"]:
+            raise llm.LLMError("LLM 调用失败: 测试超时")
+        return dict(FAKE_SUMMARY)
 
     monkeypatch.setattr("backend.llm.summarize", _boom)
     task_id = create_summary(client)
-    assert wait_until(lambda: find_task(client, task_id)["status"] == "failed")
-    assert "LLM 调用失败" in find_task(client, task_id)["error"]
+    assert wait_until(lambda: find_task(client, task_id)["status"] == "completed")
+    task = find_task(client, task_id)
+    subs = task["subtasks"]
+    assert subs["summary"]["status"] == "failed"
+    assert "LLM 调用失败" in subs["summary"]["error"]
+    assert subs["transcript"]["status"] == "done"  # 转录不受影响
+    assert subs["mindmap"]["status"] == "done"
+    # 转录仍可访问 (转录先完成即先查看, 不依赖总结成功)
+    assert client.get(f"/api/tasks/{task_id}/transcript").status_code == 200
+    # 总结接口 409 (子任务未完成)
+    assert client.get(f"/api/tasks/{task_id}/summary").status_code == 409
+
+    # 重试总结子任务: 只重跑 summary, 恢复后接口可用
+    boom["active"] = False
+    resp = client.post(f"/api/tasks/{task_id}/retry", json={"subtask": "summary"})
+    assert resp.status_code == 200
+    assert wait_until(
+        lambda: find_task(client, task_id)["subtasks"]["summary"]["status"] == "done"
+    )
+    assert client.get(f"/api/tasks/{task_id}/summary").status_code == 200
 
 
 def test_summary_domain_validation(client, fake_subtitle, fake_llm) -> None:
@@ -279,8 +346,9 @@ def test_summary_domain_validation(client, fake_subtitle, fake_llm) -> None:
 
 def test_free_summary_quota_exceeded(client, fake_subtitle, fake_llm) -> None:
     """免费档每日总结配额: 第 4 次创建 → 429 明确提示, 会员不限."""
-    for _ in range(config.FREE_SUMMARY_DAILY):
-        create_summary(client)
+    for i in range(config.FREE_SUMMARY_DAILY):
+        # 不同 url 规避幂等命中 (同 url 活跃任务不重复创建/不扣配额, 幂等验收另测)
+        create_summary(client, url=f"{VIDEO_URL}?free={i}")
     resp = client.post(
         "/api/summarize",
         json={"url": VIDEO_URL},
@@ -302,8 +370,9 @@ def test_free_summary_quota_exceeded(client, fake_subtitle, fake_llm) -> None:
 
 def test_free_summary_quota_counts_per_client(client, fake_subtitle, fake_llm) -> None:
     """配额按 client_id 独立计数: 不同客户端互不影响."""
-    for _ in range(config.FREE_SUMMARY_DAILY):
-        create_summary(client, client_id="client-a")
+    for i in range(config.FREE_SUMMARY_DAILY):
+        # 不同 url 规避幂等命中 (同 url 活跃任务不重复创建/不扣配额, 幂等验收另测)
+        create_summary(client, client_id="client-a", url=f"{VIDEO_URL}?a={i}")
     resp = client.post(
         "/api/summarize",
         json={"url": VIDEO_URL},
@@ -346,10 +415,10 @@ def test_qa_quota_free_limited(client, fake_subtitle, fake_llm) -> None:
     assert resp.status_code == 429
 
 
-def test_qa_requires_completed_task(client, fake_subtitle, fake_llm) -> None:
-    """总结进行中提问 → 409 (字幕阻塞观察中间状态)."""
+def test_qa_requires_ready_context(client, fake_subtitle, fake_llm) -> None:
+    """问答上下文未就绪 (转录阻塞中, qa 子任务 pending) 提问 → 409."""
     release, _ = fake_subtitle
-    release.clear()  # 阻塞转录: 任务停留在 transcribing
+    release.clear()  # 阻塞转录: qa 依赖 (转录+总结) 未就绪
     task_id = create_summary(client)
     resp = client.post(
         f"/api/tasks/{task_id}/qa",
@@ -469,3 +538,294 @@ def test_subtitle_parser_skips_empty_lines() -> None:
     segments = subtitle_mod._parse_caption(content)
     assert len(segments) == 1
     assert segments[0]["text"] == "有效内容"
+
+
+# ----- 四标签独立进度与分组字段 (UI 改造: 任务按视频分组 + 四 tab 进度条) -----
+
+
+def test_task_out_carries_grouping_fields(client, fake_subtitle, fake_llm) -> None:
+    """任务列表携带分组/元信息/子任务字段: url 分组键 + 四子任务状态, 大字段不入列表."""
+    task_id = create_summary(client)
+    wait_completed(client, task_id)
+    task = find_task(client, task_id)
+    assert task["url"] == VIDEO_URL  # 分组键 (同视频多清晰度合并一行)
+    # 视频元信息 (卡片展示: up主/播放量/简介)
+    assert task["uploader"] == "测试UP主"
+    assert task["view_count"] == 123456
+    assert task["description"] == "测试视频简介"
+    # 四子任务独立状态 (前端四 tab 数据源), 完成后全部 done
+    subs = task["subtasks"]
+    assert set(subs) == {"transcript", "summary", "mindmap", "qa"}
+    assert all(subs[n]["status"] == "done" for n in subs)
+    # 平铺镜像进度 (旧契约兼容)
+    assert task["transcript_progress"] == 100.0
+    assert task["summary_progress"] == 100.0
+    # 轻量契约仍在: transcript / summary / mindmap 大字段不入列表响应
+    assert "transcript" not in task
+    assert "summary" not in task
+    assert "mindmap" not in task
+
+
+def test_transcript_progress_reported_during_asr(
+    client, fake_subtitle, fake_asr, fake_llm
+) -> None:
+    """
+    ASR 转写中间态: 转录子任务 progress 10~99,
+    平铺镜像与加权任务进度同步 (旧契约兼容).
+    """
+    _, holder = fake_subtitle
+    holder["no_subtitle"] = True
+    _, gate = fake_asr
+    gate.clear()  # 阻塞 ASR 返回: 观察转写中间进度
+
+    task_id = create_summary(client)
+
+    def reached() -> bool:
+        task = find_task(client, task_id)
+        sub = task["subtasks"]["transcript"]
+        return task["status"] == "running" and sub["progress"] >= 10.0
+
+    assert wait_until(reached)
+    task = find_task(client, task_id)
+    assert task["subtasks"]["transcript"]["progress"] < 100.0
+    assert task["summary_progress"] == 0.0  # 总结未启动, 镜像进度为 0
+    # 平铺镜像 = 子任务进度; 任务级 progress = 转录加权 (40%), 其余子任务 0
+    assert task["transcript_progress"] == task["subtasks"]["transcript"]["progress"]
+    assert 4.0 <= task["progress"] < 40.0
+    gate.set()
+    wait_completed(client, task_id)
+    done = find_task(client, task_id)
+    assert done["transcript_progress"] == 100.0
+    assert done["summary_progress"] == 100.0
+
+
+def test_sse_event_carries_tab_progress(client, fake_subtitle, fake_llm) -> None:
+    """SSE 事件携带分组键 (source_url) 与四子任务状态 (前端四 tab 数据源)."""
+    stream = SseStream(client.app, "/api/events")
+    stream.wait_headers()
+    create_summary(client)
+
+    seen_source = False
+    seen_all_done = False
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and not (seen_source and seen_all_done):
+        frame = stream.next()
+        data_line = next(
+            line for line in frame.split("\n") if line.startswith("data: ")
+        )
+        evt = json.loads(data_line.removeprefix("data: "))
+        assert "source_url" in evt
+        assert "transcript_progress" in evt
+        assert "summary_progress" in evt
+        subs = evt.get("subtasks") or {}
+        assert set(subs) == {"transcript", "summary", "mindmap", "qa"}
+        if evt["source_url"] == VIDEO_URL:
+            seen_source = True
+        if evt["status"] == "completed" and all(
+            s["status"] == "done" for s in subs.values()
+        ):
+            seen_all_done = True
+    stream.close()
+    stream.join()
+
+    assert seen_source
+    assert seen_all_done
+
+
+# ----- 转录先行 / 思维导图 / 字幕导出 (四子任务独立语义, ADR-0005) -----
+
+
+def test_transcript_accessible_before_summary_ready(
+    client, fake_subtitle, monkeypatch
+) -> None:
+    """转录先行: 总结生成中 (LLM 阻塞) 转录已可查看, 总结接口 409."""
+    gate = threading.Event()
+    gate.clear()  # 阻塞 LLM 总结: 观察转录先完成
+
+    def _slow(text: str, meta: dict) -> dict:
+        gate.wait(timeout=5.0)
+        return dict(FAKE_SUMMARY)
+
+    monkeypatch.setattr("backend.llm.summarize", _slow)
+    task_id = create_summary(client)
+    assert wait_until(
+        lambda: find_task(client, task_id)["subtasks"]["transcript"]["status"] == "done"
+    )
+    # 转录就绪即可查看, 无需等总结完成
+    assert client.get(f"/api/tasks/{task_id}/transcript").status_code == 200
+    assert client.get(f"/api/tasks/{task_id}/summary").status_code == 409
+    gate.set()
+    wait_completed(client, task_id)
+
+
+def test_mindmap_endpoint_returns_structure(client, fake_subtitle, fake_llm) -> None:
+    """mindmap 接口: 导图子任务完成后返回独立生成的结构 (与总结解耦)."""
+    task_id = create_summary(client)
+    wait_completed(client, task_id)
+    resp = client.get(f"/api/tasks/{task_id}/mindmap")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["mindmap"] == FAKE_MINDMAP
+    assert body["title"] == "测试视频标题"
+
+
+def test_mindmap_409_while_transcribing(client, fake_subtitle, fake_llm) -> None:
+    """导图子任务未完成 (转录阻塞中) → 409."""
+    release, _ = fake_subtitle
+    release.clear()
+    task_id = create_summary(client)
+    assert client.get(f"/api/tasks/{task_id}/mindmap").status_code == 409
+    release.set()
+
+
+def test_export_srt_timeline_format(client, fake_subtitle, fake_llm) -> None:
+    """导出 SRT: 序号 + 逗号毫秒时间轴 (00:00:00,000)."""
+    task_id = create_summary(client)
+    wait_completed(client, task_id)
+    resp = client.get(f"/api/tasks/{task_id}/export?format=srt")
+    assert resp.status_code == 200
+    assert resp.text.startswith("1\n")  # 序号
+    assert "00:00:00,000 --> 00:00:12,500" in resp.text  # 首段 0.0s ~ 12.5s
+    assert "大家好, 今天讲视频总结功能" in resp.text
+
+
+def test_export_vtt_webvtt_format(client, fake_subtitle, fake_llm) -> None:
+    """导出 VTT: WEBVTT 头 + 点号毫秒时间轴 (00:00:00.000)."""
+    task_id = create_summary(client)
+    wait_completed(client, task_id)
+    resp = client.get(f"/api/tasks/{task_id}/export?format=vtt")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/vtt")
+    assert resp.text.startswith("WEBVTT")
+    assert "00:00:00.000 --> 00:00:12.500" in resp.text
+
+
+# ----- 子任务重试 (失败/阻塞独立恢复, 不扣配额) -----
+
+
+def test_retry_transcript_unblocks_dependents(
+    client, fake_subtitle, fake_llm, monkeypatch
+) -> None:
+    """转录重试: blocked 的依赖子任务自动解锁, 全链路恢复 completed."""
+    _, holder = fake_subtitle
+    holder["no_subtitle"] = True
+    boom = {"active": True}
+
+    def _boom(url: str, progress_cb=None, cancel_event=None):
+        if boom["active"]:
+            raise asr.TranscriptError("音频下载失败: 测试")
+        return [dict(s) for s in FAKE_SEGMENTS]
+
+    monkeypatch.setattr("backend.asr.transcribe", _boom)
+    task_id = create_summary(client)
+    assert wait_until(lambda: find_task(client, task_id)["status"] == "failed")
+    subs = find_task(client, task_id)["subtasks"]
+    assert subs["transcript"]["status"] == "failed"
+    assert all(subs[n]["status"] == "blocked" for n in ("summary", "mindmap", "qa"))
+
+    boom["active"] = False
+    resp = client.post(f"/api/tasks/{task_id}/retry", json={"subtask": "transcript"})
+    assert resp.status_code == 200
+    wait_completed(client, task_id)
+    done = find_task(client, task_id)
+    assert all(done["subtasks"][n]["status"] == "done" for n in done["subtasks"])
+    # 转录恢复后查看/导出/提问全部可用
+    assert client.get(f"/api/tasks/{task_id}/transcript").status_code == 200
+    assert client.get(f"/api/tasks/{task_id}/summary").status_code == 200
+
+
+def test_retry_only_reruns_failed_subtask(client, fake_subtitle, monkeypatch) -> None:
+    """重试只重跑失败子任务: 字幕获取调用计数保持 1 (done 子任务结果保留)."""
+    calls: list[str] = []
+
+    def _counting(url: str):
+        calls.append(url)
+        return [dict(s) for s in FAKE_SEGMENTS]
+
+    boom = {"active": True}
+
+    def _boom(text: str, meta: dict):
+        if boom["active"]:
+            raise llm.LLMError("生成失败")
+        return dict(FAKE_SUMMARY)
+
+    monkeypatch.setattr("backend.subtitle.get_subtitles", _counting)
+    monkeypatch.setattr("backend.llm.summarize", _boom)
+    task_id = create_summary(client)
+    assert wait_until(lambda: find_task(client, task_id)["status"] == "completed")
+    assert calls == [VIDEO_URL]  # 首次转录只取一次字幕
+
+    boom["active"] = False
+    resp = client.post(f"/api/tasks/{task_id}/retry", json={"subtask": "summary"})
+    assert resp.status_code == 200
+    assert wait_until(
+        lambda: find_task(client, task_id)["subtasks"]["summary"]["status"] == "done"
+    )
+    assert calls == [VIDEO_URL]  # 重试 summary 不重跑转录 (字幕未再次获取)
+
+
+def test_retry_does_not_charge_quota(client, fake_subtitle, monkeypatch) -> None:
+    """重试不扣配额: 修复性操作, 免费配额计数不因重试增加."""
+    monkeypatch.setattr(
+        "backend.llm.summarize",
+        lambda t, m: (_ for _ in ()).throw(llm.LLMError("生成失败")),
+    )
+    task_id = create_summary(client)  # 创建扣 1 次配额
+    assert wait_until(lambda: find_task(client, task_id)["status"] == "completed")
+    client_id = "test-client"
+    assert daily_quota._usages[client_id].summary_count == 1
+
+    for _ in range(2):  # 连续重试 (均失败) 不增加配额计数
+        resp = client.post(f"/api/tasks/{task_id}/retry", json={"subtask": "summary"})
+        assert resp.status_code == 200
+        assert wait_until(
+            lambda: find_task(client, task_id)["subtasks"]["summary"]["status"]
+            == "failed"
+        )
+    assert daily_quota._usages[client_id].summary_count == 1
+
+
+def test_retry_rejects_invalid_subtask(client, fake_subtitle, fake_llm) -> None:
+    """无效子任务名 → 422 (body pattern 校验)."""
+    task_id = create_summary(client)
+    resp = client.post(f"/api/tasks/{task_id}/retry", json={"subtask": "invalid"})
+    assert resp.status_code == 422
+
+
+def test_retry_rejects_non_failed_state(client, fake_subtitle, fake_llm) -> None:
+    """子任务未失败时重试 → 409 明确提示 (杜绝双 worker)."""
+    task_id = create_summary(client)
+    wait_completed(client, task_id)
+    resp = client.post(f"/api/tasks/{task_id}/retry", json={"subtask": "summary"})
+    assert resp.status_code == 409
+    assert "未失败" in resp.json()["detail"]
+
+
+def test_retry_rejects_download_task(client, fake_download) -> None:
+    """下载任务重试子任务 → 400 (kind 校验)."""
+    task_id = create_download(client, VIDEO_URL, "22")
+    assert wait_until(lambda: find_task(client, task_id)["status"] == "completed")
+    resp = client.post(f"/api/tasks/{task_id}/retry", json={"subtask": "summary"})
+    assert resp.status_code == 400
+    assert "不是总结任务" in resp.json()["detail"]
+
+
+def test_retry_404_for_unknown_task(client) -> None:
+    """不存在的任务重试 → 404."""
+    resp = client.post("/api/tasks/999/retry", json={"subtask": "summary"})
+    assert resp.status_code == 404
+
+
+# ----- 创建幂等 (按钮防重复点击, 刷新后仍收敛) -----
+
+
+def test_summarize_idempotent_for_active_task(client, fake_subtitle, fake_llm) -> None:
+    """幂等: 同 url 活跃总结任务重复创建 → 相同 task_id, 配额只扣一次."""
+    release, _ = fake_subtitle
+    release.clear()  # 阻塞转录: 任务停留在 running (活跃)
+    first = create_summary(client)
+    second = create_summary(client)  # 幂等命中: 不新建、不扣配额
+    assert second == first
+    assert daily_quota._usages["test-client"].summary_count == 1
+    release.set()
+    wait_completed(client, first)

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import ErrorAlert from './ErrorAlert.vue'
 
 // 解析结果卡: 封面 + 标题 + 平台徽章 + 时长
@@ -19,6 +19,9 @@ const props = defineProps({
   summarizing: { type: Boolean, default: false },
   // 创建总结任务失败的错误信息 (免费档每日配额用尽 429 等, 父组件透传)
   summarizeError: { type: String, default: '' },
+  // 总结禁用原因 (ADR-0005 + 用户反馈: 已总结过不可再次总结), Home 按当前
+  // 解析链接计算传入: '' 可总结 / 'active' 已有进行中任务 / 'done' 已总结过
+  summarizeDisabled: { type: String, default: '' },
 })
 
 const emit = defineEmits(['download', 'go-member', 'summarize'])
@@ -71,6 +74,38 @@ function handleSummarize() {
   if (props.summarizing) return
   emit('summarize', props.url)
 }
+
+// ---- 自定义下拉 (用户反馈: 原生 select 展开列表是浏览器渲染, 样式不可控;
+// 改为按钮 + 展开列表, 圆角边框 + hover 主题色均可自定义) ----
+const dropdownOpen = ref(false)
+const dropdownRoot = ref(null)
+
+// 触发器文案: 当前选中档位 (含 🔒 标识) / 无档位占位
+const selectedLabel = computed(() => {
+  const f = props.result.formats.find((x) => x.format_id === selectedFormat.value)
+  return f ? (f.locked ? '🔒 ' : '') + formatLabel(f) : '请选择清晰度'
+})
+
+function toggleDropdown() {
+  if (!formatsDesc.value.length) return
+  dropdownOpen.value = !dropdownOpen.value
+}
+
+function selectFormat(f) {
+  if (f.locked) return
+  selectedFormat.value = f.format_id
+  dropdownOpen.value = false
+}
+
+// 点击下拉区域外部关闭 (与展开状态解耦, 重复绑定无副作用)
+function onDocClick(e) {
+  if (dropdownRoot.value && !dropdownRoot.value.contains(e.target)) {
+    dropdownOpen.value = false
+  }
+}
+
+onMounted(() => document.addEventListener('click', onDocClick))
+onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 </script>
 
 <template>
@@ -107,17 +142,37 @@ function handleSummarize() {
 
       <div class="result__formats">
         <span class="result__formats-label">选择清晰度</span>
-        <select v-model="selectedFormat" class="result__select">
-          <!-- 倒序渲染: 最高画质在第一位 (bugfix/0006) -->
-          <option
-            v-for="f in formatsDesc"
-            :key="f.format_id"
-            :value="f.format_id"
-            :disabled="f.locked"
+        <div ref="dropdownRoot" class="result__select-wrap">
+          <button
+            type="button"
+            class="result__select"
+            :class="{ 'is-open': dropdownOpen }"
+            :disabled="!formatsDesc.length"
+            aria-haspopup="listbox"
+            :aria-expanded="dropdownOpen"
+            @click="toggleDropdown"
           >
-            {{ f.locked ? '🔒 ' : '' }}{{ formatLabel(f) }}
-          </option>
-        </select>
+            <span class="result__select-value">{{ selectedLabel }}</span>
+            <span class="result__select-arrow" aria-hidden="true">▾</span>
+          </button>
+          <!-- 展开列表: 倒序渲染, 最高画质在第一位 (bugfix/0006) -->
+          <ul v-if="dropdownOpen" class="result__select-menu" role="listbox">
+            <li
+              v-for="f in formatsDesc"
+              :key="f.format_id"
+              class="result__select-option"
+              :class="{
+                'is-locked': f.locked,
+                'is-selected': f.format_id === selectedFormat,
+              }"
+              role="option"
+              :aria-selected="f.format_id === selectedFormat"
+              @click="selectFormat(f)"
+            >
+              {{ f.locked ? '🔒 ' : '' }}{{ formatLabel(f) }}
+            </li>
+          </ul>
+        </div>
         <span v-if="result.formats.length === 0" class="result__formats-empty">
           该视频暂无可用档位
         </span>
@@ -131,11 +186,19 @@ function handleSummarize() {
         </button>
         <button
           class="btn-outline-gradient result__summarize"
-          :disabled="summarizing"
+          :disabled="summarizing || !!summarizeDisabled"
           @click="handleSummarize"
         >
           <span v-if="summarizing" class="result__spinner" aria-hidden="true"></span>
-          {{ summarizing ? '总结中…' : '✨ AI 总结' }}
+          {{
+            summarizeDisabled === 'active'
+              ? '总结生成中…'
+              : summarizeDisabled === 'done'
+                ? '已总结过'
+                : summarizing
+                  ? '总结中…'
+                  : '✨ AI 总结'
+          }}
         </button>
         <ErrorAlert :message="downloadError" />
         <ErrorAlert :message="summarizeError" />
@@ -154,10 +217,16 @@ function handleSummarize() {
   border: 1px solid var(--border);
   box-shadow: var(--shadow-card);
   margin-top: 32px;
+  /* 展开面板需盖住下方「下载记录」区域: fade-up 动画的 transform 让 .result
+     形成 stacking context, 面板 z-index 只在卡片内生效, 无法越过后续兄弟
+     .tasks; 卡片自身提升层级即可 (用户反馈: 下拉列表被下载记录盖住) */
+  position: relative;
+  z-index: 10;
 }
 
+/* 封面宽度加大 (用户反馈: 图片展示区域左右长一点) */
 .result__cover {
-  flex: 0 0 240px;
+  flex: 0 0 320px;
   border-radius: var(--radius-sm);
   overflow: hidden;
   background: rgba(31, 35, 41, 0.04);
@@ -216,21 +285,114 @@ function handleSummarize() {
   color: var(--text-sub);
 }
 
+/* 自定义下拉 (用户反馈: 展开面板样式可自定义): 触发器定位上下文 */
+.result__select-wrap {
+  position: relative;
+}
+
 .result__select {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
   min-width: 220px;
   height: 42px;
   padding: 0 14px;
-  border-radius: var(--radius-sm);
+  /* 胶囊圆角 (与页面输入框 .qa__input 一致, 用户反馈: 边框圆滑) */
+  border-radius: 999px;
   border: 1px solid var(--border);
   background: var(--bg-deep);
   color: var(--text-main);
   font-size: 14px;
   outline: none;
   cursor: pointer;
+  transition:
+    border-color 0.2s ease,
+    box-shadow 0.2s ease;
 }
 
-.result__select:focus {
-  box-shadow: 0 0 0 2px rgba(0, 174, 236, 0.35);
+.result__select:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* hover / 展开: 边框用网页主题色浅粉 (用户反馈) */
+.result__select:hover,
+.result__select.is-open {
+  border-color: var(--primary);
+}
+
+.result__select:focus-visible {
+  box-shadow: 0 0 0 2px rgba(251, 114, 153, 0.25);
+}
+
+.result__select-value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 箭头: 展开时旋转 180° */
+.result__select-arrow {
+  flex: 0 0 auto;
+  color: var(--text-dim);
+  font-size: 12px;
+  transition: transform 0.2s ease;
+}
+
+.result__select.is-open .result__select-arrow {
+  transform: rotate(180deg);
+}
+
+/* 展开列表: 圆角 + 主题色描边 + 阴影, 项 hover 浅粉底 (用户反馈) */
+.result__select-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 10;
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+  border-radius: 12px;
+  border: 1px solid rgba(251, 114, 153, 0.35);
+  background: var(--card);
+  box-shadow: 0 8px 24px rgba(31, 35, 41, 0.12);
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.result__select-option {
+  padding: 9px 12px;
+  border-radius: 8px;
+  font-size: 14px;
+  color: var(--text-main);
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
+}
+
+.result__select-option:hover {
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+
+.result__select-option.is-selected {
+  font-weight: 600;
+  color: var(--primary);
+}
+
+/* 锁定档位: 置灰不可点 (hover 不变色, 与原生 disabled 语义一致) */
+.result__select-option.is-locked {
+  color: var(--text-dim);
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.result__select-option.is-locked:hover {
+  background: transparent;
+  color: var(--text-dim);
 }
 
 .result__formats-empty {
@@ -291,9 +453,15 @@ function handleSummarize() {
     flex-basis: auto;
   }
 
-  .result__select {
+  /* 下拉触发器: 外层 wrap 占满剩余宽度 (按钮内部 flex 布局自适应) */
+  .result__select-wrap {
     flex: 1;
     min-width: 0;
+  }
+
+  .result__select {
+    min-width: 0;
+    width: 100%;
   }
 
   .result__download {

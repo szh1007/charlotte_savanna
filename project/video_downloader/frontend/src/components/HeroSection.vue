@@ -67,7 +67,8 @@ function handleResolve() {
 .hero {
   position: relative;
   overflow: hidden;
-  padding: 88px 0 64px;
+  /* 解析面板垂直方向收窄 (需求: 减少首屏纵向占位) */
+  padding: 56px 0 36px;
   text-align: center;
   background:
     linear-gradient(180deg, rgba(255, 245, 248, 0.6) 0%, rgba(235, 248, 255, 0.8) 100%),
@@ -125,7 +126,7 @@ function handleResolve() {
 
 /* 大号输入框 + 解析按钮 */
 .hero__form {
-  margin: 36px auto 0;
+  margin: 22px auto 0;
   max-width: 680px;
   display: flex;
   gap: 10px;
@@ -139,7 +140,7 @@ function handleResolve() {
 .hero__input {
   flex: 1;
   min-width: 0;
-  height: 52px;
+  height: 44px;
   padding: 0 20px;
   border: none;
   outline: none;
@@ -158,7 +159,7 @@ function handleResolve() {
 }
 
 .hero__btn {
-  height: 52px;
+  height: 44px;
   padding: 0 32px;
   font-size: 16px;
   display: inline-flex;
@@ -189,7 +190,7 @@ function handleResolve() {
 
 @media (max-width: 640px) {
   .hero {
-    padding: 56px 0 40px;
+    padding: 40px 0 24px;
   }
 
   .hero__form {

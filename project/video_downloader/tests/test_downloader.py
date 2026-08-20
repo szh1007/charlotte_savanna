@@ -39,11 +39,13 @@ def test_cover_none_when_missing() -> None:
     assert _cover_url({}) is None
 
 
-def test_to_formats_best_points_to_real_id_on_dash_only() -> None:
-    """全 DASH 分离流 (B 站真实结构): 最佳画质指向最高档真实 id, 非字面 "best".
+def test_to_formats_best_uses_independent_id_with_real_id() -> None:
+    """全 DASH 分离流 (B 站真实结构): 最佳画质用独立 id "best",
+    real_format_id 指向最高档真实 id (非字面 "best" 直接下载).
 
     字面 "best" 是 yt-dlp 格式选择表达式, 只匹配音视频合一格式; B 站返回
     全分离流时匹配为空, 下载报 "Requested format is not available" (bugfix/0003).
+    独立 id 用于区分「选了最佳画质」与普通最高档 (用户反馈: 记录重复无法追溯).
     """
     info = {
         "formats": [
@@ -74,9 +76,10 @@ def test_to_formats_best_points_to_real_id_on_dash_only() -> None:
         ]
     }
     formats = _to_formats(info)
-    assert [f["format_id"] for f in formats] == ["30016", "30064", "30080", "30080"]
+    assert [f["format_id"] for f in formats] == ["30016", "30064", "30080", "best"]
     assert formats[-1]["label"] == "最佳画质 - 1080p"
     assert formats[-1]["height"] == 1080
+    assert formats[-1]["real_format_id"] == "30080"  # 实际下载用真实 id
     # DASH video-only 档位 has_audio=False → 下载时合并音频流 (bugfix/0003)
     assert all(f["has_audio"] is False for f in formats)
 

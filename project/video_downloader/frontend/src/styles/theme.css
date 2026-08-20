@@ -34,7 +34,7 @@
     'SF Mono', 'Cascadia Code', Consolas, 'Courier New', monospace;
 
   /* 布局 */
-  --container: 1080px;
+  --container: 1440px;
   --nav-height: 64px;
 }
 

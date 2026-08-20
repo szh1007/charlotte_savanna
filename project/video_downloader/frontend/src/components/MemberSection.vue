@@ -25,7 +25,9 @@ function close() {
 }
 
 // 功能对比表 (PRD §5 付费差异, 后端强制的能力对照)
+// AI 总结行: 免费每日 3 次总结 / 10 次问答, 会员不限 (对齐 config FREE_SUMMARY_DAILY=3 / FREE_QA_DAILY=10)
 const PLAN_ROWS = [
+  { ability: 'AI 总结', free: '每日 3 次总结 / 10 次问答', member: '不限次数' },
   { ability: '最高清晰度', free: '720p', member: '1080p / 4K / 最佳画质' },
   { ability: '并发下载', free: '1 个', member: '3 个' },
   { ability: '批量队列', free: '5 个', member: '50 个' },
@@ -33,8 +35,8 @@ const PLAN_ROWS = [
 ]
 
 // 付费引导文案 (PRD §10)
-const FREE_SLOGAN = '免费下载 · 最高 720p · 适合快速预览'
-const MEMBER_SLOGAN = '解锁 4K 高清 · 批量 50 个 · 3 倍速并发 · 72h 文件保留'
+const FREE_SLOGAN = '免费下载 · 最高 720p · AI 总结每日 3 次'
+const MEMBER_SLOGAN = '解锁 4K 高清 · AI 总结不限 · 批量 50 个 · 3 倍速并发 · 72h 文件保留'
 
 // 限时倒计时: 距今日 24:00 (营销元素, 每日重置)
 const countdown = ref(0)
@@ -178,7 +180,7 @@ const expiresText = computed(() =>
             <span class="member__unlocked-icon">✨</span>
             <div class="member__unlocked-body">
               <p class="member__unlocked-title">会员已解锁</p>
-              <p class="member__unlocked-sub">全部清晰度 · 3 并发 · 队列 50 · 72h 保留</p>
+              <p class="member__unlocked-sub">全部清晰度 · AI 总结不限 · 3 并发 · 队列 50 · 72h 保留</p>
               <p v-if="expiresText" class="member__unlocked-expires">
                 有效期至 {{ expiresText }}
               </p>
@@ -208,7 +210,8 @@ const expiresText = computed(() =>
 .member-dialog {
   position: relative;
   width: 100%;
-  max-width: 760px;
+  /* 面板加宽: 容纳 AI 总结差异行与更宽的免费/会员档 */
+  max-width: 880px;
   max-height: 85vh;
   overflow-y: auto;
   padding: 30px 28px 28px;
@@ -341,7 +344,8 @@ const expiresText = computed(() =>
 }
 
 .member__th--ability {
-  width: 34%;
+  /* 能力列收窄, 免费/会员档各占 ~39% */
+  width: 22%;
 }
 
 .member__th--member {

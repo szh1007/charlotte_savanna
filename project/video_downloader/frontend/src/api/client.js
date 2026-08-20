@@ -146,6 +146,24 @@ export function fetchTranscript(taskId) {
   return request(`/tasks/${taskId}/transcript`)
 }
 
+/** 查询思维导图结构 (独立 LLM 生成, 与总结摘要解耦). */
+export function fetchMindmap(taskId) {
+  return request(`/tasks/${taskId}/mindmap`)
+}
+
+/** 重试失败/阻塞的总结子任务 (不扣配额, 仅 failed/blocked 可重试). */
+export function retrySubtask(taskId, subtask) {
+  return request(`/tasks/${taskId}/retry`, {
+    method: 'POST',
+    body: JSON.stringify({ subtask }),
+  })
+}
+
+/** 导出直链 (浏览器直接下载): md 总结 / txt|srt|vtt 转录. */
+export function exportUrl(taskId, format) {
+  return `${BASE}/tasks/${taskId}/export?format=${format}`
+}
+
 /** 针对视频内容提问 (免费档超每日配额时后端 429 拒绝). */
 export function askQuestion(taskId, question) {
   return request(`/tasks/${taskId}/qa`, {

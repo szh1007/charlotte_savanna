@@ -6,7 +6,6 @@ import MemberSection from '../components/MemberSection.vue'
 import NavBar from '../components/NavBar.vue'
 import ResolveResult from '../components/ResolveResult.vue'
 import SiteFooter from '../components/SiteFooter.vue'
-import SummaryDialog from '../components/SummaryDialog.vue'
 import TaskPanel from '../components/TaskPanel.vue'
 import { useMember } from '../composables/useMember.js'
 import {
@@ -30,8 +29,18 @@ const tasks = ref([])
 // AI 总结 (ADR-0005): 创建中防重复点击, 免费档每日配额用尽 (429) 透传提示
 const summarizing = ref(false)
 const summarizeError = ref('')
-// 总结视图弹窗: 打开的目标任务 (TaskPanel「查看总结」触发)
-const summaryTask = ref(null)
+
+// 总结禁用判定 (ADR-0005 + 用户反馈: 已 AI 总结过的视频不可再次总结):
+// 返回 '' 可总结 / 'active' 已有进行中任务 (queued/running) / 'done' 已总结过
+// (completed/expired/failed 等终态, 清除记录后可重新总结). 供 TaskPanel
+// 逐组 / ResolveResult 当前卡复用 (后端幂等仍防活跃任务重复创建)
+function summaryBlockReason(url) {
+  const t = tasks.value.find(
+    (t) => t.kind === 'summary' && (t.source_url || t.url) === url,
+  )
+  if (!t) return ''
+  return ['queued', 'running'].includes(t.status) ? 'active' : 'done'
+}
 
 // 最近一次解析的链接 (「开始下载」发起请求用; 会员解锁后自动重新解析)
 const lastUrl = ref('')
@@ -56,6 +65,19 @@ const {
 
 // 会员弹窗显隐: 导航栏会员入口 / 结果卡解锁引导 (US 35) 均打开弹窗
 const memberDialogVisible = ref(false)
+
+// 同视频已有任务兜底元信息: 从面板发起重新下载/重新生成时解析结果卡可能
+// 已不在页面 (result 为空), 用同 url 任务补齐标题/封面/时长/档位
+function peerMeta(url) {
+  const peer = tasks.value.find((t) => (t.source_url || t.url) === url)
+  return {
+    title: peer?.title ?? '',
+    cover: peer?.cover,
+    duration: peer?.duration,
+    site: peer?.site,
+    formats: peer?.formats ?? [],
+  }
+}
 
 // SSE 连接: 任务进度实时推送 (无轮询)
 let eventSource = null
@@ -111,13 +133,22 @@ async function handleSummarize(url) {
   summarizeError.value = ''
   try {
     const { task_id } = await createSummarize(url)
-    // 本地构造总结任务卡片 (元信息来自解析结果, 状态/进度由 SSE 覆盖;
-    // 与下载任务同模式, 见 handleDownload 竞态说明)
+    // 本地构造总结任务卡片 (元信息来自解析结果或同 url 已有任务兜底,
+    // 状态/进度由 SSE 覆盖; 与下载任务同模式, 见 handleDownload 竞态说明)
+    // url 字段注入: TaskPanel 按 source_url||url 分组, 本地卡立即归组
     const meta = {
-      title: result.value?.title ?? '',
-      cover: result.value?.cover,
-      duration: result.value?.duration,
-      site: result.value?.site,
+      url,
+      ...peerMeta(url),
+      ...(result.value
+        ? {
+            title: result.value.title ?? '',
+            cover: result.value.cover,
+            duration: result.value.duration,
+            site: result.value.site,
+            // 档位回填: 仅 AI 总结不下载时, 下载区仍展示各清晰度 (用户反馈)
+            formats: result.value.formats ?? [],
+          }
+        : {}),
     }
     const idx = tasks.value.findIndex((t) => t.task_id === task_id)
     if (idx >= 0) {
@@ -143,27 +174,29 @@ async function handleSummarize(url) {
   }
 }
 
-function handleViewSummary(task) {
-  summaryTask.value = task
-}
-
 async function handleDownload({ url, formatId }) {
   downloading.value = true
   downloadError.value = ''
   try {
     const { task_id } = await createDownload(url, formatId)
-    // 本地构造任务卡片立即展示完整元信息 (标题/封面来自解析结果,
-    // 后续状态/进度由 SSE 事件覆盖). 竞态: 后端先发 resolving 事件后
-    // 返回响应, SSE 事件先到时防抖刷新 (refreshTasks) 已把后端 resolving
-    // 快照拉回列表 —— resolve 未完成时该快照 title/cover 为空, 若此处
-    // 去重跳过, 卡片将长期显示占位标题且无封面 (bugfix/0006).
-    // 同 id 卡已存在时补全缺失字段, 否则 unshift 完整卡
+    // 本地构造任务卡片立即展示完整元信息 (标题/封面来自解析结果或同 url
+    // 任务兜底, 后续状态/进度由 SSE 事件覆盖). 竞态: 后端先发 resolving
+    // 事件后返回响应, SSE 事件先到时防抖刷新 (refreshTasks) 已把后端
+    // resolving 快照拉回列表 —— resolve 未完成时该快照 title/cover 为空,
+    // 若此处去重跳过, 卡片将长期显示占位标题且无封面 (bugfix/0006).
+    // url 字段注入: TaskPanel 按 source_url||url 分组, 本地卡立即归组
     const meta = {
-      title: result.value?.title ?? '',
-      cover: result.value?.cover,
-      duration: result.value?.duration,
-      site: result.value?.site,
-      formats: result.value?.formats ?? [],
+      url,
+      ...peerMeta(url),
+      ...(result.value
+        ? {
+            title: result.value.title ?? '',
+            cover: result.value.cover,
+            duration: result.value.duration,
+            site: result.value.site,
+            formats: result.value.formats ?? [],
+          }
+        : {}),
     }
     const idx = tasks.value.findIndex((t) => t.task_id === task_id)
     if (idx >= 0) {
@@ -221,6 +254,8 @@ function handleTaskUpdate(evt) {
   }
   const idx = tasks.value.findIndex((t) => t.task_id === data.task_id)
   if (idx >= 0) {
+    // 引用替换驱动 TaskPanel 内 SummaryPanel 的 watch (subtasks 四标签
+    // 状态/进度随 SSE 事件逐次刷新)
     tasks.value[idx] = { ...tasks.value[idx], ...data }
   } else {
     scheduleRefresh()
@@ -234,18 +269,22 @@ function showError(title, message) {
   errorDialog.value = { visible: true, title, message }
 }
 
-// 清除单条记录 (TaskPanel 已做二次确认): 后端删文件 + 移除任务,
-// 成功后本地移除卡片; 404 (任务已不存在) 同样移除, 保持两端一致
-async function handleClearTask(task) {
-  try {
-    await deleteTask(task.task_id)
-  } catch (e) {
-    if (e.status !== 404) {
-      showError('清除记录失败', e.message || '请稍后重试')
-      return
-    }
+// 整组清除 (需求: 一个视频一行, 清除 = 删该视频全部下载 + 总结任务):
+// 循环调后端删除接口 (自带删文件 + 取消下载 + removed 广播), 404 (任务
+// 已不存在) 视为成功; Promise.allSettled 保证任一失败不阻塞其余删除
+async function handleClearGroup(group) {
+  const ids = group.downloads.map((t) => t.task_id)
+  if (group.summary) ids.push(group.summary.task_id)
+  const results = await Promise.allSettled(ids.map((id) => deleteTask(id)))
+  const failed = results.find(
+    (r) => r.status === 'rejected' && r.reason?.status !== 404,
+  )
+  if (failed) {
+    showError('清除记录失败', failed.reason?.message || '请稍后重试')
+    return
   }
-  tasks.value = tasks.value.filter((t) => t.task_id !== task.task_id)
+  // 后端 removed 广播已移除卡片, 此处按 id 过滤兜底 (SSE 双保险)
+  tasks.value = tasks.value.filter((t) => !ids.includes(t.task_id))
 }
 
 // 一键清除全部未完成记录: 后端取消/移除全部非已完成任务并返回 removed
@@ -300,15 +339,18 @@ onBeforeUnmount(() => {
       :download-error="downloadError"
       :summarizing="summarizing"
       :summarize-error="summarizeError"
+      :summarize-disabled="summaryBlockReason(lastUrl)"
       @download="handleDownload"
       @go-member="openMemberDialog"
       @summarize="handleSummarize"
     />
     <TaskPanel
       :tasks="tasks"
-      @clear="handleClearTask"
+      :summarize-disabled="summaryBlockReason"
+      @clear-group="handleClearGroup"
       @clear-unfinished="handleClearUnfinished"
-      @view-summary="handleViewSummary"
+      @summarize="handleSummarize"
+      @download="handleDownload"
     />
   </main>
   <SiteFooter />
@@ -325,11 +367,5 @@ onBeforeUnmount(() => {
     :title="errorDialog.title"
     :message="errorDialog.message"
     hide-cancel
-  />
-  <!-- 总结视图: v-if 控制挂载 (null = 关闭销毁), close 事件重置 -->
-  <SummaryDialog
-    v-if="summaryTask"
-    :task="summaryTask"
-    @close="summaryTask = null"
   />
 </template>

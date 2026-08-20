@@ -27,6 +27,9 @@ FAKE_INFO: dict = {
     "thumbnail": "https://example.com/cover.jpg",
     "duration": 125.5,
     "extractor_key": "BiliBili",
+    "uploader": "测试UP主",
+    "view_count": 123456,
+    "description": "测试视频简介",
     "formats": [
         # 360p 含音频 MP4
         {
@@ -35,6 +38,7 @@ FAKE_INFO: dict = {
             "ext": "mp4",
             "vcodec": "avc1",
             "acodec": "mp4a",
+            "filesize": 1048576,  # 1 MB
         },
         # 720p 含音频 MP4
         {

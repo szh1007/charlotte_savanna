@@ -38,12 +38,14 @@ def test_resolve_valid_link_returns_metadata(
         "label": "360p MP4",
         "locked": False,
         "has_audio": True,  # 合一格式 (含音频, 下载无需合并)
+        "filesize": 1048576,  # 引擎提供文件大小 (1 MB)
     }
     assert formats[2]["format_id"] == "999"  # 1080p 含音频的 WEBM 胜出
     assert formats[2]["locked"] is True
-    # 最佳画质指向最高档真实 id (bugfix/0003: 字面 "best" 是 yt-dlp 表达式,
-    # 对全 DASH 分离流平台匹配为空会下载报错)
-    assert formats[3]["format_id"] == "999"
+    # 最佳画质独立 id "best" (区分普通最高档, 用户反馈); real_format_id 内部
+    # 字段被 FormatOut 过滤不外传 (字面 "best" 表达式对全 DASH 分离流会匹配
+    # 为空, bugfix/0003, 下载时由后端映射)
+    assert formats[3]["format_id"] == "best"
     assert formats[3]["locked"] is True
 
 
