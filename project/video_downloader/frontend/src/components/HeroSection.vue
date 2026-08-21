@@ -40,7 +40,16 @@ function handleResolve() {
 
     <div class="container hero__content">
       <h1 class="hero__title">哔哩哔哩视频，<span class="hero__title-accent">一键下载</span></h1>
-      <p class="hero__subtitle">免费视频 · 高清任选 · 批量下载</p>
+      <p class="hero__subtitle">免费高清下载 · AI 视频总结 · 字幕转写</p>
+
+      <!-- 核心卖点 chips: AI 总结 + 字幕 + 高清 (SEO 关键词与用户感知双兼顾) -->
+      <ul class="hero__features">
+        <li class="hero__feature">✨ AI 总结</li>
+        <li class="hero__feature">🧠 思维导图</li>
+        <li class="hero__feature">💬 AI 问答</li>
+        <li class="hero__feature">📝 字幕导出</li>
+        <li class="hero__feature">🎬 高清任选</li>
+      </ul>
 
       <form class="hero__form" @submit.prevent="handleResolve">
         <input
@@ -122,6 +131,36 @@ function handleResolve() {
   margin-top: 14px;
   font-size: clamp(15px, 2vw, 18px);
   color: var(--text-sub);
+}
+
+/* 核心卖点 chips: 粉蓝交替描边胶囊, 首屏信息密度适中 */
+.hero__features {
+  margin-top: 16px;
+  list-style: none;
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.hero__feature {
+  padding: 5px 14px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-sub);
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid var(--border);
+}
+
+.hero__feature:nth-child(odd) {
+  color: var(--primary);
+  border-color: rgba(251, 114, 153, 0.35);
+}
+
+.hero__feature:nth-child(even) {
+  color: var(--blue);
+  border-color: rgba(0, 174, 236, 0.35);
 }
 
 /* 大号输入框 + 解析按钮 */

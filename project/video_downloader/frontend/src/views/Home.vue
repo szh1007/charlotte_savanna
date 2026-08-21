@@ -1,6 +1,7 @@
 <script setup>
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
+import FeaturesSection from '../components/FeaturesSection.vue'
 import HeroSection from '../components/HeroSection.vue'
 import MemberSection from '../components/MemberSection.vue'
 import NavBar from '../components/NavBar.vue'
@@ -22,7 +23,7 @@ import {
   retrySubtask,
 } from '../api/client.js'
 
-// 单页布局 (PRD §10): 导航 → Hero → 解析结果 → 任务面板 → 页脚
+// 单页布局 (PRD §10): 导航 → Hero → 功能亮点区 → 解析结果 → 任务面板 → 页脚
 // (平台墙已移除, 会员区改弹窗由导航栏触发)
 const resolving = ref(false)
 const result = ref(null)
@@ -413,6 +414,8 @@ onBeforeUnmount(() => {
     :api-error="apiError"
     @resolve="handleResolve"
   />
+  <!-- 功能亮点区 (营销): 下载 + AI 总结等 6 大卖点 -->
+  <FeaturesSection />
   <main class="container">
     <SubtitleSourceBar
       v-model="subtitleSource"

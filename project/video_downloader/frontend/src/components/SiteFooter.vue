@@ -1,5 +1,5 @@
 <script setup>
-// 页脚 (T09): 版权免责声明
+// 页脚 (T09): 品牌简介 + 版权免责声明
 // 仅个人学习使用 / 不破解 DRM / 封号风险自担 / 尊重版权 (PRD §10.7)
 const year = new Date().getFullYear()
 </script>
@@ -9,6 +9,10 @@ const year = new Date().getFullYear()
     <div class="container footer__inner">
       <div class="footer__brand">
         <span class="footer__logo">🅱️ BilibiliDownloader</span>
+        <!-- 品牌简介: 一句话定位 + 核心卖点 (AI 总结 / 字幕 / 高清) -->
+        <p class="footer__slogan">
+          哔哩哔哩视频下载与 AI 理解工具 — 一键解析高清下载, AI 总结、字幕转写、思维导图与问答全流程
+        </p>
         <p class="footer__copy">© {{ year }} BilibiliDownloader · 保留所有权利</p>
       </div>
       <div class="footer__disclaimer">
@@ -46,6 +50,14 @@ const year = new Date().getFullYear()
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
+}
+
+.footer__slogan {
+  margin-top: 10px;
+  max-width: 360px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-sub);
 }
 
 .footer__copy {
