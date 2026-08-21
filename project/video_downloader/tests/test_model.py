@@ -50,7 +50,10 @@ def fake_model_download(monkeypatch):
             callback("model.pt", 100, 100)  # 完成进度
 
     monkeypatch.setattr("backend.model_downloader._snapshot_download", _fake)
-    return calls, {"gate": gate, "fail": fail}
+    yield calls, {"gate": gate, "fail": fail}
+    gate.set()  # 兜底放行: 测试失败/结束时阻塞的下载线程完成, 防残留
+    # (双模型 plan 两段 gate.wait, 不放行则线程挂 5~10s, 后续测试的
+    # download() 走 is_alive() pass 分支不启动新下载, 状态/SSE 断言错乱)
 
 
 def _wipe_model_files(model_assets: dict) -> None:
@@ -120,12 +123,17 @@ def test_model_download_starts_when_missing(
     resp = client.post("/api/model/download")
     assert resp.status_code == 200
     assert resp.json()["status"] == STATUS_DOWNLOADING
-    assert calls == [config.ASR_MODEL]
+
+    from helpers import wait_until
+
+    # 双模型统一管理: 主模型 (SenseVoice) + VAD (fsmn-vad) 依次下载
+    # (后台线程异步, 断言前等待双模型均触发; ready 在主模型落地即成立
+    # (VAD 文件未删), 不能作为双模型下载完成的依据)
+    assert wait_until(lambda: len(calls) == 2)
+    assert calls == [config.ASR_MODEL, config.ASR_VAD_MODEL]
 
     def ready() -> bool:
         return client.get("/api/model/status").json()["status"] == STATUS_READY
-
-    from helpers import wait_until
 
     assert wait_until(ready)
     assert client.get("/api/model/status").json()["progress"] == 100.0
@@ -142,11 +150,14 @@ def test_model_download_idempotent_while_downloading(
     assert first["status"] == STATUS_DOWNLOADING
     second = client.post("/api/model/download").json()
     assert second["status"] == STATUS_DOWNLOADING
-    assert calls == [config.ASR_MODEL]  # 仅首次触发引擎
-    control["gate"].set()  # 放行, 后台线程落地文件后置 ready
+    # gate 阻塞主模型期间 VAD 尚未启动 (双模型按序), 幂等 = 仅首次触发引擎
+    assert calls == [config.ASR_MODEL]
+    control["gate"].set()  # 放行, 后台线程落地双模型文件后置 ready
 
     from helpers import wait_until
 
+    assert wait_until(lambda: len(calls) == 2)
+    assert calls == [config.ASR_MODEL, config.ASR_VAD_MODEL]
     assert wait_until(
         lambda: client.get("/api/model/status").json()["status"] == STATUS_READY
     )
@@ -161,20 +172,25 @@ def test_model_download_failure_returns_missing_retryable(
     control["fail"]["error"] = RuntimeError("网络中断")
     resp = client.post("/api/model/download")
     assert resp.status_code == 200
-    assert resp.json()["status"] == STATUS_DOWNLOADING  # 先进入下载中
 
     from helpers import wait_until
 
+    # 引擎在首个模型立即抛: 状态可能已回 missing (不依赖下载中中间态, 竞态)
     assert wait_until(
         lambda: client.get("/api/model/status").json()["status"] == STATUS_MISSING
     )
     control["fail"]["error"] = None  # 故障恢复: 重试
     resp = client.post("/api/model/download")
-    assert resp.json()["status"] == STATUS_DOWNLOADING
+    assert resp.status_code == 200
     assert wait_until(
         lambda: client.get("/api/model/status").json()["status"] == STATUS_READY
     )
-    assert len(calls) == 2
+    # 失败轮仅主模型触发 (引擎在首模型即抛, VAD 未启动) + 重试轮双模型
+    assert calls == [
+        config.ASR_MODEL,
+        config.ASR_MODEL,
+        config.ASR_VAD_MODEL,
+    ]
 
 
 def test_model_download_file_incomplete_falls_back_missing(

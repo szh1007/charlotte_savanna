@@ -7,9 +7,10 @@
   (非原始转录), 输出 {title, chapters} 与总结 chapters 同构, 前端直接渲染
 - ask_stream(transcript, summary, question) -> Iterator[str]: AI 问答增量
   (上下文 = 转录 + 总结)
-- polish_subtitle_stream(chunk_text, start, end) -> Iterator[str]: 字幕重排
-  精修增量 (模型生成字幕增强, 按口播风格重塑 + 生成线性均匀时间戳), 消费方
-  块结束后调 parse_polished_lines 解析回 [{start, end, text}]
+- polish_subtitle_stream(chunk_text, start, end, has_real_ts) -> Iterator[str]:
+  字幕重排精修增量 (模型生成字幕增强, 按口播风格重塑; has_real_ts=True 保留
+  原时间戳 / False 线性均匀生成), 消费方块结束后调 parse_polished_lines 解析
+  回 [{start, end, text}]
 
 openai SDK 惰性 import: 未安装 / 未配置 key 时模块可导入, 调用才报错
 (测试用 mock 替换本模块, 无需真实 LLM 依赖).
@@ -372,13 +373,35 @@ _POLISHED_TS_RE = re.compile(
 )
 
 
-def polish_subtitle_stream(chunk_text: str, start: float, end: float) -> Iterator[str]:
+def polish_subtitle_stream(
+    chunk_text: str, start: float, end: float, has_real_ts: bool = True
+) -> Iterator[str]:
     """LLM 重排字幕粗稿 (模型生成字幕增强): yield 精修文本增量, 失败抛 LLMError.
 
-    start/end 为块对应的视频时间范围 (秒): LLM 按最终行数在该范围内生成
-    线性均匀时间戳, 输出每行 "MM:SS ~ MM:SS 文本"; 消费方块结束后调
-    parse_polished_lines 解析回 [{start, end, text}].
+    start/end 为块对应的视频时间范围 (秒); has_real_ts 为块内字幕是否自带
+    真实时间戳 (ASR 句子级/词级输出, 用户反馈: 保留口播节奏, 不整体线性
+    重排): True → 输入行已带 "MM:SS ~ MM:SS" 前缀, 提示词要求保留原时间戳
+    (仅微调异常间隔); False (ASR 无时间戳兜底估算) → 输入为纯文本, 提示词
+    要求在块范围内线性均匀生成时间戳. 输出格式统一 "MM:SS ~ MM:SS 文本",
+    消费方块结束后调 parse_polished_lines 解析回 [{start, end, text}].
     """
+    # 时间戳要求按来源分支 (noqa RUF001: 提示词原文使用全角标点, 系用户确认的交付文案)
+    if has_real_ts:
+        ts_requirement = (
+            "时间戳要求：\n"  # noqa: RUF001
+            "- 如果已有详细时间戳就不需要自动计算线性时间戳了：输入字幕行自带时间戳"  # noqa: RUF001
+            "（每行以“MM:SS ~ MM:SS 文本”开头），这些时间戳来自语音识别，保留了真实说话节奏\n"  # noqa: RUF001, E501
+            "- 保留原时间戳，不要重新均匀计算；可微调相邻行使间隔合理（修正重叠/倒序），"  # noqa: RUF001, E501
+            "微调幅度尽量小\n"
+            f"- 若某行时间戳明显异常，可在 {int(start)} ~ {int(end)} 秒范围内适当修正\n"  # noqa: RUF001
+        )
+    else:
+        ts_requirement = (
+            "时间戳要求：\n"  # noqa: RUF001
+            f"- 根据最终生成的字幕行数，在 {int(start)} ~ {int(end)} 秒范围内自动计算生成线性均匀的时间戳\n"  # noqa: RUF001, E501
+            "- 每行格式：MM:SS ~ MM:SS 字幕文本（如 00:05 ~ 00:12 大家好，欢迎观看本期视频）\n"  # noqa: RUF001, E501
+            f"- 首行从 {int(start)} 秒开始，末行在 {int(end)} 秒结束\n"  # noqa: RUF001
+        )
     # (noqa RUF001: 提示词原文使用全角标点, 系用户确认的交付文案)
     prompt = (
         "这是一篇视频语音识别（ASR）后的字幕粗稿，请按照视频口播的风格重塑这段字幕，"  # noqa: RUF001
@@ -392,11 +415,8 @@ def polish_subtitle_stream(chunk_text: str, start: float, end: float) -> Iterato
         "保留原文，不要擅自修改\n"  # noqa: RUF001
         "5. 合理断句：按语义断句，一句一个完整意思；过长的句子拆成两句，零碎片段适当合并"  # noqa: RUF001, E501
         "（最多合并 3 句），句数保持与原文同一量级\n\n"  # noqa: RUF001
-        "时间戳要求：\n"  # noqa: RUF001
-        f"- 根据最终生成的字幕行数，在 {int(start)} ~ {int(end)} 秒范围内自动计算生成线性均匀的时间戳\n"  # noqa: RUF001, E501
-        "- 每行格式：MM:SS ~ MM:SS 字幕文本（如 00:05 ~ 00:12 大家好，欢迎观看本期视频）\n"  # noqa: RUF001, E501
-        f"- 首行从 {int(start)} 秒开始，末行在 {int(end)} 秒结束\n\n"  # noqa: RUF001
-        "输出格式：\n"  # noqa: RUF001
+        + ts_requirement
+        + "\n输出格式：\n"  # noqa: RUF001
         "- 每行按上述时间戳格式，按原文顺序排列\n"  # noqa: RUF001
         "- 不要编号，不要任何解释，只输出字幕文本\n"  # noqa: RUF001
         "- 不输出除字幕以外的任何内容\n\n"

@@ -19,6 +19,7 @@ import {
   fetchTasks,
   purgeUnfinishedTasks,
   resolveUrl,
+  retrySubtask,
 } from '../api/client.js'
 
 // 单页布局 (PRD §10): 导航 → Hero → 解析结果 → 任务面板 → 页脚
@@ -66,15 +67,47 @@ async function handleDownloadModel() {
 }
 
 // 总结禁用判定 (ADR-0005 + 用户反馈: 已 AI 总结过的视频不可再次总结):
-// 返回 '' 可总结 / 'active' 已有进行中任务 (queued/running) / 'done' 已总结过
-// (completed/expired/failed 等终态, 清除记录后可重新总结). 供 TaskPanel
-// 逐组 / ResolveResult 当前卡复用 (后端幂等仍防活跃任务重复创建)
+// 返回 '' 可总结 / 'active' 已有进行中任务 (queued/running) / 'retry' 上次
+// 总结失败 (任务级 failed = 全部子任务失败, 一键重试) / 'done' 已总结过
+// (completed/expired 等终态, 清除记录后可重新总结). 供 TaskPanel 逐组 /
+// ResolveResult 当前卡复用 (后端幂等仍防活跃任务重复创建)
 function summaryBlockReason(url) {
   const t = tasks.value.find(
     (t) => t.kind === 'summary' && (t.source_url || t.url) === url,
   )
   if (!t) return ''
-  return ['queued', 'running'].includes(t.status) ? 'active' : 'done'
+  if (['queued', 'running', 'pending'].includes(t.status)) return 'active'
+  if (t.status === 'failed') return 'retry'
+  return 'done'
+}
+
+// 重试失败的总结任务 (任务级 failed = 全部子任务失败, 如模型下载超时):
+// 逐个重跑失败/阻塞子任务 (重试不扣配额, 后端幂等), 转录恢复后其余
+// blocked 子任务由调度器 DAG 自动解锁, 状态经 SSE 更新 (结果卡按钮与
+// 任务卡面板同步恢复)
+async function handleRetrySummarize(url) {
+  const t = tasks.value.find(
+    (task) =>
+      task.kind === 'summary' &&
+      (task.source_url || task.url) === url &&
+      task.status === 'failed',
+  )
+  if (!t) return
+  const names = Object.entries(t.subtasks || {})
+    .filter(([, s]) => ['failed', 'blocked'].includes(s.status))
+    .map(([name]) => name)
+  if (!names.length) return
+  summarizing.value = true
+  summarizeError.value = ''
+  try {
+    for (const name of names) {
+      await retrySubtask(t.task_id, name)
+    }
+  } catch (e) {
+    summarizeError.value = e.message || '重试失败, 请稍后重试'
+  } finally {
+    summarizing.value = false
+  }
 }
 
 // 最近一次解析的链接 (「开始下载」发起请求用; 会员解锁后自动重新解析)
@@ -400,6 +433,7 @@ onBeforeUnmount(() => {
       @download="handleDownload"
       @go-member="openMemberDialog"
       @summarize="handleSummarize"
+      @retry-summarize="handleRetrySummarize"
     />
     <TaskPanel
       :tasks="tasks"

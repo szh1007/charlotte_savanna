@@ -25,7 +25,7 @@ const props = defineProps({
   task: { type: Object, required: true },
 })
 
-const emit = defineEmits(['retry'])
+const emit = defineEmits(['retry', 'retry-all'])
 
 // ---- 四标签 ----
 const TABS = [
@@ -92,6 +92,19 @@ watch(
 function subError(name) {
   return props.task.subtasks?.[name]?.error || ''
 }
+
+// 转录阶段进度 (模型生成路径, 与后端 progress 区间映射同步:
+// 模型下载 0~50 / 下载音频 50~55 / 字幕解析 (ASR 转写) 55~80 / AI 润色 80~99).
+// 用户验收三阶段: 下载音频中 → 字幕解析中 → AI 润色中 (模型下载为缺失时的
+// 前置阶段). 前三段归一化为段内百分比展示; 润色段 LLM 增量已流式实时可见
+// (transcriptStreamText), 不定长条即可. 官方字幕快路径瞬时 done 不经过本展示
+const transcriptStage = computed(() => {
+  const p = props.task.subtasks?.transcript?.progress || 0
+  if (p < 50) return { label: '模型下载中', pct: Math.round(p) }
+  if (p < 55) return { label: '下载音频中', pct: Math.round(((p - 50) / 5) * 100) }
+  if (p < 80) return { label: '字幕解析中', pct: Math.round(((p - 55) / 25) * 100) }
+  return { label: 'AI 润色中', pct: null }
+})
 
 // 全局态: 结果已过期清理 (410 / expired) 提示重新生成
 const expired = ref(false)
@@ -407,11 +420,22 @@ onBeforeUnmount(() => {
       <p>总结结果已过期清理 (免费 24h / 会员 72h), 请重新生成</p>
     </div>
 
-    <!-- 任务整体失败 (全部子任务失败, 无部分结果; 部分完成时各 tab 独立展示错误) -->
-    <ErrorAlert
+    <!-- 任务整体失败 (全部子任务失败, 无部分结果; 部分完成时各 tab 独立展示
+         错误). 一键重试: 重跑失败/阻塞子任务 (转录恢复后其余 blocked 由后端
+         DAG 自动解锁, 不扣配额), 状态经 SSE 恢复四标签 -->
+    <div
       v-else-if="props.task.status === 'failed' && subStatus('transcript') !== 'done'"
-      :message="props.task.error || '总结任务执行失败'"
-    />
+      class="summary__failed"
+    >
+      <ErrorAlert :message="props.task.error || '总结任务执行失败'" />
+      <button
+        class="btn-outline-gradient tab-pane__retry"
+        type="button"
+        @click="emit('retry-all')"
+      >
+        ↻ 重试 AI 总结
+      </button>
+    </div>
 
     <template v-else>
       <!-- 面板头: 「✨ AI 总结」标题 + 四标签同行 (用户反馈: tab 标签放在
@@ -458,11 +482,17 @@ onBeforeUnmount(() => {
           class="tab-pane"
           :ref="(el) => (fsTargets.transcript = el)"
         >
-          <!-- 转录进行中: 进度条 + 文案显示在本 tab 内容区顶部 (用户反馈);
-               模型生成路径重排阶段 (LLM 精修) 流式展示增量字幕 -->
+          <!-- 转录进行中: 阶段进度条 + 文案显示在本 tab 内容区顶部 (用户反馈);
+               三阶段 (模型下载/下载音频/模型解析) 显示段内百分比, AI 润色阶段
+               LLM 增量流式实时可见 (不定长条, 无百分比也无感知等待) -->
           <div v-if="subStatus('transcript') === 'running'" class="tab-pane__progress">
-            <div class="bar bar--indeterminate"><span class="bar__fill"></span></div>
-            <p>{{ transcriptStreamText ? '字幕精修中……' : '字幕获取中......' }}</p>
+            <div class="bar" :class="{ 'bar--indeterminate': transcriptStage.pct === null }">
+              <span
+                class="bar__fill"
+                :style="transcriptStage.pct !== null ? { width: transcriptStage.pct + '%' } : {}"
+              ></span>
+            </div>
+            <p>{{ transcriptStage.label }}</p>
             <div v-if="transcriptStreamText" class="summary__transcript summary__stream">
               {{ transcriptStreamText }}
             </div>
@@ -1059,6 +1089,14 @@ onBeforeUnmount(() => {
   text-align: center;
   color: var(--danger);
   font-size: 13px;
+}
+
+/* 任务整体失败 (全部子任务失败): 错误提示 + 一键重试按钮 */
+.summary__failed {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 0;
 }
 
 /* AI 问答 */

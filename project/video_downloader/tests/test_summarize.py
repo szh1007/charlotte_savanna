@@ -150,11 +150,15 @@ def _fmt_ts(sec: float) -> str:
     return f"{m:02d}:{s:02d}"
 
 
-def _fake_polish_stream(chunk_text: str, start: float, end: float):
-    """透传字幕重排: 原行保留, 时间戳按行序在块范围内均匀插值 (不触网)."""
+def _fake_polish_stream(chunk_text: str, start: float, end: float, has_real_ts: bool):
+    """透传字幕重排 (不触网): 真实时间戳行原样保留 (行即 "MM:SS ~ MM:SS 文本"),
+    纯文本行 (估算时间戳块) 按行序在块范围内均匀插值."""
     lines = [ln for ln in chunk_text.splitlines() if ln.strip()]
     total = max(len(lines), 1)
     for idx, line in enumerate(lines):
+        if has_real_ts:
+            yield line + "\n"
+            continue
         seg_start = start + (end - start) * idx / total
         seg_end = start + (end - start) * (idx + 1) / total
         yield f"{_fmt_ts(seg_start)} ~ {_fmt_ts(seg_end)} {line}\n"

@@ -303,6 +303,40 @@ async function handleRetry(taskId, name) {
   }
 }
 
+// ---- 任务整体重试 (SummaryPanel 任务失败态「重试 AI 总结」, 后端不扣配额) ----
+// 逐个重跑全部失败/阻塞子任务: 转录恢复后其余 blocked 由后端 DAG 自动解锁,
+// 全量重试兜底; 重试顺序无依赖 (每个 retry 原子, 状态经 SSE 恢复四标签)
+async function handleRetryAll(task) {
+  const names = Object.entries(task.subtasks || {})
+    .filter(([, s]) => ['failed', 'blocked'].includes(s.status))
+    .map(([name]) => name)
+  if (!names.length) return
+  try {
+    for (const name of names) {
+      await retrySubtask(task.task_id, name)
+    }
+  } catch (e) {
+    confirmState.value = { kind: 'error', message: e.message || '重试失败, 请稍后重试' }
+    confirmVisible.value = true
+  }
+}
+
+// ---- 空态入口按钮 (无总结任务): 上次总结失败 (retry) → 重跑失败子任务;
+// 其余 → 新建总结任务 (与 ResolveResult 卡分流一致) ----
+function onAiEmptyClick(url) {
+  if (summarizeDisabled(url) === 'retry') {
+    const t = props.tasks.find(
+      (task) =>
+        task.kind === 'summary' &&
+        (task.source_url || task.url) === url &&
+        task.status === 'failed',
+    )
+    if (t) handleRetryAll(t)
+    return
+  }
+  emit('summarize', url)
+}
+
 </script>
 
 <template>
@@ -491,22 +525,26 @@ async function handleRetry(taskId, name) {
                 <button
                   class="btn-gradient ai-empty__btn"
                   type="button"
-                  :disabled="!!summarizeDisabled(group.url)"
-                  @click="emit('summarize', group.url)"
+                  :disabled="['active', 'done'].includes(summarizeDisabled(group.url))"
+                  @click="onAiEmptyClick(group.url)"
                 >
                   {{
                     summarizeDisabled(group.url) === 'active'
                       ? '总结生成中…'
                       : summarizeDisabled(group.url) === 'done'
                         ? '已总结过'
-                        : '✨ 生成 AI 总结'
+                        : summarizeDisabled(group.url) === 'retry'
+                          ? '↻ 重试 AI 总结'
+                          : '✨ 生成 AI 总结'
                   }}
                 </button>
                 <p v-if="summarizeDisabled(group.url)" class="ai-empty__hint">
                   {{
                     summarizeDisabled(group.url) === 'active'
                       ? '该视频已有总结任务, 请等待完成'
-                      : '该视频已总结过, 清除记录后可重新总结'
+                      : summarizeDisabled(group.url) === 'retry'
+                        ? '上次总结失败, 点击重试'
+                        : '该视频已总结过, 清除记录后可重新总结'
                   }}
                 </p>
               </div>
@@ -522,6 +560,7 @@ async function handleRetry(taskId, name) {
                 v-else
                 :task="group.summary"
                 @retry="(name) => handleRetry(group.summary.task_id, name)"
+                @retry-all="() => handleRetryAll(group.summary)"
               />
             </div>
           </div>

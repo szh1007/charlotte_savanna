@@ -20,11 +20,12 @@ const props = defineProps({
   // 创建总结任务失败的错误信息 (免费档每日配额用尽 429 等, 父组件透传)
   summarizeError: { type: String, default: '' },
   // 总结禁用原因 (ADR-0005 + 用户反馈: 已总结过不可再次总结), Home 按当前
-  // 解析链接计算传入: '' 可总结 / 'active' 已有进行中任务 / 'done' 已总结过
+  // 解析链接计算传入: '' 可总结 / 'active' 已有进行中任务 / 'retry' 上次
+  // 总结失败 (可点击重试) / 'done' 已总结过
   summarizeDisabled: { type: String, default: '' },
 })
 
-const emit = defineEmits(['download', 'go-member', 'summarize'])
+const emit = defineEmits(['download', 'go-member', 'summarize', 'retry-summarize'])
 
 // 档位倒序 (高清晰度在上, 用户反馈 bugfix/0006): 后端按高度升序排列
 const formatsDesc = computed(() => [...props.result.formats].reverse())
@@ -84,7 +85,13 @@ function handleDownload() {
 
 function handleSummarize() {
   if (props.summarizing) return
-  emit('summarize', props.url)
+  // 上次总结失败 (任务级 failed): 走重试流程 (重跑失败子任务, 不新建任务
+  // 不扣配额); 其余情况新建总结任务
+  if (props.summarizeDisabled === 'retry') {
+    emit('retry-summarize', props.url)
+  } else {
+    emit('summarize', props.url)
+  }
 }
 
 // ---- 自定义下拉 (用户反馈: 原生 select 展开列表是浏览器渲染, 样式不可控;
@@ -198,7 +205,9 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
         </button>
         <button
           class="btn-outline-gradient result__summarize"
-          :disabled="summarizing || !!summarizeDisabled"
+          :disabled="
+            summarizing || ['active', 'done'].includes(summarizeDisabled)
+          "
           @click="handleSummarize"
         >
           <span v-if="summarizing" class="result__spinner" aria-hidden="true"></span>
@@ -207,9 +216,11 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
               ? '总结生成中…'
               : summarizeDisabled === 'done'
                 ? '已总结过'
-                : summarizing
-                  ? '总结中…'
-                  : '✨ AI 总结'
+                : summarizeDisabled === 'retry'
+                  ? '↻ 重试 AI 总结'
+                  : summarizing
+                    ? '总结中…'
+                    : '✨ AI 总结'
           }}
         </button>
         <ErrorAlert :message="downloadError" />

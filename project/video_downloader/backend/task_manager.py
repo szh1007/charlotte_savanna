@@ -891,12 +891,12 @@ class TaskManager:
         if not chunks:
             return segments
         polished: list[dict[str, Any]] = []
-        for idx, (start, end, text) in enumerate(chunks):
+        for idx, (start, end, text, has_real_ts) in enumerate(chunks):
             if task.cancel_event.is_set():
                 raise asr.TranscriptError("已取消")
             try:
                 buf: list[str] = []
-                for delta in llm.polish_subtitle_stream(text, start, end):
+                for delta in llm.polish_subtitle_stream(text, start, end, has_real_ts):
                     buf.append(delta)
                     # 增量实时可见: worker append 与端点快照同锁, 边跑边读
                     with self._lock:
@@ -1113,13 +1113,16 @@ def segments_to_text(segments: list[dict[str, Any]]) -> str:
 
 def _split_polish_chunks(
     segments: list[dict[str, Any]], max_chars: int
-) -> list[tuple[float, float, str]]:
-    """字幕段按累计字符切块 → [(start, end, 拼接文本)] (块范围 = 首/末句时间).
+) -> list[tuple[float, float, str, bool]]:
+    """字幕段按累计字符切块 → [(start, end, 输入文本, has_real_ts)].
 
-    空文本段跳过 (ASR 清洗后可能残留空串); 拼接以换行分隔, 保留断句结构
-    供 LLM 参考. 块的时间范围随块内容走, 重排输出的时间戳均匀分布其内.
+    空文本段跳过 (ASR 清洗后可能残留空串); 块的时间范围随块内容走
+    (首句 start ~ 末句 end). has_real_ts: 块内全部段为真实时间戳 (ASR
+    句子级/词级输出, 无 ts_estimated 标记) 时 True, 输入行带 "MM:SS ~
+    MM:SS" 前缀供 LLM 保留原时间戳; 存在估算段 (ASR 无时间戳兜底) 时
+    False, 输入为纯文本, 润色提示词线性均匀重算 (用户反馈).
     """
-    chunks: list[tuple[float, float, str]] = []
+    chunks: list[tuple[float, float, str, bool]] = []
     buf: list[dict[str, Any]] = []
     count = 0
     for seg in segments:
@@ -1127,17 +1130,27 @@ def _split_polish_chunks(
         if not text:
             continue
         if buf and count + len(text) > max_chars:
-            chunks.append(
-                (buf[0]["start"], buf[-1]["end"], "\n".join(s["text"] for s in buf))
-            )
+            chunks.append(_make_polish_chunk(buf))
             buf, count = [], 0
         buf.append(seg)
         count += len(text)
     if buf:
-        chunks.append(
-            (buf[0]["start"], buf[-1]["end"], "\n".join(s["text"] for s in buf))
-        )
+        chunks.append(_make_polish_chunk(buf))
     return chunks
+
+
+def _make_polish_chunk(buf: list[dict[str, Any]]) -> tuple[float, float, str, bool]:
+    """块 → (start, end, 输入文本, has_real_ts): 真实时间戳行带前缀, 估算行纯文本."""
+    has_real_ts = not any(seg.get("ts_estimated") for seg in buf)
+    lines = []
+    for seg in buf:
+        if has_real_ts:
+            mm1, ss1 = divmod(int(seg["start"]), 60)
+            mm2, ss2 = divmod(int(seg["end"]), 60)
+            lines.append(f"{mm1:02d}:{ss1:02d} ~ {mm2:02d}:{ss2:02d} {seg['text']}")
+        else:
+            lines.append(seg["text"])
+    return buf[0]["start"], buf[-1]["end"], "\n".join(lines), has_real_ts
 
 
 # 模块级单例: 路由与测试共享同一任务存储

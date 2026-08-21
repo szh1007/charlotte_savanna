@@ -65,11 +65,15 @@ def _fmt_ts(sec: float) -> str:
     return f"{m:02d}:{s:02d}"
 
 
-def _fake_polish_stream(chunk_text: str, start: float, end: float):
-    """透传字幕重排: 原行保留, 时间戳按行序在块范围内均匀插值 (不触网)."""
+def _fake_polish_stream(chunk_text: str, start: float, end: float, has_real_ts: bool):
+    """透传字幕重排 (不触网): 真实时间戳行原样保留 (行即 "MM:SS ~ MM:SS 文本"),
+    纯文本行 (估算时间戳块) 按行序在块范围内均匀插值."""
     lines = [ln for ln in chunk_text.splitlines() if ln.strip()]
     total = max(len(lines), 1)
     for idx, line in enumerate(lines):
+        if has_real_ts:
+            yield line + "\n"
+            continue
         seg_start = start + (end - start) * idx / total
         seg_end = start + (end - start) * (idx + 1) / total
         yield f"{_fmt_ts(seg_start)} ~ {_fmt_ts(seg_end)} {line}\n"
@@ -413,7 +417,8 @@ def test_model_source_missing_triggers_auto_download(
 
     control["gate"].set()  # 放行下载 → 模型就绪 → 继续转写
     wait_completed(client, task_id, timeout=10.0)
-    assert len(calls) == 1
+    # 双模型下载: 主模型 (SenseVoice) + VAD (fsmn-vad), 各触发一次
+    assert calls == [config.ASR_MODEL, config.ASR_VAD_MODEL]
     # 完成态: 转录 100 (asr 回调已上报)
     assert find_task(client, task_id)["subtasks"]["transcript"]["progress"] == 100.0
 
@@ -452,4 +457,7 @@ def test_task_cancel_does_not_interrupt_model_download(
     assert wait_until(
         lambda: model_downloader.status()["status"] == "ready", timeout=5.0
     )
-    assert calls == [config.ASR_MODEL]
+    # 双模型下载: 主模型 (SenseVoice) + VAD (fsmn-vad), 取消只中断转录等待.
+    # ready 主模型落地即成立 (VAD 文件预置), 双模型引擎调用完成需再等待
+    assert wait_until(lambda: len(calls) == 2)
+    assert calls == [config.ASR_MODEL, config.ASR_VAD_MODEL]

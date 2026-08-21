@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 
 import pytest
 from backend import config, main
@@ -122,22 +123,30 @@ def model_assets(monkeypatch, tmp_path):
 
     预置 ready 模型文件 (config.yaml + model.pt): 现有 ASR 回退路径测试
     依赖模型就绪才能走到转写 (缺失会 failed「请先下载模型」), ready 以
-    真实文件判定, 无需 mock is_ready. 模型下载/状态/缓存测试按需删文件
-    或注入伪下载引擎驱动状态流转; SUBTITLES_DIR 落在 MODELS_DIR 下
-    (与生产布局一致, 缓存与模型本体目录分离).
+    真实文件判定, 无需 mock is_ready. 转写主模型 + VAD 模型 (fsmn-vad,
+    双模型统一管理) 均预置; 模型下载/状态/缓存测试按需删文件或注入伪
+    下载引擎驱动状态流转; SUBTITLES_DIR 落在 MODELS_DIR 下 (与生产布局
+    一致, 缓存与模型本体目录分离).
     """
     models_dir = tmp_path / "models"
     subtitles_dir = models_dir / "subtitles"
-    model_dir = models_dir / config.MODEL_DIR_NAME
-    model_dir.mkdir(parents=True)
-    (model_dir / "config.yaml").write_text("model: fake\n", encoding="utf-8")
-    (model_dir / "model.pt").write_bytes(b"fake-model-weights")
+
+    def _make_ready(dirname: str) -> Path:
+        d = models_dir / dirname
+        d.mkdir(parents=True)
+        (d / "config.yaml").write_text("model: fake\n", encoding="utf-8")
+        (d / "model.pt").write_bytes(b"fake-model-weights")
+        return d
+
+    model_dir = _make_ready(config.MODEL_DIR_NAME)
+    vad_model_dir = _make_ready(config.MODEL_VAD_DIR_NAME)
     monkeypatch.setattr(config, "MODELS_DIR", models_dir)
     monkeypatch.setattr(config, "SUBTITLES_DIR", subtitles_dir)
     return {
         "models_dir": models_dir,
         "subtitles_dir": subtitles_dir,
         "model_dir": model_dir,
+        "vad_model_dir": vad_model_dir,
     }
 
 

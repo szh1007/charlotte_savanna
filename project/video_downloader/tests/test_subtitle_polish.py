@@ -13,7 +13,7 @@ import threading
 
 import pytest
 from backend import llm, subtitle_cache
-from backend.task_manager import manager
+from backend.task_manager import _split_polish_chunks, manager
 from fastapi.testclient import TestClient
 from helpers import find_task, wait_until
 from sse_client import SseStream
@@ -62,17 +62,17 @@ def fake_asr(monkeypatch):
 def fake_polish(monkeypatch):
     """替换字幕重排 LLM 流: 记录输入 / 可阻塞 (观察流式中间态) / 注入失败.
 
-    返回 (calls, control): calls 记录 (chunk_text, start, end) 调用;
+    返回 (calls, control): calls 记录 (chunk_text, start, end, has_real_ts);
     control.gate clear 阻塞第二行 (观察已入缓冲的增量), fail 注入 LLMError.
     """
 
-    calls: list[tuple[str, float, float]] = []
+    calls: list[tuple[str, float, float, bool]] = []
     gate = threading.Event()
     gate.set()
     fail = {"error": None}
 
-    def _fake(chunk_text: str, start: float, end: float):
-        calls.append((chunk_text, start, end))
+    def _fake(chunk_text: str, start: float, end: float, has_real_ts: bool):
+        calls.append((chunk_text, start, end, has_real_ts))
         if fail["error"] is not None:
             raise fail["error"]
         yield POLISHED_TEXT.splitlines()[0] + "\n"
@@ -159,6 +159,68 @@ def test_parse_polished_lines_skips_empty() -> None:
     assert out == [{"start": 0.0, "end": 5.0, "text": "有效行"}]
 
 
+# ---- _split_polish_chunks: 时间戳来源区分 (润色输入格式, 用户反馈) ----
+
+
+def test_split_polish_chunks_real_ts_keeps_prefix() -> None:
+    """块内全部真实时间戳 (ts_estimated=False): 输入行带 "MM:SS ~ MM:SS" 前缀,
+    has_real_ts=True → 润色提示词保留原时间戳 (口播节奏不丢)."""
+    segs = [
+        {"start": 0.0, "end": 12.5, "text": "第一句", "ts_estimated": False},
+        {"start": 12.5, "end": 60.0, "text": "第二句", "ts_estimated": False},
+    ]
+    assert _split_polish_chunks(segs, 1500) == [
+        (0.0, 60.0, "00:00 ~ 00:12 第一句\n00:12 ~ 01:00 第二句", True)
+    ]
+
+
+def test_split_polish_chunks_estimated_ts_strips_prefix() -> None:
+    """块内存在估算时间戳 (ASR 无时间戳兜底): 输入为纯文本, has_real_ts=False
+    → 润色提示词线性均匀重算 (估算值无节奏信息, 不传入 LLM)."""
+    segs = [
+        {"start": 0.0, "end": 2.0, "text": "第一句", "ts_estimated": True},
+        {"start": 2.0, "end": 4.0, "text": "第二句", "ts_estimated": True},
+    ]
+    assert _split_polish_chunks(segs, 1500) == [(0.0, 4.0, "第一句\n第二句", False)]
+
+
+def test_split_polish_chunks_mixed_ts_estimated_wins() -> None:
+    """块内混有估算段: 整块按无时间戳处理 (块级判定, 保留语义简单可靠)."""
+    segs = [
+        {"start": 0.0, "end": 2.0, "text": "真实句", "ts_estimated": False},
+        {"start": 2.0, "end": 4.0, "text": "估算句", "ts_estimated": True},
+    ]
+    assert _split_polish_chunks(segs, 1500) == [(0.0, 4.0, "真实句\n估算句", False)]
+
+
+def test_polish_prompt_keeps_real_ts_requirement(monkeypatch) -> None:
+    """has_real_ts=True 提示词要求保留原时间戳, 不含「线性均匀」计算指令."""
+    captured: dict[str, str] = {}
+
+    def _fake_stream(messages):
+        captured["prompt"] = messages[-1]["content"]
+        return iter([])
+
+    monkeypatch.setattr("backend.llm._chat_stream", _fake_stream)
+    list(llm.polish_subtitle_stream("00:00 ~ 00:05 测试\n", 0.0, 5.0, True))
+    assert "保留原时间戳" in captured["prompt"]
+    assert "线性均匀" not in captured["prompt"]
+
+
+def test_polish_prompt_fallback_linear_ts_requirement(monkeypatch) -> None:
+    """has_real_ts=False 提示词要求在块范围内线性均匀计算时间戳."""
+    captured: dict[str, str] = {}
+
+    def _fake_stream(messages):
+        captured["prompt"] = messages[-1]["content"]
+        return iter([])
+
+    monkeypatch.setattr("backend.llm._chat_stream", _fake_stream)
+    list(llm.polish_subtitle_stream("纯文本测试\n", 0.0, 5.0, False))
+    assert "线性均匀" in captured["prompt"]
+    assert "保留原时间戳" not in captured["prompt"]
+
+
 # ---- 任务流程: 重排成功 / 降级 / 缓存 / 流式输出 ----
 
 
@@ -169,9 +231,16 @@ def test_model_path_polishes_transcript(
     task_id = create_summary(client)
     task = wait_transcript_done(client, task_id)
 
-    # 重排输入 = 拼接的 ASR 文本 + 块时间范围 (首句 0s ~ 末句 60s)
+    # 重排输入 = 带原时间戳前缀的 ASR 文本 (无 ts_estimated 段 → has_real_ts=True,
+    # 提示词保留原时间戳) + 块时间范围 (首句 0s ~ 末句 60s)
     assert fake_polish["calls"] == [
-        ("大家好, 今天讲字幕来源切换\n官方字幕快路径与模型生成双路径", 0.0, 60.0)
+        (
+            "00:00 ~ 00:12 大家好, 今天讲字幕来源切换\n"
+            "00:12 ~ 01:00 官方字幕快路径与模型生成双路径",
+            0.0,
+            60.0,
+            True,
+        )
     ]
     # 精修完成语义: subtask message 标注
     assert task["subtasks"]["transcript"]["message"] == "字幕精修完成"

@@ -58,6 +58,14 @@ ASR_MODEL = os.getenv("ASR_MODEL", "iic/SenseVoiceSmall")
 # 本地模型目录名 (models/SenseVoiceSmall/ 下 config.yaml + model.pt 即 ready)
 MODEL_DIR_NAME = "SenseVoiceSmall"
 
+# ASR VAD 分段模型 (fsmn-vad): SenseVoice 句子级时间戳必需 (无 VAD 整段音频
+# 只出一条无时间字幕), 同样下载到项目 models/ 统一管理 (ADR-0006 同源)
+ASR_VAD_MODEL = os.getenv(
+    "ASR_VAD_MODEL", "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch"
+)
+# 本地 VAD 模型目录名 (models/fsmn-vad/ 下 config.yaml + model.pt 即 ready)
+MODEL_VAD_DIR_NAME = "fsmn-vad"
+
 # ASR 分片长度 (秒): 每片转写后上报一次进度, 长音频避免单次调用内存峰值
 ASR_CHUNK_SECONDS = float(os.getenv("ASR_CHUNK_SECONDS", 600))
 

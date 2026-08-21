@@ -1,8 +1,14 @@
 """语音转写模型下载 (ADR-0006): 全局唯一状态机 + 幂等触发 + SSE 进度.
 
 状态机: missing → downloading → ready; 下载失败回 missing 可重试.
-ready 判定 = 模型配置与权重文件均存在 (MODELS_DIR/SenseVoiceSmall/ 下
-config.yaml + model.pt), 以文件为准, 不依赖内存状态残留.
+ready 判定 = 各模型配置与权重文件均存在 (config.yaml + model.pt),
+以文件为准, 不依赖内存状态残留.
+
+管理两个模型资产 (ADR-0006 统一管理):
+- SenseVoiceSmall (models/SenseVoiceSmall/, ~1GB): 转写主模型
+- fsmn-vad (models/fsmn-vad/, 几 MB): VAD 分段, 句子级时间戳必需
+  (SenseVoice 本身无句子边界, 缺 VAD 整段音频只出一条无时间字幕)
+下载顺序固定 (主模型 → VAD), 进度按权重区间合并 (主模型 0~97, VAD 97~99).
 
 下载引擎为独立调用点 (_snapshot_download, modelscope snapshot_download):
 测试替换该函数驱动状态流转 / 进度回调 / 失败, 不触网. 下载线程为全局
@@ -36,14 +42,23 @@ _READY_FILES = ("config.yaml", "model.pt")
 
 
 def model_dir() -> Path:
-    """模型本地目录 (MODELS_DIR/SenseVoiceSmall/, env 可覆盖)."""
+    """转写主模型本地目录 (MODELS_DIR/SenseVoiceSmall/, env 可覆盖)."""
     return config.MODELS_DIR / config.MODEL_DIR_NAME
 
 
+def vad_model_dir() -> Path:
+    """VAD 分段模型本地目录 (MODELS_DIR/fsmn-vad/, env 可覆盖)."""
+    return config.MODELS_DIR / config.MODEL_VAD_DIR_NAME
+
+
 def is_ready() -> bool:
-    """模型是否就绪: 配置与权重文件均存在 (文件为唯一事实源)."""
-    d = model_dir()
-    return all((d / f).is_file() for f in _READY_FILES)
+    """模型是否就绪: 两个模型 (转写 + VAD) 配置与权重文件均存在.
+
+    文件为唯一事实源; 任一缺失即视为未就绪 (缺 VAD 转写无句子时间戳).
+    """
+    return all(
+        (d / f).is_file() for d in (model_dir(), vad_model_dir()) for f in _READY_FILES
+    )
 
 
 def status() -> dict[str, Any]:
@@ -159,20 +174,27 @@ class ModelDownloader:
         return self.status()
 
     def _download_worker(self) -> None:
-        """执行下载: 进度回调更新状态 + 广播; 完成后校验文件, 失败回 missing.
+        """执行下载: 按序下载两个模型 (主模型 → VAD), 完成后校验, 失败回 missing.
 
+        每个模型进度按权重区间映射 (主模型 0~97 / VAD 97~99, 合并为总进度);
         文件校验失败 (下载不完整 / 中途异常) 与下载引擎异常同路径: 状态回
         missing, 进度清零, 可重新触发下载 (已下载文件由引擎续传覆盖).
         """
+        # (模型 id, 目标目录, 进度区间 [lo, hi]) — VAD 小模型占比低
+        plan = (
+            (config.ASR_MODEL, model_dir(), 0.0, 0.97),
+            (config.ASR_VAD_MODEL, vad_model_dir(), 0.97, 0.99),
+        )
         try:
-            _snapshot_download(config.ASR_MODEL, model_dir(), self._on_progress)
+            for model_id, target, lo, hi in plan:
+                _snapshot_download(model_id, target, self._on_progress_band(lo, hi))
             if not is_ready():
                 raise RuntimeError("模型文件不完整 (缺少 config.yaml / model.pt)")
             with self._lock:
                 self._status = STATUS_READY
                 self._progress = 100.0
             bus.publish_all(model_update_event(STATUS_READY, 100.0))
-            logger.info("语音转写模型下载完成: %s", model_dir())
+            logger.info("语音转写模型下载完成: %s + %s", model_dir(), vad_model_dir())
         except Exception as e:
             logger.warning("模型下载失败: %s", e)
             with self._lock:
@@ -180,9 +202,30 @@ class ModelDownloader:
                 self._progress = 0.0
             bus.publish_all(model_update_event(STATUS_MISSING, 0.0))
 
-    def _on_progress(self, filename: str, done: int, total: int) -> None:
-        """引擎进度回调 → 状态 + 进度 + SSE 广播 (下载中, 单调递增)."""
-        pct = min((done / total) * 100, 99.0) if total else 0.0
+    def _on_progress_band(
+        self, lo: float, hi: float
+    ) -> Callable[[str, int, int], None]:
+        """当前模型进度 → 总进度区间 [lo, hi] 的闭包回调 (worker 内逐模型绑定)."""
+
+        def _cb(filename: str, done: int, total: int) -> None:
+            self._on_progress(filename, done, total, lo=lo, hi=hi)
+
+        return _cb
+
+    def _on_progress(
+        self,
+        filename: str,
+        done: int,
+        total: int,
+        lo: float = 0.0,
+        hi: float = 1.0,
+    ) -> None:
+        """引擎进度回调 → 状态 + 进度 + SSE 广播 (下载中, 单调递增).
+
+        进度 = lo + (done/total) * (hi-lo), 总进度上限 99 (完成才置 100).
+        """
+        pct = lo + ((done / total) * (hi - lo) if total else 0.0)
+        pct = min(pct * 100, 99.0)
         with self._lock:
             self._progress = pct
         bus.publish_all(model_update_event(STATUS_DOWNLOADING, pct))

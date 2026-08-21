@@ -151,7 +151,13 @@ def _split_audio(src: Path, tmpdir: Path) -> list[Path]:
 
 
 def _infer(audio_path: Path) -> list[dict[str, Any]]:
-    """单片 SenseVoice 转写 → [{start, end, text}] (片内时间, 秒)."""
+    """单片 SenseVoice 转写 → [{start, end, text}] (片内时间, 秒).
+
+    sentence_timestamp=True 触发 AutoModel pipeline 层 (需 vad_model
+    配合) 生成句子级 sentence_info (毫秒, VAD 段边界为句子时间戳).
+    不能同时传 output_timestamp=True: 有词级 timestamp 且无 punc_model
+    时 pipeline 跳过句子分割, sentence_info 为空 (实测验证).
+    """
     model = _load_model()
     with _model_lock:  # 推理串行: 模型非线程安全
         result = model.generate(
@@ -190,39 +196,91 @@ def _load_model():
         try:
             # 优先加载项目 models/ 本地模型 (ADR-0006 预下载产物, funasr
             # AutoModel 支持本地路径), 未下载时回退 modelscope 模型 id
-            # (旧行为: 自动下载到 modelscope 缓存)
+            # (旧行为: 自动下载到 modelscope 缓存).
+            # vad_model 必须有: SenseVoice 本身无句子边界能力, 缺 VAD 时整段
+            # 音频按一条句子转写 (只出 1 段, 无时间戳), VAD 分段 +
+            # sentence_timestamp 才能产出句子级带时间戳字幕 (官方 README
+            # 推荐组合). VAD 与主模型同走项目 models/ 本地目录 (统一下载
+            # 管理), 目录缺失回退 modelscope id
             model_dir = config.MODELS_DIR / config.MODEL_DIR_NAME
             model_ref = str(model_dir) if model_dir.is_dir() else config.ASR_MODEL
-            _model = AutoModel(model=model_ref, device="cpu")
+            vad_dir = config.MODELS_DIR / config.MODEL_VAD_DIR_NAME
+            vad_ref = str(vad_dir) if vad_dir.is_dir() else config.ASR_VAD_MODEL
+            _model = AutoModel(model=model_ref, vad_model=vad_ref, device="cpu")
         except Exception as e:
             raise TranscriptError(f"ASR 模型加载失败: {e}") from e
         return _model
 
 
 def _to_segments(result: Any) -> list[dict[str, Any]]:
-    """funasr 输出 → [{start, end, text}] (毫秒时间戳转秒, 清洗元标签).
+    """funasr 输出 → [{start, end, text, ts_estimated}] (毫秒转秒, 清洗元标签).
 
-    SenseVoice 每句输出带 <|lang|> <|emotion|> 等元标签, 需清洗;
-    timestamp 缺失 (模型异常) 时按前句末时间连续估算, 兜底不丢文本.
+    优先级: ① sentence_info (vad_model 输出的句子级时间戳, 官方推荐字段,
+    每句一条) → ② timestamp (词级时间戳列表, 取首词 start ~ 尾词 end,
+    覆盖全句跨度) → ③ 无时间戳兜底 (句长估算连续窗口, 不丢文本).
+    SenseVoice 每句输出带 <|lang|> <|emotion|> 等元标签, 需清洗.
+    ts_estimated 为时间戳来源标记 (内部字段, 对外序列化被 schema 过滤):
+    ③ 兜底估算置 True, 字幕润色据此走「保留原时间戳」或「线性均匀重算」
+    (用户反馈: 估算时间戳无真实口播节奏, 保留无意义).
     """
     segments: list[dict[str, Any]] = []
     cursor = 0.0
     for item in result or []:
         if not isinstance(item, dict):
             continue
+        start = end = None
+        # ① 句子级 (AutoModel + vad_model): sentence_info 元素为
+        # {start, end, sentence/text}, 时间戳毫秒
+        for sent in item.get("sentence_info") or []:
+            if not isinstance(sent, dict):
+                continue
+            text = _clean_text(sent.get("sentence") or sent.get("text") or "")
+            if not text:
+                continue
+            s, e = _ms_times(sent.get("start"), sent.get("end"))
+            start, end = s, e
+            segments.append(
+                {
+                    "start": round(s, 2),
+                    "end": round(e, 2),
+                    "text": text,
+                    "ts_estimated": False,
+                }
+            )
+            cursor = e
+        if segments and start is not None:
+            continue
         text = _clean_text(item.get("text") or "")
         if not text:
             continue
+        # ② 词级 timestamp: [[start_ms, end_ms], ...] 每个词一段,
+        # 全句跨度 = 首词 start ~ 尾词 end (旧实现只取 ts[0], end 截断)
         ts = item.get("timestamp")
-        if isinstance(ts, list) and ts and isinstance(ts[0], list | tuple):
+        has_ts = isinstance(ts, list) and ts and isinstance(ts[0], list | tuple)
+        if has_ts:
             start = float(ts[0][0]) / 1000.0
-            end = float(ts[0][1]) / 1000.0
-        else:  # 无时间戳兜底: 连续窗口 (句长估算 1s/8 字)
+            end = float(ts[-1][1]) / 1000.0
+        else:  # ③ 无时间戳兜底: 连续窗口 (句长估算 1s/8 字)
             start = cursor
             end = cursor + max(len(text) / 8.0, 1.0)
-        segments.append({"start": round(start, 2), "end": round(end, 2), "text": text})
+        segments.append(
+            {
+                "start": round(start, 2),
+                "end": round(end, 2),
+                "text": text,
+                "ts_estimated": not has_ts,
+            }
+        )
         cursor = end
     return segments
+
+
+def _ms_times(start: Any, end: Any) -> tuple[float, float]:
+    """毫秒时间戳 → 秒; 缺失/非法时 (0, 0) 占位 (调用方兜底)."""
+    try:
+        return float(start or 0) / 1000.0, float(end or 0) / 1000.0
+    except (TypeError, ValueError):
+        return 0.0, 0.0
 
 
 def _clean_text(text: str) -> str:
