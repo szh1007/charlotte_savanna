@@ -30,6 +30,7 @@
 | `app/minimall/` | 业务模块（测试原型） | Django 商城：DRF API + 页面 + Redis 缓存 |
 | `project/deep_search/` | 子项目 | 深度检索智能体（DeepAgents + FastAPI + Vue） |
 | `project/menu/` | 子项目 | 餐厅智能助手（LangChain Agent + FastAPI + Vue） |
+| `project/video_downloader/` | 子项目 | B 站视频下载站（FastAPI + yt-dlp + Vue，AI 视频总结） |
 | `demo/` | 自学教程 | Python / LangChain / LangGraph / DeepAgents / FastAPI 教程 |
 
 ---
@@ -39,7 +40,7 @@
 | 层级 | 技术 | 说明 |
 |------|------|------|
 | **语言** | Python 3.13 | 类型注解、asyncio、ContextVar |
-| **Web 框架** | Django 6.0 / FastAPI 0.139 | Django 用于 minimall，FastAPI 用于两个子项目 |
+| **Web 框架** | Django 6.0 / FastAPI 0.139 | Django 用于 minimall，FastAPI 用于三个子项目 |
 | **Django 扩展** | DRF + django-filter + django-mptt | REST API、过滤、树形分类 |
 | **ORM / DB** | PyMySQL / SQLAlchemy 2.0 | MySQL（参数化查询） |
 | **缓存** | Redis（django-redis / redis-py） | L2 缓存、击穿/穿透/雪崩防护、熔断 |
@@ -48,6 +49,7 @@
 | **向量数据库** | Milvus / ChromaDB / FAISS | 语义检索（HNSW + 余弦相似度） |
 | **知识库** | RAGFlow | 企业知识库问答 |
 | **搜索** | Tavily | 联网检索 |
+| **视频处理** | yt-dlp + ffmpeg + SenseVoice | 下载引擎、音视频合并、ASR 转写（video_downloader） |
 | **前端** | Vue 3 + Vite + TS/JS + Element Plus | 组合式 API、WebSocket / SSE |
 | **代码质量** | Ruff + pre-commit | 静态检查、格式化、提交校验 |
 | **配置管理** | python-dotenv | `.env` 环境变量隔离 |
@@ -64,9 +66,10 @@ charlotte_savanna/
 ├── app/minimall/            # 商城业务（Django，9 个模型 + 缓存）
 ├── project/
 │   ├── deep_search/         # 深度检索智能体（DeepAgents + FastAPI + Vue）
-│   └── menu/                # 餐厅智能助手（LangChain Agent + FastAPI + Vue）
+│   ├── menu/                # 餐厅智能助手（LangChain Agent + FastAPI + Vue）
+│   └── video_downloader/    # B 站视频下载站（FastAPI + yt-dlp + Vue）
 ├── templates/               # 全局模板（minimall + admin）
-├── sh/                      # 启动脚本（deep_search / menu 前后端）
+├── sh/                      # 启动脚本（deep_search / menu / video_downloader 前后端）
 ├── demo/                    # 自学教程（非业务代码）
 │   └── SUMMARY.md           # 知识点学习总结
 ├── docs/                    # Agent 定义、triage 规范、学习笔记
@@ -108,6 +111,17 @@ charlotte_savanna/
 - **流式对话**：FastAPI SSE（`text/event-stream`）逐 token 输出
 - 详见 [`project/menu/README.md`](project/menu/README.md)
 
+### video_downloader — B 站视频下载站（子项目）
+
+基于 **FastAPI + yt-dlp + Vue 3** 的哔哩哔哩免费视频下载网站，实践「文档先行（CONTEXT/ADR/PRD）→ 分步实现 → 测试验收」工程模式。
+
+- **下载流程**：粘贴链接 → 解析清晰度档位 → 批量下载（队列顺序执行 + 并发槽调度）→ 临时直链交付
+- **无数据库**：任务 / 队列 / 会员会话全部内存态，交付文件 TTL 到期自动清理；仅支持 B 站免费公开视频（URL 白名单校验）
+- **付费差异（后端强制）**：免费档限 720p / 1 并发 / 队列 5 / 直链 24h；会员密钥解锁全部清晰度 / 3 并发 / 队列 50 / 直链 72h
+- **AI 视频总结**：官方字幕快路径 → SenseVoice 兜底转写 → DeepSeek 生成转录 / 总结 / 思维导图 / AI 问答
+- **实时进度**：FastAPI SSE 推送任务状态（`task-update` + 心跳）
+- 详见 [`project/video_downloader/README.md`](project/video_downloader/README.md)
+
 ### demo — 自学教程（非业务）
 
 Python 基础、LangChain 1.3、LangGraph 1.2、DeepAgents 0.7、FastAPI 的渐进式教程，仅作学习参考。另有 [`SUMMARY.md`](demo/SUMMARY.md)（知识点学习总结）。
@@ -142,6 +156,7 @@ cp .env.example .env               # 填入真实 API Key
 | minimall | `python manage.py runserver` | 内建页面 |
 | deep_search | `sh/deep_search_backend.sh` | `sh/deep_search_frontend.sh` |
 | menu | `sh/menu_backend.sh` | `sh/menu_frontend.sh` |
+| video_downloader | `sh/video_downloader_backend.sh` | `sh/video_downloader_frontend.sh` |
 
 子项目前端首次运行需在对应 `ui/` 目录执行 `npm install`。
 
@@ -155,7 +170,7 @@ cp .env.example .env               # 填入真实 API Key
 - **LLM（Embedding）**：`CLOSEAI_*`
 - **数据库**：`MYSQL_*`（Django + demo）、`PGSQL_*`（PostgreSQL demo）
 - **缓存 / 向量**：`REDIS_URL`、`MILVUS_*`（`MILVUS_URL` / `MILVUS_DATABASE_NAME` / `MILVUS_COLLECTION_NAME`）
-- **子项目专用**：`MENU_*`（menu）、`DS_*`（deep_search）
+- **子项目专用**：`MENU_*`（menu）、`DS_*`（deep_search）；video_downloader 独立 `.env`（`MEMBER_KEY` / `BILI_COOKIE` / `LLM_*` / `ASR_*`）
 - **Django**：`DJANGO_*`
 - **外部服务**：`TAVILY_API_KEY`、`LANGSMITH_*`
 
@@ -169,6 +184,7 @@ cp .env.example .env               # 填入真实 API Key
 | [demo/SUMMARY.md](demo/SUMMARY.md) | 知识点学习总结（LangChain/LangGraph/DeepAgents） |
 | [project/deep_search/README.md](project/deep_search/README.md) | deep_search 子项目文档 |
 | [project/menu/README.md](project/menu/README.md) | menu 子项目文档 |
+| [project/video_downloader/README.md](project/video_downloader/README.md) | video_downloader 子项目文档 |
 | [docs/](docs/) | Agent 定义、triage 规范、学习笔记 |
 
 ---

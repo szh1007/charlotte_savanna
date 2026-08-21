@@ -1,4 +1,4 @@
-"""临时探针: 对比三种 cookie 附加方式的 yt-dlp 内部请求 (诊断用, 用完即删)."""
+"""诊断探针: 对比三种 cookie 附加方式的 yt-dlp 内部请求 (排查字幕/下载鉴权问题用)."""
 
 from __future__ import annotations
 

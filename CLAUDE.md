@@ -17,6 +17,7 @@
 | `app/minimall/` | 业务模块（测试原型） | 商城业务（DRF API + 页面，Redis 缓存） |
 | `project/deep_search/` | 子项目 | DeepAgents 深度检索智能体（FastAPI + Vue 前端） |
 | `project/menu/` | 子项目 | 餐厅智能助手（LangChain Agent + FastAPI + Vue） |
+| `project/video_downloader/` | 子项目 | B 站视频下载站（FastAPI + yt-dlp + Vue，AI 视频总结） |
 | `demo/` | 自学教程 | 非业务代码，见 §1.1 |
 
 ---
@@ -42,12 +43,13 @@
 | 层级 | 技术 | 版本 |
 |------|------|------|
 | **语言** | Python | 3.13 |
-| **Web 框架** | Django（minimall）+ FastAPI（deep_search / menu） | 6.0 / 0.139 |
+| **Web 框架** | Django（minimall）+ FastAPI（deep_search / menu / video_downloader） | 6.0 / 0.139 |
 | **数据库** | MySQL + Redis 缓存（django-redis / redis-py） | — |
 | **ORM** | SQLAlchemy（menu 子项目） | 2.0 |
 | **Django 扩展** | DRF + django-filter + django-mptt | 3.17 / 25.2 / 0.18 |
 | **LLM 框架** | LangChain + LangGraph | 1.3 / 1.2 |
 | **Agent** | DeepAgents | 0.7 |
+| **视频处理** | yt-dlp + ffmpeg + SenseVoice（video_downloader 下载与 AI 总结） | — |
 | **向量数据库** | ChromaDB + FAISS + RAGFlow + Milvus | — |
 | **前端** | Vue 3 + Vite + TypeScript/JavaScript + Element Plus | — |
 | **代码质量** | Ruff + pre-commit | — |
@@ -88,7 +90,7 @@ charlotte_savanna/
 │       ├── tests/               #   test_api / test_models / test_services
 │       ├── todo/redis.md        #   Redis 缓存设计文档（架构/风险/使用）
 │       └── uploads/             #   本地文件上传（.gitignore 排除）
-├── project/                     # 独立子项目（deep_search / menu）
+├── project/                     # 独立子项目（deep_search / menu / video_downloader）
 │   ├── deep_search/             #   深度检索智能体（FastAPI + DeepAgents）
 │   │   ├── agent/               #   main_agent + subagents（数据库查询/网络搜索/知识库）
 │   │   ├── api/                 #   FastAPI server / context（会话）/ monitor
@@ -101,10 +103,20 @@ charlotte_savanna/
 │   │   ├── updated/             #   （空占位）
 │   │   ├── README.md            #   子项目文档
 │   │   └── .env                 #   独立环境变量（不提交）
-│   └── menu/                    #   餐厅智能助手（LangChain Agent + FastAPI）
-│       ├── agent/               #   LangChain 餐厅 Agent（工具 + prompt + FAQ + milvus 同步）
-│       ├── api/                 #   FastAPI 服务（SSE 流式 + REST）
-│       ├── ui/                  #   Vue 3 + Vite + Element Plus 前端
+│   ├── menu/                    #   餐厅智能助手（LangChain Agent + FastAPI）
+│   │   ├── agent/               #   LangChain 餐厅 Agent（工具 + prompt + FAQ + milvus 同步）
+│   │   ├── api/                 #   FastAPI 服务（SSE 流式 + REST）
+│   │   ├── ui/                  #   Vue 3 + Vite + Element Plus 前端
+│   │   ├── README.md            #   子项目文档
+│   │   └── .env                 #   独立环境变量（不提交）
+│   └── video_downloader/        #   B 站视频下载站（FastAPI + yt-dlp + Vue 3）
+│       ├── backend/             #   FastAPI 后端（解析/下载/队列/SSE/会员/AI 总结）
+│       ├── frontend/            #   Vue 3 + Vite 前端（零 UI 库, markmap 思维导图）
+│       ├── models/              #   SenseVoice / fsmn-vad 模型（.gitignore, 约 1GB）
+│       ├── downloads/           #   交付文件目录（TTL 清理, .gitignore）
+│       ├── docs/                #   CONTEXT / DESIGN / ADR-0001 ~ 0008
+│       ├── tests/               #   HTTP seam 自动化测试（119 个）
+│       ├── scripts/             #   E2E 下载 / 字幕 cookie / yt-dlp 探测脚本
 │       ├── README.md            #   子项目文档
 │       └── .env                 #   独立环境变量（不提交）
 ├── templates/                   # 全局模板目录
@@ -114,7 +126,9 @@ charlotte_savanna/
 │   ├── deep_search_backend.sh   #   启动 deep_search 后端
 │   ├── deep_search_frontend.sh  #   启动 deep_search 前端
 │   ├── menu_backend.sh          #   启动 menu 后端
-│   └── menu_frontend.sh         #   启动 menu 前端
+│   ├── menu_frontend.sh         #   启动 menu 前端
+│   ├── video_downloader_backend.sh  #   启动 video_downloader 后端
+│   └── video_downloader_frontend.sh #   启动 video_downloader 前端
 ├── demo/                        # [Demo] 自学教程代码（非业务，忽略）
 │   ├── Base/                    #   Python 基础
 │   ├── LangChain_v1.3/          #   LangChain 1.3 教程
@@ -175,14 +189,26 @@ charlotte_savanna/
 - **会话管理**：按 session/thread 上下文隔离（`api/context.py`），流式输出通过 WebSocket 推送（`utils/stream.py`）
 - **外部服务**：MySQL 查询、RAGFlow 知识库、Tavily 网络搜索均封装为独立 tool，供 agent 调用
 - **输出**：agent 生成 markdown，可转 PDF（`tools/pdf_tools.py`），落盘到 `output/`
+- **前端**：Vue 3 + Vite + TypeScript（`ui/`），WebSocket 流式上报工具调用与进度，详细文档见 `project/deep_search/README.md`
 
-### 4.4 前端（子项目 ui）
+### 4.4 FastAPI / LangChain Agent（menu 子项目）
 
-- **技术栈**：Vue 3 + Vite；deep_search 用 TypeScript、menu 用 JavaScript，组件库按需引入（如 Element Plus）
-- **依赖管理**：`package.json` 明确声明 dependencies，`package-lock.json` 提交到版本控制
-- **代码风格**：优先 `const`，组合式 API，箭头函数回调；TypeScript 项目开启严格模式
+- **后端**：FastAPI（`api/main.py`）+ LangChain `create_agent`（`agent/langchain.py`），DeepSeek 模型，`@tool` 挂载三个工具（菜品查询 / 口味语义检索 / 餐位预订）
+- **数据**：MySQL 存菜单与预订单，Milvus 存菜品向量做语义检索，Redis 存 FAQ 做相似推荐
+- **初始化**：先执行 `agent/prompt/menu.sql`（建表）、`agent/milvus_sync.py`（向量库）、`agent/FAQ/redis_sync.py`（FAQ）再启动
+- **前端**：Vue 3 + Element Plus（`ui/`），详细文档见 `project/menu/README.md`
 
-### 4.5 代码质量（Ruff / pre-commit）
+### 4.5 FastAPI / yt-dlp（video_downloader 子项目）
+
+- **后端**：FastAPI（`backend/main.py`）+ yt-dlp 引擎（`backend/downloader.py`），音视频分离流由 ffmpeg 合并输出 MP4；URL 白名单限 bilibili.com 主域/子域 + b23.tv 短链（ADR-0004）
+- **无数据库**：任务 / 队列 / 会员会话全部内存态，交付直链 TTL 到期由后台线程自动清理（ADR-0003）
+- **付费差异（后端强制）**：免费档限 720p / 1 并发 / 队列 5 / 直链 24h；会员密钥解锁全部能力（`backend/auth.py` + `backend/quota.py`, ADR-0002）
+- **AI 视频总结（ADR-0005）**：字幕快路径（`backend/subtitle.py`, 服务端 `BILI_COOKIE` 取官方字幕）→ 兜底 SenseVoice 转写（`backend/asr.py`）→ DeepSeek 生成总结（`backend/llm.py`），SSE 流式输出
+- **前端**：Vue 3 + Vite（`frontend/`），零 UI 库，d3 / markmap 渲染思维导图，详细文档见 `project/video_downloader/README.md`
+
+### 4.6 代码质量
+
+> 注释规范参见系统级 CLAUDE.md 第 6.2 节。
 
 - **Ruff**：配置在 `pyproject.toml`，`line-length = 88`，target `py313`；启用 isort 排序、flake8-simplify、pyupgrade 等规则
 - **pre-commit**：`.pre-commit-config.yaml` 定义 hooks —— ruff（--fix + format）、codespell 拼写检查、conventional-commits 提交信息校验、trailing-whitespace / end-of-file 等基础检查
@@ -191,28 +217,11 @@ charlotte_savanna/
   - 标点一律英文：注释中的逗号、句号、括号、冒号等使用 `,` `.` `(` `)` `:`，符号后按英文风格空一格
   - 行宽：代码与注释每行 ≤ 88 字符（Black 风格），超长必须换行，避免 pre-commit 的 ruff format 报错
 
-### 4.6 文件组织
-
-> 注释规范参见系统级 CLAUDE.md 第 6.2 节。
-
-- **实验代码**：`demo/` 目录下的教程代码中，已注释的实现变体保留供学习参考，不要删除
-- **Demo 命名**（仅适用于 `demo/` 目录）：
-  - 教程按 `_序号_主题/` 目录组织（如 `demo/LangGraph_v1.2/_2_control_stream/`）
-  - 文件按 `_模块_序号_描述.py` 命名（如 `_6_2_tool_node.py`），使用 `if __name__ == "__main__":` 包裹执行代码
-  - Asset 文件：测试数据统一放在对应子目录的 `asset/` 或 `load/` 下
-
-### 4.7 FastAPI / LangChain Agent（menu 子项目）
-
-- **后端**：FastAPI（`api/main.py`）+ LangChain `create_agent`（`agent/langchain.py`），DeepSeek 模型，`@tool` 挂载三个工具（菜品查询 / 口味语义检索 / 餐位预订）
-- **数据**：MySQL 存菜单与预订单，Milvus 存菜品向量做语义检索，Redis 存 FAQ 做相似推荐
-- **初始化**：先执行 `agent/prompt/menu.sql`（建表）、`agent/milvus_sync.py`（向量库）、`agent/FAQ/redis_sync.py`（FAQ）再启动
-- **前端**：Vue 3 + Element Plus（`ui/`），详细文档见 `project/menu/README.md`
-
 ---
 
 ## 5. 当前开发状态
 
-> 当前各模块均为学习/测试性质，正式「主流程」尚未确定：minimall 为 Django 测试原型，deep_search / menu 为独立子项目。
+> 当前各模块均为学习/测试性质，正式「主流程」尚未确定：minimall 为 Django 测试原型，deep_search / menu / video_downloader 为独立子项目。
 
 ### 5.1 测试原型 — minimall 商城 (`app/minimall/`)
 
@@ -246,7 +255,19 @@ charlotte_savanna/
 
 > 餐厅智能助手「一绪寿喜烧」已闭环，可通过 `sh/menu_backend.sh` + `sh/menu_frontend.sh` 启动。详细文档见 `project/menu/README.md`。
 
-### 5.4 Demo 目录（仅供学习参考，不计入业务/子项目）
+### 5.4 子项目 — video_downloader 下载站 (`project/video_downloader/`)
+
+| 组件 | 状态 | 说明 |
+|------|------|------|
+| 后端 (`backend/`) | ✅ | FastAPI：解析 / 下载 / 队列调度 / SSE / 会员 / AI 总结 |
+| 下载引擎 | ✅ | yt-dlp 嵌入（Python API），ffmpeg 合并 MP4 |
+| AI 视频总结 | ✅ | 字幕快路径 + SenseVoice 兜底 + DeepSeek（转录 / 总结 / 思维导图 / 问答） |
+| 前端 (`frontend/`) | ✅ | Vue 3 + Vite，零 UI 库，markmap 思维导图 |
+| 测试 (`tests/`) | ✅ | HTTP seam 119 个（引擎 / 字幕 / ASR / LLM mock，无网络依赖） |
+
+> 已完成闭环，可通过 `sh/video_downloader_backend.sh` + `sh/video_downloader_frontend.sh` 启动。详细文档见 `project/video_downloader/README.md`。
+
+### 5.5 Demo 目录（仅供学习参考，不计入业务/子项目）
 
 | 目录 | 状态 | 说明 |
 |------|------|------|
@@ -257,7 +278,7 @@ charlotte_savanna/
 | `demo/FastAPI/` | ✅ 完成 | FastAPI 基础教程（3 个 demo） |
 | `demo/SUMMARY.md` | ✅ 完成 | LangChain/LangGraph/DeepAgents 知识点学习总结 |
 
-### 5.5 基础设施
+### 5.6 基础设施
 
 | 项目 | 状态 | 说明 |
 |------|------|------|
@@ -277,7 +298,7 @@ charlotte_savanna/
 > 通用安全规范（`.env` 管理、API Key 保护、`.gitignore` 检查清单、敏感信息泄露处理）参见系统级 CLAUDE.md 第 3 节。
 
 - 项目 `.env.example` 已提供所需环境变量模板
-- `project/deep_search/.env`、`project/menu/.env` 为子项目独立环境变量，同样不提交
+- `project/deep_search/.env`、`project/menu/.env`、`project/video_downloader/.env` 为子项目独立环境变量，同样不提交
 - 生产环境设置见 `settings/prod.py`（DEBUG=False + HSTS/HTTPS 加固），由 WSGI/ASGI 加载
 
 ### 6.2 业务工作范围（重要）
@@ -301,6 +322,8 @@ charlotte_savanna/
 - **deep_search 前端**：`sh/deep_search_frontend.sh`（或 `cd project/deep_search/ui && npm run dev`，首次需 `npm install`）
 - **menu 后端**：`sh/menu_backend.sh`（或 `python -m project.menu.api.main`）
 - **menu 前端**：`sh/menu_frontend.sh`（或 `cd project/menu/ui && npm run dev`，首次需 `npm install`）
+- **video_downloader 后端**：`sh/video_downloader_backend.sh`（或 `cd project/video_downloader && python -m uvicorn backend.main:app --port 8000`）
+- **video_downloader 前端**：`sh/video_downloader_frontend.sh`（或 `cd project/video_downloader/frontend && npm run dev`，首次需 `npm install`）
 - **LangGraph CLI**：`langgraph dev`（`langgraph.json` 配置了 graph 入口，指向 `demo/LangGraph_v1.2`）
 - **LangChain 脚本**：在对应 `demo/` 子目录下 `python <script>.py`（脚本内部 `load_dotenv()`）
 - **实验性代码**：教程文件中的注释代码刻意保留，展示不同实现变体
@@ -314,9 +337,10 @@ pip freeze > requirements.txt      # 更新
 # 子项目前端（独立）：
 cd project/deep_search/ui && npm install
 cd project/menu/ui && npm install
+cd project/video_downloader/frontend && npm install
 ```
 
-核心依赖：Django 6.0、DRF、LangChain/LangGraph 1.x、DeepAgents、FastAPI、PyMySQL、SQLAlchemy、django-redis、redis-py、ChromaDB、FAISS、RAGFlow SDK、Milvus、python-dotenv、Tavily
+核心依赖：Django 6.0、DRF、LangChain/LangGraph 1.x、DeepAgents、FastAPI、PyMySQL、SQLAlchemy、django-redis、redis-py、ChromaDB、FAISS、RAGFlow SDK、Milvus、python-dotenv、Tavily、yt-dlp、ffmpeg
 
 ### 6.5 Claude Code 说明
 
@@ -351,4 +375,4 @@ cd project/menu/ui && npm install
 
 ---
 
-> **最后更新**：2026-08-17 | **维护者**：Claude Code (charlotte)
+> **最后更新**：2026-08-22 | **维护者**：Claude Code (charlotte)
