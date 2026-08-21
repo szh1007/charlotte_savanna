@@ -87,9 +87,11 @@ MEMBER_QUEUE_LIMIT = 50  # 会员档批量队列上限
 # 调度器扫描间隔 (秒): 把 queued 任务分配到空闲槽位 (PRD 设计值约 0.5s)
 _SCHEDULER_INTERVAL = 0.5
 
-# 字幕重排分块字符上限 (LLM 单次调用输入量): 超长转录按块逐次重排,
-# 块范围 = 块内首/末句时间戳 (重排输出时间戳线性均匀分布在此范围内)
-POLISH_CHUNK_CHARS = 1500
+# 字幕重排单次 LLM 调用字符上限: 正常视频全量转录为单块, 一次性润色
+# (用户反馈: 原 1500 字符分块串行 N 次调用太慢); 超长 (约 1h+ 长视频)
+# 回退分块保护上下文窗口 (输入 + 输出同量级, 中文 1 字 ≈ 1 token).
+# 块范围 = 块内首/末句时间戳 (重排输出时间戳分布在此范围内)
+POLISH_MAX_CHARS = 60_000
 
 
 class QueueLimitError(Exception):
@@ -877,17 +879,19 @@ class TaskManager:
     def _polish_segments(
         self, task: Task, segments: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
-        """LLM 重排字幕 (模型生成增强): 逐块流式精修 → transcript_stream 缓冲.
+        """LLM 重排字幕 (模型生成增强): 全量一次性润色, 增量流式入缓冲.
 
-        块间检查取消信号 (置位抛 TranscriptError, 语义同 ASR 转写取消);
-        单块 LLM 失败抛 LLMError (调用方降级). 重排成功返回新段列表,
-        时间戳由 LLM 在块范围内线性均匀生成 (parse_polished_lines 兜底).
-        进度: 80~99 (转写阶段占 55~80, 见 _transcript_progress).
+        正常视频整个转录为单块 (POLISH_MAX_CHARS 内), 单次 LLM 调用完成
+        (用户反馈: 原 1500 字符分块串行 N 次调用太慢); 超长转录回退分块
+        保护上下文窗口. 块间检查取消信号 (置位抛 TranscriptError, 语义同
+        ASR 转写取消); 单块 LLM 失败抛 LLMError (调用方降级). 重排成功
+        返回新段列表, 时间戳由 LLM 在块范围内生成 (parse_polished_lines
+        兜底插值). 进度: 80~99 (转写阶段占 55~80, 见 _transcript_progress).
         """
         with self._lock:
             if task.id in self._tasks:
                 task.transcript_stream.clear()
-        chunks = _split_polish_chunks(segments, POLISH_CHUNK_CHARS)
+        chunks = _split_polish_chunks(segments, POLISH_MAX_CHARS)
         if not chunks:
             return segments
         polished: list[dict[str, Any]] = []
@@ -907,12 +911,19 @@ class TaskManager:
                 raise
             except Exception as e:  # 引擎异常统一为 LLM 错误: 调用方降级
                 raise llm.LLMError(f"字幕重排异常: {e}") from e
+            # 正常单块 (全量) 固定 99, 不显示 "1/1" 分块感; 超长回退多块
+            # 时按块推进进度, 保留当前块信息
+            if len(chunks) == 1:
+                progress, message = 99.0, "字幕精修中"
+            else:
+                progress = min(80.0 + (idx + 1) / len(chunks) * 19.0, 99.0)
+                message = f"字幕精修中 {idx + 1}/{len(chunks)}"
             self.update_subtask(
                 task.id,
                 SUBTASK_TRANSCRIPT,
                 ST_RUNNING,
-                progress=min(80.0 + (idx + 1) / len(chunks) * 19.0, 99.0),
-                message=f"字幕精修中 {idx + 1}/{len(chunks)}",
+                progress=progress,
+                message=message,
             )
         return polished
 

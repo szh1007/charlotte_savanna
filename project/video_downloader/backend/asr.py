@@ -206,7 +206,21 @@ def _load_model():
             model_ref = str(model_dir) if model_dir.is_dir() else config.ASR_MODEL
             vad_dir = config.MODELS_DIR / config.MODEL_VAD_DIR_NAME
             vad_ref = str(vad_dir) if vad_dir.is_dir() else config.ASR_VAD_MODEL
-            _model = AutoModel(model=model_ref, vad_model=vad_ref, device="cpu")
+            # vad_kwargs: 断句粒度可调 (台词间隔短时 VAD 把两句合并为一条
+            # 字幕; 调低 max_end_silence_time 可断出更多短句, .env 可配)
+            vad_kwargs: dict[str, Any] = {
+                "max_end_silence_time": config.ASR_VAD_MAX_END_SILENCE_MS
+            }
+            if config.ASR_VAD_SPEECH_TO_SIL_THRES_MS:
+                vad_kwargs["speech_to_sil_time_thres"] = int(
+                    config.ASR_VAD_SPEECH_TO_SIL_THRES_MS
+                )
+            _model = AutoModel(
+                model=model_ref,
+                vad_model=vad_ref,
+                device="cpu",
+                vad_kwargs=vad_kwargs,
+            )
         except Exception as e:
             raise TranscriptError(f"ASR 模型加载失败: {e}") from e
         return _model

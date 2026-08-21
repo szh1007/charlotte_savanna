@@ -69,6 +69,14 @@ MODEL_VAD_DIR_NAME = "fsmn-vad"
 # ASR 分片长度 (秒): 每片转写后上报一次进度, 长音频避免单次调用内存峰值
 ASR_CHUNK_SECONDS = float(os.getenv("ASR_CHUNK_SECONDS", 600))
 
+# ASR VAD 断句粒度 (fsmn-vad): max_end_silence_time 为句尾静音阈值 (ms),
+# 两句话间隔低于该值会被合并为一条字幕 (默认 800 = 官方默认; 台词间隔短/
+# 快速对话调低如 500 可断出更多短句, 过低如 300 会把正常句子从中切断);
+# speech_to_sil_time_thres 为语音转静音最小持续时间 (ms, 空 = 不覆盖,
+# 用模型默认), 对短停顿更敏感时与上者同时调低
+ASR_VAD_MAX_END_SILENCE_MS = int(os.getenv("ASR_VAD_MAX_END_SILENCE_MS", 800))
+ASR_VAD_SPEECH_TO_SIL_THRES_MS = os.getenv("ASR_VAD_SPEECH_TO_SIL_THRES_MS")
+
 # 免费档每日配额 (按匿名 client_id + 日窗口计数, 内存态重启清零, ADR-0005):
 # 会员不限; 与「免费档真实受限」哲学一致
 FREE_SUMMARY_DAILY = int(os.getenv("FREE_SUMMARY_DAILY", 3))
