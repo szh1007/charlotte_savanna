@@ -9,7 +9,8 @@
         ".langgraph_api": true,
         ".ruff_cache": true,
         "**/__pycache__": true,
-        ".playwright-mcp": true
+        ".playwright-mcp": true,
+        "**/.pytest_cache": true
     },
     "workbench.editorAssociations": {
         "*.md": "vscode.markdown.preview.editor"

@@ -24,6 +24,12 @@ const router = createRouter({
       component: () => import('@/views/Profile.vue'),
       meta: { requiresAuth: true },
     },
+    {
+      path: '/journeys/:id',
+      name: 'journey-detail',
+      component: () => import('@/views/JourneyDetail.vue'),
+      meta: { requiresAuth: true },
+    },
   ],
 })
 

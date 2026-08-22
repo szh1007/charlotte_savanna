@@ -196,4 +196,176 @@ export function buyStreakFreeze(): Promise<{ coins: number; frozen: string }> {
   return request('/api/charplot/profile/streak-freeze/', { method: 'POST' })
 }
 
-// TODO(Issue 03): SSE 客户端 (EventSource) 在此实现, 消费 /ai/tasks/{id}/events 进度流.
+// ---- 旅程与生成链路 (Issue 03) ----
+
+/** 旅程输入类型: 纯文本 / 文件 / 网页链接 (PRD B-1). */
+export type JourneyInputType = 'text' | 'file' | 'link'
+/** 旅程状态: 生成中 / 已就绪 / 生成失败. */
+export type JourneyStatus = 'generating' | 'ready' | 'failed'
+/** 管道任务状态 (CONTRACT.md §2). */
+export type TaskRunStatus = 'running' | 'done' | 'error'
+
+/** 旅程列表项 (GET /api/charplot/journeys). */
+export interface JourneySummary {
+  id: number
+  title: string
+  input_type: JourneyInputType
+  status: JourneyStatus
+  cleared: boolean
+  chapter_count: number
+  kp_count: number
+  created_at: string
+}
+
+/** 知识点 (prerequisites 为 DB 主键 int 列表, 前端本地映射标题). */
+export interface KnowledgePoint {
+  id: number
+  title: string
+  summary: string
+  order: number
+  error_score: number
+  prerequisites: number[]
+}
+
+export interface Chapter {
+  id: number
+  title: string
+  summary: string
+  order: number
+  knowledge_points: KnowledgePoint[]
+}
+
+/** 旅程详情 (GET /api/charplot/journeys/{id}). */
+export interface JourneyDetail {
+  id: number
+  title: string
+  input_type: JourneyInputType
+  content: string
+  status: JourneyStatus
+  cleared: boolean
+  latest_task_id: string
+  error_message: string
+  created_at: string
+  updated_at: string
+  chapters: Chapter[]
+}
+
+/** SSE 管道进度事件 (CONTRACT.md §2). */
+export interface PipelineEvent {
+  task_id: string
+  stage: string
+  progress: number
+  message: string
+}
+
+/** 任务状态 (GET /ai/tasks/{id}). */
+export interface TaskStatus {
+  task_id: string
+  status: TaskRunStatus
+  stage: string
+  progress: number
+  error_message: string | null
+}
+
+/**
+ * 文件上传用: 与 request 同款 CSRF/错误归一, 但 body 为 FormData.
+ * request 现有实现强制 JSON Content-Type, multipart 会 415, 必须走此路.
+ */
+async function requestForm<T>(path: string, form: FormData): Promise<T> {
+  const token = getCookie('csrftoken')
+  const headers: Record<string, string> = {}
+  if (token) headers['X-CSRFToken'] = token
+  const res = await fetchWithTimeout(path, { method: 'POST', headers, body: form })
+  if (!res.ok) {
+    let payload: unknown = null
+    try {
+      payload = await res.json()
+    } catch {
+      /* 非 JSON, 状态码兜底 */
+    }
+    throw new ApiError(extractDetail(payload, res.status), res.status, payload)
+  }
+  return (await res.json()) as T
+}
+
+/** 创建旅程: file → multipart, text/link → JSON; 返回 {journey_id, status}. */
+export function createJourney(input: {
+  input_type: JourneyInputType
+  content?: string
+  file?: File
+}): Promise<{ journey_id: number; status: JourneyStatus }> {
+  if (input.input_type === 'file' && input.file) {
+    const form = new FormData()
+    form.append('input_type', 'file')
+    form.append('source_file', input.file)
+    return requestForm('/api/charplot/journeys/', form)
+  }
+  return request('/api/charplot/journeys/', {
+    method: 'POST',
+    body: { input_type: input.input_type, content: input.content },
+  })
+}
+
+/** 旅程列表 (进行中/已通关分组在前端渲染, CONTRACT.md §4). */
+export function getJourneys(): Promise<{ journeys: JourneySummary[] }> {
+  return request('/api/charplot/journeys/')
+}
+
+/** 旅程详情 + 图谱 (GET /api/charplot/journeys/{id}/). */
+export function getJourney(id: number): Promise<JourneyDetail> {
+  return request(`/api/charplot/journeys/${id}/`)
+}
+
+/** 启动知识管道 (FastAPI), 返回 {task_id}. */
+export function startPipeline(
+  journeyId: number,
+  inputType: JourneyInputType,
+  content?: string,
+): Promise<{ task_id: string }> {
+  return request('/ai/pipeline', {
+    method: 'POST',
+    body: { journey_id: journeyId, input_type: inputType, content },
+  })
+}
+
+/** 任务状态 (GET /ai/tasks/{id}). */
+export function getTaskStatus(taskId: string): Promise<TaskStatus> {
+  return request(`/ai/tasks/${taskId}`)
+}
+
+/**
+ * SSE 订阅管道进度 (CONTRACT.md §2). 返回 close 函数.
+ * EventSource 断线自动重连并携带 Last-Event-ID (服务端增量续推);
+ * 收到终端事件 (done/error) 或组件卸载时必须主动 close, 阻止无限重连.
+ */
+export function subscribePipeline(
+  taskId: string,
+  handlers: {
+    onEvent: (ev: PipelineEvent) => void
+    onStateChange?: (state: 'connecting' | 'reconnecting' | 'closed') => void
+  },
+): () => void {
+  const source = new EventSource(`/ai/tasks/${taskId}/events`)
+  let closed = false
+
+  const close = () => {
+    closed = true
+    source.close()
+  }
+
+  source.addEventListener('pipeline-progress', (event) => {
+    try {
+      const data = JSON.parse((event as MessageEvent).data) as PipelineEvent
+      handlers.onEvent(data)
+      if (data.stage === 'done' || data.stage === 'error') close()
+    } catch {
+      /* 忽略无法解析的事件帧 */
+    }
+  })
+  source.onopen = () => handlers.onStateChange?.('connecting')
+  source.onerror = () => {
+    // readyState: 0 CONNECTING (重连中) / 2 CLOSED (失败)
+    handlers.onStateChange?.(source.readyState === 2 ? 'closed' : 'reconnecting')
+  }
+  return close
+}
