@@ -106,8 +106,8 @@ USE_I18N = True
 USE_TZ = True
 
 # 登录重定向
-LOGIN_URL = "/shop/login/"
-LOGIN_REDIRECT_URL = "/shop/"
+LOGIN_URL = "/minimall/login/"
+LOGIN_REDIRECT_URL = "/minimall/"
 
 # ---------------------------------------------------------------------------
 # 静态文件 & 媒体

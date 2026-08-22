@@ -27,7 +27,7 @@
         <template x-for="order in orders" :key="order.order_no">
           <tr style="border-bottom:1px solid #eee;">
             <td style="padding:14px 16px;">
-              <a :href="'/shop/orders/'+order.order_no+'/'" style="color:#333;text-decoration:none;font-weight:600;display:inline-flex;align-items:center;gap:8px;font-size:15px;letter-spacing:0.5px;"
+              <a :href="'/minimall/orders/'+order.order_no+'/'" style="color:#333;text-decoration:none;font-weight:600;display:inline-flex;align-items:center;gap:8px;font-size:15px;letter-spacing:0.5px;"
                  @mouseenter="$el.style.color='#ff6b6b'" @mouseleave="$el.style.color='#333'">
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;opacity:.5;"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
                 <span x-text="order.order_no"></span>
@@ -68,7 +68,7 @@ function orderList() {
       page = page || 1;
       this.loading = true;
       try {
-        const r = await fetch('/api/orders/?page=' + page + '&page_size=' + this.pageSize); const d = await r.json();
+        const r = await fetch('/api/minimall/orders/?page=' + page + '&page_size=' + this.pageSize); const d = await r.json();
         this.orders = d.results || [];
         this.page = d.page; this.totalPages = d.total_pages; this.pageSize = d.page_size || 10;
       }

@@ -32,7 +32,7 @@
       </div>
       <div x-show="errorMsg" x-text="errorMsg" style="color:#e63946;font-size:13px;margin-bottom:12px;padding:8px 14px;background:#fff5f5;border-radius:8px;"></div>
       <button type="submit" class="btn btn-primary" style="width:100%;padding:13px;font-size:16px;">注册</button>
-      <p style="margin-top:16px;text-align:center;font-size:14px;color:#999;">已有账号？<a href="/shop/login/" style="color:#ff6b6b;font-weight:500;">立即登录</a></p>
+      <p style="margin-top:16px;text-align:center;font-size:14px;color:#999;">已有账号？<a href="/minimall/login/" style="color:#ff6b6b;font-weight:500;">立即登录</a></p>
     </form>
   </div>
 </div>
@@ -66,13 +66,13 @@ function registerForm() {
       if (!valid) return;
 
       var body = { username: self.username, email: self.email, password: self.password, payment_password: self.paymentPassword };
-      var r = await fetch('/api/auth/register/', {
+      var r = await fetch('/api/minimall/auth/register/', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-CSRFToken': self.csrf() },
         body: JSON.stringify(body)
       });
       if (r.ok) {
-        window.location.href = '/shop/login/';
+        window.location.href = '/minimall/login/';
       } else {
         var err = await r.json();
         self.errorMsg = Object.values(err).flat().join('；');

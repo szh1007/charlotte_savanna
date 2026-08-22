@@ -35,7 +35,7 @@
     <div class="product-grid">
       {% for product in products %}
         <div class="product-card" style="position:relative;">
-          <a href="/shop/products/{{ product.slug }}/" style="text-decoration:none;color:inherit;display:block;">
+          <a href="/minimall/products/{{ product.slug }}/" style="text-decoration:none;color:inherit;display:block;">
             {% with img=product.images.all|first %}
               {% if img %}
                 <img src="{{ img.image.url }}?v={{ img.image_version }}{% if img.image_updated_at %}&t={{ img.image_updated_at.timestamp }}{% endif %}" alt="{{ product.name }}" style="width:100%;height:200px;object-fit:cover;">

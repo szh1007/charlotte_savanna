@@ -58,7 +58,7 @@
     <div class="product-grid" style="grid-template-columns:repeat(5, 1fr);gap:12px;">
       {% for product in products %}
         <div class="product-card" style="position:relative;">
-          <a href="/shop/products/{{ product.slug }}/" style="text-decoration:none;display:block;">
+          <a href="/minimall/products/{{ product.slug }}/" style="text-decoration:none;display:block;">
             <div class="img-wrap" style="height:200px;">
               {% with img=product.images.all|first %}
                 {% if img %}<img src="{{ img.image.url }}?v={{ img.image_version }}{% if img.image_updated_at %}&t={{ img.image_updated_at.timestamp }}{% endif %}" alt="{{ product.name }}">

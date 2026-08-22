@@ -212,7 +212,7 @@ function profilePage() {
       if (this.phoneDraft && !/^1[3-9]\d{9}$/.test(this.phoneDraft)) {
         this.phoneErr = '手机号格式不正确（11位手机号）'; return;
       }
-      var r = await fetch('/api/auth/me/', {
+      var r = await fetch('/api/minimall/auth/me/', {
         method: 'PATCH',
         headers: { 'X-CSRFToken': this.csrf() },
         body: (function(d) { var fd = new FormData(); fd.append('phone', d); return fd; })(this.phoneDraft)
@@ -232,7 +232,7 @@ function profilePage() {
       if (this.emailDraft && !/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(this.emailDraft)) {
         this.emailErr = '邮箱格式不正确'; return;
       }
-      var r = await fetch('/api/auth/me/', {
+      var r = await fetch('/api/minimall/auth/me/', {
         method: 'PATCH',
         headers: { 'X-CSRFToken': this.csrf() },
         body: (function(d) { var fd = new FormData(); fd.append('email', d); return fd; })(this.emailDraft)
@@ -261,7 +261,7 @@ function profilePage() {
     async confirmRechargePay() {
       if (this.rechargePwd.length !== 6) return;
       this.rechargePayModal.error = '';
-      var r = await fetch('/api/auth/recharge/', {
+      var r = await fetch('/api/minimall/auth/recharge/', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-CSRFToken': this.csrf() },
         body: JSON.stringify({ amount: parseFloat(this.rechargeAmount), payment_password: this.rechargePwd })
@@ -308,7 +308,7 @@ function profilePage() {
       if (!/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[_@#$&*])/.test(f.new_password)) {
         this.pwdModal.error = '新密码必须同时包含数字、大小写字母和特殊字符（_ @ # $ & *）'; return;
       }
-      var r = await fetch('/api/auth/change-password/', {
+      var r = await fetch('/api/minimall/auth/change-password/', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-CSRFToken': this.csrf() },
         body: JSON.stringify({ old_password: f.old_password, new_password: f.new_password })
@@ -320,8 +320,8 @@ function profilePage() {
         this.$nextTick(function() {
           window.dispatchEvent(new CustomEvent('toast', {detail: {type:'success',message:'密码修改成功，即将跳转登录页'}}));
           setTimeout(function() {
-            fetch('/api/auth/logout/', {method:'POST',headers:{'X-CSRFToken':self.csrf()}}).then(function() {
-              location.href = '/shop/login/';
+            fetch('/api/minimall/auth/logout/', {method:'POST',headers:{'X-CSRFToken':self.csrf()}}).then(function() {
+              location.href = '/minimall/login/';
             });
           }, 1500);
         });
@@ -352,7 +352,7 @@ function profilePage() {
       if (f.new_password !== f.confirm_password) {
         this.payPwdModal.error = '两次输入的新密码不一致'; return;
       }
-      var r = await fetch('/api/auth/change-payment-password/', {
+      var r = await fetch('/api/minimall/auth/change-payment-password/', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-CSRFToken': this.csrf() },
         body: JSON.stringify({ old_password: f.old_password, new_password: f.new_password })
@@ -377,7 +377,7 @@ function uploadAvatar() {
   var fd = new FormData();
   fd.append('avatar', file);
   var csrf = document.querySelector('[name=csrfmiddlewaretoken]').value;
-  fetch('/api/auth/me/', { method: 'PATCH', headers: { 'X-CSRFToken': csrf }, body: fd })
+  fetch('/api/minimall/auth/me/', { method: 'PATCH', headers: { 'X-CSRFToken': csrf }, body: fd })
     .then(function(r) { if (r.ok) location.reload(); });
 }
 </script>

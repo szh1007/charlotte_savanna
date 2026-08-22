@@ -9,7 +9,7 @@
     <p style="text-align:center;padding:60px;color:#aaa;">加载中...</p>
   </template>
   <template x-if="!loading && cartItems.length === 0">
-    <p style="text-align:center;padding:60px;color:#aaa;">没有待结算商品. <a href="/shop/">去逛逛</a></p>
+    <p style="text-align:center;padding:60px;color:#aaa;">没有待结算商品. <a href="/minimall/">去逛逛</a></p>
   </template>
   <template x-if="!loading && cartItems.length > 0">
     <div style="display:grid;grid-template-columns:1fr 400px;gap:24px;">
@@ -43,7 +43,7 @@
         <div style="background:#fafbfc;border-radius:12px;padding:24px;">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
             <h3 style="margin:0;font-size:15px;font-weight:600;">收货地址</h3>
-            <a href="/shop/addresses/" style="font-size:13px;color:#ff6b6b;font-weight:500;">管理</a>
+            <a href="/minimall/addresses/" style="font-size:13px;color:#ff6b6b;font-weight:500;">管理</a>
           </div>
           <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:16px;">
             <template x-for="addr in addresses" :key="addr.id">
@@ -64,7 +64,7 @@
               </div>
             </template>
             <div x-show="addresses.length === 0" style="text-align:center;padding:16px;color:#adb5bd;font-size:14px;">
-              暂无地址，请<a href="/shop/addresses/" style="color:#ff6b6b;">新增</a>
+              暂无地址，请<a href="/minimall/addresses/" style="color:#ff6b6b;">新增</a>
             </div>
           </div>
           <div style="font-size:20px;margin-bottom:20px;padding-top:16px;border-top:1px solid #eee;">
@@ -111,7 +111,7 @@ function checkoutPage() {
       this.loading = true;
       try {
         var selectedIds = this.getSelectedIds();
-        const [cartR, addrR] = await Promise.all([fetch('/api/cart/'), fetch('/api/addresses/')]);
+        const [cartR, addrR] = await Promise.all([fetch('/api/minimall/cart/'), fetch('/api/minimall/addresses/')]);
         const cartData = await cartR.json();
         var allItems = cartData.items || [];
         if (selectedIds.length > 0) {
@@ -137,7 +137,7 @@ function checkoutPage() {
     },
     async placeOrder() {
       const csrf = document.querySelector('[name=csrfmiddlewaretoken]')?.value || '';
-      const r = await fetch('/api/orders/', {
+      const r = await fetch('/api/minimall/orders/', {
         method: 'POST',
         headers: {'Content-Type': 'application/json', 'X-CSRFToken': csrf},
         body: JSON.stringify({
@@ -148,7 +148,7 @@ function checkoutPage() {
       if (r.ok) {
         const data = await r.json();
         notifyCartUpdated();
-        window.location.href = '/shop/orders/' + data.order_no + '/';
+        window.location.href = '/minimall/orders/' + data.order_no + '/';
       } else {
         const err = await r.json();
         alert(err.detail || '提交订单失败');

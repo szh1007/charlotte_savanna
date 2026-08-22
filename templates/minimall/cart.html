@@ -6,7 +6,7 @@
 <div x-data="cartPage()" x-init="loadCart()">
 <div style="display:flex;align-items:center;gap:24px;margin-bottom:20px;">
   <h2 class="page-title" style="margin:0;">购物车</h2>
-  <a href="/shop/" class="btn btn-primary" style="text-decoration:none;">去逛逛</a>
+  <a href="/minimall/" class="btn btn-primary" style="text-decoration:none;">去逛逛</a>
   <div style="flex:1;"></div>
   <button @click="batchRemove()" :disabled="selected.length === 0"
           class="btn" style="background:#e63946;color:#fff;"
@@ -40,7 +40,7 @@
                 <input type="checkbox" :value="item.id" x-model="selected" @change="saveSelection()" style="width:18px;height:18px;cursor:pointer;">
               </td>
               <td style="padding:14px 16px;">
-                <a :href="'/shop/products/' + item.product_slug + '/'" style="color:#333;text-decoration:none;font-weight:500;display:inline-flex;align-items:center;gap:8px;"
+                <a :href="'/minimall/products/' + item.product_slug + '/'" style="color:#333;text-decoration:none;font-weight:500;display:inline-flex;align-items:center;gap:8px;"
                    @mouseenter="$el.style.color='#ff6b6b'" @mouseleave="$el.style.color='#333'">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;opacity:.5;"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
                   <span x-text="item.product_name"></span>
@@ -114,7 +114,7 @@ function cartPage() {
       page = page || 1;
       this.loading = true;
       try {
-        const r = await fetch('/api/cart/?page=' + page + '&page_size=' + this.pageSize); const data = await r.json();
+        const r = await fetch('/api/minimall/cart/?page=' + page + '&page_size=' + this.pageSize); const data = await r.json();
         this.items = data.items || [];
         this.page = data.page; this.totalPages = data.total_pages; this.pageSize = data.page_size || 10;
         // 恢复上次勾选
@@ -140,7 +140,7 @@ function cartPage() {
     async updateQty(item, qty) {
       qty = parseInt(qty) || 1;
       if (qty < 1) qty = 1;
-      const r = await fetch(`/api/cart/items/${item.id}/`, {
+      const r = await fetch(`/api/minimall/cart/items/${item.id}/`, {
         method: 'PATCH',
         headers: {'Content-Type': 'application/json', 'X-CSRFToken': this.getCsrf()},
         body: JSON.stringify({quantity: qty})
@@ -148,7 +148,7 @@ function cartPage() {
       if (r.ok) { const data = await r.json(); Object.assign(item, data); notifyCartUpdated(); }
     },
     async removeItem(item) {
-      const r = await fetch(`/api/cart/items/${item.id}/delete/`, {
+      const r = await fetch(`/api/minimall/cart/items/${item.id}/delete/`, {
         method: 'DELETE', headers: {'X-CSRFToken': this.getCsrf()}
       });
       if (r.ok) {
@@ -161,7 +161,7 @@ function cartPage() {
     submitOrder: function() {
       if (this.selected.length === 0) return;
       localStorage.removeItem('cart_selected');
-      location.href = '/shop/checkout/?ids=' + this.selected.join(',');
+      location.href = '/minimall/checkout/?ids=' + this.selected.join(',');
     },
     async batchRemove() {
       if (this.selected.length === 0) return;
@@ -171,7 +171,7 @@ function cartPage() {
       this.confirmModal.show = false;
       var ids = this.selected.slice();
       for (var i = 0; i < ids.length; i++) {
-        await fetch('/api/cart/items/' + ids[i] + '/delete/', {
+        await fetch('/api/minimall/cart/items/' + ids[i] + '/delete/', {
           method: 'DELETE', headers: {'X-CSRFToken': this.getCsrf()}
         });
       }

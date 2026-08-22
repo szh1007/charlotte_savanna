@@ -49,37 +49,37 @@ class ProductAPITest(TestCase):
         )
 
     def test_list_products(self):
-        r = self.client.get("/api/products/")
+        r = self.client.get("/api/minimall/products/")
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.data["count"], 2)  # p3 is inactive
 
     def test_search(self):
-        r = self.client.get("/api/products/?search=iPhone")
+        r = self.client.get("/api/minimall/products/?search=iPhone")
         self.assertEqual(r.data["count"], 1)
 
     def test_category_filter_includes_children(self):
-        r = self.client.get("/api/products/?category=electronics")
+        r = self.client.get("/api/minimall/products/?category=electronics")
         self.assertEqual(r.data["count"], 2)
 
     def test_price_filter(self):
-        r = self.client.get("/api/products/?min_price=600")
+        r = self.client.get("/api/minimall/products/?min_price=600")
         self.assertEqual(r.data["count"], 1)  # only iPhone 999
 
     def test_ordering(self):
-        r = self.client.get("/api/products/?ordering=price")
+        r = self.client.get("/api/minimall/products/?ordering=price")
         self.assertEqual(r.data["results"][0]["name"], "iPad")
 
     def test_inactive_not_shown(self):
-        r = self.client.get("/api/products/?search=Hidden")
+        r = self.client.get("/api/minimall/products/?search=Hidden")
         self.assertEqual(r.data["count"], 0)
 
     def test_category_tree(self):
-        r = self.client.get("/api/categories/")
+        r = self.client.get("/api/minimall/categories/")
         self.assertEqual(len(r.data), 1)
         self.assertEqual(len(r.data[0]["children"]), 1)
 
     def test_product_detail(self):
-        r = self.client.get("/api/products/iphone/")
+        r = self.client.get("/api/minimall/products/iphone/")
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.data["name"], "iPhone")
 
@@ -101,12 +101,12 @@ class CartAPITest(TestCase):
         self.client.force_login(self.user)
 
     def test_empty_cart(self):
-        r = self.client.get("/api/cart/")
+        r = self.client.get("/api/minimall/cart/")
         self.assertEqual(r.data["total_count"], 0)
 
     def test_add_item(self):
         r = self.client.post(
-            "/api/cart/items/",
+            "/api/minimall/cart/items/",
             {"product_id": self.prod.id, "quantity": 2},
             format="json",
         )
@@ -115,12 +115,12 @@ class CartAPITest(TestCase):
 
     def test_repeat_add_accumulates(self):
         self.client.post(
-            "/api/cart/items/",
+            "/api/minimall/cart/items/",
             {"product_id": self.prod.id, "quantity": 2},
             format="json",
         )
         r = self.client.post(
-            "/api/cart/items/",
+            "/api/minimall/cart/items/",
             {"product_id": self.prod.id, "quantity": 1},
             format="json",
         )
@@ -128,7 +128,7 @@ class CartAPITest(TestCase):
 
     def test_items_exceed_stock(self):
         r = self.client.post(
-            "/api/cart/items/",
+            "/api/minimall/cart/items/",
             {"product_id": self.prod.id, "quantity": 10},
             format="json",
         )
@@ -138,7 +138,7 @@ class CartAPITest(TestCase):
         self.prod.stock = 0
         self.prod.save()
         r = self.client.post(
-            "/api/cart/items/",
+            "/api/minimall/cart/items/",
             {"product_id": self.prod.id, "quantity": 1},
             format="json",
         )
@@ -147,40 +147,40 @@ class CartAPITest(TestCase):
 
     def test_unauthorized(self):
         self.client.logout()
-        r = self.client.get("/api/cart/")
+        r = self.client.get("/api/minimall/cart/")
         self.assertEqual(r.status_code, 403)
 
     def test_other_user_cannot_access(self):
         item = self.client.post(
-            "/api/cart/items/",
+            "/api/minimall/cart/items/",
             {"product_id": self.prod.id, "quantity": 1},
             format="json",
         ).data
         self.client.logout()
         self.client.force_login(self.other)
         r = self.client.patch(
-            f"/api/cart/items/{item['id']}/", {"quantity": 5}, format="json"
+            f"/api/minimall/cart/items/{item['id']}/", {"quantity": 5}, format="json"
         )
         self.assertEqual(r.status_code, 404)
 
     def test_update_quantity(self):
         item = self.client.post(
-            "/api/cart/items/",
+            "/api/minimall/cart/items/",
             {"product_id": self.prod.id, "quantity": 2},
             format="json",
         ).data
         r = self.client.patch(
-            f"/api/cart/items/{item['id']}/", {"quantity": 3}, format="json"
+            f"/api/minimall/cart/items/{item['id']}/", {"quantity": 3}, format="json"
         )
         self.assertEqual(r.data["quantity"], 3)
 
     def test_delete_item(self):
         item = self.client.post(
-            "/api/cart/items/",
+            "/api/minimall/cart/items/",
             {"product_id": self.prod.id, "quantity": 1},
             format="json",
         ).data
-        r = self.client.delete(f"/api/cart/items/{item['id']}/delete/")
+        r = self.client.delete(f"/api/minimall/cart/items/{item['id']}/delete/")
         self.assertEqual(r.status_code, 204)
 
 
@@ -217,7 +217,7 @@ class OrderAPITest(TestCase):
     def test_create_order(self):
         item_ids = self._setup_cart(2)
         r = self.client.post(
-            "/api/orders/",
+            "/api/minimall/orders/",
             {"cart_item_ids": item_ids, "address_id": self.addr.id},
             format="json",
         )
@@ -228,7 +228,7 @@ class OrderAPITest(TestCase):
     def test_order_insufficient_stock(self):
         item_ids = self._setup_cart(20)
         r = self.client.post(
-            "/api/orders/",
+            "/api/minimall/orders/",
             {"cart_item_ids": item_ids, "address_id": self.addr.id},
             format="json",
         )
@@ -237,12 +237,12 @@ class OrderAPITest(TestCase):
     def test_pay_order(self):
         item_ids = self._setup_cart(1)
         order_data = self.client.post(
-            "/api/orders/",
+            "/api/minimall/orders/",
             {"cart_item_ids": item_ids, "address_id": self.addr.id},
             format="json",
         ).data
         r = self.client.post(
-            f"/api/orders/{order_data['order_no']}/pay/",
+            f"/api/minimall/orders/{order_data['order_no']}/pay/",
             {"payment_password": "123456"},
             format="json",
         )
@@ -252,12 +252,12 @@ class OrderAPITest(TestCase):
     def test_pay_wrong_password(self):
         item_ids = self._setup_cart(1)
         order_data = self.client.post(
-            "/api/orders/",
+            "/api/minimall/orders/",
             {"cart_item_ids": item_ids, "address_id": self.addr.id},
             format="json",
         ).data
         r = self.client.post(
-            f"/api/orders/{order_data['order_no']}/pay/",
+            f"/api/minimall/orders/{order_data['order_no']}/pay/",
             {"payment_password": "wrong"},
             format="json",
         )
@@ -266,13 +266,13 @@ class OrderAPITest(TestCase):
     def test_cancel_order_restores_stock(self):
         item_ids = self._setup_cart(3)
         order_data = self.client.post(
-            "/api/orders/",
+            "/api/minimall/orders/",
             {"cart_item_ids": item_ids, "address_id": self.addr.id},
             format="json",
         ).data
         self.prod.refresh_from_db()
         stock_before = self.prod.stock
-        r = self.client.post(f"/api/orders/{order_data['order_no']}/cancel/")
+        r = self.client.post(f"/api/minimall/orders/{order_data['order_no']}/cancel/")
         self.assertEqual(r.status_code, 200)
         self.prod.refresh_from_db()
         self.assertEqual(self.prod.stock, stock_before + 3)
@@ -280,7 +280,7 @@ class OrderAPITest(TestCase):
     def test_other_user_cannot_access_order(self):
         item_ids = self._setup_cart(1)
         order_data = self.client.post(
-            "/api/orders/",
+            "/api/minimall/orders/",
             {"cart_item_ids": item_ids, "address_id": self.addr.id},
             format="json",
         ).data
@@ -289,5 +289,5 @@ class OrderAPITest(TestCase):
         )
         self.client.logout()
         self.client.force_login(other)
-        r = self.client.get(f"/api/orders/{order_data['order_no']}/")
+        r = self.client.get(f"/api/minimall/orders/{order_data['order_no']}/")
         self.assertEqual(r.status_code, 404)

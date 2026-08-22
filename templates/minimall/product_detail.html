@@ -33,7 +33,7 @@
       <input type="number" class="quantity-input" value="1" min="1" max="{{ product.stock }}" id="qty" {% if product.stock == 0 %}disabled{% endif %}>
       <button class="btn btn-primary" id="add-to-cart-btn"
               {% if product.stock == 0 %}disabled{% endif %}
-              @click="fetch('/api/cart/items/', {method:'POST',
+              @click="fetch('/api/minimall/cart/items/', {method:'POST',
                 headers:{'Content-Type':'application/json','X-CSRFToken':$el.dataset.csrf},
                 body:JSON.stringify({product_id:{{ product.id }},quantity:document.getElementById('qty').value})})
               .then(r => r.ok ? ($dispatch('toast',{type:'success',message:'已加入购物车'}),notifyCartUpdated()) : $dispatch('toast',{type:'error',message:'添加失败'}))"

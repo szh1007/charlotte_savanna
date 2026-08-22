@@ -20,7 +20,7 @@
       </div>
       <div id="error-msg" style="color:#e63946;font-size:13px;margin-bottom:12px;padding:8px 14px;background:#fff5f5;border-radius:8px;display:none;"></div>
       <button type="submit" class="btn btn-primary" style="width:100%;padding:13px;font-size:16px;">登录</button>
-      <p style="margin-top:16px;text-align:center;font-size:14px;color:#999;">没有账号？<a href="/shop/register/" style="color:#ff6b6b;font-weight:500;">立即注册</a></p>
+      <p style="margin-top:16px;text-align:center;font-size:14px;color:#999;">没有账号？<a href="/minimall/register/" style="color:#ff6b6b;font-weight:500;">立即注册</a></p>
     </form>
   </div>
 </div>
@@ -29,13 +29,13 @@ document.getElementById('login-form').addEventListener('submit', async function(
   e.preventDefault();
   const formData = new FormData(this);
   const csrf = this.querySelector('[name=csrfmiddlewaretoken]').value;
-  const r = await fetch('/api/auth/login/', {
+  const r = await fetch('/api/minimall/auth/login/', {
     method: 'POST',
     headers: {'Content-Type': 'application/json', 'X-CSRFToken': csrf},
     body: JSON.stringify({username: formData.get('username'), password: formData.get('password')})
   });
   if (r.ok) {
-    window.location.href = '/shop/';
+    window.location.href = '/minimall/';
   } else {
     const err = await r.json();
     const el = document.getElementById('error-msg');

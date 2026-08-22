@@ -162,7 +162,7 @@ function addressPage() {
     csrf() { return document.querySelector('[name=csrfmiddlewaretoken]').value; },
     async load() {
       this.loading = true;
-      try { await this.initRegion(); const r = await fetch('/api/addresses/'); this.addresses = await r.json(); }
+      try { await this.initRegion(); const r = await fetch('/api/minimall/addresses/'); this.addresses = await r.json(); }
       finally { this.loading = false; }
     },
     edit(addr) {
@@ -185,7 +185,7 @@ function addressPage() {
       });
       if (!valid) return;
 
-      var url = this.editingId ? '/api/addresses/' + this.editingId + '/' : '/api/addresses/';
+      var url = this.editingId ? '/api/minimall/addresses/' + this.editingId + '/' : '/api/minimall/addresses/';
       var method = this.editingId ? 'PATCH' : 'POST';
       var r = await fetch(url, { method: method, headers:{'Content-Type':'application/json','X-CSRFToken':this.csrf()}, body: JSON.stringify(this.form) });
       if (r.ok) { this.showForm = false; this.editingId = null; this.load(); }
@@ -193,7 +193,7 @@ function addressPage() {
     },
     async remove(addr) {
       if (!confirm('确定删除 ' + addr.receiver_name + ' 的地址?')) return;
-      var r = await fetch('/api/addresses/' + addr.id + '/', { method:'DELETE', headers:{'X-CSRFToken':this.csrf()} });
+      var r = await fetch('/api/minimall/addresses/' + addr.id + '/', { method:'DELETE', headers:{'X-CSRFToken':this.csrf()} });
       if (r.ok) this.load();
       else { var d = await r.json(); alert(d.detail || '删除失败'); }
     }

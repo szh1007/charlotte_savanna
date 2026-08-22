@@ -169,7 +169,7 @@ document.addEventListener('alpine:init', () => {
     get orderNo() { var p = window.location.pathname.split('/').filter(function(s){return s;}); return p[p.length-1] || ''; },
     async init() {
       try {
-        var r = await fetch('/api/orders/' + this.orderNo + '/');
+        var r = await fetch('/api/minimall/orders/' + this.orderNo + '/');
         this.order = await r.json();
       } catch(e) { console.error(e); }
       finally { this.loading = false; }
@@ -220,15 +220,15 @@ document.addEventListener('alpine:init', () => {
     },
     doCancel: function() {
       var self = this;
-      this.confirmModal = {show: true, title: '取消订单', message: '确定要取消该订单吗？', onConfirm: function() { self.doAction('/api/orders/'+self.orderNo+'/cancel/'); }};
+      this.confirmModal = {show: true, title: '取消订单', message: '确定要取消该订单吗？', onConfirm: function() { self.doAction('/api/minimall/orders/'+self.orderNo+'/cancel/'); }};
     },
     doReceive: function() {
       var self = this;
-      this.confirmModal = {show: true, title: '确认收货', message: '确定已收到商品？', onConfirm: function() { self.doAction('/api/orders/'+self.orderNo+'/receive/'); }};
+      this.confirmModal = {show: true, title: '确认收货', message: '确定已收到商品？', onConfirm: function() { self.doAction('/api/minimall/orders/'+self.orderNo+'/receive/'); }};
     },
     doComplete: function() {
       var self = this;
-      this.confirmModal = {show: true, title: '确认完成', message: '确定该订单已完成？', onConfirm: function() { self.doAction('/api/orders/'+self.orderNo+'/complete/'); }};
+      this.confirmModal = {show: true, title: '确认完成', message: '确定该订单已完成？', onConfirm: function() { self.doAction('/api/minimall/orders/'+self.orderNo+'/complete/'); }};
     },
     closeConfirmModal: function() { this.confirmModal.show = false; },
     async doAction(url) {
@@ -252,7 +252,7 @@ document.addEventListener('alpine:init', () => {
     async confirmPay() {
       if (!this.payPwd || this.payPwd.length !== 6) return;
       this.payModal.error = '';
-      var url = '/api/orders/' + this.orderNo + '/pay/';
+      var url = '/api/minimall/orders/' + this.orderNo + '/pay/';
       var csrf = document.querySelector('[name=csrfmiddlewaretoken]') ? document.querySelector('[name=csrfmiddlewaretoken]').value : '';
       var r = await fetch(url,{method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':csrf},body:JSON.stringify({payment_password: this.payPwd})});
       if (r.ok) { await r.json(); location.reload(); }
@@ -261,7 +261,7 @@ document.addEventListener('alpine:init', () => {
         var msg = e.detail || '操作失败';
         if (msg.indexOf('余额不足') !== -1) {
           this.closePayModal();
-          this.modal = {show: true, title: '余额不足', message: '当前账户余额不足以支付该订单，是否前往充值?', actionLabel: '去充值', actionUrl: '/shop/profile/'};
+          this.modal = {show: true, title: '余额不足', message: '当前账户余额不足以支付该订单，是否前往充值?', actionLabel: '去充值', actionUrl: '/minimall/profile/'};
         } else {
           this.payModal.error = msg;
           this.payPwd = '';

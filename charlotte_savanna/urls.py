@@ -29,8 +29,8 @@ admin.site.index_title = "管理面板"
 urlpatterns = [
     path("", TemplateView.as_view(template_name="welcome.html"), name="home"),
     path("admin/", admin.site.urls),
-    path("api/", include("app.minimall.urls_api")),
-    path("shop/", include("app.minimall.urls_html")),
+    path("minimall/", include("app.minimall.urls_html")),
+    path("api/minimall/", include("app.minimall.urls_api")),
     path("api/charplot/", include("app.charplot.urls_api")),
 ]
 
