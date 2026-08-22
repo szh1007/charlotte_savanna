@@ -31,6 +31,7 @@ urlpatterns = [
     path("admin/", admin.site.urls),
     path("api/", include("app.minimall.urls_api")),
     path("shop/", include("app.minimall.urls_html")),
+    path("api/charplot/", include("app.charplot.urls_api")),
 ]
 
 if settings.DEBUG:

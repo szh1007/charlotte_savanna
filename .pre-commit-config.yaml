@@ -18,7 +18,7 @@ repos:
     rev: v2.4.1
     hooks:
       - id: codespell
-        args: [--skip, "*.json,*.lock,*-gbk.txt", --ignore-words-list, "Fals,falsey"]
+        args: [--skip, "*.json,*.lock,*-gbk.txt", --ignore-words-list, "Fals,falsey,childs"]
 
   # Python lint & format（Ruff）
   - repo: https://github.com/astral-sh/ruff-pre-commit

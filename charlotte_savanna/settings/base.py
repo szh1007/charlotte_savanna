@@ -36,6 +36,7 @@ INSTALLED_APPS = [
     "django_filters",
     "mptt",
     "app.minimall.apps.MinimallConfig",
+    "app.charplot.apps.CharplotConfig",
 ]
 
 MIDDLEWARE = [

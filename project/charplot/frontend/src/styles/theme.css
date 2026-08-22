@@ -1,0 +1,75 @@
+/* CharPlot 设计令牌 (DESIGN.md §6 UI 设计规范).
+ * B 站粉主色 + 二次元柔和色系, 圆角卡片 + 软阴影, 轻松动漫氛围.
+ */
+
+:root {
+  /* ---- 色板 ---- */
+  --cp-primary: #fb7299;            /* B 站粉, 主色 */
+  --cp-primary-deep: #c95b7a;       /* 主色加深 (hover/active) */
+  --cp-primary-soft: #fff5f8;       /* 奶白粉 */
+  --cp-accent-lilac: #c9b6e4;       /* 浅紫 */
+  --cp-accent-sky: #a5cfe3;         /* 淡蓝 */
+  --cp-bg-from: #fff0f4;            /* 背景渐变起点 (浅粉) */
+  --cp-bg-to: #eef6fb;              /* 背景渐变终点 (浅蓝) */
+  --cp-card: #ffffff;               /* 白卡 */
+  --cp-ink: #4a4a55;                /* 正文墨灰 (不用纯黑, 保持柔和) */
+  --cp-ink-soft: #8a8a99;           /* 次级文字 */
+  --cp-ok: #34c98e;                 /* 健康绿 */
+  --cp-warn: #f5a623;               /* 降级琥珀 */
+  --cp-error: #f56c6c;              /* 异常红 */
+
+  /* ---- 圆角 / 阴影 ---- */
+  --cp-radius: 16px;
+  --cp-radius-sm: 10px;
+  --cp-shadow: 0 12px 32px rgba(251, 114, 153, 0.14);
+  --cp-shadow-hover: 0 16px 40px rgba(251, 114, 153, 0.22);
+
+  /* ---- 字体: 系统栈圆润风 ---- */
+  --cp-font:
+    "PingFang SC", "Hiragino Sans GB", "MiSans", "Microsoft YaHei", system-ui,
+    -apple-system, sans-serif;
+
+  /* ---- Element Plus 主题定制: 主色映射 B 站粉 ---- */
+  --el-color-primary: var(--cp-primary);
+  --el-color-primary-light-3: #fc93b1;
+  --el-color-primary-light-5: #fdb4c9;
+  --el-color-primary-light-7: #fed5e0;
+  --el-color-primary-light-8: #ffe6ec;
+  --el-color-primary-light-9: var(--cp-primary-soft);
+  --el-color-primary-dark-2: var(--cp-primary-deep);
+  --el-border-radius-base: 12px;
+  --el-font-family: var(--cp-font);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--cp-font);
+  color: var(--cp-ink);
+  background: linear-gradient(135deg, var(--cp-bg-from), var(--cp-bg-to));
+  background-attachment: fixed;
+  -webkit-font-smoothing: antialiased;
+}
+
+#app {
+  min-height: 100vh;
+}
+
+/* 尊重系统「减少动态效果」偏好 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
