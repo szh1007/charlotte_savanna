@@ -70,7 +70,7 @@ charlotte_savanna/
 │   │   ├── base.py              #   通用配置（DB/Redis/DRF/i18n/静态媒体）
 │   │   ├── dev.py               #   开发环境（DEBUG=True, ALLOWED_HOSTS 宽松）
 │   │   └── prod.py              #   生产环境（DEBUG=False, 安全加固）
-│   ├── urls.py                  # 根路由（/、admin/、api/、shop/）
+│   ├── urls.py                  # 根路由（/、admin/、minimall/、api/minimall/）
 │   ├── wsgi.py / asgi.py        # 部署入口
 │   └── __init__.py
 ├── app/                         # Django 业务子应用统一目录
@@ -84,8 +84,8 @@ charlotte_savanna/
 │       ├── signals.py           #   缓存失效 Signal（post_save/delete + on_commit）
 │       ├── permissions.py       #   权限类
 │       ├── context_processors.py / filters.py / utils.py
-│       ├── urls_api.py          #   API 路由（/api/...）
-│       ├── urls_html.py         #   页面路由（/shop/...）
+│       ├── urls_api.py          #   API 路由（/api/minimall/...）
+│       ├── urls_html.py         #   页面路由（/minimall/...）
 │       ├── migrations/          #   17 个迁移
 │       ├── tests/               #   test_api / test_models / test_services
 │       ├── todo/redis.md        #   Redis 缓存设计文档（架构/风险/使用）
