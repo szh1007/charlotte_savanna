@@ -1,5 +1,4 @@
 {
-    "postman.settings.dotenv-detection-notification-visibility": false,
     "python.analysis.autoImportCompletions": false,
     "editor.defaultFormatter": "ms-python.black-formatter",
     "[jsonc]": {
@@ -9,7 +8,8 @@
         ".idea": true,
         ".langgraph_api": true,
         ".ruff_cache": true,
-        "**/__pycache__": true
+        "**/__pycache__": true,
+        ".playwright-mcp": true
     },
     "workbench.editorAssociations": {
         "*.md": "vscode.markdown.preview.editor"
