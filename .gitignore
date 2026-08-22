@@ -23,6 +23,9 @@ env/
 *.swo
 *~
 
+# --- 测试工具产物 ---
+.playwright-mcp/
+
 # --- Django ---
 db.sqlite3
 **/uploads/
