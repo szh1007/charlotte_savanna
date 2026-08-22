@@ -58,6 +58,6 @@
 
 ## 5. 边界与后续 issue 扩展位
 
-- file 输入：本票仅保存文件不解析（`source_file` 落盘 `app/charplot/uploads/journeys/`）；07 需经 Django 内部端点取文件内容（本票不实现）
+- file 输入：本票仅保存文件不解析（`source_file` 落盘 `app/charplot/uploads/`）；07 需经 Django 内部端点取文件内容（本票不实现）
 - 08：题目 JSON 契约沿用本票 `version` 机制（只增不改）
 - 技能树（Issue 04）/ 关卡（Issue 05）锚定 DB 主键，不消费管道临时 id
