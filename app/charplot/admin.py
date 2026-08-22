@@ -12,6 +12,7 @@ class CharplotProfileAdmin(admin.ModelAdmin):
         "xp",
         "level",
         "streak",
+        "max_streak",
         "hearts",
         "coins",
         "last_study_date",
@@ -20,6 +21,7 @@ class CharplotProfileAdmin(admin.ModelAdmin):
     )
     list_select_related = ("user",)
     search_fields = ("user__username",)
+    readonly_fields = ("max_streak",)  # 由结算逻辑维护, 禁止手动修改
 
 
 @admin.register(CharplotUserEvent)

@@ -102,6 +102,25 @@ def get_streak_loss_warning(profile, today=None):
     return {"warning": False, "missed_days": 0, "freeze_until": profile.freeze_until}
 
 
+def settle_streak_on_login(profile, today=None):
+    """登录时惰性连胜归零判定: 断连才动, 不学习不动.
+
+    last_study_date == today → 今天已学习, 学习结算 (Issue 05) 已处理, 跳过;
+    冻结保护期内豁免归零; 间隔 > 1 天且冻结已过期 → streak 归零 (max_streak
+    保留历史峰值). 判定纯读状态且幂等, 未学习日重复登录重复执行无副作用.
+    """
+    today = today or timezone.localdate()
+    last = profile.last_study_date
+    if last is None or last == today:
+        return profile  # 从未学习 / 今天已结算
+    if profile.freeze_until and today <= profile.freeze_until:
+        return profile  # 冻结保护期 (含当日) 豁免
+    if (today - last).days > 1 and profile.streak != 0:
+        profile.streak = 0
+        profile.save(update_fields=["streak", "updated_at"])
+    return profile
+
+
 def build_profile_stats(user):
     """统计面板 (DESIGN §4.1): 登录天数现算, 答题/通关类字段由后续 issue 流入."""
     return {

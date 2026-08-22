@@ -18,6 +18,7 @@ from app.charplot.services import (
     count_login_days,
     get_streak_loss_warning,
     record_event,
+    settle_streak_on_login,
 )
 
 User = get_user_model()
@@ -64,6 +65,62 @@ class StreakLossWarningTests(TestCase):
         self.profile.freeze_until = TODAY - timedelta(days=1)  # 冻结已过期
         result = get_streak_loss_warning(self.profile, today=TODAY)
         self.assertTrue(result["warning"])
+
+
+class StreakSettleOnLoginTests(TestCase):
+    """登录时惰性归零判定 (Issue 02 补充)."""
+
+    def setUp(self):
+        user = User.objects.create_user(
+            username="alice", email="alice@example.com", password="TestPass#2026"
+        )
+        self.profile = CharplotProfile.objects.create(user=user, streak=5)
+
+    def test_skip_when_never_studied(self):
+        settle_streak_on_login(self.profile, today=TODAY)
+        self.assertEqual(self.profile.streak, 5)
+
+    def test_skip_when_studied_today(self):
+        # 今天已学习, 学习结算已处理 (last_study_date 由 Issue 05 更新)
+        self.profile.last_study_date = TODAY
+        self.profile.save(update_fields=["last_study_date"])
+        settle_streak_on_login(self.profile, today=TODAY)
+        self.assertEqual(self.profile.streak, 5)
+
+    def test_keeps_streak_when_studied_yesterday(self):
+        self.profile.last_study_date = TODAY - timedelta(days=1)
+        self.profile.save(update_fields=["last_study_date"])
+        settle_streak_on_login(self.profile, today=TODAY)
+        self.assertEqual(self.profile.streak, 5)
+
+    def test_resets_after_missed_days(self):
+        self.profile.last_study_date = TODAY - timedelta(days=3)
+        self.profile.save(update_fields=["last_study_date"])
+        settle_streak_on_login(self.profile, today=TODAY)
+        self.assertEqual(self.profile.streak, 0)
+
+    def test_freeze_exempts_reset(self):
+        self.profile.last_study_date = TODAY - timedelta(days=3)
+        self.profile.freeze_until = TODAY  # 冻结保护期 (含当日)
+        self.profile.save(update_fields=["last_study_date", "freeze_until"])
+        settle_streak_on_login(self.profile, today=TODAY)
+        self.assertEqual(self.profile.streak, 5)
+
+    def test_expired_freeze_resets(self):
+        self.profile.last_study_date = TODAY - timedelta(days=3)
+        self.profile.freeze_until = TODAY - timedelta(days=1)  # 冻结已过期
+        self.profile.save(update_fields=["last_study_date", "freeze_until"])
+        settle_streak_on_login(self.profile, today=TODAY)
+        self.assertEqual(self.profile.streak, 0)
+
+    def test_idempotent_when_already_zero(self):
+        self.profile.last_study_date = TODAY - timedelta(days=3)
+        self.profile.streak = 0
+        self.profile.save(update_fields=["last_study_date", "streak"])
+        settle_streak_on_login(self.profile, today=TODAY)
+        # 已归零不再写库; 重复登录重复执行无副作用
+        self.profile.refresh_from_db()
+        self.assertEqual(self.profile.streak, 0)
 
 
 class StreakFreezeServiceTests(TestCase):
