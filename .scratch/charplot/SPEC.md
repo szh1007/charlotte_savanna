@@ -162,9 +162,9 @@ charplot_knowledge_base_document        # 知识库文档：文件记录、is_de
 charplot_journey                        # 学习旅程：输入快照、来源类型(材料/主题/知识库)、图谱
 charplot_chapter                        # 章节
 charplot_knowledge_point                # 知识点：前置依赖边(自引用 M2M)、易错分
-charplot_level                          # 关卡：FK 知识点 + 序号(1:N)、题型配置
+charplot_level                          # 关卡：FK 知识点 + 序号(1:N)、题型配置、进度字段(答到第几题/已通关)、剩余心动值
 charplot_question                       # 题目：类型(选择/判断/填空)、选项、答案、讲解、来源引用
-charplot_attempt                        # 答题记录：逐题事实(所选答案/对错/时长/时间戳)
+charplot_attempt                        # 答题记录：逐题事实(所选答案/对错/时长/时间戳)；关卡重开产生新记录，历史 Attempt 保留不覆盖
 charplot_review_report                  # 复盘报告：公开 slug、OG 信息
 charplot_user_event                     # 用户事件(登录/通关/答题等) → 事实静态记录统计源
 ```
@@ -180,7 +180,7 @@ charplot_user_event                     # 用户事件(登录/通关/答题等) 
 | 渐进认知阶梯 | 单关由浅入深（识别 → 回忆），简单题收尾保成功感 |
 | XP + 等级 | 答题/通关累积 |
 | 连胜 Streak | 连续学习天数，习惯钩子 |
-| 心动值 Heart | 5 心，答错扣心，扣完重开——「安全失败」体验，答错展示温和鼓励动画（非红色错误界面） |
+| 心动值 Heart | 5 心，答错扣心，退出关卡保留剩余心；扣完 = 本关失败需重开（重开时题目与心重置）——「安全失败」体验，答错展示温和鼓励动画（非红色错误界面） |
 | 学习币 Coin | 通关获得，兑换连胜冻结等轻量化付费替代 |
 | 技能树 | 图谱节点点亮动画，具象化成长反馈 |
 | 间隔复习 | 易错分（答错+2/答对-1，下限 0）× 时间衰减，新关混入 Top 20%；无独立复习页 |
@@ -209,6 +209,7 @@ charplot_user_event                     # 用户事件(登录/通关/答题等) 
 | 成就勋章 | 条件系统 + 图标 |
 | 排行榜 | 好友对比（需多用户活跃） |
 | 增量索引 | 企业级：doc_id 级更新/删除（软删除机制已提前设计） |
+| Agentic RAG | 使用 LangGraph 编排更智能的检索流程（类似 RAGFlow）：LLM 检索质量评估、失败重写重试（corrective RAG）、按需检索（adaptive RAG）；在 rag/ 模块内演进，外部接口不变 |
 
 ## 13. 决策索引
 
