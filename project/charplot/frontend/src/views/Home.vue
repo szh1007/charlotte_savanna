@@ -46,7 +46,7 @@ const cards = reactive<BackendCard[]>([
     no: '03',
     name: '前端',
     role: 'Vue 3 · Element Plus · 主题基座',
-    endpoint: 'localhost:3001',
+    endpoint: 'localhost:4300',
     status: 'ok',
     detail: [{ label: '主题令牌', value: 'ok' }],
     latency: null,

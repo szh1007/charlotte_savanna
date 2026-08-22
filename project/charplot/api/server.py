@@ -22,8 +22,8 @@ app = FastAPI(title="CharPlot AI Service", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:3001",
-        "http://127.0.0.1:3001",
+        "http://localhost:4300",
+        "http://127.0.0.1:4300",
     ],
     allow_credentials=True,
     allow_methods=["*"],

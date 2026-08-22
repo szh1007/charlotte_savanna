@@ -11,7 +11,7 @@ export default defineConfig({
     },
   },
   server: {
-    port: 3001,
+    port: 4300,
     proxy: {
       // Django 业务侧 (app/charplot)
       '/api': {

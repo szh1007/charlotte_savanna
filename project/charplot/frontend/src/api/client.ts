@@ -1,5 +1,6 @@
 // 双后端请求封装: Django 业务侧 /api, FastAPI AI 侧 /ai (DESIGN.md §4).
 // Vite dev server 已配置代理, 同源请求即可.
+// Issue 02: 新增 request<T>() 统一封装 (CSRF token 注入 + 错误归一) 与认证 API.
 
 /** 健康检查响应 (Django / FastAPI 双端同构). */
 export interface HealthStatus {
@@ -10,15 +11,135 @@ export interface HealthStatus {
   time: string
 }
 
+/** 会话用户 (与后端 auth/session 及登录响应同构). */
+export interface SessionUser {
+  id: number
+  username: string
+  email: string
+  is_staff: boolean
+}
+
+/** 会话探测响应. */
+export interface SessionStatus {
+  authenticated: boolean
+  user: SessionUser | null
+}
+
+/** 统计面板 (SPEC §8, Issue 05 后答题类字段自然流入). */
+export interface ProfileStats {
+  login_days: number
+  answered: number
+  correct: number
+  wrong: number
+  cleared_levels: number
+}
+
+/** 连胜中断警告. */
+export interface StreakLossWarning {
+  warning: boolean
+  missed_days: number
+  freeze_until: string | null
+}
+
+/** 个人主页载荷 (GET /api/charplot/profile). */
+export interface Profile {
+  id: number
+  username: string
+  email: string
+  is_staff: boolean
+  xp: number
+  level: number
+  streak: number
+  max_streak: number
+  hearts: number
+  coins: number
+  last_study_date: string | null
+  freeze_until: string | null
+  stats: ProfileStats
+  streak_loss_warning: StreakLossWarning
+  created_at: string
+  updated_at: string
+}
+
+/** 带 status 与原始载荷的请求错误 (DRF 字段级错误可逐字段映射). */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly payload: unknown,
+  ) {
+    super(message)
+    this.name = 'ApiError'
+  }
+}
+
+/** 从 DRF 错误载荷提取人话: detail > non_field_errors > 首个字段错误. */
+function extractDetail(payload: unknown, status: number): string {
+  if (payload && typeof payload === 'object') {
+    const p = payload as Record<string, unknown>
+    if (typeof p.detail === 'string') return p.detail
+    for (const key of ['non_field_errors', 'username', 'email', 'password']) {
+      const v = p[key]
+      if (Array.isArray(v) && typeof v[0] === 'string') return v[0]
+    }
+  }
+  return `请求失败 (${status})`
+}
+
+/** 读取 cookie (CSRF token 存于 csrftoken, 登录后 Django 轮换, 每次现读). */
+function getCookie(name: string): string | null {
+  const match = document.cookie.match(new RegExp('(?:^|; )' + name + '=([^;]*)'))
+  return match && match[1] ? decodeURIComponent(match[1]) : null
+}
+
 /** 带超时的 fetch, 超时视为服务不可达. */
-async function fetchWithTimeout(url: string, ms = 4000): Promise<Response> {
+async function fetchWithTimeout(
+  url: string,
+  init?: RequestInit,
+  ms = 8000,
+): Promise<Response> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), ms)
   try {
-    return await fetch(url, { signal: controller.signal })
+    return await fetch(url, { ...init, signal: controller.signal })
   } finally {
     clearTimeout(timer)
   }
+}
+
+/** 统一请求封装: JSON 收发 + CSRF token 注入 + 错误归一. */
+export async function request<T>(
+  path: string,
+  opts: { method?: string; body?: unknown } = {},
+): Promise<T> {
+  const method = opts.method ?? 'GET'
+  const headers: Record<string, string> = {}
+  if (method !== 'GET' && method !== 'HEAD') {
+    // Django CSRF middleware 校验 X-CSRFToken 与 csrftoken cookie 匹配
+    const token = getCookie('csrftoken')
+    if (token) headers['X-CSRFToken'] = token
+  }
+  if (opts.body !== undefined) {
+    // DRF 按 Content-Type 选择解析器, 缺省时 JSON body 会 415
+    headers['Content-Type'] = 'application/json'
+  }
+  const res = await fetchWithTimeout(path, {
+    method,
+    headers,
+    body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
+  })
+  if (!res.ok) {
+    // middleware 403 是 HTML 响应, json() 需容错
+    let payload: unknown = null
+    try {
+      payload = await res.json()
+    } catch {
+      /* 非 JSON (HTML 错误页), 用状态码兜底 */
+    }
+    throw new ApiError(extractDetail(payload, res.status), res.status, payload)
+  }
+  if (res.status === 204) return undefined as T
+  return (await res.json()) as T
 }
 
 /** 探活 Django 业务侧. */
@@ -31,6 +152,48 @@ export async function checkDjangoHealth(): Promise<HealthStatus> {
 export async function checkAiHealth(): Promise<HealthStatus> {
   const res = await fetchWithTimeout('/ai/health')
   return (await res.json()) as HealthStatus
+}
+
+// ---- 账号体系 (Issue 02) ----
+
+/** 会话探测 + CSRF cookie 引导 (SPA 启动必调). */
+export function getSession(): Promise<SessionStatus> {
+  return request<SessionStatus>('/api/charplot/auth/session/')
+}
+
+/** 注册 (201 → 用户信息). */
+export function register(data: {
+  username: string
+  email: string
+  password: string
+}): Promise<{ id: number; username: string; email: string }> {
+  return request('/api/charplot/auth/register/', { method: 'POST', body: data })
+}
+
+/** 登录 (Django session 建立, 返回用户信息). */
+export function login(data: {
+  username: string
+  password: string
+}): Promise<SessionUser> {
+  return request<SessionUser>('/api/charplot/auth/login/', {
+    method: 'POST',
+    body: data,
+  })
+}
+
+/** 登出. */
+export function logout(): Promise<void> {
+  return request<void>('/api/charplot/auth/logout/', { method: 'POST' })
+}
+
+/** 个人主页. */
+export function getProfile(): Promise<Profile> {
+  return request<Profile>('/api/charplot/profile/')
+}
+
+/** 学习币兑换连胜冻结 → 剩余币 + 冻结截止日. */
+export function buyStreakFreeze(): Promise<{ coins: number; frozen: string }> {
+  return request('/api/charplot/profile/streak-freeze/', { method: 'POST' })
 }
 
 // TODO(Issue 03): SSE 客户端 (EventSource) 在此实现, 消费 /ai/tasks/{id}/events 进度流.
