@@ -144,13 +144,13 @@ project/menu/
 ```bash
 python -m project.menu.api.main
 
-# 或 uvicorn project.menu.api.main:app --host 127.0.0.1 --port 8000
+# 或 uvicorn project.menu.api.main:app --host 127.0.0.1 --port 8001
 
 # 或一键脚本（仓库根目录 sh/ 下, 自动完成数据初始化 + 启动后端）
 sh sh/menu_backend.sh
 ```
 
-后端服务地址：`http://127.0.0.1:8000`
+后端服务地址：`http://127.0.0.1:8001`
 
 ### 6.3 启动前端
 
@@ -160,7 +160,7 @@ npm install     # 首次运行
 npm run dev     # 或直接双击 start.bat（Windows）/ 仓库根目录 sh/menu_frontend.sh
 ```
 
-前端地址：`http://localhost:3000`
+前端地址：`http://localhost:9001`
 
 ---
 
@@ -201,13 +201,13 @@ npm run dev     # 或直接双击 start.bat（Windows）/ 仓库根目录 sh/men
 
 ## 八、前端代理配置
 
-开发环境下，`vite.config.js` 将 `/api` 路径代理到 `http://127.0.0.1:8000`，并移除 `/api` 前缀。后端接口路径与前端调用保持一致，无需跨域配置。
+开发环境下，`vite.config.js` 将 `/api` 路径代理到 `http://127.0.0.1:8001`，并移除 `/api` 前缀。后端接口路径与前端调用保持一致，无需跨域配置。
 
 ---
 
 ## 九、注意事项
 
-1. 确保后端服务运行在 `http://127.0.0.1:8000`，前端代理默认指向该地址。
+1. 确保后端服务运行在 `http://127.0.0.1:8001`，前端代理默认指向该地址。
 2. `agent/langchain.py` 依赖 `milvus_sync.py` 先完成向量库初始化，否则口味检索工具会查询失败。
 3. `.env` 含 API Key，请勿提交到版本控制。
 4. 若需修改后端地址，请同步调整 `vite.config.js` 中的代理配置。

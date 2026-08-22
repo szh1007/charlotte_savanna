@@ -51,7 +51,7 @@ project/video_downloader/
 │   │                             #   PlatformWall / MemberSection / SiteFooter / SummaryPanel /
 │   │                             #   SubtitleSourceBar / MindMapCanvas / ConfirmDialog /
 │   │                             #   ErrorAlert / FeaturesSection
-│   └── vite.config.js            # dev server + /api 代理到 127.0.0.1:8000
+│   └── vite.config.js            # dev server + /api 代理到 127.0.0.1:8003
 ├── scripts/
 │   ├── e2e_download.py           # 真实链接 E2E 脚本（解析 → 下载 → 直链取回）
 │   ├── check_subtitle_cookie.py  # 验证 BILI_COOKIE 能否取到官方字幕（真实网络, 不 mock）
@@ -87,7 +87,7 @@ project/video_downloader/
 ```bash
 # 在项目根目录（charlotte_savanna）激活虚拟环境后:
 cd project/video_downloader
-python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
+python -m uvicorn backend.main:app --host 0.0.0.0 --port 8003
 ```
 
 - 依赖 MySQL / Redis 之外的任何外部服务（无数据库）。
@@ -98,7 +98,7 @@ python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
 ```bash
 cd project/video_downloader/frontend
 npm install        # 首次
-npm run dev        # 默认 http://localhost:5173, /api 代理到 127.0.0.1:8000
+npm run dev        # 默认 http://localhost:9003, /api 代理到 127.0.0.1:8003
 ```
 
 生产构建: `npm run build`（产物在 `frontend/dist/`, 部署时由反向代理或后端静态托管做同源）。

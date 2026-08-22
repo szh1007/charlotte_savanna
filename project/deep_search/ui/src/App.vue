@@ -51,14 +51,14 @@ const scrollToBottom = async () => {
 const fetchFiles = async () => {
   if (!currentSessionPath.value) return
   try {
-    const res = await axios.get('http://localhost:8000/api/files', {
+    const res = await axios.get('http://localhost:8002/api/files', {
       params: { path: currentSessionPath.value }
     })
     if (res.data.files) {
       fileList.value = res.data.files.map((f: any) => ({
         ...f,
         // 使用新的下载 API，传入绝对路径
-        url: `http://localhost:8000/api/download?path=${encodeURIComponent(f.path)}`
+        url: `http://localhost:8002/api/download?path=${encodeURIComponent(f.path)}`
       }))
     }
   } catch (e) {
@@ -68,7 +68,7 @@ const fetchFiles = async () => {
 
 // WebSocket Connection
 const connectWebSocket = () => {
-  const ws = new WebSocket(`ws://localhost:8000/ws/${currentThreadId.value}`)
+  const ws = new WebSocket(`ws://localhost:8002/ws/${currentThreadId.value}`)
 
   ws.onopen = () => {
     console.log('WebSocket Connected')
@@ -103,7 +103,7 @@ const handleSocketMessage = (data: any) => {
     currentSessionPath.value = eventData.path
     const parts = eventData.path.split(/output[\\/]/)
     if (parts.length > 1) {
-      currentSessionUrl.value = `http://localhost:8000/outputs/${parts[1].replace(/\\/g, '/')}`
+      currentSessionUrl.value = `http://localhost:8002/outputs/${parts[1].replace(/\\/g, '/')}`
     }
     isSidebarOpen.value = true
     fetchFiles()
@@ -236,7 +236,7 @@ const sendMessage = async () => {
             formData.append('files', file)
         })
 
-        await axios.post('http://127.0.0.1:8000/api/upload', formData, {
+        await axios.post('http://127.0.0.1:8002/api/upload', formData, {
             headers: {
                 'Content-Type': 'multipart/form-data'
             }
@@ -275,7 +275,7 @@ const sendMessage = async () => {
       payload.thread_id = currentThreadId.value
     }
     console.log('Sending request payload:', payload)
-    const res = await axios.post('http://127.0.0.1:8000/api/task', payload)
+    const res = await axios.post('http://127.0.0.1:8002/api/task', payload)
 
     if (res.data && res.data.thread_id) {
       currentThreadId.value = res.data.thread_id

@@ -322,7 +322,7 @@ charlotte_savanna/
 - **deep_search 前端**：`sh/deep_search_frontend.sh`（或 `cd project/deep_search/ui && npm run dev`，首次需 `npm install`）
 - **menu 后端**：`sh/menu_backend.sh`（或 `python -m project.menu.api.main`）
 - **menu 前端**：`sh/menu_frontend.sh`（或 `cd project/menu/ui && npm run dev`，首次需 `npm install`）
-- **video_downloader 后端**：`sh/video_downloader_backend.sh`（或 `cd project/video_downloader && python -m uvicorn backend.main:app --port 8000`）
+- **video_downloader 后端**：`sh/video_downloader_backend.sh`（或 `cd project/video_downloader && python -m uvicorn backend.main:app --port 8003`）
 - **video_downloader 前端**：`sh/video_downloader_frontend.sh`（或 `cd project/video_downloader/frontend && npm run dev`，首次需 `npm install`）
 - **LangGraph CLI**：`langgraph dev`（`langgraph.json` 配置了 graph 入口，指向 `demo/LangGraph_v1.2`）
 - **LangChain 脚本**：在对应 `demo/` 子目录下 `python <script>.py`（脚本内部 `load_dotenv()`）

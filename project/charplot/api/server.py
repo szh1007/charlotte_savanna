@@ -22,8 +22,8 @@ app = FastAPI(title="CharPlot AI Service", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:4300",
-        "http://127.0.0.1:4300",
+        "http://localhost:9004",
+        "http://127.0.0.1:9004",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -59,4 +59,4 @@ async def health():
 
 if __name__ == "__main__":
     # 独立启动: python -m project.charplot.api.server
-    uvicorn.run(app, host="127.0.0.1", port=8001)
+    uvicorn.run(app, host="127.0.0.1", port=8004)

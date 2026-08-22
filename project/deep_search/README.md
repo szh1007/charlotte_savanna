@@ -145,7 +145,7 @@ python -m project.deep_search.api.server
 # 或仓库根目录 sh/deep_search_backend.sh
 ```
 
-后端服务地址：`http://127.0.0.1:8000`
+后端服务地址：`http://127.0.0.1:8002`
 
 ### 7.3 启动前端
 
@@ -172,7 +172,7 @@ npm run dev     # 或仓库根目录 sh/deep_search_frontend.sh
 
 ## 九、注意事项
 
-1. 后端监听 `0.0.0.0:8000`，CORS 已放开，前端可直接跨域调用。
+1. 后端监听 `0.0.0.0:8002`，CORS 已放开，前端可直接跨域调用。
 2. `convert_md_to_pdf` 依赖 Word COM 引擎（`pywin32`），仅支持 Windows 环境。
 3. RAGFlow 知识库助手默认未启用，需在 `main_agent.py` 中取消注释并配置 `DS_RAGFLOW_API_URL` / `DS_RAGFLOW_API_KEY`。
 4. `.env` 含 API Key，请勿提交到版本控制。
