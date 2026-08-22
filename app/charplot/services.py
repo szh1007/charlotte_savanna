@@ -71,9 +71,13 @@ def buy_streak_freeze(profile, today=None):
 
 
 def get_streak_loss_warning(profile, today=None):
-    """连胜中断检查: 最后学习日距今 > 1 天且未在冻结期内 → 警告.
+    """连胜中断检查: 上次学习日次日 0 点起全天警告, 次日仍不学则第三天中断.
 
-    返回固定三字段结构, 前端统一消费:
+    上次学习日 (last_study_date):
+    - 当天 → 打卡成功, 无警告
+    - 次日 (missed_days=1) → 警告: 今天不学, 明天连胜中断
+    - 第三天起 (missed_days>1) → 已中断 (登录结算已归零), 警告持续到重新学习
+    冻结期内豁免. 返回固定三字段结构, 前端统一消费:
     {warning, missed_days, freeze_until}
     """
     today = today or timezone.localdate()
@@ -92,7 +96,7 @@ def get_streak_loss_warning(profile, today=None):
             "missed_days": 0,
             "freeze_until": profile.freeze_until,
         }
-    missed_days = (today - last).days - 1  # 完整没学的天数
+    missed_days = (today - last).days  # 距上次学习的自然日数, 次日即 1
     if missed_days > 0:
         return {
             "warning": True,

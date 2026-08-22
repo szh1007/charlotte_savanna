@@ -37,22 +37,23 @@ class StreakLossWarningTests(TestCase):
         result = get_streak_loss_warning(self.profile, today=TODAY)
         self.assertFalse(result["warning"])
 
-    def test_no_warning_when_studied_yesterday(self):
+    def test_warning_when_studied_yesterday(self):
+        # 上次学习日次日全天警告: 今天不学, 明天连胜中断
         self.profile.last_study_date = TODAY - timedelta(days=1)
         result = get_streak_loss_warning(self.profile, today=TODAY)
-        self.assertFalse(result["warning"])
-        self.assertEqual(result["missed_days"], 0)
+        self.assertTrue(result["warning"])
+        self.assertEqual(result["missed_days"], 1)
 
     def test_no_warning_when_studied_today(self):
         self.profile.last_study_date = TODAY
         result = get_streak_loss_warning(self.profile, today=TODAY)
         self.assertFalse(result["warning"])
 
-    def test_warning_after_two_full_missed_days(self):
+    def test_warning_after_missed_days(self):
         self.profile.last_study_date = TODAY - timedelta(days=3)
         result = get_streak_loss_warning(self.profile, today=TODAY)
         self.assertTrue(result["warning"])
-        self.assertEqual(result["missed_days"], 2)
+        self.assertEqual(result["missed_days"], 3)
 
     def test_freeze_exempts_warning(self):
         self.profile.last_study_date = TODAY - timedelta(days=5)

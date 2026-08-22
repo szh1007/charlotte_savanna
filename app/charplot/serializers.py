@@ -5,7 +5,9 @@ Profile 响应直出模型字段 + 统计面板 + 连胜中断警告.
 """
 
 from django.contrib.auth import authenticate, get_user_model
-from django.contrib.auth.password_validation import validate_password
+from django.contrib.auth.password_validation import (
+    validate_password as validate_password_strength,
+)
 from django.db import IntegrityError
 from rest_framework import serializers
 
@@ -21,7 +23,7 @@ class UserRegisterSerializer(serializers.Serializer):
     password = serializers.CharField(write_only=True, min_length=8)
 
     def validate_password(self, value):
-        validate_password(value)
+        validate_password_strength(value)
         return value
 
     def validate_username(self, value):
