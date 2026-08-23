@@ -6,6 +6,7 @@ X-Internal-Token (CONTRACT.md §3). 落库失败语义: transient 错误重试 1
 """
 
 import asyncio
+import base64
 import logging
 
 import httpx
@@ -17,12 +18,42 @@ logger = logging.getLogger(__name__)
 _TIMEOUT = httpx.Timeout(10.0)
 
 
+def _internal_headers() -> dict:
+    return {"X-Internal-Token": config.INTERNAL_TOKEN}
+
+
 async def _post_internal(path: str, payload: dict) -> httpx.Response:
-    headers = {"X-Internal-Token": config.INTERNAL_TOKEN}
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
         return await client.post(
-            f"{config.DJANGO_API_BASE}{path}", json=payload, headers=headers
+            f"{config.DJANGO_API_BASE}{path}",
+            json=payload,
+            headers=_internal_headers(),
         )
+
+
+async def fetch_journey_content(journey_id: int) -> tuple[str, bytes]:
+    """取 file 输入的源文件二进制 (内部端点, Issue 07).
+
+    返回 (filename, bytes); 4xx (契约/无文件) 与网络错误抛 RuntimeError,
+    由管道转任务 error (前端可重试). 解析在 FastAPI 侧完成.
+    """
+    path = f"/api/charplot/journeys/{journey_id}/content/"
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+            resp = await client.get(
+                f"{config.DJANGO_API_BASE}{path}", headers=_internal_headers()
+            )
+    except httpx.HTTPError as exc:
+        raise RuntimeError(f"取源文件内容失败 (网络): {exc}") from exc
+    if resp.status_code != 200:
+        detail = resp.text[:200] if resp.text else resp.status_code
+        raise RuntimeError(f"取源文件内容失败 ({resp.status_code}): {detail}")
+    body = resp.json()
+    try:
+        raw = base64.b64decode(body["content_base64"])
+    except (KeyError, ValueError) as exc:
+        raise RuntimeError(f"源文件内容响应异常: {exc}") from exc
+    return body.get("filename", "upload"), raw
 
 
 async def save_graph_to_django(journey_id: int, task_id: str, graph: dict) -> None:

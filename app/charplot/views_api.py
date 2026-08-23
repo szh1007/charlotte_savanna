@@ -5,6 +5,7 @@
 闯关答题 (Issue 05): 关卡列表/详情 + 提交答案 + 重开.
 """
 
+import base64
 import logging
 
 from django.contrib.auth import login, logout
@@ -396,6 +397,41 @@ class JourneyGraphView(APIView):
         except JourneyGraphError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return Response({"status": "ready"})
+
+
+class JourneyContentView(APIView):
+    """源文件内容获取 (内部端点, FastAPI → Django, CONTRACT.md §5).
+
+    Issue 07 真实管道解析 file 输入: FastAPI 经此端点取文件二进制
+    (base64 编码, 支持 pdf/docx 等二进制格式), 解析在 FastAPI 侧完成
+    (AI 能力端职责). 无源文件 → 404; 文件缺失 (磁盘已清理) → 400.
+    """
+
+    authentication_classes = []
+    permission_classes = [IsInternalService]
+
+    def get(self, request, pk):
+        journey = get_object_or_404(CharplotJourney, pk=pk)
+        if not journey.source_file:
+            return Response(
+                {"detail": "旅程无源文件"}, status=status.HTTP_404_NOT_FOUND
+            )
+        try:
+            journey.source_file.open("rb")
+            raw = journey.source_file.read()
+        except (FileNotFoundError, OSError) as exc:
+            logger.warning("读取源文件失败 (journey=%s): %s", pk, exc)
+            return Response(
+                {"detail": "源文件读取失败"}, status=status.HTTP_400_BAD_REQUEST
+            )
+        finally:
+            journey.source_file.close()
+        return Response(
+            {
+                "filename": journey.source_file.name.rsplit("/", 1)[-1],
+                "content_base64": base64.b64encode(raw).decode("ascii"),
+            }
+        )
 
 
 class JourneyStatusView(APIView):

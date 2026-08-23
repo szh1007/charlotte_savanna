@@ -1,8 +1,10 @@
-"""旅程链路测试 (Issue 03).
+"""旅程链路测试 (Issue 03, 07).
 
 覆盖创建 (text/link/file 三形态) / 列表 / 详情 / 内部落库端点 (token 校验 +
-契约校验 + 幂等) / 失败标记 / 服务层契约校验.
+契约校验 + 幂等) / 失败标记 / 源文件内容端点 (Issue 07) / 服务层契约校验.
 """
+
+import base64
 
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -346,6 +348,56 @@ class JourneyGraphInternalTests(TestCase):
             HTTP_X_INTERNAL_TOKEN="wrong",
         )
         self.assertEqual(resp.status_code, 403)
+
+
+@override_settings(CHARPLOT_INTERNAL_TOKEN=INTERNAL_TOKEN)
+class JourneyContentInternalTests(TestCase):
+    """源文件内容端点 (内部端点, FastAPI → Django, Issue 07)."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.user = create_user()
+        upload = SimpleUploadedFile(
+            "intro.txt", b"hello charplot", content_type="text/plain"
+        )
+        self.journey = CharplotJourney.objects.create(
+            user=self.user,
+            title="intro",
+            input_type="file",
+            content="",
+            source_file=upload,
+        )
+        self.content_url = f"{JOURNEYS_URL}{self.journey.id}/content/"
+
+    def test_get_content_with_token(self):
+        resp = self.client.get(self.content_url, HTTP_X_INTERNAL_TOKEN=INTERNAL_TOKEN)
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        # 文件名经 upload_to 重命名 (user_{id}_{ts}.txt), 断言扩展名与内容
+        self.assertTrue(body["filename"].endswith(".txt"))
+        # base64 解码回原文
+        self.assertEqual(
+            base64.b64decode(body["content_base64"]).decode("utf-8"),
+            "hello charplot",
+        )
+
+    def test_get_content_without_token_forbidden(self):
+        resp = self.client.get(self.content_url)
+        self.assertEqual(resp.status_code, 403)
+
+    def test_get_content_wrong_token_forbidden(self):
+        resp = self.client.get(self.content_url, HTTP_X_INTERNAL_TOKEN="wrong")
+        self.assertEqual(resp.status_code, 403)
+
+    def test_get_content_no_source_file_404(self):
+        text_journey = CharplotJourney.objects.create(
+            user=self.user, title="无文件", input_type="text", content="x"
+        )
+        resp = self.client.get(
+            f"{JOURNEYS_URL}{text_journey.id}/content/",
+            HTTP_X_INTERNAL_TOKEN=INTERNAL_TOKEN,
+        )
+        self.assertEqual(resp.status_code, 404)
 
 
 class ValidateGraphTests(TestCase):

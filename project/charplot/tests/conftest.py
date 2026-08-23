@@ -11,15 +11,18 @@ import os
 import time
 
 os.environ["REDIS_URL"] = "redis://127.0.0.1:6379/15"
-os.environ["CHARPLOT_STUB_DELAY_MS"] = "0"
 os.environ["CHARPLOT_INTERNAL_TOKEN"] = "test-internal-token"
 
 import pytest
 import redis
 from starlette.testclient import TestClient
+from tests.fakes import FakeChatModel
 
+from project.charplot.agents.search_agent import SearchReport
 from project.charplot.api import tasks
 from project.charplot.api.server import app
+from project.charplot.pipeline import llm as pipeline_llm
+from project.charplot.pipeline.stages import search as search_stage
 
 
 @pytest.fixture(autouse=True)
@@ -36,6 +39,30 @@ def flush_redis():
     tasks._redis = None
     tasks._tasks_registry.clear()
     yield
+
+
+@pytest.fixture(autouse=True)
+def fake_llm_and_search(monkeypatch):
+    """隔离真实管道的外部依赖 (Issue 07): LLM / 检索 subagent / Django 取文件.
+
+    - get_chat_model → FakeChatModel (按 prompt 关键词返回预置 JSON)
+    - run_search_agent → 固定空检索报告 (不触网)
+    - fetch_journey_content → 固定 txt 材料 (file 输入不触 Django)
+    单测阶段可通过 monkeypatch.setattr 覆盖 fixture 行为.
+    """
+    monkeypatch.setattr(pipeline_llm, "get_chat_model", lambda: FakeChatModel())
+
+    async def fake_search(sources, topic, queries):
+        return SearchReport(topic=topic, queries=queries)
+
+    monkeypatch.setattr(search_stage, "run_search_agent", fake_search)
+
+    from project.charplot.api import django_client
+
+    async def fake_fetch_content(journey_id):
+        return "upload.txt", "这是一份测试学习材料\n\n包含若干知识点内容".encode()
+
+    monkeypatch.setattr(django_client, "fetch_journey_content", fake_fetch_content)
 
 
 @pytest.fixture

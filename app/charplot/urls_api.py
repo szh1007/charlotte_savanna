@@ -2,6 +2,7 @@ from django.urls import path
 
 from .views_api import (
     HealthView,
+    JourneyContentView,
     JourneyDetailView,
     JourneyGraphView,
     JourneyListView,
@@ -52,6 +53,11 @@ urlpatterns = [
     ),
     # 内部端点 (FastAPI → Django, X-Internal-Token 认证)
     path("journeys/<int:pk>/graph/", JourneyGraphView.as_view(), name="journey-graph"),
+    path(
+        "journeys/<int:pk>/content/",
+        JourneyContentView.as_view(),
+        name="journey-content",
+    ),
     path(
         "journeys/<int:pk>/status/", JourneyStatusView.as_view(), name="journey-status"
     ),
