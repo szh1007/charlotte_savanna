@@ -1,20 +1,29 @@
-"""CharPlot 游戏化与统计服务层 (Issue 02).
+"""CharPlot 游戏化 / 统计 / 旅程服务层 (Issue 02 / 03).
 
 规则参数集中配置 (DESIGN.md §5); 日期一律用 timezone.localdate() 保证
 Asia/Shanghai 自然日语义 (USE_TZ=True). 所有函数支持 today 参数注入,
 便于测试免 mock 时钟.
 """
 
+import os
 from datetime import timedelta
 
 from django.db import transaction
 from django.utils import timezone
 
-from .models import CharplotUserEvent
+from .models import (
+    CharplotChapter,
+    CharplotJourney,
+    CharplotKnowledgePoint,
+    CharplotUserEvent,
+)
 
 # ---- 规则参数 (集中配置, 后续可改, 勿散落各处) ----
 FREEZE_COIN_COST = 10  # 兑换 1 天连胜冻结所需学习币
 FREEZE_DAYS = 1  # 每次兑换冻结天数
+
+JOURNEY_TITLE_MAX = 40  # 列表卡展示标题截断长度
+JOURNEY_GRAPH_VERSION = 1  # 图谱契约版本 (CONTRACT.md, 只增不改)
 
 
 class StreakFreezeError(Exception):
@@ -134,3 +143,141 @@ def build_profile_stats(user):
         "wrong": 0,  # Issue 05
         "cleared_levels": 0,  # Issue 05: user_event(level_clear) 聚合
     }
+
+
+# ---------------------------------------------------------------------------
+# 旅程 (Issue 03)
+# ---------------------------------------------------------------------------
+
+
+class JourneyGraphError(ValueError):
+    """图谱契约校验失败 (中文 detail 透传给 FastAPI 落库调用方)."""
+
+
+def derive_journey_title(input_type, content="", filename=""):
+    """从输入推导旅程标题: text/link 取内容首行截断, file 取去扩展名文件名."""
+    if input_type == CharplotJourney.InputType.FILE and filename:
+        base = os.path.splitext(os.path.basename(filename))[0]
+        return base[:JOURNEY_TITLE_MAX]
+    title = (
+        (content or "").strip().splitlines()[0]
+        if (content or "").strip()
+        else "未命名旅程"
+    )
+    return title[:JOURNEY_TITLE_MAX]
+
+
+def create_journey(user, input_type, content, source_file=None):
+    """创建旅程: status=generating, title 由输入推导, 源文件一并落库."""
+    filename = source_file.name if source_file else ""
+    journey = CharplotJourney.objects.create(
+        user=user,
+        input_type=input_type,
+        content=content or "",
+        source_file=source_file,
+        title=derive_journey_title(input_type, content, filename),
+        status=CharplotJourney.Status.GENERATING,
+    )
+    return journey
+
+
+def validate_graph(graph):
+    """图谱契约校验 (CONTRACT.md v1), 失败抛 JourneyGraphError.
+
+    校验项: 顶层 version/title/chapters; 章节 ≥1 且 id/title 必填;
+    每章知识点 ≥1 且 id/title 必填; 临时 id 全局唯一; prerequisites 引用
+    的 id 必须是本 journey 内已定义的 kp 临时 id (允许跨章节).
+    """
+    if not isinstance(graph, dict):
+        raise JourneyGraphError("图谱必须是 JSON 对象")
+    if graph.get("version") != JOURNEY_GRAPH_VERSION:
+        raise JourneyGraphError(f"不支持的图谱契约版本: {graph.get('version')!r}")
+    if not graph.get("title"):
+        raise JourneyGraphError("图谱缺少 title")
+    chapters = graph.get("chapters")
+    if not isinstance(chapters, list) or not chapters:
+        raise JourneyGraphError("图谱至少需要 1 个章节")
+
+    kp_ids: set[str] = set()
+    for chapter in chapters:
+        if (
+            not isinstance(chapter, dict)
+            or not chapter.get("id")
+            or not chapter.get("title")
+        ):
+            raise JourneyGraphError("章节必须包含 id 与 title")
+        kps = chapter.get("knowledge_points")
+        if not isinstance(kps, list) or not kps:
+            raise JourneyGraphError(f"章节 {chapter['id']!r} 至少需要 1 个知识点")
+        for kp in kps:
+            if not isinstance(kp, dict) or not kp.get("id") or not kp.get("title"):
+                raise JourneyGraphError("知识点必须包含 id 与 title")
+            if kp["id"] in kp_ids:
+                raise JourneyGraphError(f"知识点临时 id 重复: {kp['id']!r}")
+            kp_ids.add(kp["id"])
+
+    for chapter in chapters:
+        for kp in chapter["knowledge_points"]:
+            for prereq in kp.get("prerequisites") or []:
+                if prereq not in kp_ids:
+                    raise JourneyGraphError(
+                        f"知识点 {kp['id']!r} 引用了未知的前置知识点: {prereq!r}"
+                    )
+
+
+def save_journey_graph(journey, task_id, graph):
+    """图谱落库 (CONTRACT.md): 先删后建, 事务内原子完成.
+
+    幂等性: 重试只会发生在 failed 旅程 (无答题数据, Attempt/Level 是
+    Issue 05 产物), 删除重建不产生重复行; 若未来对 ready 旅程重生成
+    (涉及保留 error_score), 届时再评估更新策略.
+    """
+    validate_graph(graph)
+    with transaction.atomic():
+        journey.chapters.all().delete()  # 级联删除知识点与 M2M 依赖边
+        kp_pk_by_tmp_id: dict[str, CharplotKnowledgePoint] = {}
+        for order, chapter_data in enumerate(graph["chapters"]):
+            chapter = CharplotChapter.objects.create(
+                journey=journey,
+                title=chapter_data["title"],
+                summary=chapter_data.get("summary", ""),
+                order=order,
+            )
+            for kp_order, kp_data in enumerate(chapter_data["knowledge_points"]):
+                kp = CharplotKnowledgePoint.objects.create(
+                    chapter=chapter,
+                    title=kp_data["title"],
+                    summary=kp_data.get("summary", ""),
+                    order=kp_order,
+                )
+                kp_pk_by_tmp_id[kp_data["id"]] = kp
+        for chapter_data in graph["chapters"]:
+            for kp_data in chapter_data["knowledge_points"]:
+                kp = kp_pk_by_tmp_id[kp_data["id"]]
+                prereqs = [
+                    kp_pk_by_tmp_id[p] for p in (kp_data.get("prerequisites") or [])
+                ]
+                kp.prerequisites.add(*prereqs)
+        journey.graph = graph
+        journey.latest_task_id = task_id
+        journey.status = CharplotJourney.Status.READY
+        journey.error_message = ""
+        journey.save(
+            update_fields=[
+                "graph",
+                "latest_task_id",
+                "status",
+                "error_message",
+                "updated_at",
+            ]
+        )
+
+
+def mark_journey_failed(journey, task_id, error_message):
+    """任务失败标记: status=failed + 失败原因 (FastAPI 经内部端点调用)."""
+    journey.status = CharplotJourney.Status.FAILED
+    journey.latest_task_id = task_id
+    journey.error_message = error_message[:1000]
+    journey.save(
+        update_fields=["status", "latest_task_id", "error_message", "updated_at"]
+    )

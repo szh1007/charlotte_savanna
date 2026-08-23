@@ -1,12 +1,14 @@
 """CharPlot API 视图 (DRF).
 
 账号体系 (Issue 02): 注册/登录/登出 + 会话探测 + 个人主页 + 连胜冻结兑换.
+旅程链路 (Issue 03): 创建/列表/详情 + FastAPI 内部落库端点 (X-Internal-Token).
 """
 
 import logging
 
 from django.contrib.auth import login, logout
 from django.db import connection
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_protect, ensure_csrf_cookie
@@ -15,16 +17,24 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import CharplotProfile, CharplotUserEvent
+from .models import CharplotJourney, CharplotProfile, CharplotUserEvent
+from .permissions import IsInternalService
 from .serializers import (
     CharplotProfileSerializer,
+    JourneyCreateSerializer,
+    JourneyDetailSerializer,
+    JourneyListSerializer,
     UserLoginSerializer,
     UserRegisterSerializer,
 )
 from .services import (
     InsufficientCoinsError,
+    JourneyGraphError,
     buy_streak_freeze,
+    create_journey,
+    mark_journey_failed,
     record_event,
+    save_journey_graph,
 )
 
 logger = logging.getLogger(__name__)
@@ -175,3 +185,92 @@ class StreakFreezeView(APIView):
             {"coins": profile.coins, "frozen": profile.freeze_until},
             status=status.HTTP_200_OK,
         )
+
+
+class JourneyListView(APIView):
+    """旅程创建与列表 (DESIGN §4.1).
+
+    GET: 仅本人旅程, 计数 prefetch 避免 N+1, 全量返回 (个人量小, 契约 {journeys[]}).
+    POST: JSON (text/link) 或 multipart (file) 创建, 返回 {journey_id, status}.
+    """
+
+    permission_classes = [IsAuthenticated]
+    # DRF 全局默认分页, 契约要求 {journeys[]} 全量返回
+    pagination_class = None
+
+    def get(self, request):
+        journeys = (
+            CharplotJourney.objects.filter(user=request.user)
+            .prefetch_related("chapters__knowledge_points")
+            .order_by("-created_at")
+        )
+        return Response({"journeys": JourneyListSerializer(journeys, many=True).data})
+
+    def post(self, request):
+        serializer = JourneyCreateSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        data = serializer.validated_data
+        journey = create_journey(
+            user=request.user,
+            input_type=data["input_type"],
+            content=data.get("content", ""),
+            source_file=data.get("source_file"),
+        )
+        return Response(
+            {"journey_id": journey.id, "status": journey.status},
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class JourneyDetailView(APIView):
+    """旅程详情 + 图谱 + 任务状态 (DESIGN §4.1). 非本人旅程返回 404 不泄露存在性."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        journey = get_object_or_404(CharplotJourney, pk=pk, user=request.user)
+        return Response(JourneyDetailSerializer(journey).data)
+
+
+class JourneyGraphView(APIView):
+    """图谱落库 (内部端点, FastAPI → Django, CONTRACT.md §3).
+
+    DRF APIView 默认 csrf_exempt, 免 CSRF 校验; 认证靠 X-Internal-Token.
+    落库先删后建, 重复调用幂等 (重试语义).
+    """
+
+    authentication_classes = []
+    permission_classes = [IsInternalService]
+
+    def post(self, request, pk):
+        journey = get_object_or_404(CharplotJourney, pk=pk)
+        task_id = (request.data.get("task_id") or "").strip()
+        graph = request.data.get("graph")
+        if not task_id or graph is None:
+            return Response(
+                {"detail": "缺少 task_id 或 graph"}, status=status.HTTP_400_BAD_REQUEST
+            )
+        try:
+            save_journey_graph(journey, task_id, graph)
+        except JourneyGraphError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"status": "ready"})
+
+
+class JourneyStatusView(APIView):
+    """任务失败标记 (内部端点, FastAPI → Django)."""
+
+    authentication_classes = []
+    permission_classes = [IsInternalService]
+
+    def post(self, request, pk):
+        journey = get_object_or_404(CharplotJourney, pk=pk)
+        task_id = (request.data.get("task_id") or "").strip()
+        error_message = (request.data.get("error_message") or "").strip()
+        if not task_id:
+            return Response(
+                {"detail": "缺少 task_id"}, status=status.HTTP_400_BAD_REQUEST
+            )
+        mark_journey_failed(journey, task_id, error_message)
+        return Response({"status": "failed"})
