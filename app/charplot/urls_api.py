@@ -1,6 +1,9 @@
 from django.urls import path
 
 from .views_api import (
+    DashboardActivityView,
+    DashboardMasteryView,
+    DashboardWeakpointsView,
     HealthView,
     JourneyContentView,
     JourneyDetailView,
@@ -144,4 +147,20 @@ urlpatterns = [
     ),
     # Issue 11 内部端点: 知识库元信息 (kb 旅程管道解析输入)
     path("kb/<int:pk>/meta/", KbMetaView.as_view(), name="kb-meta"),
+    # 分析 Dashboard (Issue 12, DESIGN.md §4.1)
+    path(
+        "dashboard/mastery/",
+        DashboardMasteryView.as_view(),
+        name="dashboard-mastery",
+    ),
+    path(
+        "dashboard/activity/",
+        DashboardActivityView.as_view(),
+        name="dashboard-activity",
+    ),
+    path(
+        "dashboard/weakpoints/",
+        DashboardWeakpointsView.as_view(),
+        name="dashboard-weakpoints",
+    ),
 ]

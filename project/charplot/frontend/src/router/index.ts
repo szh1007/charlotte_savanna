@@ -65,6 +65,13 @@ const router = createRouter({
       component: () => import('@/views/KBManage.vue'),
       meta: { requiresAuth: true, requiresStaff: true },
     },
+    {
+      // 学习分析 Dashboard (Issue 12): 掌握度矩阵 + 活动统计 + 易错清单
+      path: '/dashboard',
+      name: 'dashboard',
+      component: () => import('@/views/Dashboard.vue'),
+      meta: { requiresAuth: true },
+    },
   ],
 })
 

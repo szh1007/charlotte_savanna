@@ -3,6 +3,7 @@
 账号体系 (Issue 02): 注册/登录/登出 + 会话探测 + 个人主页 + 连胜冻结兑换.
 旅程链路 (Issue 03): 创建/列表/详情 + FastAPI 内部落库端点 (X-Internal-Token).
 闯关答题 (Issue 05): 关卡列表/详情 + 提交答案 + 重开.
+分析 Dashboard (Issue 12): 掌握度矩阵 / 学习活动统计 / 易错点清单.
 """
 
 import base64
@@ -20,6 +21,11 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from .dashboard import (
+    build_activity_stats,
+    build_mastery_matrix,
+    build_weakpoint_list,
+)
 from .models import (
     CharplotJourney,
     CharplotKnowledgeBase,
@@ -859,3 +865,42 @@ class KbMetaView(APIView):
                 "status": kb.status,
             }
         )
+
+
+class DashboardMasteryView(APIView):
+    """掌握度矩阵 (Issue 12, PRD F-1): 旅程 → 章节 → 知识点正确率.
+
+    数据从 Attempt 事实表按需聚合 (知识点归属 = 来源知识点或关卡知识点),
+    薄弱点 (正确率 < 60%) 由前端高亮. 仅登录用户可见.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return Response(build_mastery_matrix(request.user))
+
+
+class DashboardActivityView(APIView):
+    """学习活动统计 (Issue 12, PRD F-2): 时长 / 通关数 / 活跃天数 / 连胜.
+
+    时长 = Attempt.duration 聚合, 通关数 = LEVEL_CLEAR 事件计数, 活跃天数 =
+    LOGIN 事件按日去重, 近 N 天分布由事件表按日聚合. 仅登录用户可见.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return Response(build_activity_stats(request.user))
+
+
+class DashboardWeakpointsView(APIView):
+    """易错点清单 (Issue 12, PRD F-3): 易错分排序 + 复习优先级.
+
+    优先级公式与间隔复习同源 (services._review_candidates), 全局聚合,
+    标注所属旅程 / 章节 / 答错次数. 仅登录用户可见.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return Response(build_weakpoint_list(request.user))

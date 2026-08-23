@@ -705,3 +705,87 @@ export function subscribePipeline(
   }
   return close
 }
+
+// ---- 分析 Dashboard (Issue 12, SPEC §10) ----
+
+/** 知识点掌握度 (Attempt 事实聚合, 复习题归属来源知识点). */
+export interface MasteryPoint {
+  kp_id: number
+  title: string
+  order: number
+  answered: number
+  correct: number
+  /** 整数百分比正确率. */
+  accuracy: number
+  duration: number
+  error_score: number
+  /** 正确率 < 60% 薄弱点, 前端高亮. */
+  weak: boolean
+}
+
+/** 章节掌握度 (章内知识点 Attempt 汇总). */
+export interface MasteryChapter {
+  chapter_id: number
+  title: string
+  order: number
+  answered: number
+  correct: number
+  accuracy: number
+  duration: number
+  knowledge_points: MasteryPoint[]
+}
+
+/** 旅程掌握度分组 (仅含答题记录的知识点). */
+export interface MasteryJourney {
+  journey_id: number
+  title: string
+  cleared: boolean
+  chapters: MasteryChapter[]
+}
+
+/** 近 N 天每日学习活跃 (ANSWER/LEVEL_CLEAR 事件按日聚合, 无学习天 active=false). */
+export interface DailyActivity {
+  date: string
+  answers: number
+  cleared: number
+  active: boolean
+}
+
+/** 学习活动统计 (时长/通关数/活跃天数/连胜, 与事实表一致). */
+export interface ActivityStats {
+  duration_seconds: number
+  cleared_levels: number
+  active_days: number
+  streak: number
+  max_streak: number
+  daily: DailyActivity[]
+}
+
+/** 易错点 (优先级公式与间隔复习同源, 全局聚合). */
+export interface Weakpoint {
+  kp_id: number
+  title: string
+  journey_id: number
+  journey_title: string
+  chapter_title: string
+  error_score: number
+  days_since_review: number
+  priority: number
+  priority_level: 'high' | 'medium' | 'low'
+  wrong_count: number
+}
+
+/** 掌握度矩阵 (GET /api/charplot/dashboard/mastery/). */
+export function getMasteryMatrix(): Promise<{ journeys: MasteryJourney[] }> {
+  return request('/api/charplot/dashboard/mastery/')
+}
+
+/** 学习活动统计 (GET /api/charplot/dashboard/activity/). */
+export function getActivityStats(): Promise<ActivityStats> {
+  return request('/api/charplot/dashboard/activity/')
+}
+
+/** 易错点清单 (GET /api/charplot/dashboard/weakpoints/). */
+export function getWeakpoints(): Promise<{ weakpoints: Weakpoint[] }> {
+  return request('/api/charplot/dashboard/weakpoints/')
+}

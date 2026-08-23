@@ -71,6 +71,10 @@ async function onLogout() {
               <span aria-hidden="true">🪙</span>{{ state.profile?.coins ?? 0 }}
             </span>
           </div>
+          <!-- 学习分析入口 (Issue 12): Dashboard 仅登录用户可见 -->
+          <el-button size="small" round plain @click="router.push('/dashboard')">
+            学习分析
+          </el-button>
           <!-- 管理员入口 (Issue 09): 知识库管理页, 仅 is_staff 显示 -->
           <el-button
             v-if="state.user.is_staff"
