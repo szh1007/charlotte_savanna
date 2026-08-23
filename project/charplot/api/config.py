@@ -37,3 +37,8 @@ CONTEXT7_MAX_DOCS = int(os.environ.get("CHARPLOT_CONTEXT7_MAX_DOCS", "5"))
 LINK_FETCH_TIMEOUT = float(os.environ.get("CHARPLOT_LINK_FETCH_TIMEOUT", "10"))
 # LLM 分析/解构失败重试次数 (每次重试带上次错误反馈给模型修正)
 LLM_RETRIES = int(os.environ.get("CHARPLOT_LLM_RETRIES", "1"))
+
+# ---- 知识库索引任务 (Issue 09, stub) ----
+# 每个文档阶段的模拟延迟 (秒); 默认 0 = 零延迟 (per-doc 事件序列即进度),
+# 手动演示可设 0.15 观察渐进效果 (测试不设该 env, 天然不变慢)
+KB_STUB_STEP_SLEEP = float(os.environ.get("CHARPLOT_KB_STUB_STEP_SLEEP", "0"))

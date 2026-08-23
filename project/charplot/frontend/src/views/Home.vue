@@ -6,7 +6,13 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, type UploadInstance } from 'element-plus'
-import { ApiError, createJourney, startPipeline } from '@/api/client'
+import {
+  ApiError,
+  createJourney,
+  getTopics,
+  startPipeline,
+  type Topic,
+} from '@/api/client'
 import { useAuth } from '@/stores/auth'
 import { useJourneys } from '@/stores/journeys'
 
@@ -21,6 +27,9 @@ const linkContent = ref('')
 const file = ref<File | null>(null)
 const uploading = ref(false)
 const uploadRef = ref<UploadInstance>()
+
+// 主题卡片墙 (Issue 09): 就绪知识库, 游客也可浏览; 点击直达开旅程为 Issue 11
+const topics = ref<Topic[]>([])
 
 const submitText = computed(() => {
   if (uploading.value) return '正在生成…'
@@ -86,6 +95,14 @@ function clearFile() {
 }
 
 onMounted(async () => {
+  // 主题卡片墙: 无条件加载 (游客可见, 加载失败静默隐藏)
+  getTopics()
+    .then((data) => {
+      topics.value = data.topics
+    })
+    .catch(() => {
+      /* 静默: 失败时不展示卡片墙 */
+    })
   if (auth.user) {
     refreshList().catch(() => {
       /* 列表加载失败由空态提示兜底 */
@@ -160,6 +177,23 @@ onMounted(async () => {
         </el-button>
         <p v-if="!auth.user" class="composer-tip">登录后即可创建旅程</p>
       </div>
+    </section>
+
+    <!-- 主题知识库 (Issue 09): 管理员预建, 仅就绪库展示; 点击直达开旅程为 Issue 11 -->
+    <section v-if="topics.length" class="topics" aria-label="主题知识库">
+      <h2 class="section-title">主题知识库</h2>
+      <ul class="topic-grid">
+        <li v-for="t in topics" :key="t.id" class="topic-card">
+          <div class="topic-cover">
+            <img v-if="t.cover" :src="t.cover" :alt="t.name" loading="lazy" />
+            <span v-else class="topic-cover-fallback" aria-hidden="true">
+              {{ t.name[0] }}
+            </span>
+          </div>
+          <h3 class="topic-name">{{ t.name }}</h3>
+          <p class="topic-desc">{{ t.description || '管理员预建主题知识库' }}</p>
+        </li>
+      </ul>
     </section>
 
     <!-- 我的旅程 -->
@@ -332,6 +366,79 @@ onMounted(async () => {
   font-size: 12px;
   color: var(--cp-ink-soft);
   margin: 10px 0 0;
+}
+
+/* ---- 主题知识库 (Issue 09) ---- */
+.topics {
+  margin-top: 36px;
+}
+
+.topic-grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 16px;
+}
+
+.topic-card {
+  background: var(--cp-card);
+  border-radius: var(--cp-radius);
+  box-shadow: var(--cp-shadow);
+  padding: 14px;
+  transition:
+    transform 0.25s ease,
+    box-shadow 0.25s ease;
+}
+
+.topic-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--cp-shadow-hover);
+}
+
+.topic-cover {
+  aspect-ratio: 16 / 9;
+  border-radius: var(--cp-radius-sm);
+  overflow: hidden;
+  margin-bottom: 12px;
+  background: linear-gradient(120deg, var(--cp-primary), var(--cp-accent-lilac));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.topic-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.topic-cover-fallback {
+  color: var(--cp-card);
+  font-size: 34px;
+  font-weight: 800;
+}
+
+.topic-name {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--cp-ink);
+  margin: 0 0 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topic-desc {
+  font-size: 12px;
+  color: var(--cp-ink-soft);
+  margin: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 /* ---- 我的旅程 ---- */

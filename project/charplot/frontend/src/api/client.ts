@@ -464,6 +464,116 @@ export function getReviewReport(journeyId: number): Promise<ReviewReport> {
   return request(`/api/charplot/journeys/${journeyId}/report/`)
 }
 
+// ---- 知识库管理 (Issue 09, PRD C-1~C-4) ----
+
+/** 知识库状态: 草稿 / 索引中 / 已就绪 / 索引失败 / 已下线 (SPEC §6.1). */
+export type KbStatus = 'draft' | 'indexing' | 'ready' | 'failed' | 'offline'
+
+/** 知识库文档 (软删标记 is_deleted, 管理页回收区展示). */
+export interface KbDocument {
+  id: number
+  knowledge_base_id: number
+  title: string
+  filename: string
+  file_size: number
+  is_deleted: boolean
+  deleted_at: string | null
+  created_at: string
+}
+
+/** 知识库列表项 (管理员全部状态 / 普通用户仅就绪). */
+export interface KnowledgeBaseSummary {
+  id: number
+  name: string
+  description: string
+  cover: string
+  status: KbStatus
+  collection_name: string
+  latest_task_id: string
+  error_message: string
+  document_count: number
+  created_at: string
+  updated_at: string
+}
+
+/** 知识库详情 (管理页): documents 有效 / deleted_documents 软删分组. */
+export interface KnowledgeBaseDetail extends KnowledgeBaseSummary {
+  documents: KbDocument[]
+  deleted_documents: KbDocument[]
+}
+
+/** 主题卡片 (用户端, GET /api/charplot/topics/: 仅就绪知识库). */
+export interface Topic {
+  id: number
+  name: string
+  description: string
+  cover: string
+}
+
+/** 知识库列表 (GET /api/charplot/kb/: 双语义, 管理员含全部状态). */
+export function getKnowledgeBases(): Promise<{ kbs: KnowledgeBaseSummary[] }> {
+  return request('/api/charplot/kb/')
+}
+
+/** 知识库详情 + 文档分组 (管理页). */
+export function getKnowledgeBase(id: number): Promise<KnowledgeBaseDetail> {
+  return request(`/api/charplot/kb/${id}/`)
+}
+
+/** 创建知识库 (is_staff): {name, description, cover} → 201 KB. */
+export function createKnowledgeBase(data: {
+  name: string
+  description?: string
+  cover?: string
+}): Promise<KnowledgeBaseSummary> {
+  return request('/api/charplot/kb/', { method: 'POST', body: data })
+}
+
+/** 上传文档 (is_staff, multipart 多文件字段 files, all-or-nothing). */
+export function uploadKbDocuments(
+  kbId: number,
+  files: File[],
+): Promise<{ documents: KbDocument[] }> {
+  const form = new FormData()
+  for (const f of files) form.append('files', f)
+  return requestForm(`/api/charplot/kb/${kbId}/documents/`, form)
+}
+
+/** 软删文档 (可恢复, 磁盘文件保留). */
+export function deleteKbDocument(docId: number): Promise<void> {
+  return request(`/api/charplot/kb/documents/${docId}/`, { method: 'DELETE' })
+}
+
+/** 恢复软删文档. */
+export function restoreKbDocument(docId: number): Promise<KbDocument> {
+  return request(`/api/charplot/kb/documents/${docId}/restore/`, {
+    method: 'POST',
+  })
+}
+
+/** 下线知识库 (仅就绪可下线, 用户端不可见). */
+export function setKbOffline(kbId: number): Promise<KnowledgeBaseSummary> {
+  return request(`/api/charplot/kb/${kbId}/offline/`, { method: 'POST' })
+}
+
+/** 恢复上线 (仅下线状态). */
+export function setKbOnline(kbId: number): Promise<KnowledgeBaseSummary> {
+  return request(`/api/charplot/kb/${kbId}/online/`, { method: 'POST' })
+}
+
+/** 主题卡片 (就绪知识库, 游客可浏览). */
+export function getTopics(): Promise<{ topics: Topic[] }> {
+  return request('/api/charplot/topics/')
+}
+
+/**
+ * 触发索引任务 (POST /ai/kb/index, 全量重建 stub).
+ * 幂等由后端 claim 保证 (索引中/下线/无文档 → 任务直接 done 跳过).
+ */
+export function startKbIndex(kbId: number): Promise<{ task_id: string }> {
+  return request('/ai/kb/index', { method: 'POST', body: { kb_id: kbId } })
+}
+
 /** SSE 管道进度事件 (CONTRACT.md §2). */
 export interface PipelineEvent {
   task_id: string

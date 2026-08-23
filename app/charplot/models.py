@@ -389,6 +389,102 @@ class CharplotQuestion(models.Model):
         return f"charplot_question({self.id}, {self.question_type})"
 
 
+def kb_document_upload_to(instance, filename):
+    """知识库文档存储路径: app/charplot/uploads/kb/.
+
+    与 journey_file_upload_to 同款: 时间戳区分同名文件; 文档创建时
+    knowledge_base_id 已赋值 (Document 在知识库存在后上传), 直接可用.
+    """
+    ext = os.path.splitext(filename)[1]
+    ts = timezone.now().strftime("%Y%m%d%H%M%S")
+    return f"app/charplot/uploads/kb/kb_{instance.knowledge_base_id}_{ts}{ext}"
+
+
+class CharplotKnowledgeBase(models.Model):
+    """知识库 (SPEC §8) - 1 库 1 主题 (Q19), 管理员预建, 用户点击直达开旅程.
+
+    主题字段: 名称 / 描述 / 封面 (cover 存图片 URL, 契约 {name, desc, cover}
+    为 JSON, 避免图片上传的 multipart 复杂度). 状态机 (SPEC §6.1):
+    draft → indexing → ready, failed 可重试, ready 可手动下线 (offline),
+    offline 恢复上线回到 ready. 任何变更触发全量重建 (Q18b): ready 也可
+    重新索引. collection_name 为 Milvus collection 配置预留 (Issue 10),
+    创建时生成, 全量重建沿用同名 collection.
+    """
+
+    class Status(models.TextChoices):
+        DRAFT = "draft", "草稿"
+        INDEXING = "indexing", "索引中"
+        READY = "ready", "已就绪"
+        FAILED = "failed", "索引失败"
+        OFFLINE = "offline", "已下线"
+
+    name = models.CharField(max_length=200, verbose_name="主题名")
+    description = models.TextField(blank=True, verbose_name="描述")
+    cover = models.CharField(max_length=500, blank=True, verbose_name="封面图 URL")
+    status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        default=Status.DRAFT,
+        verbose_name="状态",
+    )
+    collection_name = models.CharField(
+        max_length=128, blank=True, verbose_name="Milvus collection 名称"
+    )
+    # Issue 10 索引时按此名建 collection/入库; 创建时生成 cp_kb_{id}
+    latest_task_id = models.CharField(
+        max_length=64, blank=True, verbose_name="最近索引任务 ID"
+    )
+    error_message = models.TextField(blank=True, verbose_name="失败原因")
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
+    updated_at = models.DateTimeField(auto_now=True, verbose_name="更新时间")
+
+    class Meta:
+        db_table = "charplot_knowledge_base"
+        verbose_name = "CharPlot 知识库"
+        verbose_name_plural = verbose_name
+        ordering = ["-created_at", "id"]
+
+    def __str__(self):
+        return f"charplot_knowledge_base({self.id}, {self.name})"
+
+
+class CharplotKnowledgeBaseDocument(models.Model):
+    """知识库文档 (SPEC §8) - 文件记录, is_deleted 软删标记 (Q18c).
+
+    软删除: 列表隐藏 + 可恢复; Issue 10 检索时 filter 排除 (Django 软删标记
+    + Milvus metadata 有效标记), 重建时物理剔除. 磁盘文件软删后保留,
+    物理删除发生在重建 (Issue 10) 或管理员明确清理时.
+    """
+
+    knowledge_base = models.ForeignKey(
+        CharplotKnowledgeBase,
+        on_delete=models.CASCADE,
+        related_name="documents",
+        verbose_name="知识库",
+    )
+    title = models.CharField(max_length=255, verbose_name="文件名")
+    file = models.FileField(upload_to=kb_document_upload_to, verbose_name="文件")
+    file_size = models.PositiveIntegerField(default=0, verbose_name="文件大小(字节)")
+    is_deleted = models.BooleanField(default=False, verbose_name="是否软删除")
+    deleted_at = models.DateTimeField(null=True, blank=True, verbose_name="软删除时间")
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
+
+    class Meta:
+        db_table = "charplot_knowledge_base_document"
+        verbose_name = "CharPlot 知识库文档"
+        verbose_name_plural = verbose_name
+        ordering = ["id"]
+        indexes = [
+            models.Index(
+                fields=["knowledge_base", "is_deleted"],
+                name="idx_kb_doc_kb_deleted",
+            )
+        ]
+
+    def __str__(self):
+        return f"charplot_kb_document({self.id}, {self.title})"
+
+
 class CharplotReviewReport(models.Model):
     """复盘报告 (SPEC §8) - 通关总结, 公开链接页可分享 (Issue 06).
 

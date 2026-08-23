@@ -58,6 +58,13 @@ const router = createRouter({
       component: () => import('@/views/ReportView.vue'),
       meta: { requiresAuth: true },
     },
+    {
+      // 知识库管理页 (Issue 09): 管理员预建主题知识库 (创建/上传/索引/下线)
+      path: '/admin/kb',
+      name: 'kb-manage',
+      component: () => import('@/views/KBManage.vue'),
+      meta: { requiresAuth: true, requiresStaff: true },
+    },
   ],
 })
 
@@ -72,6 +79,10 @@ router.beforeEach(async (to) => {
   }
   if (to.meta.requiresAuth && !state.user) {
     return { name: 'login', query: { redirect: to.fullPath } }
+  }
+  if (to.meta.requiresStaff && !state.user?.is_staff) {
+    // 普通用户访问管理页: 弹回首页 (后端 IsStaff 仍会拦截直接调 API)
+    return { name: 'home' }
   }
   if (to.meta.guestOnly && state.user) {
     return { name: 'home' }

@@ -10,6 +10,7 @@ import logging
 
 from django.contrib.auth import login, logout
 from django.db import connection
+from django.db.models import Count, Q
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.utils.decorators import method_decorator
@@ -21,27 +22,36 @@ from rest_framework.views import APIView
 
 from .models import (
     CharplotJourney,
+    CharplotKnowledgeBase,
+    CharplotKnowledgeBaseDocument,
     CharplotLevel,
     CharplotProfile,
     CharplotReviewReport,
     CharplotUserEvent,
 )
-from .permissions import IsInternalService
+from .permissions import IsInternalService, IsStaff
 from .serializers import (
     AnswerRequestSerializer,
     CharplotProfileSerializer,
     JourneyCreateSerializer,
     JourneyDetailSerializer,
     JourneyListSerializer,
+    KbCreateSerializer,
+    KbDocumentSerializer,
+    KbDocumentsUploadSerializer,
+    KnowledgeBaseDetailSerializer,
+    KnowledgeBaseListSerializer,
     LevelDetailSerializer,
     LevelListSerializer,
     ReviewReportSerializer,
+    TopicSerializer,
     UserLoginSerializer,
     UserRegisterSerializer,
 )
 from .services import (
     InsufficientCoinsError,
     JourneyGraphError,
+    KnowledgeBaseStateError,
     LevelClearedError,
     LevelFailedError,
     LevelLockedError,
@@ -49,15 +59,25 @@ from .services import (
     LevelNotReadyError,
     build_skill_tree,
     buy_streak_freeze,
+    claim_kb_index,
     claim_level_generation,
     create_journey,
+    create_kb_documents,
+    create_knowledge_base,
     ensure_levels_for_journey,
+    list_ready_kbs,
     mark_journey_failed,
+    mark_kb_index_failed,
     mark_level_generation_failed,
     record_event,
     restart_level,
+    restore_kb_document,
     save_generated_questions,
     save_journey_graph,
+    save_kb_index_success,
+    set_kb_offline,
+    set_kb_online,
+    soft_delete_kb_document,
     submit_answer,
 )
 
@@ -562,4 +582,200 @@ class LevelGenerationFailedView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
         mark_level_generation_failed(level, task_id, error_message)
+        return Response({"status": "failed"})
+
+
+# ---------------------------------------------------------------------------
+# 知识库 (Issue 09, PRD C-1~C-4, DESIGN §4.1)
+# ---------------------------------------------------------------------------
+
+
+class KnowledgeBaseListView(APIView):
+    """知识库列表与创建 (DESIGN §4.1, 双语义单端点).
+
+    GET: 管理员含全部状态 / 普通用户仅就绪 (用户端另有 /topics/ 主入口);
+    POST: 管理员创建 (非 staff 403, 验收标准 1). 列表 document_count
+    用 annotate 条件计数防 N+1.
+    """
+
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+
+    def get(self, request):
+        if request.user.is_staff:
+            qs = CharplotKnowledgeBase.objects.all().annotate(
+                document_count=Count("documents", filter=Q(documents__is_deleted=False))
+            )
+        else:
+            qs = list_ready_kbs().annotate(
+                document_count=Count("documents", filter=Q(documents__is_deleted=False))
+            )
+        return Response({"kbs": KnowledgeBaseListSerializer(qs, many=True).data})
+
+    def post(self, request):
+        if not request.user.is_staff:
+            return Response(
+                {"detail": "仅管理员可创建知识库"}, status=status.HTTP_403_FORBIDDEN
+            )
+        serializer = KbCreateSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        data = serializer.validated_data
+        kb = create_knowledge_base(
+            name=data["name"],
+            description=data.get("description", ""),
+            cover=data.get("cover", ""),
+        )
+        return Response(
+            KnowledgeBaseListSerializer(kb).data, status=status.HTTP_201_CREATED
+        )
+
+
+class KnowledgeBaseDetailView(APIView):
+    """知识库详情 + 文档分组 (管理页, is_staff 专属)."""
+
+    permission_classes = [IsStaff]
+
+    def get(self, request, pk):
+        kb = get_object_or_404(CharplotKnowledgeBase, pk=pk)
+        return Response(KnowledgeBaseDetailSerializer(kb).data)
+
+
+class KnowledgeBaseDocumentsView(APIView):
+    """上传文档 (is_staff, multipart 多文件字段 files).
+
+    all-or-nothing: 任一文件格式非法 → 整批 400 零落库 (serializer
+    逐文件校验 + 服务层事务防御).
+    """
+
+    permission_classes = [IsStaff]
+
+    def post(self, request, pk):
+        kb = get_object_or_404(CharplotKnowledgeBase, pk=pk)
+        files = list(request.FILES.getlist("files"))
+        serializer = KbDocumentsUploadSerializer(data={"files": files})
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        documents = create_kb_documents(kb, serializer.validated_data["files"])
+        return Response(
+            {"documents": KbDocumentSerializer(documents, many=True).data},
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class KnowledgeBaseDocumentView(APIView):
+    """软删文档 (is_staff): 列表隐藏可恢复, 磁盘文件保留 (Q18c)."""
+
+    permission_classes = [IsStaff]
+
+    def delete(self, request, pk):
+        document = get_object_or_404(CharplotKnowledgeBaseDocument, pk=pk)
+        soft_delete_kb_document(document)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class KnowledgeBaseDocumentRestoreView(APIView):
+    """恢复软删文档 (is_staff)."""
+
+    permission_classes = [IsStaff]
+
+    def post(self, request, pk):
+        document = get_object_or_404(CharplotKnowledgeBaseDocument, pk=pk)
+        restore_kb_document(document)
+        return Response(KbDocumentSerializer(document).data)
+
+
+class KnowledgeBaseOfflineView(APIView):
+    """下线知识库 (is_staff): 仅 ready → offline, 用户端不可见."""
+
+    permission_classes = [IsStaff]
+
+    def post(self, request, pk):
+        kb = get_object_or_404(CharplotKnowledgeBase, pk=pk)
+        try:
+            set_kb_offline(kb)
+        except KnowledgeBaseStateError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(KnowledgeBaseListSerializer(kb).data)
+
+
+class KnowledgeBaseOnlineView(APIView):
+    """恢复上线 (is_staff): 仅 offline → ready."""
+
+    permission_classes = [IsStaff]
+
+    def post(self, request, pk):
+        kb = get_object_or_404(CharplotKnowledgeBase, pk=pk)
+        try:
+            set_kb_online(kb)
+        except KnowledgeBaseStateError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(KnowledgeBaseListSerializer(kb).data)
+
+
+class TopicsView(APIView):
+    """主题卡片 (DESIGN §4.1 GET /api/topics): 就绪知识库, 游客可浏览 (PRD A-1)."""
+
+    permission_classes = [AllowAny]
+    pagination_class = None
+
+    def get(self, request):
+        return Response({"topics": TopicSerializer(list_ready_kbs(), many=True).data})
+
+
+class KnowledgeBaseIndexClaimView(APIView):
+    """索引任务抢占 (内部端点, FastAPI → Django, CONTRACT.md §6).
+
+    原子置 indexing + 返回有效文档清单 (Issue 10 索引输入, 含 extension
+    供解析器选型); 拒绝理由 indexing/offline/no_documents 幂等跳过.
+    """
+
+    authentication_classes = []
+    permission_classes = [IsInternalService]
+
+    def post(self, request, pk):
+        kb = get_object_or_404(CharplotKnowledgeBase, pk=pk)
+        task_id = (request.data.get("task_id") or "").strip()
+        if not task_id:
+            return Response(
+                {"detail": "缺少 task_id"}, status=status.HTTP_400_BAD_REQUEST
+            )
+        claimed, payload = claim_kb_index(kb, task_id)
+        if claimed:
+            return Response({"claimed": True, **payload})
+        return Response({"claimed": False, **payload})
+
+
+class KnowledgeBaseIndexSaveView(APIView):
+    """索引完成 (内部端点): → ready."""
+
+    authentication_classes = []
+    permission_classes = [IsInternalService]
+
+    def post(self, request, pk):
+        kb = get_object_or_404(CharplotKnowledgeBase, pk=pk)
+        task_id = (request.data.get("task_id") or "").strip()
+        if not task_id:
+            return Response(
+                {"detail": "缺少 task_id"}, status=status.HTTP_400_BAD_REQUEST
+            )
+        save_kb_index_success(kb, task_id)
+        return Response({"status": "ready"})
+
+
+class KnowledgeBaseIndexFailedView(APIView):
+    """索引失败 (内部端点): → failed + error_message, 前端可重试."""
+
+    authentication_classes = []
+    permission_classes = [IsInternalService]
+
+    def post(self, request, pk):
+        kb = get_object_or_404(CharplotKnowledgeBase, pk=pk)
+        task_id = (request.data.get("task_id") or "").strip()
+        error_message = (request.data.get("error_message") or "").strip()
+        if not task_id:
+            return Response(
+                {"detail": "缺少 task_id"}, status=status.HTTP_400_BAD_REQUEST
+            )
+        mark_kb_index_failed(kb, task_id, error_message)
         return Response({"status": "failed"})

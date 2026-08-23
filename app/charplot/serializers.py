@@ -17,6 +17,8 @@ from rest_framework import serializers
 from .models import (
     CharplotChapter,
     CharplotJourney,
+    CharplotKnowledgeBase,
+    CharplotKnowledgeBaseDocument,
     CharplotKnowledgePoint,
     CharplotLevel,
     CharplotProfile,
@@ -28,6 +30,7 @@ from .services import (
     get_streak_loss_warning,
     level_locked,
     level_status,
+    validate_kb_document_file,
 )
 
 User = get_user_model()
@@ -415,3 +418,141 @@ class ReviewReportSerializer(serializers.ModelSerializer):
 
     def get_share_url(self, obj):
         return f"/r/{obj.slug}/"
+
+
+# ---------------------------------------------------------------------------
+# 知识库 (Issue 09, PRD C-1~C-4)
+# ---------------------------------------------------------------------------
+
+
+class KbCreateSerializer(serializers.Serializer):
+    """创建知识库 (DESIGN §4.1 POST /api/kb): {name, desc, cover} JSON."""
+
+    name = serializers.CharField(max_length=200)
+    description = serializers.CharField(required=False, allow_blank=True, default="")
+    cover = serializers.CharField(required=False, allow_blank=True, default="")
+
+    def validate_cover(self, value):
+        value = (value or "").strip()
+        if value:
+            URLValidator()(value)  # 非法 URL 抛 ValidationError
+        return value
+
+
+class KbDocumentsUploadSerializer(serializers.Serializer):
+    """文档上传 (multipart, 字段 files 多文件): 逐文件格式校验 (all-or-nothing).
+
+    HTML multipart 解析出的 QueryDict 不能直接喂 ListField, 视图需显式
+    构造 data={"files": list(request.FILES.getlist("files"))}.
+    """
+
+    files = serializers.ListField(
+        child=serializers.FileField(), min_length=1, allow_empty=False
+    )
+
+    def validate_files(self, value):
+        for uploaded_file in value:
+            try:
+                validate_kb_document_file(uploaded_file)
+            except ValueError as exc:
+                raise serializers.ValidationError(str(exc)) from exc
+        return value
+
+
+class KbDocumentSerializer(serializers.ModelSerializer):
+    """文档项: filename 取存储路径 basename (磁盘路径对前端无意义)."""
+
+    knowledge_base_id = serializers.IntegerField(
+        source="knowledge_base.id", read_only=True
+    )
+    filename = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CharplotKnowledgeBaseDocument
+        fields = [
+            "id",
+            "knowledge_base_id",
+            "title",
+            "filename",
+            "file_size",
+            "is_deleted",
+            "deleted_at",
+            "created_at",
+        ]
+
+    def get_filename(self, obj):
+        return obj.file.name.rsplit("/", 1)[-1]
+
+
+class KnowledgeBaseListSerializer(serializers.ModelSerializer):
+    """知识库列表项 (管理员全部状态 / 用户端仅就绪, 视图按身份过滤).
+
+    document_count 由视图 annotate 注入 (有效文档数, 防 N+1).
+    """
+
+    document_count = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = CharplotKnowledgeBase
+        fields = [
+            "id",
+            "name",
+            "description",
+            "cover",
+            "status",
+            "collection_name",
+            "latest_task_id",
+            "error_message",
+            "document_count",
+            "created_at",
+            "updated_at",
+        ]
+
+
+class KnowledgeBaseDetailSerializer(serializers.ModelSerializer):
+    """知识库详情 (管理页): documents 按有效/软删分组 (恢复 UX 用).
+
+    单对象两次小查询可接受; 软删文档标记 is_deleted, 管理列表隐藏于
+    有效区、展示于回收区 (验收标准 3).
+    """
+
+    document_count = serializers.SerializerMethodField()
+    documents = serializers.SerializerMethodField()
+    deleted_documents = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CharplotKnowledgeBase
+        fields = [
+            "id",
+            "name",
+            "description",
+            "cover",
+            "status",
+            "collection_name",
+            "latest_task_id",
+            "error_message",
+            "document_count",
+            "documents",
+            "deleted_documents",
+            "created_at",
+            "updated_at",
+        ]
+
+    def get_document_count(self, obj):
+        return obj.documents.filter(is_deleted=False).count()
+
+    def get_documents(self, obj):
+        qs = obj.documents.filter(is_deleted=False).order_by("id")
+        return KbDocumentSerializer(qs, many=True).data
+
+    def get_deleted_documents(self, obj):
+        qs = obj.documents.filter(is_deleted=True).order_by("-deleted_at", "id")
+        return KbDocumentSerializer(qs, many=True).data
+
+
+class TopicSerializer(serializers.ModelSerializer):
+    """主题卡片 (用户端, GET /api/charplot/topics/): 仅就绪知识库."""
+
+    class Meta:
+        model = CharplotKnowledgeBase
+        fields = ["id", "name", "description", "cover"]

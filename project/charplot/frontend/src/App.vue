@@ -71,6 +71,16 @@ async function onLogout() {
               <span aria-hidden="true">🪙</span>{{ state.profile?.coins ?? 0 }}
             </span>
           </div>
+          <!-- 管理员入口 (Issue 09): 知识库管理页, 仅 is_staff 显示 -->
+          <el-button
+            v-if="state.user.is_staff"
+            size="small"
+            round
+            plain
+            @click="router.push('/admin/kb')"
+          >
+            知识库管理
+          </el-button>
           <el-button size="small" round @click="router.push('/profile')">
             {{ state.user.username }}
           </el-button>

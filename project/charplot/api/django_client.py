@@ -172,3 +172,65 @@ async def mark_level_generation_failed(
             level_seq,
             exc,
         )
+
+
+async def claim_kb_index(kb_id: int, task_id: str) -> tuple[bool, dict]:
+    """索引任务抢占 (Issue 09, 内部端点): 原子置 indexing 并取回文档清单.
+
+    返回 (claimed, payload): claimed=True 时 payload["documents"] 为有效
+    文档清单 (id/title/filename/file_size/extension, Issue 10 索引输入);
+    claimed=False 时 payload 为 {"reason": "indexing"|"offline"|
+    "no_documents", "task_id"?} (幂等跳过).
+    """
+    path = f"/api/charplot/kb/{kb_id}/index-claim/"
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+            resp = await client.post(
+                f"{config.DJANGO_API_BASE}{path}",
+                json={"task_id": task_id},
+                headers=_internal_headers(),
+            )
+    except httpx.HTTPError as exc:
+        raise RuntimeError(f"索引抢占失败 (网络): {exc}") from exc
+    if resp.status_code != 200:
+        detail = resp.text[:200] if resp.text else resp.status_code
+        raise RuntimeError(f"索引抢占失败 ({resp.status_code}): {detail}")
+    body = resp.json()
+    claimed = bool(body.get("claimed"))
+    return claimed, body
+
+
+async def save_kb_index_success(kb_id: int, task_id: str) -> None:
+    """索引完成落库, transient 失败重试 1 次 (间隔 1s); 4xx 抛异常不重试."""
+    path = f"/api/charplot/kb/{kb_id}/index-save/"
+    last_exc: Exception | None = None
+    for attempt in range(2):
+        try:
+            resp = await _post_internal(path, {"task_id": task_id})
+        except httpx.HTTPError as exc:
+            last_exc = exc
+            await asyncio.sleep(1.0)
+            continue
+        if 400 <= resp.status_code < 500:
+            raise RuntimeError(
+                f"索引完成落库被拒绝 ({resp.status_code}): {resp.text[:200]}"
+            )
+        if resp.status_code >= 500:
+            last_exc = RuntimeError(f"Django 服务错误 ({resp.status_code})")
+            await asyncio.sleep(1.0)
+            continue
+        if resp.status_code == 200:
+            return
+        last_exc = RuntimeError(f"意外状态码 {resp.status_code}")
+    raise RuntimeError(f"索引完成落库失败: {last_exc}")
+
+
+async def mark_kb_index_failed(kb_id: int, task_id: str, error_message: str) -> None:
+    """索引失败标记 (best-effort): Django 不可达时静默, 前端靠 SSE error 兜底."""
+    try:
+        path = f"/api/charplot/kb/{kb_id}/index-failed/"
+        await _post_internal(
+            path, {"task_id": task_id, "error_message": error_message[:1000]}
+        )
+    except Exception as exc:
+        logger.warning("mark_kb_index_failed 调用失败 (kb=%s): %s", kb_id, exc)

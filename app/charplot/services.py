@@ -19,6 +19,8 @@ from .models import (
     CharplotAttempt,
     CharplotChapter,
     CharplotJourney,
+    CharplotKnowledgeBase,
+    CharplotKnowledgeBaseDocument,
     CharplotKnowledgePoint,
     CharplotLevel,
     CharplotProfile,
@@ -54,6 +56,13 @@ BOSS_QUESTION_COUNT = 8  # Boss 关题数 (= LEVEL_QUESTION_MAX)
 REVIEW_RATIO = 0.2  # 间隔复习混入比例 (Top 20% 历史易错知识点)
 REVIEW_NEVER_DAYS = 30  # 从未复习按 30 天计 (时间衰减上界)
 GENERATION_STALE_MINUTES = 10  # 生成中状态陈旧超时 (任务丢失后可重新抢占)
+
+# ---- 知识库 (Issue 09, SPEC §6.1 / §8, Q18b/c) ----
+KB_ALLOWED_EXTENSIONS = frozenset({".pdf", ".docx", ".pptx", ".md", ".txt", ".html"})
+# 文档格式白名单 (与 PRD B-1 输入形态一致, 解析器按扩展名选型于 Issue 10)
+KB_MAX_FILE_SIZE_MB = 20  # 单文档大小上限
+KB_COLLECTION_PREFIX = "cp_kb_"  # Milvus collection 命名前缀 (创建时生成)
+KB_INDEX_STALE_MINUTES = 10  # 索引中状态陈旧超时 (任务丢失后可重新抢占)
 
 
 class StreakFreezeError(Exception):
@@ -1352,3 +1361,181 @@ def create_review_report(journey):
         report.og_image = og_image
         report.save(update_fields=["og_image", "updated_at"])
     return report
+
+
+# ---------------------------------------------------------------------------
+# 知识库 (Issue 09, SPEC §6.1 / §8, PRD C-1~C-4)
+# ---------------------------------------------------------------------------
+
+
+class KnowledgeBaseError(ValueError):
+    """知识库业务异常基类 (中文 detail, 视图转 400)."""
+
+
+class KnowledgeBaseStateError(KnowledgeBaseError):
+    """状态机非法流转 (如下线仅允许 ready 进入)."""
+
+
+def validate_kb_document_file(uploaded_file):
+    """文档格式校验 (扩展名白名单 + 大小上限), 非法抛 ValueError.
+
+    不信任 content_type (客户端可伪造), 以扩展名为准; Issue 10 解析器
+    同样按扩展名选型. 返回规范化 basename (含扩展名, 供 title 展示).
+    """
+    filename = getattr(uploaded_file, "name", "") or ""
+    ext = os.path.splitext(filename)[1].lower()
+    if ext not in KB_ALLOWED_EXTENSIONS:
+        allowed = " / ".join(sorted(KB_ALLOWED_EXTENSIONS))
+        raise ValueError(f"不支持的文档格式: {filename} (仅支持 {allowed})")
+    size = getattr(uploaded_file, "size", 0) or 0
+    if size > KB_MAX_FILE_SIZE_MB * 1024 * 1024:
+        raise ValueError(
+            f"文档过大: {filename} ({size // 1024}KB, 上限 {KB_MAX_FILE_SIZE_MB}MB)"
+        )
+    return os.path.basename(filename)
+
+
+def create_knowledge_base(name, description="", cover=""):
+    """创建知识库 (状态 draft) + 生成 Milvus collection 名称.
+
+    collection_name 依赖 pk, 分两步写; 全量重建沿用同名 collection
+    (Q18b), 名称对外不可变.
+    """
+    kb = CharplotKnowledgeBase.objects.create(
+        name=name, description=description, cover=cover
+    )
+    kb.collection_name = f"{KB_COLLECTION_PREFIX}{kb.id}"
+    kb.save(update_fields=["collection_name", "updated_at"])
+    return kb
+
+
+def create_kb_documents(kb, files):
+    """批量落库文档 (all-or-nothing): 任一文件非法 → 整体回滚零落库.
+
+    serializer 已逐文件校验, 此处防御性复校验 (权威校验在服务层的既定
+    模式, 同 validate_graph); 软删文档不参与 (过滤于调用方).
+    """
+    documents = []
+    with transaction.atomic():
+        for uploaded_file in files:
+            validate_kb_document_file(uploaded_file)  # 非法抛 ValueError
+            title = os.path.basename(uploaded_file.name)
+            document = CharplotKnowledgeBaseDocument.objects.create(
+                knowledge_base=kb,
+                title=title,
+                file=uploaded_file,
+                file_size=uploaded_file.size,
+            )
+            documents.append(document)
+    return documents
+
+
+def soft_delete_kb_document(document):
+    """软删文档: is_deleted + deleted_at (幂等, 已删再删直接返回)."""
+    if not document.is_deleted:
+        document.is_deleted = True
+        document.deleted_at = timezone.now()
+        document.save(update_fields=["is_deleted", "deleted_at"])
+    return document
+
+
+def restore_kb_document(document):
+    """恢复软删文档 (幂等, 未删直接返回)."""
+    if document.is_deleted:
+        document.is_deleted = False
+        document.deleted_at = None
+        document.save(update_fields=["is_deleted", "deleted_at"])
+    return document
+
+
+def set_kb_offline(kb):
+    """下线: 仅 ready → offline (用户端不可见); 其余状态拒绝."""
+    if kb.status != CharplotKnowledgeBase.Status.READY:
+        raise KnowledgeBaseStateError(
+            f"仅就绪知识库可下线 (当前状态: {kb.get_status_display()})"
+        )
+    kb.status = CharplotKnowledgeBase.Status.OFFLINE
+    kb.save(update_fields=["status", "updated_at"])
+    return kb
+
+
+def set_kb_online(kb):
+    """恢复上线: 仅 offline → ready; 其余状态拒绝."""
+    if kb.status != CharplotKnowledgeBase.Status.OFFLINE:
+        raise KnowledgeBaseStateError(
+            f"仅下线知识库可恢复上线 (当前状态: {kb.get_status_display()})"
+        )
+    kb.status = CharplotKnowledgeBase.Status.READY
+    kb.save(update_fields=["status", "updated_at"])
+    return kb
+
+
+def claim_kb_index(kb, task_id):
+    """原子抢占索引任务 (select_for_update, 对齐 claim_level_generation).
+
+    返回 (claimed, payload): claimed=True 时 payload 为文档清单 dict
+    ({"documents": [...]}, Issue 10 索引输入); 否则 payload 为拒绝理由:
+    {"reason": "indexing"|"offline"|"no_documents", "task_id"?}.
+    状态机 (SPEC §6.1): draft/failed/ready → indexing (ready 为全量重建);
+    indexing 非陈旧拒绝 (并发幂等), 陈旧 (任务丢失) 允许重新抢占;
+    offline 拒绝 (需先恢复上线); 无有效文档拒绝 (防止"就绪但零内容").
+    """
+    with transaction.atomic():
+        locked = CharplotKnowledgeBase.objects.select_for_update().get(pk=kb.pk)
+        if locked.status == CharplotKnowledgeBase.Status.INDEXING:
+            stale = timezone.now() - locked.updated_at >= timedelta(
+                minutes=KB_INDEX_STALE_MINUTES
+            )
+            if not stale:
+                return False, {
+                    "reason": "indexing",
+                    "task_id": locked.latest_task_id,
+                }
+        elif locked.status == CharplotKnowledgeBase.Status.OFFLINE:
+            return False, {"reason": "offline"}
+        documents = list(locked.documents.filter(is_deleted=False).order_by("id"))
+        if not documents:
+            return False, {"reason": "no_documents"}
+        locked.status = CharplotKnowledgeBase.Status.INDEXING
+        locked.latest_task_id = task_id
+        locked.error_message = ""
+        locked.save(
+            update_fields=["status", "latest_task_id", "error_message", "updated_at"]
+        )
+        return True, {
+            "documents": [
+                {
+                    "id": doc.id,
+                    "title": doc.title,
+                    "filename": doc.title,  # 原始文件名 (存储名带前缀, 对解析器无意义)
+                    "file_size": doc.file_size,
+                    "extension": os.path.splitext(doc.title)[1].lstrip(".").lower(),
+                }
+                for doc in documents
+            ]
+        }
+
+
+def save_kb_index_success(kb, task_id):
+    """索引完成: indexing → ready, 记录 task_id, 清空失败原因."""
+    kb.status = CharplotKnowledgeBase.Status.READY
+    kb.latest_task_id = task_id
+    kb.error_message = ""
+    kb.save(update_fields=["status", "latest_task_id", "error_message", "updated_at"])
+    return kb
+
+
+def mark_kb_index_failed(kb, task_id, error_message):
+    """索引失败: → failed + error_message (截断, 供管理页重试提示)."""
+    kb.status = CharplotKnowledgeBase.Status.FAILED
+    kb.latest_task_id = task_id
+    kb.error_message = (error_message or "")[:1000]
+    kb.save(update_fields=["status", "latest_task_id", "error_message", "updated_at"])
+    return kb
+
+
+def list_ready_kbs():
+    """就绪知识库 (用户端主题列表数据源, 仅 ready 展示)."""
+    return CharplotKnowledgeBase.objects.filter(
+        status=CharplotKnowledgeBase.Status.READY
+    ).order_by("-created_at", "id")

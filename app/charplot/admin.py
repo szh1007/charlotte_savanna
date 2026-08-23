@@ -4,6 +4,8 @@ from .models import (
     CharplotAttempt,
     CharplotChapter,
     CharplotJourney,
+    CharplotKnowledgeBase,
+    CharplotKnowledgeBaseDocument,
     CharplotKnowledgePoint,
     CharplotLevel,
     CharplotProfile,
@@ -125,3 +127,37 @@ class CharplotAttemptAdmin(admin.ModelAdmin):
         "user_answer",
         "duration",
     )
+
+
+@admin.register(CharplotKnowledgeBase)
+class CharplotKnowledgeBaseAdmin(admin.ModelAdmin):
+    """知识库后台管理 (Issue 09, 便于人工验证状态机与 collection 配置)."""
+
+    list_display = (
+        "id",
+        "name",
+        "status",
+        "collection_name",
+        "latest_task_id",
+        "created_at",
+    )
+    list_filter = ("status",)
+    search_fields = ("name",)
+    readonly_fields = ("collection_name",)  # 创建时生成, 禁止手动修改
+
+
+@admin.register(CharplotKnowledgeBaseDocument)
+class CharplotKnowledgeBaseDocumentAdmin(admin.ModelAdmin):
+    """知识库文档后台管理 (Issue 09): 软删标记便于人工验证恢复."""
+
+    list_display = (
+        "id",
+        "knowledge_base",
+        "title",
+        "file_size",
+        "is_deleted",
+        "created_at",
+    )
+    list_filter = ("is_deleted",)
+    list_select_related = ("knowledge_base",)
+    search_fields = ("title", "knowledge_base__name")

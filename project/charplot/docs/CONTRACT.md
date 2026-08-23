@@ -72,3 +72,49 @@
 - file 输入：本票仅保存文件不解析（`source_file` 落盘 `app/charplot/uploads/`）；07 需经 Django 内部端点取文件内容（本票不实现）
 - 08：题目 JSON 契约沿用本票 `version` 机制（只增不改）
 - 技能树（Issue 04）/ 关卡（Issue 05）锚定 DB 主键，不消费管道临时 id
+
+## 6. 知识库契约（Issue 09）
+
+> Issue 10（Milvus 真实索引/检索）的对接依据。只增不改，不 bump v1。
+
+### 6.1 表结构与状态机
+
+- `charplot_knowledge_base`：`name`（主题名）/ `description` / `cover`（图片 URL 字符串）/ `status` / `collection_name`（创建时生成 `cp_kb_{id}`，全量重建沿用）/ `latest_task_id` / `error_message`
+- `charplot_knowledge_base_document`：`knowledge_base` FK / `title`（文件名）/ `file` / `file_size`（字节）/ `is_deleted`（软删标记）/ `deleted_at` / `created_at`
+- 状态机：`draft → indexing → ready`；`failed` 可重试（重新 claim）；`ready` 可全量重建（任何变更触发，Q18b）与手动下线（`offline`）；`offline` 恢复上线回到 `ready`；`offline` 禁止触发索引（需先上线）
+- 格式白名单：`pdf / docx / pptx / md / txt / html`（扩展名判定，不信任 MIME）；单文档 ≤ 20MB
+
+### 6.2 管理端点（Django `/api/charplot/`，is_staff，普通用户 403）
+
+- `POST /kb/` `{name, description?, cover?}` → 201 KB（status=draft）
+- `GET /kb/` → `{kbs: [...]}`（**双语义**：管理员含全部状态 / 普通用户仅就绪）
+- `GET /kb/{id}/` → KB 详情，`documents`（有效）与 `deleted_documents`（软删，回收区）分组
+- `POST /kb/{id}/documents/`（multipart，字段 `files` 多文件）→ 201 `{documents: [...]}`；任一文件非法 → 整批 400 零落库（all-or-nothing）
+- `DELETE /kb/documents/{id}/` → 204 软删（可恢复，磁盘文件保留）
+- `POST /kb/documents/{id}/restore/` → 200 恢复
+- `POST /kb/{id}/offline/` / `POST /kb/{id}/online/` → 200 KB；非法流转 → 400 中文 detail
+
+### 6.3 用户端点
+
+- `GET /topics/`（AllowAny，游客可浏览）→ `{topics: [{id, name, description, cover}]}`，**仅就绪知识库**（draft/indexing/failed/offline 不可见）
+- 触发索引：**前端直调 `POST /ai/kb/index`**（DESIGN §4.1 的 Django 端 `POST /api/kb/{id}/reindex` 由该路径实现——与 Issue 08 出题触发同构，仓库无 Django→FastAPI 反向调用先例，不引入反向 URL 配置）
+
+### 6.4 索引内部端点（FastAPI → Django，X-Internal-Token 认证）
+
+- `POST /api/charplot/kb/{id}/index-claim/` `{task_id}` → 抢占 + 索引输入：
+  - `200 {claimed: true, documents: [{id, title, filename, file_size, extension}]}`——仅**有效**文档（is_deleted=False，按 id 排序）；`extension`（去点小写）供 Issue 10 解析器按格式选型
+  - `200 {claimed: false, reason: "indexing"|"offline"|"no_documents", task_id?}`（幂等跳过；indexing 超过 `KB_INDEX_STALE_MINUTES`（10 分钟）视为陈旧可重新抢占；无有效文档拒绝——防止"就绪但零内容"）
+- `POST /api/charplot/kb/{id}/index-save/` `{task_id}` → `200 {status: "ready"}`（kb → ready，清空 error_message）
+- `POST /api/charplot/kb/{id}/index-failed/` `{task_id, error_message}` → `200 {status: "failed"}`（kb → failed，管理页「失败 · 重试」）
+
+### 6.5 索引任务（FastAPI `/ai/kb/index`）
+
+- `POST /ai/kb/index` `{kb_id}` → `{task_id}`；`GET /ai/tasks/{id}` 返回 `task_type: "kb-index"`
+- 阶段与进度：`parsing(15)` → 每文档交替 `chunking → embedding`（进度 40→85 逐文档单调递增, 流水线语义）→ `indexing(90) → done(100)`；事件名统一 `pipeline-progress`（DESIGN §4.2：不同任务类型不同 stage 列表）
+- 失败语义：任务级失败 → `mark_kb_index_failed`（kb → failed），前端「重试」= 重新 POST `/ai/kb/index`
+- 本票为 **stub 索引**（仅状态流转 + 假进度，不解析文档）；进度模拟默认零延迟，演示可设 `CHARPLOT_KB_STUB_STEP_SLEEP`（秒）
+
+### 6.6 软删与检索过滤（Issue 10 扩展位）
+
+- 软删文档检索立即不命中：Django `is_deleted` 标记 + Milvus 向量 metadata 有效标记，检索时 filter 排除（Q18c）；重建（全量）时物理剔除
+- 文档内容获取（Issue 10 解析器输入）：`GET /api/charplot/kb/documents/{id}/content/`（内部端点，返回 `{filename, content_base64}`，与 §5 `journey content` 同构）——**本票不实现**，为 Issue 10 预留契约

@@ -18,6 +18,8 @@ from redis.asyncio import Redis
 # .env 加载由 api/config.py 模块顶部完成 (首个被 import 的配置模块), 本模块不重复
 from . import tasks as task_system
 from .schemas import (
+    KbIndexRequest,
+    KbIndexResponse,
     LevelGenerateRequest,
     LevelGenerateResponse,
     PipelineRequest,
@@ -85,6 +87,17 @@ async def generate_level_questions(req: LevelGenerateRequest):
         req.journey_id, req.level_seq
     )
     return LevelGenerateResponse(task_id=task_id)
+
+
+@app.post("/ai/kb/index", response_model=KbIndexResponse)
+async def start_kb_index(req: KbIndexRequest):
+    """知识库索引任务 (DESIGN §4.2 POST /ai/kb/index): 创建异步任务.
+
+    stub 索引 (Issue 09): 状态流转 + 假进度; 幂等/拒绝理由由 Django 侧
+    claim 保证 (索引中/下线/无文档 → 任务直接 done 跳过, 前端可刷新).
+    """
+    task_id = await task_system.create_kb_index_task(req.kb_id)
+    return KbIndexResponse(task_id=task_id)
 
 
 @app.get("/ai/tasks/{task_id}", response_model=TaskStatusOut)

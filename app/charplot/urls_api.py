@@ -8,6 +8,16 @@ from .views_api import (
     JourneyListView,
     JourneyReportView,
     JourneyStatusView,
+    KnowledgeBaseDetailView,
+    KnowledgeBaseDocumentRestoreView,
+    KnowledgeBaseDocumentsView,
+    KnowledgeBaseDocumentView,
+    KnowledgeBaseIndexClaimView,
+    KnowledgeBaseIndexFailedView,
+    KnowledgeBaseIndexSaveView,
+    KnowledgeBaseListView,
+    KnowledgeBaseOfflineView,
+    KnowledgeBaseOnlineView,
     LevelAnswerView,
     LevelDetailView,
     LevelGenerationClaimView,
@@ -22,6 +32,7 @@ from .views_api import (
     SessionView,
     SkillTreeView,
     StreakFreezeView,
+    TopicsView,
 )
 
 app_name = "charplot_api"
@@ -79,5 +90,42 @@ urlpatterns = [
         "journeys/<int:pk>/level-generation/failed/",
         LevelGenerationFailedView.as_view(),
         name="level-generation-failed",
+    ),
+    # 知识库 (Issue 09, PRD C-1~C-4)
+    path("kb/", KnowledgeBaseListView.as_view(), name="kb-list"),
+    path("kb/<int:pk>/", KnowledgeBaseDetailView.as_view(), name="kb-detail"),
+    path(
+        "kb/<int:pk>/documents/",
+        KnowledgeBaseDocumentsView.as_view(),
+        name="kb-documents",
+    ),
+    path(
+        "kb/documents/<int:pk>/",
+        KnowledgeBaseDocumentView.as_view(),
+        name="kb-document",
+    ),
+    path(
+        "kb/documents/<int:pk>/restore/",
+        KnowledgeBaseDocumentRestoreView.as_view(),
+        name="kb-document-restore",
+    ),
+    path("kb/<int:pk>/offline/", KnowledgeBaseOfflineView.as_view(), name="kb-offline"),
+    path("kb/<int:pk>/online/", KnowledgeBaseOnlineView.as_view(), name="kb-online"),
+    path("topics/", TopicsView.as_view(), name="topics"),
+    # 索引任务内部端点 (FastAPI → Django, X-Internal-Token 认证)
+    path(
+        "kb/<int:pk>/index-claim/",
+        KnowledgeBaseIndexClaimView.as_view(),
+        name="kb-index-claim",
+    ),
+    path(
+        "kb/<int:pk>/index-save/",
+        KnowledgeBaseIndexSaveView.as_view(),
+        name="kb-index-save",
+    ),
+    path(
+        "kb/<int:pk>/index-failed/",
+        KnowledgeBaseIndexFailedView.as_view(),
+        name="kb-index-failed",
     ),
 ]

@@ -42,6 +42,18 @@ class LevelGenerateResponse(BaseModel):
     task_id: str
 
 
+class KbIndexRequest(BaseModel):
+    """知识库索引任务 (DESIGN §4.2 POST /ai/kb/index): 全量重建."""
+
+    kb_id: int
+
+
+class KbIndexResponse(BaseModel):
+    """索引任务创建结果 (幂等/拒绝理由由 SSE 事件与知识库状态反映)."""
+
+    task_id: str
+
+
 class TaskStatusOut(BaseModel):
     """任务状态 (DESIGN §4.2): {status, stage, progress, error_message?}.
 
