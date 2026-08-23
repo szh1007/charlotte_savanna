@@ -30,6 +30,20 @@ const router = createRouter({
       component: () => import('@/views/JourneyDetail.vue'),
       meta: { requiresAuth: true },
     },
+    {
+      // 闯关地图 (Issue 04): 技能树可视化 + 点亮状态 + 关卡入口
+      path: '/journeys/:id/map',
+      name: 'journey-map',
+      component: () => import('@/views/SkillTreeMap.vue'),
+      meta: { requiresAuth: true },
+    },
+    {
+      // 关卡入口 (Issue 04 占位 → Issue 05 答题页)
+      path: '/journeys/:id/levels',
+      name: 'level-list',
+      component: () => import('@/views/LevelList.vue'),
+      meta: { requiresAuth: true },
+    },
   ],
 })
 

@@ -281,3 +281,62 @@ def mark_journey_failed(journey, task_id, error_message):
     journey.save(
         update_fields=["status", "latest_task_id", "error_message", "updated_at"]
     )
+
+
+# ---------------------------------------------------------------------------
+# 技能树 (Issue 04)
+# ---------------------------------------------------------------------------
+
+# 技能树节点状态枚举 (skill-tree 接口输出, 前端 SkillNode 消费):
+# locked=依赖未满足锁定 / unlocked=可解锁 / in_progress=进行中(Issue 05) /
+# cleared=已通关点亮
+SKILL_STATUS = ("locked", "unlocked", "in_progress", "cleared")
+
+
+def _kp_status(prereq_ids, cleared_kp_ids):
+    """知识点点亮状态 (PRD D-1): 依赖全部通关才解锁, 否则锁定.
+
+    纯函数便于测试: 调用方把已通关知识点 id 集合 (Issue 05 由通关结算
+    产出) 注入, 本期无关卡数据时传空集 → 有前置依赖的知识点一律锁定.
+    """
+    if prereq_ids and not set(prereq_ids) <= set(cleared_kp_ids):
+        return "locked"
+    return "unlocked"
+
+
+def build_skill_tree(journey, cleared_kp_ids=None):
+    """技能树图数据 (DESIGN §4.1, GET /api/charplot/journeys/{id}/skill-tree).
+
+    返回 {nodes, edges}: nodes 为知识点节点 (章节归属 + 点亮状态 + 关卡进度
+    合并字段), edges 为前置依赖边 (source → target, DAG). 前端据此渲染
+    闯关地图 (vue-flow + dagre 布局).
+
+    关卡进度字段 (cleared_levels/total_levels) 本期无 Level 数据恒为 0,
+    节点进度徽章 "2/3" 由 Issue 05 创建关卡后按知识点聚合流入, 前端非零才显示.
+    """
+    cleared_kp_ids = cleared_kp_ids or set()
+    nodes = []
+    edges = []
+    chapters = journey.chapters.prefetch_related("knowledge_points__prerequisites")
+    for chapter in chapters.all():
+        for kp in chapter.knowledge_points.all():
+            prereq_ids = list(kp.prerequisites.values_list("id", flat=True))
+            if kp.id in cleared_kp_ids:
+                status = "cleared"
+            else:
+                status = _kp_status(prereq_ids, cleared_kp_ids)
+            nodes.append(
+                {
+                    "id": kp.id,
+                    "chapter_id": chapter.id,
+                    "chapter_title": chapter.title,
+                    "title": kp.title,
+                    "order": kp.order,
+                    "status": status,
+                    "cleared_levels": 0,  # Issue 05: 该知识点已通关关卡数
+                    "total_levels": 0,  # Issue 05: 该知识点关卡总数
+                }
+            )
+            for pid in prereq_ids:
+                edges.append({"id": f"e-{pid}-{kp.id}", "source": pid, "target": kp.id})
+    return {"nodes": nodes, "edges": edges}

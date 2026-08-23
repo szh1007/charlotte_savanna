@@ -11,6 +11,7 @@ from .views_api import (
     ProfileView,
     RegisterView,
     SessionView,
+    SkillTreeView,
     StreakFreezeView,
 )
 
@@ -28,6 +29,11 @@ urlpatterns = [
     # 旅程链路 (Issue 03)
     path("journeys/", JourneyListView.as_view(), name="journey-list"),
     path("journeys/<int:pk>/", JourneyDetailView.as_view(), name="journey-detail"),
+    path(
+        "journeys/<int:pk>/skill-tree/",
+        SkillTreeView.as_view(),
+        name="journey-skill-tree",
+    ),
     # 内部端点 (FastAPI → Django, X-Internal-Token 认证)
     path("journeys/<int:pk>/graph/", JourneyGraphView.as_view(), name="journey-graph"),
     path(

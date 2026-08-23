@@ -30,6 +30,7 @@ from .serializers import (
 from .services import (
     InsufficientCoinsError,
     JourneyGraphError,
+    build_skill_tree,
     buy_streak_freeze,
     create_journey,
     mark_journey_failed,
@@ -231,6 +232,20 @@ class JourneyDetailView(APIView):
     def get(self, request, pk):
         journey = get_object_or_404(CharplotJourney, pk=pk, user=request.user)
         return Response(JourneyDetailSerializer(journey).data)
+
+
+class SkillTreeView(APIView):
+    """技能树图数据 (DESIGN §4.1): 节点 (点亮状态/进度) + 依赖边.
+
+    闯关地图页渲染源 (PRD D-1); 点亮状态由服务层计算, 本期无通关数据
+    (Issue 05), 依赖未满足的知识点锁定, 无前置根节点可解锁.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        journey = get_object_or_404(CharplotJourney, pk=pk, user=request.user)
+        return Response(build_skill_tree(journey))
 
 
 class JourneyGraphView(APIView):

@@ -250,6 +250,42 @@ export interface JourneyDetail {
   chapters: Chapter[]
 }
 
+// ---- 技能树 (Issue 04) ----
+
+/** 技能树节点状态: 锁定 / 可解锁 / 进行中(Issue 05) / 已通关点亮. */
+export type SkillNodeStatus = 'locked' | 'unlocked' | 'in_progress' | 'cleared'
+
+/** 技能树节点 (GET /api/charplot/journeys/{id}/skill-tree/). */
+export interface SkillTreeNode {
+  id: number
+  chapter_id: number
+  chapter_title: string
+  title: string
+  order: number
+  status: SkillNodeStatus
+  /** 已通关关卡数 (Issue 05 流入; 大知识点多关时节点徽章显示 cleared/total). */
+  cleared_levels: number
+  total_levels: number
+}
+
+/** 前置依赖边 (source → target, DAG). */
+export interface SkillTreeEdge {
+  id: string
+  source: number
+  target: number
+}
+
+/** 技能树图数据: 节点 + 依赖边, 闯关地图渲染源 (PRD D-1). */
+export interface SkillTreeData {
+  nodes: SkillTreeNode[]
+  edges: SkillTreeEdge[]
+}
+
+/** 技能树图数据 (闯关地图页). */
+export function getSkillTree(journeyId: number): Promise<SkillTreeData> {
+  return request(`/api/charplot/journeys/${journeyId}/skill-tree/`)
+}
+
 /** SSE 管道进度事件 (CONTRACT.md §2). */
 export interface PipelineEvent {
   task_id: string

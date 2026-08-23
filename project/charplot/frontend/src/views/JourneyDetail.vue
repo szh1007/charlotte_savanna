@@ -163,9 +163,14 @@ onUnmounted(() => {
         <el-button type="primary" round @click="runPipeline">重试生成</el-button>
       </section>
 
-      <!-- 已就绪: 图谱展示 -->
+      <!-- 已就绪: 图谱展示 + 闯关地图入口 (Issue 04) -->
       <section v-else class="graph">
-        <h2 class="graph-title">知识图谱</h2>
+        <div class="graph-head">
+          <h2 class="graph-title">知识图谱</h2>
+          <router-link :to="`/journeys/${detail.id}/map`">
+            <el-button type="primary" round>进入闯关地图 →</el-button>
+          </router-link>
+        </div>
         <el-collapse v-if="detail.chapters.length">
           <el-collapse-item
             v-for="(chapter, ci) in detail.chapters"
@@ -355,10 +360,18 @@ onUnmounted(() => {
 }
 
 /* ---- 图谱 ---- */
+.graph-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
 .graph-title {
   font-size: 18px;
   font-weight: 800;
-  margin: 0 0 14px;
+  margin: 0;
 }
 
 .chapter {
