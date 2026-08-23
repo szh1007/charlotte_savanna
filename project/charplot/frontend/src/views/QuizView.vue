@@ -253,6 +253,16 @@ onMounted(loadLevel)
           关卡列表
         </el-button>
         <el-button
+          v-if="result?.reward?.journey_cleared"
+          type="primary"
+          size="large"
+          round
+          @click="router.push(`/journeys/${journeyId}/report`)"
+        >
+          📜 查看复盘报告
+        </el-button>
+        <el-button
+          v-else
           type="primary"
           size="large"
           round

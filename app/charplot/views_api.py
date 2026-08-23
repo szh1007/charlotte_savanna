@@ -18,7 +18,13 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import CharplotJourney, CharplotLevel, CharplotProfile, CharplotUserEvent
+from .models import (
+    CharplotJourney,
+    CharplotLevel,
+    CharplotProfile,
+    CharplotReviewReport,
+    CharplotUserEvent,
+)
 from .permissions import IsInternalService
 from .serializers import (
     AnswerRequestSerializer,
@@ -28,6 +34,7 @@ from .serializers import (
     JourneyListSerializer,
     LevelDetailSerializer,
     LevelListSerializer,
+    ReviewReportSerializer,
     UserLoginSerializer,
     UserRegisterSerializer,
 )
@@ -344,6 +351,26 @@ class LevelRestartView(APIView):
             )
         restart_level(level)
         return Response(LevelDetailSerializer(level).data)
+
+
+class JourneyReportView(APIView):
+    """复盘报告 (DESIGN §4.1, GET /api/charplot/journeys/{id}/report/).
+
+    仅本人旅程可见 (非本人 404 不泄露存在性); 未通关无报告 → 404, 前端
+    据旅程 cleared 状态决定入口显隐. 报告为通关时快照, 只读不改.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        journey = get_object_or_404(CharplotJourney, pk=pk, user=request.user)
+        report = CharplotReviewReport.objects.filter(journey=journey).first()
+        if report is None:
+            return Response(
+                {"detail": "旅程尚未通关, 暂无复盘报告"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        return Response(ReviewReportSerializer(report).data)
 
 
 class JourneyGraphView(APIView):

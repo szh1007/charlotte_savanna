@@ -1,11 +1,13 @@
-"""CharPlot 游戏化 / 统计 / 旅程 / 闯关服务层 (Issue 02 / 03 / 05).
+"""CharPlot 游戏化 / 统计 / 旅程 / 闯关服务层 (Issue 02 / 03 / 05 / 06).
 
 规则参数集中配置 (DESIGN.md §5); 日期一律用 timezone.localdate() 保证
 Asia/Shanghai 自然日语义 (USE_TZ=True). 所有函数支持 today 参数注入,
 便于测试免 mock 时钟.
 """
 
+import logging
 import os
+import secrets
 import unicodedata
 from datetime import timedelta
 
@@ -20,8 +22,11 @@ from .models import (
     CharplotLevel,
     CharplotProfile,
     CharplotQuestion,
+    CharplotReviewReport,
     CharplotUserEvent,
 )
+
+logger = logging.getLogger(__name__)
 
 # ---- 规则参数 (集中配置, 后续可改, 勿散落各处) ----
 FREEZE_COIN_COST = 10  # 兑换 1 天连胜冻结所需学习币
@@ -627,6 +632,8 @@ def _settle_level_clear(level, profile, today):
     ):
         journey.cleared = True
         journey.save(update_fields=["cleared", "updated_at"])
+        # 旅程全部通关 → 自动生成复盘报告 (Issue 06, 幂等, 与结算同事务)
+        create_review_report(journey)
     return {
         "xp": LEVEL_CLEAR_XP,
         "coins": LEVEL_CLEAR_COINS,
@@ -746,3 +753,225 @@ def restart_level(level):
         level.save(update_fields=["hearts", "current_index", "cleared", "updated_at"])
         CharplotProfile.objects.filter(user=user).update(hearts=MAX_HEARTS)
     return level
+
+
+# ---------------------------------------------------------------------------
+# 复盘报告 (Issue 06)
+# ---------------------------------------------------------------------------
+
+REPORT_SLUG_LENGTH = 12  # 公开短链长度
+REPORT_SLUG_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"
+# 去易混淆字符 (0/o/1/l/i), 便于口头传播
+REPORT_TITLE_MAX = 40  # OG 标题截断
+REPORT_DESC_MAX = 200  # OG 描述截断
+
+# OG 社交卡片 (1200x630, 微信/QQ/推特通用)
+_OG_IMAGE_WIDTH = 1200
+_OG_IMAGE_HEIGHT = 630
+_OG_FONT_CANDIDATES = (
+    "C:/Windows/Fonts/msyh.ttc",  # 微软雅黑 (自用 Windows 环境)
+    "C:/Windows/Fonts/simhei.ttf",
+    "C:/Windows/Fonts/simsun.ttc",
+)
+_OG_DIR = "app/charplot/uploads/og"  # MEDIA_ROOT 下相对目录
+
+
+def generate_report_slug():
+    """生成不可猜测的公开 slug (secrets 密码学随机), 撞库重试."""
+    while True:
+        slug = "".join(
+            secrets.choice(REPORT_SLUG_ALPHABET) for _ in range(REPORT_SLUG_LENGTH)
+        )
+        if not CharplotReviewReport.objects.filter(slug=slug).exists():
+            return slug
+
+
+def build_report_stats(journey):
+    """答题统计快照 (PRD E-1): 从 Attempt 聚合, 与事实表逐条一致 (SPEC §8).
+
+    返回总答题数/对/错/正确率(整数百分比)/总耗时 + 每关明细; 关卡重开的
+    历史 Attempt 一并计入 (与 profile 统计同源, 掌握度分析需要历史事实).
+    """
+    attempts = CharplotAttempt.objects.filter(level__journey=journey).select_related(
+        "level__knowledge_point__chapter"
+    )
+    total = correct = duration = 0
+    per_level: dict[int, dict] = {}
+    for attempt in attempts:
+        total += 1
+        correct += 1 if attempt.is_correct else 0
+        duration += attempt.duration
+        level = attempt.level
+        stat = per_level.setdefault(
+            level.id,
+            {
+                "level_id": level.id,
+                "kp_id": level.knowledge_point_id,
+                "kp_title": level.knowledge_point.title,
+                "chapter_title": level.knowledge_point.chapter.title,
+                "answered": 0,
+                "correct": 0,
+            },
+        )
+        stat["answered"] += 1
+        stat["correct"] += 1 if attempt.is_correct else 0
+    return {
+        "answered": total,
+        "correct": correct,
+        "wrong": total - correct,
+        "accuracy": round(correct * 100 / total) if total else 0,
+        "duration": duration,
+        "levels": sorted(per_level.values(), key=lambda s: s["level_id"]),
+    }
+
+
+def build_knowledge_summary(journey):
+    """知识总结 (PRD E-1): 章节 → 知识点 (标题 + 概述).
+
+    stub 阶段为图谱确定性聚合, 与 JourneyDetail 图谱同源 (LLM 文字总结
+    为 Issue 13, 接入后分享页同步增强, 快照结构不变).
+    """
+    chapters = []
+    for chapter in journey.chapters.prefetch_related("knowledge_points").all():
+        chapters.append(
+            {
+                "title": chapter.title,
+                "summary": chapter.summary,
+                "knowledge_points": [
+                    {"title": kp.title, "summary": kp.summary}
+                    for kp in chapter.knowledge_points.all()
+                ],
+            }
+        )
+    return {"chapters": chapters}
+
+
+def _report_og_texts(journey, stats):
+    """OG 标题/描述 (PRD E-2): 分享到社交平台卡片展示用."""
+    og_title = f"{journey.title} · 通关复盘"[:REPORT_TITLE_MAX]
+    kp_count = CharplotKnowledgePoint.objects.filter(chapter__journey=journey).count()
+    og_description = (
+        f"通关 {journey.title} 共 {stats['answered']} 道题, 答对 "
+        f"{stats['correct']} 道 ({stats['accuracy']}%), 掌握 {kp_count} 个知识点."
+    )[:REPORT_DESC_MAX]
+    return og_title, og_description
+
+
+def _load_og_font(size):
+    """按候选顺序加载中文字体, 全缺失时回退 Pillow 默认 (豆腐块, 不崩溃)."""
+    try:
+        from PIL import ImageFont
+    except ImportError:
+        return None
+    for path in _OG_FONT_CANDIDATES:
+        if os.path.exists(path):
+            return ImageFont.truetype(path, size)
+    return ImageFont.load_default()
+
+
+def _draw_wrapped_text(draw, text, font, x, y, fill, max_width, line_height):
+    """按最大宽度逐行截断绘制 (中文字符按字宽估算, 简易换行)."""
+    lines = []
+    while text:
+        # 二分找能容纳的最长前缀
+        lo, hi = 0, len(text)
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if draw.textlength(text[:mid], font=font) <= max_width:
+                lo = mid
+            else:
+                hi = mid - 1
+        if lo == 0:
+            lo = 1  # 单字超宽兜底, 避免死循环
+        lines.append(text[:lo])
+        text = text[lo:]
+    for i, line in enumerate(lines):
+        draw.text((x, y + i * line_height), line, font=font, fill=fill)
+
+
+def render_og_image(report, journey, stats):
+    """Pillow 绘制 1200x630 社交卡片 PNG (B站粉渐变底 + 标题 + 统计摘要).
+
+    输出 MEDIA_ROOT/{_OG_DIR}/{slug}.png, 返回相对 URL; 任何异常吞掉并记
+    日志 (图缺失不阻塞报告生成与分享页, OG 卡片仍显示标题/摘要).
+    """
+    from django.conf import settings
+
+    try:
+        from PIL import Image, ImageDraw
+    except ImportError:
+        return ""
+    try:
+        # 粉色 → 浅紫竖向渐变 (B站粉主色 + 二次元柔和色系, DESIGN §6)
+        img = Image.new("RGB", (_OG_IMAGE_WIDTH, _OG_IMAGE_HEIGHT))
+        top = (251, 114, 153)
+        bottom = (201, 182, 228)
+        draw = ImageDraw.Draw(img)
+        for y in range(_OG_IMAGE_HEIGHT):
+            t = y / (_OG_IMAGE_HEIGHT - 1)
+            color = tuple(round(top[i] + (bottom[i] - top[i]) * t) for i in range(3))
+            draw.line([(0, y), (_OG_IMAGE_WIDTH, y)], fill=color)
+
+        font_label = _load_og_font(44)
+        font_title = _load_og_font(72)
+        font_stats = _load_og_font(48)
+        white = (255, 255, 255)
+
+        draw.text((90, 90), "CHARPLOT · 通关复盘", font=font_label, fill=white)
+        # 标题最多 2 行 (行高约字号 1.3 倍), 过长截断
+        title = journey.title[:40]
+        _draw_wrapped_text(
+            draw,
+            title,
+            font_title,
+            90,
+            190,
+            white,
+            _OG_IMAGE_WIDTH - 180,
+            int(72 * 1.3),
+        )
+        kp_count = CharplotKnowledgePoint.objects.filter(
+            chapter__journey=journey
+        ).count()
+        stats_line = (
+            f"答对 {stats['correct']}/{stats['answered']} 题 · "
+            f"正确率 {stats['accuracy']}% · 掌握 {kp_count} 个知识点"
+        )
+        draw.text((90, 460), stats_line, font=font_stats, fill=white)
+        draw.text((90, 530), "来 CharPlot 一起闯关学知识", font=font_label, fill=white)
+
+        directory = os.path.join(settings.MEDIA_ROOT, _OG_DIR)
+        os.makedirs(directory, exist_ok=True)
+        filename = f"{report.slug}.png"
+        img.save(os.path.join(directory, filename))
+        return f"{settings.MEDIA_URL}{_OG_DIR}/{filename}"
+    except Exception:
+        logger.exception("CharPlot OG 图生成失败: journey=%s", journey.id)
+        return ""
+
+
+def create_review_report(journey):
+    """旅程全部通关后生成复盘报告 (PRD E-1), 幂等: 已存在直接返回.
+
+    由 _settle_level_clear 在事务内调用; OG 图文件 IO 异常已在 render 内
+    吞掉, 不污染通关结算事务. 快照生成后不可变 (分享页只读防篡改, E-2).
+    """
+    existing = CharplotReviewReport.objects.filter(journey=journey).first()
+    if existing:
+        return existing
+    stats = build_report_stats(journey)
+    og_title, og_description = _report_og_texts(journey, stats)
+    report = CharplotReviewReport.objects.create(
+        journey=journey,
+        user=journey.user,
+        slug=generate_report_slug(),
+        knowledge_summary=build_knowledge_summary(journey),
+        stats=stats,
+        og_title=og_title,
+        og_description=og_description,
+    )
+    og_image = render_og_image(report, journey, stats)
+    if og_image:
+        report.og_image = og_image
+        report.save(update_fields=["og_image", "updated_at"])
+    return report

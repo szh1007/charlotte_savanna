@@ -21,6 +21,7 @@ from .models import (
     CharplotLevel,
     CharplotProfile,
     CharplotQuestion,
+    CharplotReviewReport,
 )
 from .services import build_profile_stats, get_streak_loss_warning, level_status
 
@@ -311,3 +312,37 @@ class AnswerRequestSerializer(serializers.Serializer):
     question_id = serializers.IntegerField()
     answer = serializers.JSONField()
     duration = serializers.IntegerField(required=False, min_value=0, default=0)
+
+
+# ---------------------------------------------------------------------------
+# 复盘报告 (Issue 06)
+# ---------------------------------------------------------------------------
+
+
+class ReviewReportSerializer(serializers.ModelSerializer):
+    """复盘报告 (DESIGN §4.1, GET /api/charplot/journeys/{id}/report/).
+
+    快照数据直出 (知识总结 + 答题统计, 生成后不可变); share_url 为相对
+    路径, 前端复制时拼 location.origin 得到完整公开链接.
+    """
+
+    journey_id = serializers.IntegerField(source="journey.id", read_only=True)
+    share_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CharplotReviewReport
+        fields = [
+            "id",
+            "journey_id",
+            "slug",
+            "knowledge_summary",
+            "stats",
+            "og_title",
+            "og_description",
+            "og_image",
+            "share_url",
+            "created_at",
+        ]
+
+    def get_share_url(self, obj):
+        return f"/r/{obj.slug}/"

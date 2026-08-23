@@ -328,6 +328,50 @@ class CharplotQuestion(models.Model):
         return f"charplot_question({self.id}, {self.question_type})"
 
 
+class CharplotReviewReport(models.Model):
+    """复盘报告 (SPEC §8) - 通关总结, 公开链接页可分享 (Issue 06).
+
+    旅程全部关卡通关时由服务层生成并落库快照: 知识总结 (章节 → 知识点)
+    + 答题统计 (生成时点从 Attempt 聚合, 与事实表一致). 快照生成后不可变,
+    分享页只读展示; slug 不可猜测 → 内容不可篡改 (PRD E-2).
+
+    og_image 为 Pillow 绘制的社交卡片 PNG 相对 URL (media 下); 生成失败时
+    为空串 (OG 卡片仅标题/摘要, 不阻塞报告).
+    """
+
+    journey = models.OneToOneField(
+        CharplotJourney,
+        on_delete=models.CASCADE,
+        related_name="review_report",
+        verbose_name="旅程",
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="charplot_review_reports",
+        verbose_name="用户",
+    )
+    slug = models.CharField(max_length=16, unique=True, verbose_name="公开短链")
+    # 密码学随机短码, 不可猜测; unique 约束防撞库
+    knowledge_summary = models.JSONField(default=dict, verbose_name="知识总结快照")
+    stats = models.JSONField(default=dict, verbose_name="答题统计快照")
+    og_title = models.CharField(max_length=120, blank=True, verbose_name="OG 标题")
+    og_description = models.CharField(
+        max_length=200, blank=True, verbose_name="OG 描述"
+    )
+    og_image = models.CharField(max_length=200, blank=True, verbose_name="OG 缩略图")
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
+    updated_at = models.DateTimeField(auto_now=True, verbose_name="更新时间")
+
+    class Meta:
+        db_table = "charplot_review_report"
+        verbose_name = "CharPlot 复盘报告"
+        verbose_name_plural = verbose_name
+
+    def __str__(self):
+        return f"charplot_review_report({self.id}, {self.slug})"
+
+
 class CharplotAttempt(models.Model):
     """答题记录 (SPEC §8) - 逐题事实, 统计与分析的事实源.
 

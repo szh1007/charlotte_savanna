@@ -1,0 +1,241 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ og_title }} — CharPlot</title>
+  <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><circle cx='32' cy='32' r='32' fill='%23fb7299'/><text x='32' y='46' font-size='40' font-weight='bold' text-anchor='middle' fill='%23fff'>C</text></svg>">
+
+  <!-- OG 社交卡片 (PRD E-2): 爬虫抓取即得标题/摘要/缩略图 -->
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="CharPlot">
+  <meta property="og:title" content="{{ og_title }}">
+  <meta property="og:description" content="{{ og_description }}">
+  <meta property="og:url" content="{{ page_url }}">
+  {% if og_image_url %}<meta property="og:image" content="{{ og_image_url }}">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">{% endif %}
+  <meta name="twitter:card" content="{% if og_image_url %}summary_large_image{% else %}summary{% endif %}">
+  <meta name="twitter:title" content="{{ og_title }}">
+  <meta name="twitter:description" content="{{ og_description }}">
+  {% if og_image_url %}<meta name="twitter:image" content="{{ og_image_url }}">{% endif %}
+
+  <style>
+    /* CharPlot 设计令牌 (theme.css 同款, B站粉动漫风, DESIGN.md §6) */
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: "PingFang SC", "Hiragino Sans GB", "MiSans", "Microsoft YaHei", system-ui, sans-serif;
+      color: #4a4a55;
+      background: linear-gradient(135deg, #fff0f4, #eef6fb);
+      background-attachment: fixed;
+      -webkit-font-smoothing: antialiased;
+      min-height: 100vh;
+    }
+    .wrap { max-width: 720px; margin: 0 auto; padding: 40px 20px 56px; }
+
+    /* ---- Hero ---- */
+    .hero {
+      text-align: center;
+      margin-bottom: 28px;
+    }
+    .hero-badge {
+      display: inline-block;
+      font-size: 52px;
+      margin-bottom: 10px;
+      animation: pop .6s ease-out;
+    }
+    @keyframes pop {
+      0% { transform: scale(.4); opacity: 0; }
+      70% { transform: scale(1.15); }
+      100% { transform: scale(1); opacity: 1; }
+    }
+    .hero-title {
+      font-size: 26px;
+      font-weight: 800;
+      color: #4a4a55;
+      margin-bottom: 8px;
+      line-height: 1.4;
+      word-break: break-all;
+    }
+    .hero-meta { font-size: 13px; color: #8a8a99; }
+    .hero-meta .dot { margin: 0 6px; }
+
+    .card {
+      background: #fff;
+      border-radius: 16px;
+      box-shadow: 0 12px 32px rgba(251, 114, 153, .14);
+      padding: 26px 26px 28px;
+      margin-bottom: 16px;
+    }
+    .section-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 17px;
+      font-weight: 800;
+      color: #4a4a55;
+      margin-bottom: 18px;
+    }
+    .section-title .emoji { font-size: 20px; }
+
+    /* ---- 答题表现 ---- */
+    .accuracy {
+      text-align: center;
+      margin-bottom: 20px;
+    }
+    .accuracy-num {
+      font-size: 52px;
+      font-weight: 900;
+      color: #fb7299;
+      line-height: 1.1;
+    }
+    .accuracy-label { font-size: 13px; color: #8a8a99; margin-top: 4px; }
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+    }
+    .stat-item {
+      background: #fff5f8;
+      border-radius: 10px;
+      padding: 14px 6px;
+      text-align: center;
+    }
+    .stat-num { font-size: 22px; font-weight: 900; color: #fb7299; }
+    .stat-label { font-size: 12px; color: #8a8a99; margin-top: 2px; }
+
+    .level-list { list-style: none; margin-top: 18px; }
+    .level-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 10px 14px;
+      border-radius: 10px;
+      background: #fff5f8;
+      margin-bottom: 8px;
+    }
+    .level-info { min-width: 0; }
+    .level-chapter { font-size: 11px; color: #a5cfe3; font-weight: 600; }
+    .level-kp { font-size: 13px; font-weight: 700; color: #4a4a55; margin-top: 2px; }
+    .level-acc {
+      flex-shrink: 0;
+      font-size: 13px;
+      font-weight: 800;
+      color: #34c98e;
+    }
+
+    /* ---- 知识总结 ---- */
+    .chapter { margin-bottom: 12px; }
+    .chapter-name {
+      font-size: 15px;
+      font-weight: 800;
+      color: #fb7299;
+      margin-bottom: 4px;
+    }
+    .chapter-summary { font-size: 12px; color: #8a8a99; margin-bottom: 10px; }
+    .kp-list { list-style: none; }
+    .kp-item {
+      background: #fff5f8;
+      border-radius: 10px;
+      padding: 10px 14px;
+      margin-bottom: 8px;
+    }
+    .kp-name { font-size: 13px; font-weight: 700; color: #4a4a55; }
+    .kp-summary { font-size: 12px; color: #8a8a99; margin-top: 3px; line-height: 1.6; }
+
+    /* ---- 底部 ---- */
+    .footer {
+      text-align: center;
+      font-size: 13px;
+      color: #8a8a99;
+      margin-top: 24px;
+      line-height: 1.8;
+    }
+    .footer a {
+      color: #fb7299;
+      text-decoration: none;
+      font-weight: 700;
+    }
+    .footer a:hover { text-decoration: underline; }
+    .readonly-tip { font-size: 12px; color: #c0c0cc; margin-top: 6px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <!-- Hero: 通关徽章 + 标题 -->
+    <header class="hero">
+      <div class="hero-badge" aria-hidden="true">🏆</div>
+      <h1 class="hero-title">{{ journey.title }}</h1>
+      <p class="hero-meta">
+        通关复盘报告<span class="dot">·</span>{{ report.user.username }}<span class="dot">·</span>{{ report.created_at|date:"Y-m-d" }}
+      </p>
+    </header>
+
+    <!-- 答题表现 (PRD E-1) -->
+    <section class="card" aria-label="答题表现">
+      <h2 class="section-title"><span class="emoji" aria-hidden="true">📊</span>答题表现</h2>
+      <div class="accuracy">
+        <div class="accuracy-num">{{ stats.accuracy }}%</div>
+        <div class="accuracy-label">正确率</div>
+      </div>
+      <div class="stats-grid">
+        <div class="stat-item">
+          <div class="stat-num">{{ stats.answered }}</div>
+          <div class="stat-label">答题</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-num">{{ stats.correct }}</div>
+          <div class="stat-label">答对</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-num">{{ stats.wrong }}</div>
+          <div class="stat-label">答错</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-num">{{ stats.duration }}s</div>
+          <div class="stat-label">总耗时</div>
+        </div>
+      </div>
+      {% if per_levels %}
+      <ul class="level-list">
+        {% for item in per_levels %}
+        <li class="level-item">
+          <div class="level-info">
+            <div class="level-chapter">{{ item.chapter_title }}</div>
+            <div class="level-kp">{{ item.kp_title }}</div>
+          </div>
+          <span class="level-acc">{{ item.correct }}/{{ item.answered }}</span>
+        </li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    </section>
+
+    <!-- 知识总结 (PRD E-1): 章节 → 知识点 -->
+    <section class="card" aria-label="知识总结">
+      <h2 class="section-title"><span class="emoji" aria-hidden="true">📚</span>知识总结</h2>
+      {% for chapter in chapters %}
+      <div class="chapter">
+        <h3 class="chapter-name">{{ chapter.title }}</h3>
+        {% if chapter.summary %}<p class="chapter-summary">{{ chapter.summary }}</p>{% endif %}
+        <ul class="kp-list">
+          {% for kp in chapter.knowledge_points %}
+          <li class="kp-item">
+            <div class="kp-name">{{ kp.title }}</div>
+            {% if kp.summary %}<div class="kp-summary">{{ kp.summary }}</div>{% endif %}
+          </li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% endfor %}
+    </section>
+
+    <footer class="footer">
+      <a href="/">来 CharPlot 一起闯关学知识 →</a>
+      <p class="readonly-tip">本页面为公开只读分享页, 内容已固定, 不可修改</p>
+    </footer>
+  </div>
+</body>
+</html>

@@ -5,6 +5,7 @@ from .views_api import (
     JourneyDetailView,
     JourneyGraphView,
     JourneyListView,
+    JourneyReportView,
     JourneyStatusView,
     LevelAnswerView,
     LevelDetailView,
@@ -43,6 +44,12 @@ urlpatterns = [
     path("levels/<int:pk>/", LevelDetailView.as_view(), name="level-detail"),
     path("levels/<int:pk>/answer/", LevelAnswerView.as_view(), name="level-answer"),
     path("levels/<int:pk>/restart/", LevelRestartView.as_view(), name="level-restart"),
+    # 复盘报告 (Issue 06)
+    path(
+        "journeys/<int:pk>/report/",
+        JourneyReportView.as_view(),
+        name="journey-report",
+    ),
     # 内部端点 (FastAPI → Django, X-Internal-Token 认证)
     path("journeys/<int:pk>/graph/", JourneyGraphView.as_view(), name="journey-graph"),
     path(

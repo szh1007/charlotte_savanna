@@ -51,6 +51,13 @@ const router = createRouter({
       component: () => import('@/views/QuizView.vue'),
       meta: { requiresAuth: true },
     },
+    {
+      // 复盘报告页 (Issue 06): 知识总结 + 答题表现 + 公开分享链接
+      path: '/journeys/:id/report',
+      name: 'journey-report',
+      component: () => import('@/views/ReportView.vue'),
+      meta: { requiresAuth: true },
+    },
   ],
 })
 

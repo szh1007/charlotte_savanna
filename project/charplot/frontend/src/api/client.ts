@@ -380,6 +380,59 @@ export function restartLevel(levelId: number): Promise<LevelDetail> {
   return request(`/api/charplot/levels/${levelId}/restart/`, { method: 'POST' })
 }
 
+// ---- 复盘报告 (Issue 06) ----
+
+/** 每关答题表现 (报告统计 levels 项). */
+export interface LevelReportStat {
+  level_id: number
+  kp_id: number
+  kp_title: string
+  chapter_title: string
+  answered: number
+  correct: number
+}
+
+/** 答题统计快照 (与 Attempt 聚合一致, SPEC §8). */
+export interface ReviewStats {
+  answered: number
+  correct: number
+  wrong: number
+  /** 整数百分比正确率. */
+  accuracy: number
+  /** 总耗时秒. */
+  duration: number
+  levels: LevelReportStat[]
+}
+
+/** 知识总结: 章节 → 知识点 (图谱确定性聚合, LLM 总结为 Issue 13). */
+export interface ReviewKnowledgeSummary {
+  chapters: {
+    title: string
+    summary: string
+    knowledge_points: { title: string; summary: string }[]
+  }[]
+}
+
+/** 复盘报告 (GET /api/charplot/journeys/{id}/report/). */
+export interface ReviewReport {
+  id: number
+  journey_id: number
+  slug: string
+  knowledge_summary: ReviewKnowledgeSummary
+  stats: ReviewStats
+  og_title: string
+  og_description: string
+  og_image: string
+  /** 公开分享链接 (相对路径, 复制时拼 location.origin). */
+  share_url: string
+  created_at: string
+}
+
+/** 复盘报告 (仅通关后存在; 未通关 404). */
+export function getReviewReport(journeyId: number): Promise<ReviewReport> {
+  return request(`/api/charplot/journeys/${journeyId}/report/`)
+}
+
 /** SSE 管道进度事件 (CONTRACT.md §2). */
 export interface PipelineEvent {
   task_id: string
