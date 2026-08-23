@@ -779,3 +779,56 @@ class KnowledgeBaseIndexFailedView(APIView):
             )
         mark_kb_index_failed(kb, task_id, error_message)
         return Response({"status": "failed"})
+
+
+class KbDocumentContentView(APIView):
+    """知识库文档内容获取 (内部端点, FastAPI → Django, CONTRACT.md §6.6).
+
+    Issue 10 真实索引的解析器输入: FastAPI 经此端点取文档文件二进制
+    (base64 编码, 支持 pdf/docx 等二进制格式), 解析在 FastAPI 侧完成.
+    软删文档同样可读 (恢复后重新索引需要), 是否索引由 claim 的有效文档
+    清单决定. 文件缺失 (磁盘已清理) → 400.
+    """
+
+    authentication_classes = []
+    permission_classes = [IsInternalService]
+
+    def get(self, request, pk):
+        doc = get_object_or_404(CharplotKnowledgeBaseDocument, pk=pk)
+        try:
+            doc.file.open("rb")
+            raw = doc.file.read()
+        except (FileNotFoundError, OSError) as exc:
+            logger.warning("读取知识库文档失败 (doc=%s): %s", pk, exc)
+            return Response(
+                {"detail": "知识库文档读取失败"}, status=status.HTTP_400_BAD_REQUEST
+            )
+        finally:
+            doc.file.close()
+        # filename 返回原始文件名 (title), 非 upload_to 存储名 (可读性 +
+        # 解析器按原始扩展名分发, 与 claim 清单的 title 一致)
+        return Response(
+            {
+                "filename": doc.title,
+                "content_base64": base64.b64encode(raw).decode("ascii"),
+            }
+        )
+
+
+class KbDeletedDocIdsView(APIView):
+    """软删文档 id 清单 (内部端点, FastAPI → Django, CONTRACT.md §6.6).
+
+    Issue 10 检索过滤用: FastAPI 实时查询软删集合, 构造 Milvus filter
+    排除 → 软删立即生效 (Q18c, 无需等全量重建); 恢复的文档自动从集合
+    移除 → 重新命中.
+    """
+
+    authentication_classes = []
+    permission_classes = [IsInternalService]
+
+    def get(self, request, pk):
+        get_object_or_404(CharplotKnowledgeBase, pk=pk)
+        deleted_ids = CharplotKnowledgeBaseDocument.objects.filter(
+            knowledge_base_id=pk, is_deleted=True
+        ).values_list("id", flat=True)
+        return Response({"deleted_doc_ids": list(deleted_ids)})

@@ -28,11 +28,12 @@ from functools import partial
 from redis.asyncio import Redis
 
 from ..pipeline import PipelineInput, run_pipeline
+from ..pipeline.parsers import parse_document
 from ..pipeline.questions import generate_level_questions
-from . import config
 from .django_client import (
     claim_kb_index,
     claim_level_generation,
+    fetch_kb_document_content,
     mark_journey_failed,
     mark_kb_index_failed,
     mark_level_generation_failed,
@@ -56,12 +57,18 @@ _tasks_registry: dict[str, asyncio.Task] = {}  # 内存引用保活, 防 GC 中�
 
 
 def get_redis() -> Redis:
-    """模块级惰性 Redis 单例 (decode_responses=True)."""
+    """模块级惰性 Redis 单例 (decode_responses=True).
+
+    socket_timeout=None: redis-py 8 默认 5s 读超时, 但任务执行体内的
+    同步 AI 操作 (文档解析/embedding) 会阻塞事件循环, 偶发阻塞超 5s
+    导致状态写被误杀 (TimeoutError); 本地状态存储显式恢复无超时语义.
+    """
     global _redis
     if _redis is None:
         _redis = Redis.from_url(
             os.environ.get("REDIS_URL", "redis://127.0.0.1:6379/0"),
             decode_responses=True,
+            socket_timeout=None,
         )
     return _redis
 
@@ -249,13 +256,19 @@ async def _run_level_generation_task(
 
 
 async def _run_kb_index_task(task_id: str, kb_id: int) -> None:
-    """索引任务执行体 (Issue 09, stub): 抢占 → per-doc 假进度 → 落库 → done.
+    """索引任务执行体 (Issue 10, 真实索引): 抢占 → per-doc 解析/切分/向量化
+    → Milvus 全量重建入库 → 落库 → done.
 
-    本票不做真实解析/切分/embedding (Issue 10 替换): 每文档两阶段事件
-    (chunking/embedding) 提供假进度, 阶段间可选 sleep (KB_STUB_STEP_SLEEP,
-    演示用). 抢占未成功 (索引中/下线/无文档) → 直接 done, 幂等由 Django
-    侧 claim 保证; 失败 → error + mark_kb_index_failed (best-effort),
-    前端靠 SSE error 事件刷新并展示「失败 · 重试」.
+    全链路 (SPEC §7.2): 文档二进制经 Django 内部端点获取 (CONTRACT §6.6),
+    解析复用 pipeline.parsers (pdf/docx/pptx/md/txt/html) → 按类型调优
+    切分 (rag.chunking) → embedding 抽象 (rag.embeddings, 可切换) →
+    Milvus drop+create 全量重建 (rag.milvus.ensure_collection, 软删物理
+    剔除) + 批量入库. 每文档两阶段事件 (chunking/embedding) 提供真实
+    进度 (契约阶段序列不变, CONTRACT §6.5).
+
+    抢占未成功 (索引中/下线/无文档) → 直接 done, 幂等由 Django 侧 claim
+    保证; 任一文档失败 (取内容/解析/向量化) → error + mark_kb_index_failed
+    (best-effort), 前端靠 SSE error 事件刷新并展示「失败 · 重试」.
     """
     redis = get_redis()
     try:
@@ -268,25 +281,62 @@ async def _run_kb_index_task(task_id: str, kb_id: int) -> None:
             return
         documents = payload.get("documents", [])
         total = len(documents)
-        # 每文档 2 步 (切分/向量化), 进度按全局步数 40→85 单调递增
+        # per-doc 流水线: 解析+切分 → 向量化 → 暂存行, 进度 40→85 单调递增
+        from ..rag.chunking import split_document
+        from ..rag.embeddings import get_embedder
+
+        embedder = get_embedder()
         total_steps = total * 2
+        all_rows: list[dict] = []
         for idx, doc in enumerate(documents, start=1):
-            filename = doc.get("filename", "")
+            doc_id = int(doc["id"])
+            filename, raw = await fetch_kb_document_content(doc_id)
+            text = parse_document(filename, raw)
+            chunks = split_document(
+                text,
+                doc_id=doc_id,
+                title=doc.get("title") or filename,
+                filename=filename,
+                extension=doc.get("extension", ""),
+            )
             await emit(
                 task_id,
                 "chunking",
                 40 + int(45 * (2 * idx - 1) / total_steps),
                 f"切分文档 {idx}/{total}: {filename}",
             )
-            await _maybe_sleep()
+            if chunks:
+                vectors = embedder.embed_documents([c["content"] for c in chunks])
+                for chunk, dense, sparse in zip(
+                    chunks, vectors["dense"], vectors["sparse"]
+                ):
+                    all_rows.append(
+                        {
+                            "id": f"{doc_id}-{chunk['chunk_index']}",
+                            "kb_id": kb_id,
+                            "doc_id": doc_id,
+                            "title": chunk["title"],
+                            "filename": chunk["filename"],
+                            "chunk_index": chunk["chunk_index"],
+                            "valid": chunk["valid"],
+                            "content": chunk["content"],
+                            "dense_vector": dense,
+                            "sparse_vector": sparse,
+                        }
+                    )
             await emit(
                 task_id,
                 "embedding",
                 40 + int(45 * (2 * idx) / total_steps),
-                f"向量化 {idx}/{total}: {filename}",
+                f"向量化 {idx}/{total}: {filename} ({len(chunks)} chunks)",
             )
-            await _maybe_sleep()
-        await emit(task_id, "indexing", 90, "写入向量库 (stub)")
+        # 全量重建入库: drop + create (软删物理剔除) + 批量写入
+        from ..rag.milvus import ensure_collection, insert_chunks
+        from ..rag.retriever import collection_name
+
+        await emit(task_id, "indexing", 90, f"写入向量库 ({len(all_rows)} chunks)")
+        ensure_collection(collection_name(kb_id))
+        insert_chunks(collection_name(kb_id), all_rows)
         await save_kb_index_success(kb_id, task_id)
         await emit(task_id, "done", 100, "完成, 知识库已就绪")
         await redis.hset(_task_key(task_id), mapping={"status": "done"})
@@ -302,12 +352,6 @@ async def _run_kb_index_task(task_id: str, kb_id: int) -> None:
             await mark_kb_index_failed(kb_id, task_id, str(exc))
     finally:
         _tasks_registry.pop(task_id, None)
-
-
-async def _maybe_sleep() -> None:
-    """stub 阶段模拟延迟 (KB_STUB_STEP_SLEEP > 0 时生效, 演示用)."""
-    if config.KB_STUB_STEP_SLEEP > 0:
-        await asyncio.sleep(config.KB_STUB_STEP_SLEEP)
 
 
 async def event_stream(task_id: str, start_after: int = -1) -> AsyncIterator[str]:

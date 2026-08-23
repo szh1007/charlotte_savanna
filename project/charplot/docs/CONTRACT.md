@@ -112,9 +112,16 @@
 - `POST /ai/kb/index` `{kb_id}` → `{task_id}`；`GET /ai/tasks/{id}` 返回 `task_type: "kb-index"`
 - 阶段与进度：`parsing(15)` → 每文档交替 `chunking → embedding`（进度 40→85 逐文档单调递增, 流水线语义）→ `indexing(90) → done(100)`；事件名统一 `pipeline-progress`（DESIGN §4.2：不同任务类型不同 stage 列表）
 - 失败语义：任务级失败 → `mark_kb_index_failed`（kb → failed），前端「重试」= 重新 POST `/ai/kb/index`
-- 本票为 **stub 索引**（仅状态流转 + 假进度，不解析文档）；进度模拟默认零延迟，演示可设 `CHARPLOT_KB_STUB_STEP_SLEEP`（秒）
+- **真实索引（Issue 10 替换 stub）**：文档二进制经 §6.6 content 端点获取 → `pipeline/parsers` 解析（pdf/docx/pptx/md/txt/html）→ `rag/chunking` 按类型调优切分（md/txt 500/50、html 800/80、pdf/docx/pptx 600/60，metadata 保留 doc_id/title/filename/chunk_index/valid）→ `rag/embeddings` 抽象（默认 bge-m3 本地模型，可切换）→ Milvus **drop+create 全量重建**（软删物理剔除）+ 批量入库
 
-### 6.6 软删与检索过滤（Issue 10 扩展位）
+### 6.6 软删与检索过滤（Issue 10 已实现）
 
-- 软删文档检索立即不命中：Django `is_deleted` 标记 + Milvus 向量 metadata 有效标记，检索时 filter 排除（Q18c）；重建（全量）时物理剔除
-- 文档内容获取（Issue 10 解析器输入）：`GET /api/charplot/kb/documents/{id}/content/`（内部端点，返回 `{filename, content_base64}`，与 §5 `journey content` 同构）——**本票不实现**，为 Issue 10 预留契约
+- 软删文档检索立即不命中：Django `is_deleted` 标记 + Milvus 向量 metadata `valid` 有效标记，检索时 filter 排除（Q18c）；重建（全量）时物理剔除
+- **软删立即生效机制**：检索时（`/ai/kb/search` / KbSource）实时查询 `GET /api/charplot/kb/{id}/deleted-doc-ids/`（内部端点 → `{deleted_doc_ids: [...]}`），构造 Milvus filter `valid == true and doc_id not in [...]` 排除；恢复的文档自动从集合移除 → 重新命中（无需等重建）
+- 文档内容获取（索引解析器输入）：`GET /api/charplot/kb/documents/{id}/content/`（内部端点，返回 `{filename, content_base64}`，与 §5 `journey content` 同构；软删文档同样可读，是否索引由 claim 的有效文档清单决定）
+
+### 6.7 检索任务（FastAPI `/ai/kb/search`，Issue 10）
+
+- `POST /ai/kb/search` `{kb_id, query, top_k?}` → `{chunks: [{doc_id, title, filename, chunk_index, content, score}]}`——**片段检索不是答案**（QA.md Q7），生成由调用方 LLM 完成
+- 全链路：query rewriting（LLM 改写，失败降级原 query）→ 稠密+稀疏混合检索（`WeightedRanker` 融合，filter 软删排除）→ rerank（必配，默认本地 bge-reranker-v2-m3，配置留空降级保持召回顺序）→ Top-K（默认 `CHARPLOT_RERANK_TOP_K=5`，召回 `CHARPLOT_RETRIEVE_TOP_K=20`）
+- 供管道 A 解构 / C 出题（Issue 11）与调试调用；KbSource 实现同链路（pipeline/sources/kb_source.py）

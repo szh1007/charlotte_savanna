@@ -23,6 +23,7 @@ from app.charplot.services import (
     claim_kb_index,
     create_kb_documents,
     create_knowledge_base,
+    restore_kb_document,
     set_kb_offline,
     set_kb_online,
     validate_kb_document_file,
@@ -513,3 +514,99 @@ class TopicsTests(TestCase):
         make_kb(name="草稿库")
         resp = self.client.get(TOPICS_URL)
         self.assertEqual(resp.json()["topics"], [])
+
+
+# ---------------------------------------------------------------------------
+# E. Issue 10 内部端点 (文档内容 / 软删清单, CONTRACT.md §6.6)
+# ---------------------------------------------------------------------------
+
+
+@override_settings(CHARPLOT_INTERNAL_TOKEN=INTERNAL_TOKEN)
+class KbDocumentContentEndpointTests(TestCase):
+    """GET /kb/documents/{id}/content/: 索引解析器输入 (base64 同构)."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.kb = make_kb()
+        (self.doc,) = upload_files(self.kb, [("a.pdf", b"pdf-binary")])
+
+    def url(self, doc_id):
+        return f"/api/charplot/kb/documents/{doc_id}/content/"
+
+    def test_returns_base64_content(self):
+        resp = self.client.get(
+            self.url(self.doc.id), HTTP_X_INTERNAL_TOKEN=INTERNAL_TOKEN
+        )
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["filename"], "a.pdf")
+        self.assertEqual(body["content_base64"], "cGRmLWJpbmFyeQ==")
+
+    def test_soft_deleted_document_still_readable(self):
+        """软删文档同样可读 (恢复后重新索引需要), 是否索引由 claim 决定."""
+        self.doc.is_deleted = True
+        self.doc.save()
+        resp = self.client.get(
+            self.url(self.doc.id), HTTP_X_INTERNAL_TOKEN=INTERNAL_TOKEN
+        )
+        self.assertEqual(resp.status_code, 200)
+
+    def test_missing_token_forbidden(self):
+        resp = self.client.get(self.url(self.doc.id))
+        self.assertEqual(resp.status_code, 403)
+
+    def test_unknown_document_404(self):
+        resp = self.client.get(self.url(9999), HTTP_X_INTERNAL_TOKEN=INTERNAL_TOKEN)
+        self.assertEqual(resp.status_code, 404)
+
+
+@override_settings(CHARPLOT_INTERNAL_TOKEN=INTERNAL_TOKEN)
+class KbDeletedDocIdsEndpointTests(TestCase):
+    """GET /kb/{id}/deleted-doc-ids/: 检索软删过滤 (立即生效, Q18c)."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.kb = make_kb()
+        self.docs = upload_files(
+            self.kb, [("a.pdf", b"pdf"), ("b.md", b"md"), ("c.txt", b"txt")]
+        )
+
+    def url(self):
+        return f"/api/charplot/kb/{self.kb.id}/deleted-doc-ids/"
+
+    def test_empty_when_none_deleted(self):
+        resp = self.client.get(self.url(), HTTP_X_INTERNAL_TOKEN=INTERNAL_TOKEN)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json(), {"deleted_doc_ids": []})
+
+    def test_lists_soft_deleted_only(self):
+        self.kb.documents.filter(pk=self.docs[1].pk).update(is_deleted=True)
+        resp = self.client.get(self.url(), HTTP_X_INTERNAL_TOKEN=INTERNAL_TOKEN)
+        self.assertEqual(resp.json(), {"deleted_doc_ids": [self.docs[1].id]})
+
+    def test_restored_doc_removed_from_list(self):
+        """恢复的文档自动从软删集合移除 → 检索重新命中 (无需重建)."""
+        self.kb.documents.filter(pk=self.docs[0].pk).update(is_deleted=True)
+        self.kb.documents.filter(pk=self.docs[2].pk).update(is_deleted=True)
+        resp = self.client.get(self.url(), HTTP_X_INTERNAL_TOKEN=INTERNAL_TOKEN)
+        self.assertEqual(
+            set(resp.json()["deleted_doc_ids"]), {self.docs[0].id, self.docs[2].id}
+        )
+
+        # 恢复走服务层 (管理端点 is_staff 认证, 此处只测软删清单联动);
+        # queryset.update 是库级直改, 实例需 refresh 才能被服务层感知
+        self.docs[0].refresh_from_db()
+        restore_kb_document(self.docs[0])
+        resp = self.client.get(self.url(), HTTP_X_INTERNAL_TOKEN=INTERNAL_TOKEN)
+        self.assertEqual(resp.json()["deleted_doc_ids"], [self.docs[2].id])
+
+    def test_missing_token_forbidden(self):
+        resp = self.client.get(self.url())
+        self.assertEqual(resp.status_code, 403)
+
+    def test_unknown_kb_404(self):
+        resp = self.client.get(
+            "/api/charplot/kb/9999/deleted-doc-ids/",
+            HTTP_X_INTERNAL_TOKEN=INTERNAL_TOKEN,
+        )
+        self.assertEqual(resp.status_code, 404)

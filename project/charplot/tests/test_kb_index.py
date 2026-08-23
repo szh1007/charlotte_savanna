@@ -1,55 +1,17 @@
-"""知识库索引任务测试 (Issue 09, DESIGN §4.2 /ai/kb/index, CONTRACT.md §6.5).
+"""知识库索引任务测试 (Issue 09/10, DESIGN §4.2 /ai/kb/index, CONTRACT §6.5).
 
 覆盖: 成功流 (parsing → chunking x N → embedding x N → indexing → done,
-per-doc 假进度 + 落库) / 未抢占 (no_documents/offline/indexing) 直接
-done 不落库 / claim 异常 → error + 失败标记 / save 异常 → error 兜底 /
-task_type == "kb-index". 内部端点 (Django 侧) 由 monkeypatch 隔离.
+per-doc 真实进度 + 切分/向量化/入库行结构 + 全量重建落库) / 未抢占
+(no_documents/offline/indexing) 直接 done 不落库 / claim 异常 → error +
+失败标记 / save 异常 → error 兜底 / task_type == "kb-index". 内部端点
+(Django) 与 RAG 外部依赖 (embedding/Milvus) 由 monkeypatch 隔离
+(真实索引见 test_kb_rag.py, 此处验证任务契约与 SSE 阶段序列不变).
 """
 
-import pytest
 from tests.conftest import wait_task_status
 from tests.test_tasks_sse import read_stream
 
 from project.charplot.api import tasks
-
-# claim 返回的文档清单 (2 个有效文档)
-KB_DOCUMENTS = [
-    {
-        "id": 1,
-        "title": "a.pdf",
-        "filename": "a.pdf",
-        "file_size": 1024,
-        "extension": "pdf",
-    },
-    {
-        "id": 2,
-        "title": "b.md",
-        "filename": "b.md",
-        "file_size": 512,
-        "extension": "md",
-    },
-]
-
-
-@pytest.fixture
-def mock_kb_endpoints(monkeypatch):
-    """隔离索引内部端点, 记录 claim / save / failed 调用."""
-    calls = {"claim": [], "save": [], "failed": []}
-
-    async def fake_claim(kb_id, task_id):
-        calls["claim"].append((kb_id, task_id))
-        return True, {"documents": KB_DOCUMENTS}
-
-    async def fake_save(kb_id, task_id):
-        calls["save"].append((kb_id, task_id))
-
-    async def fake_failed(kb_id, task_id, error_message):
-        calls["failed"].append((kb_id, task_id, error_message))
-
-    monkeypatch.setattr(tasks, "claim_kb_index", fake_claim)
-    monkeypatch.setattr(tasks, "save_kb_index_success", fake_save)
-    monkeypatch.setattr(tasks, "mark_kb_index_failed", fake_failed)
-    return calls
 
 
 def start_index(client, kb_id=1):
@@ -58,8 +20,9 @@ def start_index(client, kb_id=1):
     return resp.json()["task_id"]
 
 
-def test_index_success_stream_and_save(client, mock_kb_endpoints):
-    """成功流: per-doc 假进度 (切分/向量化各 N 段) → 落库 → done."""
+def test_index_success_stream_and_save(client, mock_kb_endpoints, fake_rag_deps):
+    """成功流: per-doc 真实进度 (切分/向量化各 N 段) + 全量重建入库 → done."""
+    _, milvus_client = fake_rag_deps
     task_id = start_index(client)
     assert wait_task_status(client, task_id, "done")
 
@@ -80,12 +43,27 @@ def test_index_success_stream_and_save(client, mock_kb_endpoints):
     progresses = [e[2]["progress"] for e in events]
     assert progresses == sorted(progresses)
     # per-doc 消息带文件名
-    assert "a.pdf" in events[1][2]["message"]
+    assert "a.txt" in events[1][2]["message"]
 
     # 落库恰好 1 次 (kb_id, task_id)
     assert len(mock_kb_endpoints["save"]) == 1
     assert mock_kb_endpoints["save"][0] == (1, task_id)
     assert mock_kb_endpoints["failed"] == []
+
+    # 全量重建: collection 已创建 (cp_kb_{id}) + 入库行结构完整
+    assert milvus_client.collections == {"cp_kb_1"}
+    rows = milvus_client.inserted
+    assert len(rows) > 0
+    row = rows[0]
+    assert row["kb_id"] == 1
+    assert row["doc_id"] in (1, 2)
+    assert row["id"] == f"{row['doc_id']}-{row['chunk_index']}"
+    assert row["valid"] is True  # 有效标记 (软删 filter 兜底)
+    assert row["content"]
+    assert row["dense_vector"] == [0.1] * 1024
+    assert row["sparse_vector"] == {1: 0.5}
+    # metadata 保留来源: 两文档的 doc_id 都出现在入库行
+    assert {r["doc_id"] for r in rows} == {1, 2}
 
 
 def test_task_type_is_kb_index(client, mock_kb_endpoints):

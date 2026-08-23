@@ -54,6 +54,34 @@ class KbIndexResponse(BaseModel):
     task_id: str
 
 
+class KbSearchRequest(BaseModel):
+    """混合检索 (DESIGN §4.2 POST /ai/kb/search, QA.md Q7): 片段检索.
+
+    top_k 可选 (默认精排后 Top 5); kb 未就绪/软删文档自动过滤.
+    """
+
+    kb_id: int
+    query: str
+    top_k: int | None = None
+
+
+class KbSearchChunk(BaseModel):
+    """单条检索片段 (带来源 metadata, 供生成阶段引用与来源展示)."""
+
+    doc_id: int
+    title: str
+    filename: str
+    chunk_index: int
+    content: str
+    score: float = 0.0
+
+
+class KbSearchResponse(BaseModel):
+    """检索结果 (片段列表, 不是答案 - 生成由调用方 LLM 完成)."""
+
+    chunks: list[KbSearchChunk]
+
+
 class TaskStatusOut(BaseModel):
     """任务状态 (DESIGN §4.2): {status, stage, progress, error_message?}.
 

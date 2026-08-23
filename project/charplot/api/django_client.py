@@ -234,3 +234,50 @@ async def mark_kb_index_failed(kb_id: int, task_id: str, error_message: str) -> 
         )
     except Exception as exc:
         logger.warning("mark_kb_index_failed 调用失败 (kb=%s): %s", kb_id, exc)
+
+
+async def fetch_kb_document_content(doc_id: int) -> tuple[str, bytes]:
+    """取知识库文档文件二进制 (内部端点, CONTRACT.md §6.6, Issue 10).
+
+    返回 (filename, bytes); 4xx (契约/无文件) 与网络错误抛 RuntimeError,
+    由索引任务转 error (前端可重试). 与 fetch_journey_content 同构,
+    解析在 FastAPI 侧完成.
+    """
+    path = f"/api/charplot/kb/documents/{doc_id}/content/"
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+            resp = await client.get(
+                f"{config.DJANGO_API_BASE}{path}", headers=_internal_headers()
+            )
+    except httpx.HTTPError as exc:
+        raise RuntimeError(f"取知识库文档内容失败 (网络): {exc}") from exc
+    if resp.status_code != 200:
+        detail = resp.text[:200] if resp.text else resp.status_code
+        raise RuntimeError(f"取知识库文档内容失败 ({resp.status_code}): {detail}")
+    body = resp.json()
+    try:
+        raw = base64.b64decode(body["content_base64"])
+    except (KeyError, ValueError) as exc:
+        raise RuntimeError(f"知识库文档内容响应异常: {exc}") from exc
+    return body.get("filename", "document"), raw
+
+
+def fetch_kb_deleted_doc_ids(kb_id: int) -> list[int]:
+    """取知识库软删文档 id 集合 (内部端点, Issue 10 检索过滤用).
+
+    软删立即生效 (Q18c): 检索时 (同步链路 search_kb/KbSource) 实时查询
+    Django, 构造 Milvus filter 排除. 网络/4xx 错误抛 RuntimeError
+    (检索接口转 503, 不静默返回脏数据).
+    """
+    path = f"/api/charplot/kb/{kb_id}/deleted-doc-ids/"
+    try:
+        with httpx.Client(timeout=_TIMEOUT) as client:
+            resp = client.get(
+                f"{config.DJANGO_API_BASE}{path}", headers=_internal_headers()
+            )
+    except httpx.HTTPError as exc:
+        raise RuntimeError(f"取软删文档列表失败 (网络): {exc}") from exc
+    if resp.status_code != 200:
+        detail = resp.text[:200] if resp.text else resp.status_code
+        raise RuntimeError(f"取软删文档列表失败 ({resp.status_code}): {detail}")
+    return [int(doc_id) for doc_id in resp.json().get("deleted_doc_ids", [])]

@@ -8,6 +8,8 @@ from .views_api import (
     JourneyListView,
     JourneyReportView,
     JourneyStatusView,
+    KbDeletedDocIdsView,
+    KbDocumentContentView,
     KnowledgeBaseDetailView,
     KnowledgeBaseDocumentRestoreView,
     KnowledgeBaseDocumentsView,
@@ -127,5 +129,16 @@ urlpatterns = [
         "kb/<int:pk>/index-failed/",
         KnowledgeBaseIndexFailedView.as_view(),
         name="kb-index-failed",
+    ),
+    # Issue 10 内部端点: 文档内容 (索引解析输入) / 软删清单 (检索过滤)
+    path(
+        "kb/documents/<int:pk>/content/",
+        KbDocumentContentView.as_view(),
+        name="kb-document-content",
+    ),
+    path(
+        "kb/<int:pk>/deleted-doc-ids/",
+        KbDeletedDocIdsView.as_view(),
+        name="kb-deleted-doc-ids",
     ),
 ]

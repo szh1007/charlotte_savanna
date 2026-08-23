@@ -38,7 +38,41 @@ LINK_FETCH_TIMEOUT = float(os.environ.get("CHARPLOT_LINK_FETCH_TIMEOUT", "10"))
 # LLM 分析/解构失败重试次数 (每次重试带上次错误反馈给模型修正)
 LLM_RETRIES = int(os.environ.get("CHARPLOT_LLM_RETRIES", "1"))
 
-# ---- 知识库索引任务 (Issue 09, stub) ----
-# 每个文档阶段的模拟延迟 (秒); 默认 0 = 零延迟 (per-doc 事件序列即进度),
-# 手动演示可设 0.15 观察渐进效果 (测试不设该 env, 天然不变慢)
-KB_STUB_STEP_SLEEP = float(os.environ.get("CHARPLOT_KB_STUB_STEP_SLEEP", "0"))
+# ---- RAG 全链路 (Issue 10, rag/ 模块) ----
+# Milvus 向量库地址 (与 deep_search 共用实例; 未配置时索引/检索不可用)
+MILVUS_URL = os.environ.get("MILVUS_URL", "http://localhost:19530")
+# Embedding 模型接入 (可切换抽象, rag/embeddings.py 工厂): 当前仅
+# bge-m3 (pymilvus BGEM3EmbeddingFunction, 本地模型稠密+稀疏一次出),
+# 新增模型实现 Embedder 协议并在 get_embedder 注册
+EMBEDDING_MODEL = os.environ.get("CHARPLOT_EMBEDDING_MODEL", "bge-m3")
+# bge-m3 本地模型路径/名称 (HuggingFace 名或本地目录), 设备与 fp16 加速
+EMBEDDING_MODEL_NAME = os.environ.get("CHARPLOT_EMBEDDING_MODEL_NAME", "BAAI/bge-m3")
+EMBEDDING_DEVICE = os.environ.get("CHARPLOT_EMBEDDING_DEVICE", "cpu")
+EMBEDDING_FP16 = os.environ.get("CHARPLOT_EMBEDDING_FP16", "false").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+# bge-m3 稠密向量维度 (collection schema 与查询向量维度校验用)
+EMBEDDING_DIM = int(os.environ.get("CHARPLOT_EMBEDDING_DIM", "1024"))
+# 文档切分参数 (按文档类型调优, rag/chunking.py; 默认 md/txt 档)
+CHUNK_SIZE = int(os.environ.get("CHARPLOT_CHUNK_SIZE", "500"))
+CHUNK_OVERLAP = int(os.environ.get("CHARPLOT_CHUNK_OVERLAP", "50"))
+# Rerank 模型 (必配链路, 抽象可切换): 本地 bge-reranker-v2-m3
+# (FlagReranker), 配置留空 = 降级不重排 (warning, 模型下载为主动行为)
+RERANKER_MODEL = os.environ.get("CHARPLOT_RERANKER_MODEL", "BAAI/bge-reranker-v2-m3")
+RERANKER_DEVICE = os.environ.get("CHARPLOT_RERANKER_DEVICE", "cpu")
+RERANKER_FP16 = os.environ.get("CHARPLOT_RERANKER_FP16", "false").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+# 检索参数: 混合召回量 (精排前) 与精排后 Top-K
+RETRIEVE_TOP_K = int(os.environ.get("CHARPLOT_RETRIEVE_TOP_K", "20"))
+RERANK_TOP_K = int(os.environ.get("CHARPLOT_RERANK_TOP_K", "5"))
+# Query rewriting: 检索前 LLM 改写 (rewrite 失败自动降级原 query, 不阻塞)
+QUERY_REWRITE = os.environ.get("CHARPLOT_QUERY_REWRITE", "true").lower() in (
+    "1",
+    "true",
+    "yes",
+)

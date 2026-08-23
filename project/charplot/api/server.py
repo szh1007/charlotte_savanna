@@ -20,6 +20,9 @@ from . import tasks as task_system
 from .schemas import (
     KbIndexRequest,
     KbIndexResponse,
+    KbSearchChunk,
+    KbSearchRequest,
+    KbSearchResponse,
     LevelGenerateRequest,
     LevelGenerateResponse,
     PipelineRequest,
@@ -93,11 +96,30 @@ async def generate_level_questions(req: LevelGenerateRequest):
 async def start_kb_index(req: KbIndexRequest):
     """知识库索引任务 (DESIGN §4.2 POST /ai/kb/index): 创建异步任务.
 
-    stub 索引 (Issue 09): 状态流转 + 假进度; 幂等/拒绝理由由 Django 侧
-    claim 保证 (索引中/下线/无文档 → 任务直接 done 跳过, 前端可刷新).
+    真实索引 (Issue 10): 解析 → 切分 → embedding → Milvus 入库, SSE
+    阶段进度可见; 幂等/拒绝理由由 Django 侧 claim 保证 (索引中/下线/
+    无文档 → 任务直接 done 跳过, 前端可刷新).
     """
     task_id = await task_system.create_kb_index_task(req.kb_id)
     return KbIndexResponse(task_id=task_id)
+
+
+@app.post("/ai/kb/search", response_model=KbSearchResponse)
+async def search_kb(req: KbSearchRequest):
+    """混合检索 + rerank (DESIGN §4.2, QA.md Q7): 片段检索, 不是答案.
+
+    全链路: query rewriting → 稠密+稀疏混合检索 (软删 filter 排除,
+    立即生效) → rerank 精排 → Top-K 片段. 供管道 A 解构 / C 出题
+    (Issue 11) 与调试调用.
+    """
+    from ..rag.retriever import search_kb as rag_search
+
+    try:
+        # 同步调用与 pipeline 内 LLM 调用同款 (单机自用项目, 不引入线程池)
+        chunks = rag_search(req.kb_id, req.query, req.top_k)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return KbSearchResponse(chunks=[KbSearchChunk(**chunk) for chunk in chunks])
 
 
 @app.get("/ai/tasks/{task_id}", response_model=TaskStatusOut)

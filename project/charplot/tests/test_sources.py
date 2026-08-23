@@ -9,7 +9,6 @@ from project.charplot.pipeline.sources import build_sources
 from project.charplot.pipeline.sources.base import SOURCE_DOCS, SOURCE_DOCUMENT
 from project.charplot.pipeline.sources.context7_source import Context7Source
 from project.charplot.pipeline.sources.document_source import DocumentSource
-from project.charplot.pipeline.sources.kb_source import KbSource
 
 
 def test_build_sources_without_tavily_key(monkeypatch):
@@ -57,11 +56,6 @@ def test_document_source_fallback_to_head():
     results = source.search("不存在的关键词xyz")
     assert results
     assert "第一段内容" in results[0].content
-
-
-def test_kb_source_returns_empty():
-    results = KbSource().search("任意查询")
-    assert results == []
 
 
 def test_context7_split_snippets_extracts_source_url():
