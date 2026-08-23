@@ -53,6 +53,9 @@ node_modules/
 
 # --- log 日志 ---
 */log
+*/logs
+**/log
+**/logs
 
 # --- pytest 缓存 ---
 .pytest_cache/
