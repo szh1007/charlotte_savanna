@@ -11,7 +11,7 @@ from datetime import timedelta
 
 from django.contrib.auth import get_user_model
 from django.db.models import Sum
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -361,3 +361,69 @@ class DashboardApiTests(TestCase):
         activity = self.client.get("/api/charplot/dashboard/activity/").data
         self.assertIn("duration_seconds", activity)
         self.assertIn("daily", activity)
+
+
+# ---------------------------------------------------------------------------
+# 状态总结聚合输入内部端点 (Issue 13, FastAPI → Django, DESIGN.md §4.2)
+# ---------------------------------------------------------------------------
+
+INTERNAL_TOKEN = "test-internal-token"
+
+
+@override_settings(CHARPLOT_INTERNAL_TOKEN=INTERNAL_TOKEN)
+class StatusSummaryInputApiTests(TestCase):
+    """聚合输入内部端点: X-Internal-Token 认证 + 用户隔离 + 结构透传.
+
+    LLM 状态总结 (POST /ai/report/summary) 的事实来源: FastAPI 经此端点
+    取指定用户的三块聚合 (与 Dashboard 用户端点同构), 用户不存在 → 404.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        self.user = create_user("alice")
+
+    def _url(self, user_id=None):
+        return f"/api/charplot/users/{user_id or self.user.id}/status-summary-input/"
+
+    def test_with_token_returns_three_aggregates(self):
+        journey, _, kps = make_journey(self.user)
+        kp = kps[0]
+        make_answered_level(self.user, journey, kp, [True, True, False])
+        resp = self.client.get(self._url(), HTTP_X_INTERNAL_TOKEN=INTERNAL_TOKEN)
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(set(body), {"mastery", "activity", "weakpoints"})
+        # 与三个聚合函数同构 (内部端点透传, Dashboard 用户端点同源数据)
+        self.assertEqual(body["mastery"], build_mastery_matrix(self.user))
+        self.assertEqual(body["activity"], build_activity_stats(self.user))
+        self.assertEqual(body["weakpoints"], build_weakpoint_list(self.user))
+
+    def test_without_token_forbidden(self):
+        resp = self.client.get(self._url())
+        self.assertEqual(resp.status_code, 403)
+
+    def test_wrong_token_forbidden(self):
+        resp = self.client.get(self._url(), HTTP_X_INTERNAL_TOKEN="wrong")
+        self.assertEqual(resp.status_code, 403)
+
+    def test_user_not_found_404(self):
+        resp = self.client.get(
+            "/api/charplot/users/99999/status-summary-input/",
+            HTTP_X_INTERNAL_TOKEN=INTERNAL_TOKEN,
+        )
+        self.assertEqual(resp.status_code, 404)
+
+    def test_user_isolation(self):
+        # bob 的数据不进入 alice 的聚合 (内部端点按 user_id 过滤,
+        # 与 Dashboard 用户端点同隔离语义)
+        other = create_user("bob")
+        journey, _, kps = make_journey(other)
+        make_answered_level(other, journey, kps[0], [False, False, False])
+        resp = self.client.get(self._url(), HTTP_X_INTERNAL_TOKEN=INTERNAL_TOKEN)
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["mastery"], {"journeys": []})
+        self.assertEqual(body["weakpoints"], {"weakpoints": []})
+        # activity 仅 profile 默认值 (streak 0), 不含 bob 的答题时长
+        self.assertEqual(body["activity"]["duration_seconds"], 0)
+        self.assertEqual(body["activity"]["cleared_levels"], 0)

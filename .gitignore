@@ -52,10 +52,11 @@ node_modules/
 .langgraph*
 
 # --- log 日志 ---
-*/log
-*/logs
-**/log
-**/logs
+log/
+logs/
+
+# --- assets 资料 ---
+assets/
 
 # --- pytest 缓存 ---
 .pytest_cache/

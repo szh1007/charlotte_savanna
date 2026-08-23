@@ -37,6 +37,7 @@ from .views_api import (
     RegisterView,
     SessionView,
     SkillTreeView,
+    StatusSummaryInputView,
     StreakFreezeView,
     TopicsView,
 )
@@ -162,5 +163,11 @@ urlpatterns = [
         "dashboard/weakpoints/",
         DashboardWeakpointsView.as_view(),
         name="dashboard-weakpoints",
+    ),
+    # 状态总结聚合输入 (Issue 13, FastAPI → Django, X-Internal-Token 认证)
+    path(
+        "users/<int:pk>/status-summary-input/",
+        StatusSummaryInputView.as_view(),
+        name="status-summary-input",
     ),
 ]

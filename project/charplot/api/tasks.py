@@ -66,7 +66,7 @@ def get_redis() -> Redis:
     global _redis
     if _redis is None:
         _redis = Redis.from_url(
-            os.environ.get("REDIS_URL", "redis://127.0.0.1:6379/0"),
+            os.environ.get("CHARPLOT_REDIS_URL", "redis://127.0.0.1:6379/4"),
             decode_responses=True,
             socket_timeout=None,
         )

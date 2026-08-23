@@ -302,3 +302,30 @@ def fetch_kb_deleted_doc_ids(kb_id: int) -> list[int]:
         detail = resp.text[:200] if resp.text else resp.status_code
         raise RuntimeError(f"取软删文档列表失败 ({resp.status_code}): {detail}")
     return [int(doc_id) for doc_id in resp.json().get("deleted_doc_ids", [])]
+
+
+class UserNotFoundError(RuntimeError):
+    """内部端点用户不存在 (Issue 13): FastAPI 转 404, 与数据/服务错误区分."""
+
+
+async def fetch_status_summary_input(user_id: int) -> dict:
+    """取状态总结聚合输入 (内部端点, Issue 13, DESIGN.md §4.2).
+
+    返回 {mastery, activity, weakpoints} (与 Dashboard 三个用户端点同构,
+    按 user_id 查询实现用户隔离). 用户不存在 → UserNotFoundError (转 404);
+    网络 / 其他 4xx / 5xx → RuntimeError (转 502, 前端可重试).
+    """
+    path = f"/api/charplot/users/{user_id}/status-summary-input/"
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+            resp = await client.get(
+                f"{config.DJANGO_API_BASE}{path}", headers=_internal_headers()
+            )
+    except httpx.HTTPError as exc:
+        raise RuntimeError(f"取状态总结聚合失败 (网络): {exc}") from exc
+    if resp.status_code == 404:
+        raise UserNotFoundError(f"用户 {user_id} 不存在")
+    if resp.status_code != 200:
+        detail = resp.text[:200] if resp.text else resp.status_code
+        raise RuntimeError(f"取状态总结聚合失败 ({resp.status_code}): {detail}")
+    return resp.json()

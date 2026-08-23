@@ -109,3 +109,19 @@ class PipelineEvent(BaseModel):
     stage: str
     progress: int
     message: str
+
+
+class StatusSummaryRequest(BaseModel):
+    """LLM 状态总结请求 (Issue 13, DESIGN.md §4.2): {user_id} → {summary}.
+
+    user_id 定位聚合数据的用户 (FastAPI 经内部端点取, 单机个人项目
+    前端直调, 与现有 /ai/* 接口同认证模型).
+    """
+
+    user_id: int
+
+
+class StatusSummaryResponse(BaseModel):
+    """LLM 状态总结响应: markdown 文字报告 (强项 / 弱项 / 学习建议)."""
+
+    summary: str

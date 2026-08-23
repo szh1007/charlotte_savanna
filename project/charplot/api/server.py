@@ -6,6 +6,7 @@ Django 侧 = 状态与数据 (app/charplot), FastAPI 侧 = AI 能力, 二者通�
 HTTP + 共享 MySQL/Redis 通信.
 """
 
+import logging
 import os
 from datetime import datetime
 
@@ -13,10 +14,21 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from langchain_core.messages import HumanMessage, SystemMessage
 from redis.asyncio import Redis
+
+from ..pipeline import llm
+from ..prompt.status_summary import (
+    STATUS_SUMMARY_SYSTEM_PROMPT,
+    build_status_summary_prompt,
+)
 
 # .env 加载由 api/config.py 模块顶部完成 (首个被 import 的配置模块), 本模块不重复
 from . import tasks as task_system
+from .django_client import (
+    UserNotFoundError,
+    fetch_status_summary_input,
+)
 from .schemas import (
     KbIndexRequest,
     KbIndexResponse,
@@ -27,8 +39,12 @@ from .schemas import (
     LevelGenerateResponse,
     PipelineRequest,
     PipelineResponse,
+    StatusSummaryRequest,
+    StatusSummaryResponse,
     TaskStatusOut,
 )
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="CharPlot AI Service", version="0.1.0")
 
@@ -54,7 +70,7 @@ async def health():
     redis_status = "ok"
     try:
         client = Redis.from_url(
-            os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0"),
+            os.getenv("CHARPLOT_REDIS_URL", "redis://127.0.0.1:6379/4"),
             decode_responses=True,
         )
         await client.ping()
@@ -69,6 +85,40 @@ async def health():
         "time": datetime.now().isoformat(),
     }
     return payload
+
+
+@app.post("/ai/report/summary", response_model=StatusSummaryResponse)
+async def status_summary(req: StatusSummaryRequest):
+    """LLM 状态总结 (Issue 13, DESIGN.md §4.2 步骤 13): 聚合 → 文字报告.
+
+    同步调用 (单次 LLM 生成, 不落库, 可重复生成; 前端加载态 + 失败重试).
+    聚合事实经内部端点从 Django 侧权威获取 (按 user_id 隔离). 错误语义:
+    用户不存在 → 404; 取聚合数据失败 → 502; LLM 未配置 → 503;
+    LLM 调用失败 → 502 (均可在修复后重试).
+    """
+    try:
+        aggregate = await fetch_status_summary_input(req.user_id)
+    except UserNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    try:
+        model = llm.get_chat_model()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    try:
+        resp = await model.ainvoke(
+            [
+                SystemMessage(content=STATUS_SUMMARY_SYSTEM_PROMPT),
+                HumanMessage(content=build_status_summary_prompt(aggregate)),
+            ]
+        )
+    except Exception as exc:
+        logger.exception("状态总结失败 (user=%s)", req.user_id)
+        raise HTTPException(status_code=502, detail=f"生成状态总结失败: {exc}") from exc
+    return StatusSummaryResponse(summary=str(resp.content))
 
 
 @app.post("/ai/pipeline", response_model=PipelineResponse)

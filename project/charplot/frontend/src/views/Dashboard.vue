@@ -8,6 +8,7 @@ import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
   ApiError,
+  generateStatusSummary,
   getActivityStats,
   getMasteryMatrix,
   getWeakpoints,
@@ -15,11 +16,39 @@ import {
   type MasteryJourney,
   type Weakpoint,
 } from '@/api/client'
+import MarkdownText from '@/components/MarkdownText.vue'
+import { useAuth } from '@/stores/auth'
+
+const { state: auth } = useAuth()
 
 const loading = ref(true)
 const journeys = ref<MasteryJourney[]>([])
 const activity = ref<ActivityStats | null>(null)
 const weakpoints = ref<Weakpoint[]>([])
+
+// AI 学习总结 (Issue 13): 生成按钮 + markdown 报告, 可重复生成
+const summaryText = ref('')
+const generating = ref(false)
+
+/** 是否有学习数据 (掌握度与易错清单同为空 = 从未答题) → 无数据禁用生成. */
+const hasLearningData = computed(
+  () => journeys.value.length > 0 || weakpoints.value.length > 0,
+)
+
+/** 生成当前状态分析报告 (FastAPI LLM 同步接口, 失败提示后可重试). */
+async function generateSummary() {
+  if (!auth.user || generating.value) return
+  generating.value = true
+  try {
+    const { summary } = await generateStatusSummary(auth.user.id)
+    summaryText.value = summary
+  } catch (e) {
+    summaryText.value = ''
+    ElMessage.error(e instanceof ApiError ? e.message : '状态总结生成失败, 请稍后重试')
+  } finally {
+    generating.value = false
+  }
+}
 
 onMounted(async () => {
   try {
@@ -125,6 +154,46 @@ const priorityMeta: Record<Weakpoint['priority_level'], { label: string; cls: st
           <span class="kpi-label">连胜</span>
           <span class="kpi-value kpi-flame">{{ activity.streak }}</span>
           <span class="kpi-sub">纪录 {{ activity.max_streak }}</span>
+        </div>
+      </section>
+
+      <!-- AI 学习总结: 点击生成当前状态分析 (Issue 13, PRD F-4) -->
+      <section class="panel summary-panel" aria-label="AI 学习总结">
+        <header class="panel-head summary-head">
+          <div>
+            <h2 class="panel-title">AI 学习总结</h2>
+            <p class="panel-desc">
+              基于统计事实生成强项 / 弱项 / 学习建议, 可重复生成
+            </p>
+          </div>
+          <el-button
+            type="primary"
+            round
+            :loading="generating"
+            :disabled="!hasLearningData"
+            @click="generateSummary"
+          >
+            {{ generating ? '正在分析…' : summaryText ? '重新生成' : '生成当前状态分析' }}
+          </el-button>
+        </header>
+
+        <div v-if="generating" class="summary-loading" aria-label="正在生成状态总结">
+          <el-skeleton :rows="4" animated />
+        </div>
+
+        <!-- 报告卡片: 顶部渐变细条为签名元素 (与趋势柱渐变同族) -->
+        <div v-else-if="summaryText" class="summary-card">
+          <MarkdownText :text="summaryText" />
+        </div>
+
+        <div v-else class="empty summary-empty">
+          <p class="empty-emoji" aria-hidden="true">💡</p>
+          <p v-if="hasLearningData" class="empty-detail">
+            点击右上角按钮, 生成基于当前统计的学习状态分析报告
+          </p>
+          <p v-else class="empty-detail">
+            还没有答题数据, 先去闯一关再回来生成总结吧
+          </p>
         </div>
       </section>
 
@@ -378,6 +447,58 @@ const priorityMeta: Record<Weakpoint['priority_level'], { label: string; cls: st
   margin: 4px 0 0;
   font-size: 12px;
   color: var(--cp-ink-soft);
+}
+
+/* ---- AI 学习总结 (Issue 13) ---- */
+.summary-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+/* 报告卡片签名: 顶部粉→浅紫渐变细条 (与趋势柱渐变同族), 其余保持安静 */
+.summary-card {
+  position: relative;
+  padding: 18px 20px 6px;
+  border: 1px solid rgba(251, 114, 153, 0.14);
+  border-radius: var(--cp-radius-sm);
+  background: var(--cp-primary-soft);
+}
+
+.summary-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 20px;
+  right: 20px;
+  height: 3px;
+  border-radius: 0 0 3px 3px;
+  background: linear-gradient(90deg, var(--cp-primary), var(--cp-accent-lilac));
+}
+
+/* 三段标题 (## 强项 / ## 弱项 / ## 学习建议): 粉左色条, 报告骨架一眼可见 */
+.summary-card :deep(.md h3) {
+  margin: 14px 0 8px;
+  padding-left: 10px;
+  border-left: 3px solid var(--cp-primary);
+}
+
+.summary-card :deep(.md h3:first-child) {
+  margin-top: 0;
+}
+
+.summary-card :deep(.md ul),
+.summary-card :deep(.md ol) {
+  padding-left: 20px;
+}
+
+.summary-loading {
+  padding: 4px 2px;
+}
+
+.summary-empty {
+  padding: 18px 10px;
 }
 
 /* ---- 掌握度矩阵 ---- */

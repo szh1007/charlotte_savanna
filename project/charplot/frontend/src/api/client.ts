@@ -789,3 +789,17 @@ export function getActivityStats(): Promise<ActivityStats> {
 export function getWeakpoints(): Promise<{ weakpoints: Weakpoint[] }> {
   return request('/api/charplot/dashboard/weakpoints/')
 }
+
+/**
+ * LLM 状态总结 (POST /ai/report/summary, Issue 13, DESIGN.md §4.2).
+ * 聚合在 Django 侧权威获取, FastAPI 只做 LLM 生成 (同步, 可重复生成).
+ * 返回 markdown 报告 (强项 / 弱项 / 学习建议 三段), 由 MarkdownText 渲染.
+ */
+export function generateStatusSummary(
+  userId: number,
+): Promise<{ summary: string }> {
+  return request('/ai/report/summary', {
+    method: 'POST',
+    body: { user_id: userId },
+  })
+}

@@ -9,7 +9,7 @@
 import base64
 import logging
 
-from django.contrib.auth import login, logout
+from django.contrib.auth import get_user_model, login, logout
 from django.db import connection
 from django.db.models import Count, Q
 from django.shortcuts import get_object_or_404
@@ -904,3 +904,25 @@ class DashboardWeakpointsView(APIView):
 
     def get(self, request):
         return Response(build_weakpoint_list(request.user))
+
+
+class StatusSummaryInputView(APIView):
+    """状态总结聚合输入 (内部端点, FastAPI → Django, Issue 13, DESIGN.md §4.2).
+
+    LLM 状态总结 (POST /ai/report/summary) 的事实来源: FastAPI 经此端点
+    取指定用户的掌握度 / 活动统计 / 易错清单聚合 (与 Dashboard 三个用户
+    端点同构, 按 user_id 查询实现用户隔离). 用户不存在 → 404.
+    """
+
+    authentication_classes = []
+    permission_classes = [IsInternalService]
+
+    def get(self, request, pk):
+        user = get_object_or_404(get_user_model(), pk=pk)
+        return Response(
+            {
+                "mastery": build_mastery_matrix(user),
+                "activity": build_activity_stats(user),
+                "weakpoints": build_weakpoint_list(user),
+            }
+        )

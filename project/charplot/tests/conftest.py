@@ -1,17 +1,18 @@
 """FastAPI 侧测试基建 (Issue 03).
 
-环境隔离: 测试专用 Redis db 15 (不清 0 库) + stub 阶段零延迟加速;
-Django 落库由 monkeypatch 隔离 (Django 侧已有独立测试, 不触网).
+环境隔离: 测试专用 Redis db 15 (Redis 默认上限 16 库, 远离开发库 /4 与
+Django 库 /0, 每测试 flushdb 不影响开发环境任务状态) + stub 阶段零延迟
+加速; Django 落库由 monkeypatch 隔离 (Django 侧已有独立测试, 不触网).
 HTTP 客户端用 starlette TestClient (内置独立事件循环), 避免 pytest-asyncio
-循环与 Windows Proactor 的 socket 绑定问题; 后台任务跑在 TestClient
-portal 循环内, 每个测试前 flushdb 保证隔离.
+循环与 Windows Proactor 的 socket 绑定问题; 后台任务跑在 TestClient portal
+循环内, 每个测试前 flushdb 保证隔离.
 """
 
 import os
 import re
 import time
 
-os.environ["REDIS_URL"] = "redis://127.0.0.1:6379/15"
+os.environ["CHARPLOT_REDIS_URL"] = "redis://127.0.0.1:6379/15"
 os.environ["CHARPLOT_INTERNAL_TOKEN"] = "test-internal-token"
 
 import pytest
@@ -34,7 +35,7 @@ def flush_redis():
     portal 重建 (新循环), 不复用会触发 "Event loop is closed"; 注册表
     残留 Task 引用旧循环, 一并清空.
     """
-    r = redis.Redis.from_url(os.environ["REDIS_URL"])
+    r = redis.Redis.from_url(os.environ["CHARPLOT_REDIS_URL"])
     r.flushdb()
     r.close()
     tasks._redis = None

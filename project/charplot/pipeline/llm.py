@@ -13,13 +13,23 @@ _model = None
 
 
 def get_chat_model():
-    """惰性构建 ChatModel 单例 (DeepSeek, thinking 关闭)."""
+    """惰性构建 ChatModel 单例 (DeepSeek, thinking 关闭).
+
+    api_key / api_base 显式透传 (CHARPLOT_ 前缀配置), 不依赖 langchain
+    库级 DEEPSEEK_API_KEY / DEEPSEEK_API_BASE 环境变量读取; 留空时由库
+    兜底默认值 (如官方 base URL).
+    """
     global _model
     if _model is None:
         if not config.LLM_MODEL:
-            raise RuntimeError("未配置 DEEPSEEK_MODEL_NAME, 知识管道不可用")
-        _model = init_chat_model(
-            model=config.LLM_MODEL,
-            extra_body={"thinking": {"type": "disabled"}},
-        )
+            raise RuntimeError("未配置 CHARPLOT_DEEPSEEK_MODEL_NAME, 知识管道不可用")
+        kwargs = {
+            "model": config.LLM_MODEL,
+            "extra_body": {"thinking": {"type": "disabled"}},
+        }
+        if config.DEEPSEEK_API_KEY:
+            kwargs["api_key"] = config.DEEPSEEK_API_KEY
+        if config.DEEPSEEK_API_BASE:
+            kwargs["api_base"] = config.DEEPSEEK_API_BASE
+        _model = init_chat_model(**kwargs)
     return _model
