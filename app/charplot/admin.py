@@ -1,10 +1,13 @@
 from django.contrib import admin
 
 from .models import (
+    CharplotAttempt,
     CharplotChapter,
     CharplotJourney,
     CharplotKnowledgePoint,
+    CharplotLevel,
     CharplotProfile,
+    CharplotQuestion,
     CharplotUserEvent,
 )
 
@@ -75,3 +78,50 @@ class CharplotKnowledgePointAdmin(admin.ModelAdmin):
     list_display = ("id", "title", "chapter", "order", "error_score")
     list_select_related = ("chapter__journey",)
     search_fields = ("title",)
+
+
+@admin.register(CharplotLevel)
+class CharplotLevelAdmin(admin.ModelAdmin):
+    """关卡后台管理 (Issue 05): 进度 / 剩余心 / 通关状态, 便于人工验证."""
+
+    list_display = (
+        "id",
+        "journey",
+        "knowledge_point",
+        "hearts",
+        "current_index",
+        "cleared",
+        "updated_at",
+    )
+    list_filter = ("cleared",)
+    list_select_related = ("journey", "knowledge_point")
+    search_fields = ("knowledge_point__title",)
+    readonly_fields = ("hearts", "current_index", "cleared")  # 由结算逻辑维护
+
+
+@admin.register(CharplotQuestion)
+class CharplotQuestionAdmin(admin.ModelAdmin):
+    """题目后台管理."""
+
+    list_display = ("id", "level", "question_type", "order", "content")
+    list_filter = ("question_type",)
+    list_select_related = ("level",)
+    search_fields = ("content",)
+
+
+@admin.register(CharplotAttempt)
+class CharplotAttemptAdmin(admin.ModelAdmin):
+    """答题记录后台管理 (Issue 05, 统计事实源)."""
+
+    list_display = ("id", "user", "level", "question", "is_correct", "created_at")
+    list_filter = ("is_correct",)
+    list_select_related = ("user", "level", "question")
+    search_fields = ("user__username",)
+    readonly_fields = (
+        "user",
+        "level",
+        "question",
+        "is_correct",
+        "user_answer",
+        "duration",
+    )

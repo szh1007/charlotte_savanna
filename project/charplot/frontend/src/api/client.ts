@@ -281,9 +281,103 @@ export interface SkillTreeData {
   edges: SkillTreeEdge[]
 }
 
+// ---- 闯关答题 (Issue 05) ----
+
+/** 题型: 选择 / 判断 / 填空 (PRD D-3). */
+export type QuestionType = 'choice' | 'judge' | 'fill'
+
+/** 关卡状态: 已通关 / 心扣完失败 / 进行中 / 未开始. */
+export type LevelStatus = 'cleared' | 'failed' | 'in_progress' | 'pending'
+
+/** 题目载荷 (不含标准答案, 判分在后端; options 仅选择类型使用). */
+export interface Question {
+  id: number
+  question_type: QuestionType
+  content: string
+  options: string[]
+  order: number
+}
+
+/** 关卡列表项 (GET /api/charplot/journeys/{id}/levels/). */
+export interface LevelSummary {
+  id: number
+  kp_id: number
+  kp_title: string
+  chapter_title: string
+  question_count: number
+  hearts: number
+  current_index: number
+  cleared: boolean
+  status: LevelStatus
+}
+
+/** 通关结算奖励 (POST answer 的 reward 字段, 通关时非 null). */
+export interface LevelReward {
+  xp: number
+  coins: number
+  streak: number
+  max_streak: number
+  level: number
+  journey_cleared: boolean
+}
+
+/** 关卡详情 (GET /api/charplot/levels/{id}/): 进度/心 + 当前题. */
+export interface LevelDetail {
+  id: number
+  kp_id: number
+  kp_title: string
+  chapter_id: number
+  chapter_title: string
+  question_count: number
+  hearts: number
+  current_index: number
+  cleared: boolean
+  status: LevelStatus
+  /** 当前题; 通关/心扣完/已答完时为 null (前端渲染结算或重开视图). */
+  question: Question | null
+}
+
+/** 提交答案结果 (POST /api/charplot/levels/{id}/answer/). */
+export interface AnswerResult {
+  correct: boolean
+  explanation: string
+  sources: string[]
+  hearts: number
+  level_status: LevelStatus
+  cleared: boolean
+  reward: LevelReward | null
+  progress: { current_index: number; question_count: number }
+}
+
 /** 技能树图数据 (闯关地图页). */
 export function getSkillTree(journeyId: number): Promise<SkillTreeData> {
   return request(`/api/charplot/journeys/${journeyId}/skill-tree/`)
+}
+
+/** 关卡列表 (首次访问自动生成 stub 关卡, 后端幂等). */
+export function getLevels(journeyId: number): Promise<{ levels: LevelSummary[] }> {
+  return request(`/api/charplot/journeys/${journeyId}/levels/`)
+}
+
+/** 关卡详情 + 当前题 (断点续答定位源). */
+export function getLevel(levelId: number): Promise<LevelDetail> {
+  return request(`/api/charplot/levels/${levelId}/`)
+}
+
+/** 提交答案: 判分 + 讲解/来源 + 心动值扣减 + 通关结算. */
+export function answerQuestion(
+  levelId: number,
+  data: { question_id: number; answer: number[] | string[]; duration?: number },
+): Promise<AnswerResult> {
+  return request(`/api/charplot/levels/${levelId}/answer/`, {
+    method: 'POST',
+    body: data,
+  })
+}
+
+/** 重开关卡 (5 心扣完): 心与进度重置, 题目不变, Attempt 历史保留. */
+export function restartLevel(levelId: number): Promise<LevelDetail> {
+  return request(`/api/charplot/levels/${levelId}/restart/`, { method: 'POST' })
 }
 
 /** SSE 管道进度事件 (CONTRACT.md §2). */

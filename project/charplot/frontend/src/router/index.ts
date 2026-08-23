@@ -38,10 +38,17 @@ const router = createRouter({
       meta: { requiresAuth: true },
     },
     {
-      // 关卡入口 (Issue 04 占位 → Issue 05 答题页)
+      // 关卡入口 (Issue 05): 关卡列表 + 状态/进度
       path: '/journeys/:id/levels',
       name: 'level-list',
       component: () => import('@/views/LevelList.vue'),
+      meta: { requiresAuth: true },
+    },
+    {
+      // 答题页 (Issue 05): 答题 → 反馈 → 结算/重开, 断点续答
+      path: '/journeys/:id/levels/:levelId',
+      name: 'level-quiz',
+      component: () => import('@/views/QuizView.vue'),
       meta: { requiresAuth: true },
     },
   ],

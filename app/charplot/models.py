@@ -236,3 +236,146 @@ class CharplotKnowledgePoint(models.Model):
 
     def __str__(self):
         return f"charplot_knowledge_point({self.id}, {self.title})"
+
+
+class CharplotLevel(models.Model):
+    """关卡 (SPEC §8) - 挂知识点, 5-8 题, 3 分钟量级.
+
+    进度持久化字段: hearts 为本关剩余心动值 (5 心, 答错 -1, 扣完需重开),
+    current_index 为下一题下标 (0-based), 通关 = cleared. 中途退出再进
+    按这两个字段断点续答; 重开 = hearts/current_index 重置, 历史 Attempt 保留.
+    """
+
+    journey = models.ForeignKey(
+        CharplotJourney,
+        on_delete=models.CASCADE,
+        related_name="levels",
+        verbose_name="旅程",
+    )
+    knowledge_point = models.ForeignKey(
+        CharplotKnowledgePoint,
+        on_delete=models.CASCADE,
+        related_name="levels",
+        verbose_name="知识点",
+    )
+    hearts = models.PositiveIntegerField(default=5, verbose_name="剩余心动值")
+    current_index = models.PositiveIntegerField(default=0, verbose_name="下一题下标")
+    cleared = models.BooleanField(default=False, verbose_name="是否已通关")
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
+    updated_at = models.DateTimeField(auto_now=True, verbose_name="更新时间")
+
+    class Meta:
+        db_table = "charplot_level"
+        verbose_name = "CharPlot 关卡"
+        verbose_name_plural = verbose_name
+        # 知识点与关卡 1:N (大知识点拆多关, Issue 08 间隔复习), 允许重复
+        indexes = [
+            models.Index(
+                fields=["journey", "knowledge_point"],
+                name="idx_level_journey_kp",
+            )
+        ]
+        ordering = ["knowledge_point__order", "id"]
+
+    def __str__(self):
+        return f"charplot_level({self.id}, kp={self.knowledge_point_id})"
+
+
+class CharplotQuestion(models.Model):
+    """题目 (SPEC §8) - 选择 / 判断 / 填空; 含预生成讲解与来源引用位.
+
+    options 仅选择/判断类型使用 (判断 = 固定 [对, 错] 选项, 由前端内置);
+    answer 存 JSON: 选择 = 正确选项下标 int, 判断 = "true"/"false", 填空 =
+    可接受答案字符串数组 (归一化后模糊匹配). sources 为来源引用数组,
+    Issue 08 真实管道填充, 本票 stub 留空占位.
+    """
+
+    class QuestionType(models.TextChoices):
+        CHOICE = "choice", "选择"
+        JUDGE = "judge", "判断"
+        FILL = "fill", "填空"
+
+    level = models.ForeignKey(
+        CharplotLevel,
+        on_delete=models.CASCADE,
+        related_name="questions",
+        verbose_name="关卡",
+    )
+    question_type = models.CharField(
+        max_length=16, choices=QuestionType.choices, verbose_name="题型"
+    )
+    content = models.TextField(verbose_name="题干")
+    options = models.JSONField(default=list, blank=True, verbose_name="选项")
+    answer = models.JSONField(default=list, blank=True, verbose_name="标准答案")
+    # 选择=int / 判断=str / 填空=list[str], 判分按题型取用
+    explanation = models.TextField(blank=True, verbose_name="讲解")
+    sources = models.JSONField(default=list, blank=True, verbose_name="来源引用")
+    order = models.PositiveIntegerField(default=0, verbose_name="序号")
+
+    class Meta:
+        db_table = "charplot_question"
+        verbose_name = "CharPlot 题目"
+        verbose_name_plural = verbose_name
+        ordering = ["order", "id"]
+        indexes = [
+            models.Index(
+                fields=["level", "order"],
+                name="idx_question_level_order",
+            )
+        ]
+
+    def __str__(self):
+        return f"charplot_question({self.id}, {self.question_type})"
+
+
+class CharplotAttempt(models.Model):
+    """答题记录 (SPEC §8) - 逐题事实, 统计与分析的事实源.
+
+    关卡重开产生新记录, 历史 Attempt 保留不覆盖 (掌握度分析需要历史事实);
+    不做唯一约束. user_answer 存用户原始作答 (填空原文 / 选项下标 / 判断值),
+    duration 为作答耗时秒数 (前端计时的宽松参考, 后端不强制).
+    """
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="charplot_attempts",
+        verbose_name="用户",
+    )
+    level = models.ForeignKey(
+        CharplotLevel,
+        on_delete=models.CASCADE,
+        related_name="attempts",
+        verbose_name="关卡",
+    )
+    question = models.ForeignKey(
+        CharplotQuestion,
+        on_delete=models.CASCADE,
+        related_name="attempts",
+        verbose_name="题目",
+    )
+    is_correct = models.BooleanField(verbose_name="是否正确")
+    user_answer = models.JSONField(default=list, blank=True, verbose_name="用户作答")
+    duration = models.PositiveIntegerField(default=0, verbose_name="耗时(秒)")
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
+
+    class Meta:
+        db_table = "charplot_attempt"
+        verbose_name = "CharPlot 答题记录"
+        verbose_name_plural = verbose_name
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(
+                fields=["user", "-created_at"],
+                name="idx_attempt_user_created",
+            ),
+            models.Index(
+                fields=["level", "question"],
+                name="idx_attempt_level_question",
+            ),
+        ]
+
+    def __str__(self):
+        return (
+            f"charplot_attempt({self.user_id}, q={self.question_id}, {self.is_correct})"
+        )

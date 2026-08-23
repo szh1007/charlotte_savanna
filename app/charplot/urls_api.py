@@ -6,6 +6,10 @@ from .views_api import (
     JourneyGraphView,
     JourneyListView,
     JourneyStatusView,
+    LevelAnswerView,
+    LevelDetailView,
+    LevelListView,
+    LevelRestartView,
     LoginView,
     LogoutView,
     ProfileView,
@@ -34,6 +38,11 @@ urlpatterns = [
         SkillTreeView.as_view(),
         name="journey-skill-tree",
     ),
+    # 闯关答题 (Issue 05)
+    path("journeys/<int:pk>/levels/", LevelListView.as_view(), name="level-list"),
+    path("levels/<int:pk>/", LevelDetailView.as_view(), name="level-detail"),
+    path("levels/<int:pk>/answer/", LevelAnswerView.as_view(), name="level-answer"),
+    path("levels/<int:pk>/restart/", LevelRestartView.as_view(), name="level-restart"),
     # 内部端点 (FastAPI → Django, X-Internal-Token 认证)
     path("journeys/<int:pk>/graph/", JourneyGraphView.as_view(), name="journey-graph"),
     path(

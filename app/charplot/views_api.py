@@ -2,6 +2,7 @@
 
 账号体系 (Issue 02): 注册/登录/登出 + 会话探测 + 个人主页 + 连胜冻结兑换.
 旅程链路 (Issue 03): 创建/列表/详情 + FastAPI 内部落库端点 (X-Internal-Token).
+闯关答题 (Issue 05): 关卡列表/详情 + 提交答案 + 重开.
 """
 
 import logging
@@ -17,25 +18,34 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import CharplotJourney, CharplotProfile, CharplotUserEvent
+from .models import CharplotJourney, CharplotLevel, CharplotProfile, CharplotUserEvent
 from .permissions import IsInternalService
 from .serializers import (
+    AnswerRequestSerializer,
     CharplotProfileSerializer,
     JourneyCreateSerializer,
     JourneyDetailSerializer,
     JourneyListSerializer,
+    LevelDetailSerializer,
+    LevelListSerializer,
     UserLoginSerializer,
     UserRegisterSerializer,
 )
 from .services import (
     InsufficientCoinsError,
     JourneyGraphError,
+    LevelClearedError,
+    LevelFailedError,
+    LevelNotCurrentError,
     build_skill_tree,
     buy_streak_freeze,
     create_journey,
+    ensure_levels_for_journey,
     mark_journey_failed,
     record_event,
+    restart_level,
     save_journey_graph,
+    submit_answer,
 )
 
 logger = logging.getLogger(__name__)
@@ -237,8 +247,8 @@ class JourneyDetailView(APIView):
 class SkillTreeView(APIView):
     """技能树图数据 (DESIGN §4.1): 节点 (点亮状态/进度) + 依赖边.
 
-    闯关地图页渲染源 (PRD D-1); 点亮状态由服务层计算, 本期无通关数据
-    (Issue 05), 依赖未满足的知识点锁定, 无前置根节点可解锁.
+    闯关地图页渲染源 (PRD D-1); 点亮状态由服务层从关卡数据聚合计算
+    (Issue 05): 已通关点亮, 有关卡进行中 in_progress, 依赖未满足锁定.
     """
 
     permission_classes = [IsAuthenticated]
@@ -246,6 +256,94 @@ class SkillTreeView(APIView):
     def get(self, request, pk):
         journey = get_object_or_404(CharplotJourney, pk=pk, user=request.user)
         return Response(build_skill_tree(journey))
+
+
+class LevelListView(APIView):
+    """关卡列表 (DESIGN §4.1, GET /api/charplot/journeys/{id}/levels/).
+
+    懒创建: 首次进入为无关卡的知识点生成关卡 (stub 题目, Issue 05),
+    幂等, 图谱重生成新增的知识点自动补关卡. 全部关卡返回, 前端按需过滤.
+    """
+
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+
+    def get(self, request, pk):
+        journey = get_object_or_404(CharplotJourney, pk=pk, user=request.user)
+        ensure_levels_for_journey(journey)
+        levels = journey.levels.select_related(
+            "knowledge_point__chapter"
+        ).prefetch_related("questions")
+        return Response({"levels": LevelListSerializer(levels, many=True).data})
+
+
+def get_level_for_user(pk, user):
+    """关卡归属校验: 非本人旅程返回 404, 不泄露存在性 (同旅程详情)."""
+    return get_object_or_404(
+        CharplotLevel.objects.select_related("knowledge_point__chapter", "journey"),
+        pk=pk,
+        journey__user=user,
+    )
+
+
+class LevelDetailView(APIView):
+    """关卡详情 (Issue 05): 进度/心/当前题, 断点续答定位源.
+
+    中途退出再进 (PRD D-2 持久化): 后端从 current_index / hearts 续答,
+    前端直接渲染返回的当前题.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        level = get_level_for_user(pk, request.user)
+        return Response(LevelDetailSerializer(level).data)
+
+
+class LevelAnswerView(APIView):
+    """提交答案 (DESIGN §4.1, POST /api/charplot/levels/{id}/answer/).
+
+    判分 + 讲解/来源 + 心动值扣减 + 通关结算, 全部在服务层事务内完成;
+    业务异常 (已通关/心扣完/题目不匹配) 映射 400 中文 detail.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        level = get_level_for_user(pk, request.user)
+        serializer = AnswerRequestSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        data = serializer.validated_data
+        try:
+            result = submit_answer(
+                level=level,
+                question_id=data["question_id"],
+                answer=data["answer"],
+                duration=data.get("duration", 0),
+            )
+        except (LevelClearedError, LevelFailedError, LevelNotCurrentError) as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(result)
+
+
+class LevelRestartView(APIView):
+    """重开关卡 (POST /api/charplot/levels/{id}/restart/).
+
+    5 心扣完本关失败后重开: 心与进度重置 (题目不变, stub 确定性);
+    Attempt 历史保留不覆盖; 已通关关卡禁止重开 (防丢通关状态).
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        level = get_level_for_user(pk, request.user)
+        if level.cleared:
+            return Response(
+                {"detail": "本关已通关, 无需重开"}, status=status.HTTP_400_BAD_REQUEST
+            )
+        restart_level(level)
+        return Response(LevelDetailSerializer(level).data)
 
 
 class JourneyGraphView(APIView):
