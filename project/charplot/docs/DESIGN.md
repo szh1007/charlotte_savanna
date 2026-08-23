@@ -118,7 +118,7 @@ project/charplot/frontend/           # Vue 3 + Vite + TS 前端
 | POST | `/ai/kb/search` | 混合检索 + rerank（管道内部/调试） | `{kb_id, query}` → `{chunks[]}` |
 | POST | `/ai/report/summary` | LLM 状态总结（统计聚合 → 文字报告） | `{user_id}` → `{summary}` |
 
-**SSE 事件**（`event: pipeline-progress`）：`{task_id, stage, progress, message}`——阶段：`parsing → analyzing → searching → deconstructing → done/error`；索引任务：`parsing → chunking → embedding → indexing → done/error`。
+**SSE 事件**（`event: pipeline-progress`）：`{task_id, stage, progress, message}`——阶段：`parsing → analyzing → searching → deconstructing → done/error`；索引任务：`parsing → chunking → embedding → indexing → done/error`；出题任务（Issue 08）：`preparing → generating → saving → done/error`。任务 HASH 带 `task_type`（pipeline / level-generation），`GET /ai/tasks/{id}` 返回。
 
 ## 5. 业务规则（后端强制）
 

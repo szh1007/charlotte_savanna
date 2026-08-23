@@ -34,14 +34,16 @@
 
 ## 2. 任务与 SSE（FastAPI `/ai/*`）
 
-- 阶段：`parsing → analyzing → searching → deconstructing → done / error`，progress 单调递增（15 / 35 / 60 / 90 / 100）
-- `GET /ai/tasks/{id}` → `{task_id, status: running|done|error, stage, progress, error_message?}`；任务不存在（过期 / 服务重启）→ 404
+- **任务类型**（HASH 字段 `task_type`，`GET /ai/tasks/{id}` 返回）：
+  - `pipeline`：知识管道，阶段 `parsing → analyzing → searching → deconstructing → done / error`，progress 单调递增（15 / 35 / 60 / 90 / 100）
+  - `level-generation`（Issue 08）：出题任务，阶段 `preparing → generating → saving → done / error`（10 / 60 / 90 / 100），事件名统一 `pipeline-progress`（DESIGN §4.2：不同任务类型不同 stage 列表）
+- `GET /ai/tasks/{id}` → `{task_id, status: running|done|error, stage, progress, error_message?, task_type}`；任务不存在（过期 / 服务重启）→ 404
 - `GET /ai/tasks/{id}/events`（SSE）：
   - event 名 `pipeline-progress`，data `{task_id, stage, progress, message}`
   - 每帧带 `id: <递增序号>`（Redis LIST 下标）；断线重连客户端带 `Last-Event-ID`，服务端从增量续推，不丢事件
   - 终端事件（done / error）后流结束；客户端应主动关闭 EventSource
-- **失败语义**：落库写自动重试 1 次（transient 5xx / 连接错误）；任务级失败 → `journey.status=failed`，前端重试 = 重新 `POST /ai/pipeline`（同一 journey_id）
-- 任务持久化明确不做（DESIGN.md §8）：FastAPI 重启丢内存任务 → SSE 404 → 前端兜底「重新生成」
+- **失败语义**：落库写自动重试 1 次（transient 5xx / 连接错误）；任务级失败 → `journey.status=failed`（pipeline）/ 关卡 `questions_status=failed`（level-generation，前端「生成失败 · 重试」），前端重试 = 重新 POST 对应端点（同一 journey_id）
+- 任务持久化明确不做（DESIGN.md §8）：FastAPI 重启丢内存任务 → SSE 404 → 前端兜底「重新生成」；出题任务丢失时关卡 generating 状态超过 10 分钟视为陈旧，可重新抢占
 
 ## 3. 内部端点（FastAPI → Django，服务间认证）
 
@@ -49,6 +51,15 @@
 - `POST /api/charplot/journeys/{id}/graph/` `{task_id, graph}` → 200 `{status: "ready"}`；契约校验失败 → 400 `{detail: 中文}`
 - `POST /api/charplot/journeys/{id}/status/` `{task_id, status: "failed", error_message}` → 200 `{status: "failed"}`
 - **幂等**：图谱落库先删后建（事务内），重复调用不产生重复行；重试只会发生在 failed 旅程（无答题数据，Attempt / Level 是 Issue 05 产物）
+
+### 3.1 出题内部端点（Issue 08，均 X-Internal-Token 认证）
+
+- `POST /api/charplot/journeys/{id}/level-generation/` `{task_id, level_seq}` → 抢占 + 出题输入：
+  - `200 {claimed: true, input: {journey_id, level_id, level_seq, level_type, difficulty, question_count, new_count, kp, chapter, kp_infos, review_questions}}`
+  - `200 {claimed: false, reason: "ready"|"generating", task_id?}`（幂等跳过；generating 超 10 分钟视为陈旧可重新抢占）
+  - `review_questions` 为间隔复习题（易错分 × 时间衰减 Top 20%），**含完整答案**，仅内部传递（答案永不直达前端）；复习题固定置于落库题目末尾
+- `POST /api/charplot/journeys/{id}/level-generation/questions/` `{task_id, level_seq, questions: [...]}` → `200 {status: "ready"}`；逐题校验失败 → 400 `{detail: 中文}`；有 Attempt 的关卡 update-in-place（保历史），无 Attempt delete+create
+- `POST /api/charplot/journeys/{id}/level-generation/failed/` `{task_id, level_seq, error_message}` → `200 {status: "failed"}`（关卡 `questions_status=failed`，前端可重试）
 
 ## 4. 旅程状态与列表
 

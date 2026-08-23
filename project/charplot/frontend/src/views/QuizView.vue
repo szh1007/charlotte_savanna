@@ -1,18 +1,24 @@
 <script setup lang="ts">
-// 闯关答题页 (Issue 05, PRD D-2~D-5): 答题 → 即时反馈 (讲解/来源) →
+// 闯关答题页 (Issue 05/08, PRD D-2~D-5): 答题 → 即时反馈 (讲解/来源) →
 // 答错扣心 (温和鼓励动画) → 通关结算 (XP/币/连胜/彩花) / 5 心扣完重开.
+// Issue 08 渐进生成: 题目未就绪时展示生成进度 (SSE), 失败可重试;
+// 学当前关时后台预生成下一关 (进入关卡与通关时触发, 进入下一关零等待).
 // 断点续答: 每次进入/下一题都从后端拉取当前题 (current_index 定位),
 // 中途退出再进自动续答; 进度/剩余心持久化在后端 (charplot_level).
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
   ApiError,
   answerQuestion,
   getLevel,
+  getLevels,
   restartLevel,
+  startLevelGeneration,
+  subscribePipeline,
   type AnswerResult,
   type LevelDetail,
+  type PipelineEvent,
 } from '@/api/client'
 import Confetti from '@/components/Confetti.vue'
 import HeartsBar from '@/components/HeartsBar.vue'
@@ -25,13 +31,24 @@ const { refreshProfile } = useAuth()
 const journeyId = computed(() => Number(route.params.id))
 const levelId = computed(() => Number(route.params.levelId))
 
-type Phase = 'loading' | 'answering' | 'feedback' | 'cleared' | 'failed'
+type Phase =
+  | 'loading'
+  | 'answering'
+  | 'feedback'
+  | 'cleared'
+  | 'failed'
+  | 'generating'
+  | 'generation_failed'
+  | 'locked'
 
 const detail = ref<LevelDetail | null>(null)
 const phase = ref<Phase>('loading')
 const result = ref<AnswerResult | null>(null)
 const submitting = ref(false)
 const confettiBurst = ref(0)
+const genProgress = ref(0)
+const genStage = ref('')
+let closeSse: (() => void) | null = null
 
 // ---- 作答计时 (秒, 宽松参考; 提交后落库) ----
 let startedAt = Date.now()
@@ -55,14 +72,74 @@ const questionLabel = computed(() => {
   return `第 ${idx} 题 / 共 ${questionCount.value} 题`
 })
 
+/** 订阅出题生成进度 (SSE); done → 重新拉取关卡, error → 生成失败视图. */
+function subscribeGeneration(taskId: string) {
+  closeSse?.()
+  genProgress.value = 0
+  genStage.value = ''
+  closeSse = subscribePipeline(taskId, {
+    onEvent: (ev: PipelineEvent) => {
+      genProgress.value = ev.progress
+      genStage.value = ev.message
+      if (ev.stage === 'done') loadLevel()
+      else if (ev.stage === 'error') phase.value = 'generation_failed'
+    },
+  })
+}
+
+/** 触发生成本关题目 (渐进生成); 已就绪/生成中直接订阅或跳过.
+ * 返回是否已就绪可答题 (供调用方决定预生成下一关). */
+async function ensureGenerated(): Promise<boolean> {
+  const d = detail.value
+  if (!d) return false
+  if (d.questions_status === 'generating') {
+    if (d.latest_task_id) subscribeGeneration(d.latest_task_id)
+    phase.value = 'generating'
+    return false
+  }
+  if (d.questions_status === 'ready') {
+    phase.value = 'answering'
+    return true
+  }
+  try {
+    const { task_id } = await startLevelGeneration(journeyId.value, d.seq)
+    subscribeGeneration(task_id)
+    phase.value = 'generating'
+  } catch (e) {
+    ElMessage.error(e instanceof ApiError ? e.message : '题目生成启动失败, 请重试')
+    phase.value = 'generation_failed'
+  }
+  return false
+}
+
+/** 预生成下一关 (学当前关时后台生成, 进入下一关零等待). fire-and-forget. */
+async function pregenerateNext() {
+  try {
+    const { levels } = await getLevels(journeyId.value)
+    const next = levels.find((l) => l.seq === (detail.value?.seq ?? 0) + 1)
+    if (next && next.questions_status === 'pending') {
+      await startLevelGeneration(journeyId.value, next.seq)
+    }
+  } catch {
+    /* 预生成失败静默: 进入下一关时按渐进生成再触发 */
+  }
+}
+
 async function loadLevel() {
   phase.value = 'loading'
+  closeSse?.()
   try {
     detail.value = await getLevel(levelId.value)
     // 已通关 / 心扣完 → 直接进入对应视图, 不重复答题
     if (detail.value.status === 'cleared') phase.value = 'cleared'
     else if (detail.value.status === 'failed') phase.value = 'failed'
-    else phase.value = 'answering'
+    else if (detail.value.locked) phase.value = 'locked'
+    else {
+      // 题目未就绪 → 渐进生成 (或续订阅生成中任务); 就绪 → 直接答题
+      const ready = await ensureGenerated()
+      // 开始学当前关: 后台预生成下一关
+      if (ready) pregenerateNext()
+    }
   } catch (e) {
     ElMessage.error(e instanceof ApiError ? e.message : '关卡加载失败, 请稍后重试')
     phase.value = 'loading'
@@ -99,6 +176,8 @@ async function nextStep() {
   if (result.value?.cleared) {
     phase.value = 'cleared'
     confettiBurst.value += 1
+    // 通关 = 学完当前关 → 后台预生成下一关
+    pregenerateNext()
     return
   }
   if (result.value?.level_status === 'failed') {
@@ -123,6 +202,7 @@ async function onRestart() {
 const sources = computed(() => result.value?.sources ?? [])
 
 onMounted(loadLevel)
+onUnmounted(() => closeSse?.())
 </script>
 
 <template>
@@ -149,6 +229,36 @@ onMounted(loadLevel)
     <!-- 加载中 -->
     <section v-if="phase === 'loading'" class="panel">
       <el-skeleton :rows="4" animated />
+    </section>
+
+    <!-- 题目生成中 (Issue 08 渐进生成): SSE 进度, 完成后自动进入答题 -->
+    <section v-else-if="detail && phase === 'generating'" class="panel gen-card">
+      <p class="gen-emoji" aria-hidden="true">✨</p>
+      <h2 class="gen-title">正在生成题目</h2>
+      <p class="gen-detail">
+        {{ genStage || 'AI 正在基于本关知识点出题, 请稍候…' }}
+      </p>
+      <el-progress :percentage="genProgress" :stroke-width="10" class="gen-progress" />
+    </section>
+
+    <!-- 生成失败: 可重试 -->
+    <section v-else-if="detail && phase === 'generation_failed'" class="panel gen-card">
+      <p class="gen-emoji" aria-hidden="true">😿</p>
+      <h2 class="gen-title">题目生成失败</h2>
+      <p class="gen-detail">生成服务暂时不可用, 稍后重试即可, 进度不会丢失。</p>
+      <el-button type="primary" size="large" round @click="ensureGenerated">
+        重试生成
+      </el-button>
+    </section>
+
+    <!-- 未解锁 (前置章节 Boss 未通关, G-5) -->
+    <section v-else-if="detail && phase === 'locked'" class="panel gen-card">
+      <p class="gen-emoji" aria-hidden="true">🔒</p>
+      <h2 class="gen-title">关卡尚未解锁</h2>
+      <p class="gen-detail">请先通关上一章节的 Boss 挑战, 再回来继续冒险。</p>
+      <el-button size="large" round @click="router.push(`/journeys/${journeyId}/levels`)">
+        返回关卡列表
+      </el-button>
     </section>
 
     <!-- 答题 / 反馈 -->
@@ -411,6 +521,34 @@ onMounted(loadLevel)
 .next-btn {
   margin-top: 14px;
   width: 100%;
+}
+
+/* ---- 生成中 / 生成失败 / 锁定 (Issue 08) ---- */
+.gen-card {
+  margin-top: 8px;
+}
+
+.gen-emoji {
+  font-size: 42px;
+  margin: 0 0 6px;
+}
+
+.gen-title {
+  font-size: 20px;
+  font-weight: 800;
+  margin: 0 0 8px;
+  color: var(--cp-ink);
+}
+
+.gen-detail {
+  font-size: 13px;
+  color: var(--cp-ink-soft);
+  margin: 0 0 18px;
+}
+
+.gen-progress {
+  max-width: 320px;
+  margin: 0 auto;
 }
 
 /* ---- 心扣完 ---- */

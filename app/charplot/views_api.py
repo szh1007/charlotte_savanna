@@ -44,14 +44,19 @@ from .services import (
     JourneyGraphError,
     LevelClearedError,
     LevelFailedError,
+    LevelLockedError,
     LevelNotCurrentError,
+    LevelNotReadyError,
     build_skill_tree,
     buy_streak_freeze,
+    claim_level_generation,
     create_journey,
     ensure_levels_for_journey,
     mark_journey_failed,
+    mark_level_generation_failed,
     record_event,
     restart_level,
+    save_generated_questions,
     save_journey_graph,
     submit_answer,
 )
@@ -269,8 +274,9 @@ class SkillTreeView(APIView):
 class LevelListView(APIView):
     """关卡列表 (DESIGN §4.1, GET /api/charplot/journeys/{id}/levels/).
 
-    懒创建: 首次进入为无关卡的知识点生成关卡 (stub 题目, Issue 05),
-    幂等, 图谱重生成新增的知识点自动补关卡. 全部关卡返回, 前端按需过滤.
+    懒创建: 首次进入为无关卡的知识点生成空关卡 (Issue 08: 题目渐进生成,
+    状态 pending), 每章末尾补 Boss 关; 幂等, 图谱重生成新增知识点自动补关.
+    全部关卡返回 (含 questions_status / locked), 前端按需过滤与触发生成.
     """
 
     permission_classes = [IsAuthenticated]
@@ -330,7 +336,13 @@ class LevelAnswerView(APIView):
                 answer=data["answer"],
                 duration=data.get("duration", 0),
             )
-        except (LevelClearedError, LevelFailedError, LevelNotCurrentError) as exc:
+        except (
+            LevelClearedError,
+            LevelFailedError,
+            LevelNotCurrentError,
+            LevelNotReadyError,
+            LevelLockedError,
+        ) as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(result)
 
@@ -338,7 +350,7 @@ class LevelAnswerView(APIView):
 class LevelRestartView(APIView):
     """重开关卡 (POST /api/charplot/levels/{id}/restart/).
 
-    5 心扣完本关失败后重开: 心与进度重置 (题目不变, stub 确定性);
+    5 心扣完本关失败后重开: 心与进度重置 (题目保持已生成题库);
     Attempt 历史保留不覆盖; 已通关关卡禁止重开 (防丢通关状态).
     """
 
@@ -449,4 +461,105 @@ class JourneyStatusView(APIView):
                 {"detail": "缺少 task_id"}, status=status.HTTP_400_BAD_REQUEST
             )
         mark_journey_failed(journey, task_id, error_message)
+        return Response({"status": "failed"})
+
+
+def _get_level_for_generation(journey, level_seq):
+    """按旅程内 seq 定位关卡 (渐进生成契约的 level_seq)."""
+    if not isinstance(level_seq, int):
+        return None
+    return journey.levels.filter(seq=level_seq).first()
+
+
+class LevelGenerationClaimView(APIView):
+    """出题任务抢占 + 输入 (内部端点, FastAPI → Django, DESIGN §4.2).
+
+    原子抢占 (select_for_update) 保证并发幂等: 已就绪 → claimed=false
+    (reason=ready); 生成中 → claimed=false (reason=generating, 附现有
+    task_id); 否则置 generating + latest_task_id 并返回出题输入 (含
+    知识点素材与间隔复习候选题, 复习题带完整答案, 仅内部传递).
+    """
+
+    authentication_classes = []
+    permission_classes = [IsInternalService]
+
+    def post(self, request, pk):
+        journey = get_object_or_404(CharplotJourney, pk=pk)
+        task_id = (request.data.get("task_id") or "").strip()
+        level_seq = request.data.get("level_seq")
+        if not task_id or level_seq is None:
+            return Response(
+                {"detail": "缺少 task_id 或 level_seq"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        ensure_levels_for_journey(journey)  # 防御: 未建关时先补 (幂等)
+        level = _get_level_for_generation(journey, level_seq)
+        if level is None:
+            return Response(
+                {"detail": f"关卡不存在: seq={level_seq}"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        claimed, payload = claim_level_generation(level, task_id)
+        if claimed:
+            return Response({"claimed": True, "input": payload})
+        return Response({"claimed": False, **payload})
+
+
+class LevelGenerationSaveView(APIView):
+    """题目落库 (内部端点, FastAPI → Django).
+
+    逐题校验 (题型/选项/答案/讲解) 失败 400; 事务写入: 有关卡 Attempt 走
+    update-in-place (保历史), 无 Attempt delete+create; 置 ready + 复习题
+    来源知识点 last_reviewed_at 更新 (间隔复习衰减闭环).
+    """
+
+    authentication_classes = []
+    permission_classes = [IsInternalService]
+
+    def post(self, request, pk):
+        journey = get_object_or_404(CharplotJourney, pk=pk)
+        task_id = (request.data.get("task_id") or "").strip()
+        level_seq = request.data.get("level_seq")
+        questions = request.data.get("questions")
+        if not task_id or level_seq is None or not isinstance(questions, list):
+            return Response(
+                {"detail": "缺少 task_id / level_seq / questions"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        level = _get_level_for_generation(journey, level_seq)
+        if level is None:
+            return Response(
+                {"detail": f"关卡不存在: seq={level_seq}"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        try:
+            save_generated_questions(level, task_id, questions)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"status": "ready"})
+
+
+class LevelGenerationFailedView(APIView):
+    """生成失败标记 (内部端点, FastAPI → Django): 置 failed, 前端可重试."""
+
+    authentication_classes = []
+    permission_classes = [IsInternalService]
+
+    def post(self, request, pk):
+        journey = get_object_or_404(CharplotJourney, pk=pk)
+        task_id = (request.data.get("task_id") or "").strip()
+        level_seq = request.data.get("level_seq")
+        error_message = (request.data.get("error_message") or "").strip()
+        if not task_id or level_seq is None:
+            return Response(
+                {"detail": "缺少 task_id 或 level_seq"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        level = _get_level_for_generation(journey, level_seq)
+        if level is None:
+            return Response(
+                {"detail": f"关卡不存在: seq={level_seq}"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        mark_level_generation_failed(level, task_id, error_message)
         return Response({"status": "failed"})

@@ -16,6 +16,7 @@ from app.charplot.models import (
     CharplotChapter,
     CharplotJourney,
     CharplotKnowledgePoint,
+    CharplotLevel,
     CharplotProfile,
     CharplotQuestion,
     CharplotReviewReport,
@@ -28,6 +29,7 @@ from app.charplot.services import (
     generate_report_slug,
     submit_answer,
 )
+from app.charplot.tests.test_quiz import make_level_ready
 
 User = get_user_model()
 
@@ -71,6 +73,18 @@ def answers_for(level, correct=True):
             else (["false"] if question.answer[0] == "true" else ["true"])
         )
     return question.answer if correct else ["完全错误"]
+
+
+def make_ready_levels(journey, kps):
+    """Issue 08: 为旅程建就绪关卡 (每 kp 常规关 + 章末 boss 关).
+
+    题目渐进生成后由 FastAPI 落库, 报告测试不依赖生成链路, 直建可答题关.
+    """
+    levels = [make_level_ready(journey, kp) for kp in kps]
+    levels.append(
+        make_level_ready(journey, kps[0], level_type=CharplotLevel.LevelType.BOSS)
+    )
+    return levels
 
 
 def clear_level(level, correct_pattern):
@@ -120,8 +134,8 @@ class ReportSlugTests(TestCase):
 class ReportAggregationTests(TestCase):
     def setUp(self):
         self.user = create_user()
-        self.journey, _, _ = make_journey(self.user, kp_count=2)
-        ensure_levels_for_journey(self.journey)
+        self.journey, _, self.kps = make_journey(self.user, kp_count=2)
+        make_ready_levels(self.journey, self.kps)
 
     def test_stats_match_attempts(self):
         # 第一关: 5 对 1 错; 第二关: 全对
@@ -171,8 +185,8 @@ class ReportAggregationTests(TestCase):
 class CreateReportTests(TestCase):
     def setUp(self):
         self.user = create_user()
-        self.journey, _, _ = make_journey(self.user, kp_count=2)
-        ensure_levels_for_journey(self.journey)
+        self.journey, _, self.kps = make_journey(self.user, kp_count=2)
+        make_ready_levels(self.journey, self.kps)
 
     def test_report_auto_generated_on_journey_clear(self):
         self.assertFalse(CharplotReviewReport.objects.exists())
@@ -181,8 +195,9 @@ class CreateReportTests(TestCase):
         self.assertEqual(report.user, self.user)
         self.assertRegex(report.slug, SLUG_PATTERN)
         # 快照数据与 Attempt 一致 (验收: 报告数据与 Attempt 一致)
-        self.assertEqual(report.stats["answered"], 12)
-        self.assertEqual(report.stats["correct"], 12)
+        # 2 常规关 + 1 boss 关 × 6 题 = 18 次作答  # noqa: RUF003
+        self.assertEqual(report.stats["answered"], 18)
+        self.assertEqual(report.stats["correct"], 18)
         self.assertEqual(report.stats["accuracy"], 100)
         self.assertEqual(len(report.knowledge_summary["chapters"]), 1)
         # OG 文本
@@ -225,8 +240,8 @@ class ReportApiTests(TestCase):
         self.client = APIClient()
         self.user = create_user()
         self.client.force_login(self.user)
-        self.journey, _, _ = make_journey(self.user, kp_count=1)
-        ensure_levels_for_journey(self.journey)
+        self.journey, _, self.kps = make_journey(self.user, kp_count=1)
+        make_ready_levels(self.journey, self.kps)
         self.url = f"/api/charplot/journeys/{self.journey.id}/report/"
 
     def test_report_404_before_clear(self):
@@ -239,15 +254,16 @@ class ReportApiTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
         self.assertEqual(data["journey_id"], self.journey.id)
-        self.assertEqual(data["stats"]["answered"], 6)
+        # 1 常规关 + 1 boss 关 × 6 题 = 12 次作答  # noqa: RUF003
+        self.assertEqual(data["stats"]["answered"], 12)
         self.assertIn("knowledge_summary", data)
         self.assertIn("share_url", data)
         self.assertRegex(data["share_url"], r"^/r/[a-hjkmnp-z2-9]{12}/$")
 
     def test_other_user_report_404(self):
         other = create_user("bob")
-        other_journey, _, _ = make_journey(other, kp_count=1)
-        ensure_levels_for_journey(other_journey)
+        other_journey, _, other_kps = make_journey(other, kp_count=1)
+        make_ready_levels(other_journey, other_kps)
         clear_journey(other_journey, [True] * 6)
         resp = self.client.get(f"/api/charplot/journeys/{other_journey.id}/report/")
         self.assertEqual(resp.status_code, 404)
@@ -266,8 +282,8 @@ class ReportApiTests(TestCase):
 class SharePageTests(TestCase):
     def setUp(self):
         self.user = create_user()
-        self.journey, _, _ = make_journey(self.user, kp_count=2)
-        ensure_levels_for_journey(self.journey)
+        self.journey, _, self.kps = make_journey(self.user, kp_count=2)
+        make_ready_levels(self.journey, self.kps)
         clear_journey(self.journey, [True] * 6)
         self.report = CharplotReviewReport.objects.get(journey=self.journey)
 

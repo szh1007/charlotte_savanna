@@ -6,12 +6,13 @@ Asia/Shanghai 自然日语义 (USE_TZ=True). 所有函数支持 today 参数注�
 """
 
 import logging
+import math
 import os
 import secrets
 import unicodedata
 from datetime import timedelta
 
-from django.db import transaction
+from django.db import models, transaction
 from django.utils import timezone
 
 from .models import (
@@ -46,6 +47,13 @@ LEVEL_QUESTION_MIN = 5  # 关卡题数范围 (PRD D-2)
 LEVEL_QUESTION_MAX = 8
 LEVEL_XP_THRESHOLDS = [0, 100, 250, 450, 700, 1000, 1400, 1800, 2300, 3000]
 # 等级 = 满足的档位数, 如 xp=0 → 1 级, xp=100 → 2 级
+
+# ---- 题目渐进生成 / 间隔复习 / Boss (Issue 08, DESIGN §5, SPEC §9) ----
+LEVEL_QUESTION_TARGET = 6  # 常规关目标题数 (5-8 范围)
+BOSS_QUESTION_COUNT = 8  # Boss 关题数 (= LEVEL_QUESTION_MAX)
+REVIEW_RATIO = 0.2  # 间隔复习混入比例 (Top 20% 历史易错知识点)
+REVIEW_NEVER_DAYS = 30  # 从未复习按 30 天计 (时间衰减上界)
+GENERATION_STALE_MINUTES = 10  # 生成中状态陈旧超时 (任务丢失后可重新抢占)
 
 
 class StreakFreezeError(Exception):
@@ -423,6 +431,14 @@ class LevelNotCurrentError(LevelError):
     """提交的题目不是当前题 (防跳题/重放)."""
 
 
+class LevelNotReadyError(LevelError):
+    """题目未生成就绪 (生成中/失败/待生成), 不可答题."""
+
+
+class LevelLockedError(LevelError):
+    """关卡未解锁 (前置章节 Boss 未通关), 不可答题."""
+
+
 def level_status(level):
     """关卡状态 (API 输出): cleared / failed(心扣完) / in_progress / pending."""
     if level.cleared:
@@ -547,22 +563,376 @@ def _stub_questions(level, journey):
 
 
 def ensure_levels_for_journey(journey):
-    """为无关卡的知识点创建关卡 (stub 题目, Issue 05).
+    """为无关卡的知识点创建关卡 (Issue 08: 空关待生成, 题目由 FastAPI 任务生成).
 
-    幂等: 已有关卡的知识点跳过; 图谱重生成后新增的知识点自动补关卡.
+    幂等: 已有关卡的知识点跳过 (常规关); 每章末尾补 1 个 Boss 关
+    (level_type=boss, 覆盖整章知识点, G-5). seq 按 (章节 order, 知识点 order)
+    从 1 递增, boss 关 seq 紧随章内常规关; 图谱重生成后新增知识点自动补关.
     返回新创建的关卡列表.
     """
-    existing = set(journey.levels.values_list("knowledge_point_id", flat=True))
+    existing_kps = set(
+        journey.levels.exclude(level_type=CharplotLevel.LevelType.BOSS).values_list(
+            "knowledge_point_id", flat=True
+        )
+    )
+    existing_boss_chapters = set(
+        journey.levels.filter(level_type=CharplotLevel.LevelType.BOSS).values_list(
+            "chapter_id", flat=True
+        )
+    )
+    seq = journey.levels.order_by("-seq").values_list("seq", flat=True).first() or 0
     created = []
-    for chapter in journey.chapters.prefetch_related("knowledge_points"):
+    for chapter in journey.chapters.prefetch_related("knowledge_points").order_by(
+        "order", "id"
+    ):
         for kp in chapter.knowledge_points.all():
-            if kp.id in existing:
+            if kp.id in existing_kps:
                 continue
-            level = CharplotLevel.objects.create(journey=journey, knowledge_point=kp)
-            for order, data in enumerate(_stub_questions(level, journey)):
-                CharplotQuestion.objects.create(level=level, order=order, **data)
-            created.append(level)
+            seq += 1
+            created.append(
+                CharplotLevel.objects.create(
+                    journey=journey,
+                    knowledge_point=kp,
+                    chapter=chapter,
+                    seq=seq,
+                    questions_status=CharplotLevel.QuestionsStatus.PENDING,
+                )
+            )
+        if chapter.id not in existing_boss_chapters:
+            seq += 1
+            # boss 关无单点语义, knowledge_point 挂章内第一个作展示锚点
+            anchor = chapter.knowledge_points.order_by("order", "id").first()
+            if anchor is not None:
+                created.append(
+                    CharplotLevel.objects.create(
+                        journey=journey,
+                        knowledge_point=anchor,
+                        chapter=chapter,
+                        seq=seq,
+                        level_type=CharplotLevel.LevelType.BOSS,
+                        questions_status=CharplotLevel.QuestionsStatus.PENDING,
+                    )
+                )
     return created
+
+
+def level_locked(level):
+    """Boss 解锁规则 (G-5): 通关才可进入下一章.
+
+    - 常规关: 上一章 (order-1) 的 Boss 关存在且未通关 → locked
+    - Boss 关: 本章常规关存在未通关 → locked; 或上一章 Boss 未通关 → locked
+    - 第一章常规关永不锁定 (无前置章); 无章节挂载 (旧数据) 不锁定
+    """
+    chapter = level.chapter
+    if chapter is None:
+        return False
+    journey = level.journey
+    prev_chapter = (
+        journey.chapters.filter(order=chapter.order - 1).first()
+        if chapter.order > 0
+        else None
+    )
+    prev_boss_locked = (
+        prev_chapter is not None
+        and journey.levels.filter(
+            level_type=CharplotLevel.LevelType.BOSS,
+            chapter=prev_chapter,
+            cleared=False,
+        ).exists()
+    )
+    if level.level_type == CharplotLevel.LevelType.BOSS:
+        chapter_uncleared = journey.levels.filter(
+            level_type=CharplotLevel.LevelType.REGULAR,
+            chapter=chapter,
+            cleared=False,
+        ).exists()
+        return chapter_uncleared or prev_boss_locked
+    return prev_boss_locked
+
+
+def _kp_info(kp):
+    """出题素材 (内部端点 → FastAPI): 标题/概述/前置依赖标题."""
+    return {
+        "id": kp.id,
+        "title": kp.title,
+        "summary": kp.summary,
+        "prereq_titles": list(kp.prerequisites.values_list("title", flat=True)),
+    }
+
+
+def _review_candidates(journey, exclude_kp_ids, today):
+    """间隔复习候选 (DESIGN §5): error_score>0 的知识点按「易错分与时间衰减」排序.
+
+    时间衰减: 距上次复习越久越优先 (CONTEXT Q11), 从未复习按
+    REVIEW_NEVER_DAYS 天计; priority = error_score * (days + 1),
+    排序 priority 降序 → error_score 降序 → id 升序 (确定性 tie-break).
+    """
+    qs = CharplotKnowledgePoint.objects.filter(
+        chapter__journey=journey, error_score__gt=0
+    ).exclude(pk__in=exclude_kp_ids)
+    ranked = []
+    for kp in qs:
+        days = (
+            (today - kp.last_reviewed_at.date()).days
+            if kp.last_reviewed_at
+            else REVIEW_NEVER_DAYS
+        )
+        ranked.append((kp, kp.error_score * (days + 1)))
+    ranked.sort(key=lambda item: (-item[1], -item[0].error_score, item[0].id))
+    return [kp for kp, _ in ranked]
+
+
+def _pick_review_questions(journey, level, today):
+    """间隔复习选题: 混入 Top 20% 历史易错知识点题目 (无感融入, 不标注).
+
+    候选排除: 常规关排除本关 kp; boss 关排除本章全部 kp (正被新题覆盖).
+    每候选 kp 取「答错 Attempt 最多」的历史题目 (平手取最小 id), 复制完整
+    记录并附 source_kp_id (答错易错分记来源 kp, 形成衰减闭环).
+    """
+    if level.level_type == CharplotLevel.LevelType.BOSS:
+        exclude = (
+            set(level.chapter.knowledge_points.values_list("id", flat=True))
+            if level.chapter
+            else set()
+        )
+    else:
+        exclude = {level.knowledge_point_id}
+    candidates = _review_candidates(journey, exclude, today)
+    total = (
+        BOSS_QUESTION_COUNT
+        if level.level_type == CharplotLevel.LevelType.BOSS
+        else LEVEL_QUESTION_TARGET
+    )
+    if not candidates:
+        return []
+    desired = max(1, round(total * REVIEW_RATIO))
+    top_k = max(1, math.ceil(REVIEW_RATIO * len(candidates)))
+    picked = candidates[: min(desired, top_k)]
+    questions = []
+    for kp in picked:
+        worst = (
+            CharplotQuestion.objects.filter(
+                models.Q(level__knowledge_point=kp) | models.Q(source_kp=kp)
+            )
+            .annotate(
+                wrong_count=models.Count(
+                    "attempts", filter=models.Q(attempts__is_correct=False)
+                )
+            )
+            .order_by("-wrong_count", "id")
+            .first()
+        )
+        if worst is None:
+            continue  # 防御: error_score>0 必有答错 Attempt, 实际不会走到
+        questions.append(
+            {
+                "question_type": worst.question_type,
+                "content": worst.content,
+                "options": worst.options,
+                "answer": worst.answer,
+                "explanation": worst.explanation,
+                "sources": worst.sources,
+                "source_kp_id": kp.id,
+            }
+        )
+    return questions
+
+
+def build_level_generation_input(level, today=None):
+    """出题输入 (内部端点 → FastAPI): 关卡信息 + 知识点素材 + 复习题透传.
+
+    复习题由 Django 计算 (易错分与时间衰减 Top 20%), 含完整答案; 内部端点
+    信任 FastAPI, 答案永不直达前端. difficulty: 常规 medium / boss high.
+    """
+    today = today or timezone.localdate()
+    is_boss = level.level_type == CharplotLevel.LevelType.BOSS
+    total = BOSS_QUESTION_COUNT if is_boss else LEVEL_QUESTION_TARGET
+    review_questions = _pick_review_questions(level.journey, level, today)
+    kp = level.knowledge_point
+    return {
+        "journey_id": level.journey_id,
+        "level_id": level.id,
+        "level_seq": level.seq,
+        "level_type": level.level_type,
+        "difficulty": "high" if is_boss else "medium",
+        "question_count": total,
+        "new_count": total - len(review_questions),
+        "kp": _kp_info(kp),
+        "chapter": {
+            "id": kp.chapter_id,
+            "title": kp.chapter.title,
+            "summary": kp.chapter.summary,
+        },
+        "kp_infos": (
+            [_kp_info(k) for k in kp.chapter.knowledge_points.all()]
+            if is_boss
+            else [_kp_info(kp)]
+        ),
+        "review_questions": review_questions,
+    }
+
+
+def claim_level_generation(level, task_id, today=None):
+    """原子抢占生成任务 (select_for_update): 已就绪/生成中 → 拒绝.
+
+    返回 (claimed, payload): claimed=True 时 payload 为出题输入 dict;
+    否则 payload 为 {"reason": "ready"|"generating", "task_id": 现有}.
+    并发触发 (预生成/重试/多端) 由抢占保证幂等; generating 状态超过
+    GENERATION_STALE_MINUTES (任务丢失, 如 FastAPI 重启) 视为陈旧, 允许
+    重新抢占, 防止关卡永久卡在生成中.
+    """
+    today = today or timezone.localdate()
+    with transaction.atomic():
+        locked = CharplotLevel.objects.select_for_update().get(pk=level.pk)
+        if locked.questions_status == CharplotLevel.QuestionsStatus.READY:
+            return False, {"reason": "ready"}
+        if locked.questions_status == CharplotLevel.QuestionsStatus.GENERATING:
+            stale = timezone.now() - locked.updated_at >= timedelta(
+                minutes=GENERATION_STALE_MINUTES
+            )
+            if not stale:
+                return False, {
+                    "reason": "generating",
+                    "task_id": locked.latest_task_id,
+                }
+        locked.questions_status = CharplotLevel.QuestionsStatus.GENERATING
+        locked.latest_task_id = task_id
+        locked.save(update_fields=["questions_status", "latest_task_id", "updated_at"])
+    return True, build_level_generation_input(level, today)
+
+
+def validate_question_dict(data):
+    """单题结构校验 (落库前, 与 FastAPI 侧 QuestionsDraft 同规则).
+
+    非法抛 ValueError (中文消息, 视图转 400). 复习题透传时允许 source_kp_id
+    (答错易错分记来源知识点).
+    """
+    if not isinstance(data, dict):
+        raise ValueError("题目必须是 JSON 对象")
+    qtype = data.get("question_type")
+    if qtype not in CharplotQuestion.QuestionType.values:
+        raise ValueError(f"未知题型: {qtype}")
+    content = str(data.get("content") or "").strip()
+    if not content:
+        raise ValueError("题干不能为空")
+    explanation = str(data.get("explanation") or "").strip()
+    if not explanation:
+        raise ValueError("讲解不能为空")
+    answer = data.get("answer")
+    options = data.get("options") or []
+    if qtype == CharplotQuestion.QuestionType.CHOICE:
+        if not isinstance(options, list) or len(options) < 3:
+            raise ValueError("选择题至少 3 个选项")
+        if len(set(options)) != len(options):
+            raise ValueError("选择题选项不能重复")
+        if (
+            not isinstance(answer, list)
+            or len(answer) != 1
+            or not isinstance(answer[0], int)
+            or isinstance(answer[0], bool)
+        ):
+            raise ValueError("选择题答案必须为单个选项下标")
+        if not 0 <= answer[0] < len(options):
+            raise ValueError("选择题答案下标越界")
+    elif qtype == CharplotQuestion.QuestionType.JUDGE:
+        if (
+            not isinstance(answer, list)
+            or len(answer) != 1
+            or str(answer[0]) not in ("true", "false")
+        ):
+            raise ValueError("判断题答案必须为 true/false")
+    else:  # FILL
+        if (
+            not isinstance(answer, list)
+            or not answer
+            or not all(isinstance(a, str) and a.strip() for a in answer)
+        ):
+            raise ValueError("填空题至少 1 个可接受答案")
+    sources = data.get("sources") or []
+    if not isinstance(sources, list):
+        raise ValueError("来源引用必须是数组")
+    source_kp_id = data.get("source_kp_id")
+    if source_kp_id is not None and not isinstance(source_kp_id, int):
+        raise ValueError("source_kp_id 必须是整数")
+    return {
+        "question_type": qtype,
+        "content": content,
+        "options": options if qtype == CharplotQuestion.QuestionType.CHOICE else [],
+        "answer": answer,
+        "explanation": explanation,
+        "sources": sources,
+        "source_kp_id": source_kp_id,
+    }
+
+
+def save_generated_questions(level, task_id, questions):
+    """题目落库 (内部端点): 逐题校验 → 事务写入 → 置 ready + 复习衰减更新.
+
+    有 Attempt 的关卡 update-in-place (复用旧题 id 按序更新, 多删少增),
+    历史 Attempt 不丢 (Attempt.question 是 CASCADE FK, 删题会连带删历史);
+    无 Attempt 时 delete+create (题库完全重建). 带 source_kp_id 的复习题
+    落库后置来源知识点 last_reviewed_at=now (间隔复习衰减闭环).
+    """
+    validated = [validate_question_dict(q) for q in questions]
+    if not validated:
+        raise ValueError("题目列表不能为空")
+    if len(validated) > BOSS_QUESTION_COUNT:
+        raise ValueError("题目数量超过上限")
+    with transaction.atomic():
+        has_attempts = CharplotAttempt.objects.filter(level=level).exists()
+        if has_attempts:
+            old_questions = list(level.questions.order_by("order", "id"))
+            for index, data in enumerate(validated):
+                if index < len(old_questions):
+                    question = old_questions[index]
+                    question.question_type = data["question_type"]
+                    question.content = data["content"]
+                    question.options = data["options"]
+                    question.answer = data["answer"]
+                    question.explanation = data["explanation"]
+                    question.sources = data["sources"]
+                    question.source_kp_id = data["source_kp_id"]
+                    question.order = index
+                    question.save(
+                        update_fields=[
+                            "question_type",
+                            "content",
+                            "options",
+                            "answer",
+                            "explanation",
+                            "sources",
+                            "source_kp",
+                            "order",
+                        ]
+                    )
+                else:
+                    CharplotQuestion.objects.create(level=level, order=index, **data)
+            # 尾部多余旧题删除 (仅可能为无 Attempt 的复习复制题)
+            for question in old_questions[len(validated) :]:
+                question.delete()
+        else:
+            level.questions.all().delete()
+            for index, data in enumerate(validated):
+                CharplotQuestion.objects.create(level=level, order=index, **data)
+        level.questions_status = CharplotLevel.QuestionsStatus.READY
+        level.latest_task_id = task_id
+        level.save(update_fields=["questions_status", "latest_task_id", "updated_at"])
+        source_kp_ids = [
+            q["source_kp_id"] for q in validated if q["source_kp_id"] is not None
+        ]
+        if source_kp_ids:
+            CharplotKnowledgePoint.objects.filter(pk__in=source_kp_ids).update(
+                last_reviewed_at=timezone.now()
+            )
+    return level
+
+
+def mark_level_generation_failed(level, task_id, error_message):
+    """生成失败标记 (内部端点; best-effort 重试语义在 FastAPI 任务侧)."""
+    level.questions_status = CharplotLevel.QuestionsStatus.FAILED
+    level.latest_task_id = task_id
+    level.save(update_fields=["questions_status", "latest_task_id", "updated_at"])
+    return level
 
 
 def check_answer(question, user_answer):
@@ -649,14 +1019,20 @@ def submit_answer(level, question_id, answer, duration=0, today=None):
 
     防重放: question_id 必须属于本关且是当前题 (current_index 定位), 否则抛
     LevelNotCurrentError; 已通关抛 LevelClearedError; 心扣完抛 LevelFailedError.
-    答错扣关卡心 (扣完即本关失败, 不结算), 答对即时 +XP; 答完最后一题且
-    还有剩余心 → 通关结算. 返回结构化结果 (serializer 直出).
+    Issue 08 守卫: 题目未就绪抛 LevelNotReadyError; 未解锁 (前置章节 Boss 未
+    通关) 抛 LevelLockedError. 答错扣关卡心 (扣完即本关失败, 不结算), 答对
+    即时 +XP; 答完最后一题且还有剩余心 → 通关结算. 复习题 (source_kp) 答错
+    易错分记来源知识点, 答对 -1 同理. 返回结构化结果 (serializer 直出).
     """
     today = today or timezone.localdate()
     if level.cleared:
         raise LevelClearedError("本关已通关")
     if level.hearts <= 0:
         raise LevelFailedError("心动值已扣完, 请重开本关")
+    if level.questions_status != CharplotLevel.QuestionsStatus.READY:
+        raise LevelNotReadyError("题目生成中或生成失败, 请稍后重试")
+    if level_locked(level):
+        raise LevelLockedError("请先通关上一章节的 Boss 挑战")
     question_count = level.questions.count()
     if level.current_index >= question_count:
         # 脏数据兜底: 进度越界且未通关 (题库变更等), 提示重开
@@ -692,7 +1068,8 @@ def submit_answer(level, question_id, answer, duration=0, today=None):
             },
             dedupe=False,
         )
-        kp = level.knowledge_point
+        # 易错分锚点: 复习题 (source_kp) 记来源知识点, 否则本关知识点
+        kp = question.source_kp or level.knowledge_point
         if correct:
             profile.xp += ANSWER_CORRECT_XP
             kp.error_score = max(0, kp.error_score + ERROR_SCORE_RIGHT)
@@ -740,7 +1117,7 @@ def submit_answer(level, question_id, answer, duration=0, today=None):
 
 
 def restart_level(level):
-    """重开关卡 (5 心扣完): 心与进度重置, 题目不变 (stub 确定性, 重开同题).
+    """重开关卡 (5 心扣完): 心与进度重置, 题目保持 (已生成题库).
 
     Attempt 历史记录保留不覆盖 (掌握度分析的事实源, SPEC §8); profile.hearts
     同步重置回满.

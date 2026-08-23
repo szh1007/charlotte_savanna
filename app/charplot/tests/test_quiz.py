@@ -1,8 +1,10 @@
-"""闯关答题测试 (Issue 05).
+"""闯关答题测试 (Issue 05/08).
 
-覆盖: stub 题目生成 (题型顺序/确定性) / 判分 (选择/判断/填空归一化) /
-答题结算 (XP/心动值/易错分/事件) / 通关结算 (XP/币/连胜/点亮) / 断点续答 /
-5 心扣完重开 (Attempt 保留) / API 权限与防重放.
+覆盖: 关卡创建 (每 kp 一关 + 章末 boss 关, 题目渐进生成 pending) / 判分
+(选择/判断/填空归一化) / 答题结算 (XP/心动值/易错分/事件) / 通关结算
+(XP/币/连胜/点亮) / 断点续答 / 5 心扣完重开 (Attempt 保留) / API 权限与
+防重放. Issue 08 后题目由 FastAPI 任务生成, 测试用 make_level_ready 工厂
+直建就绪关卡 (题目生成任务链路见 test_level_generation.py).
 """
 
 from datetime import timedelta
@@ -32,6 +34,7 @@ from app.charplot.services import (
     LevelNotCurrentError,
     check_answer,
     ensure_levels_for_journey,
+    level_locked,
     level_status,
     normalize_answer,
     restart_level,
@@ -64,6 +67,56 @@ def make_journey(user, kp_count=2, summary="核心知识点概述"):
             kp.prerequisites.add(kps[-1])
         kps.append(kp)
     return journey, chapter, kps
+
+
+def make_level_ready(journey, kp=None, count=6, level_type="regular"):
+    """工厂 (Issue 08): 直建就绪关卡 + 混合题型题目 (内容合法, 可答题).
+
+    题目渐进生成后由 FastAPI 落库, 服务层/判分测试不依赖生成链路, 直接
+    建 ready 关 + 3 种题型题目 (选择/判断/填空循环), 返回关卡.
+    """
+    kp = kp or journey.chapters.first().knowledge_points.first()
+    level = CharplotLevel.objects.create(
+        journey=journey,
+        knowledge_point=kp,
+        chapter=kp.chapter,
+        seq=journey.levels.count() + 1,
+        level_type=level_type,
+        questions_status=CharplotLevel.QuestionsStatus.READY,
+    )
+    types = [
+        CharplotQuestion.QuestionType.CHOICE,
+        CharplotQuestion.QuestionType.JUDGE,
+        CharplotQuestion.QuestionType.FILL,
+    ]
+    for order in range(count):
+        qtype = types[order % len(types)]
+        if qtype == CharplotQuestion.QuestionType.CHOICE:
+            data = {
+                "question_type": qtype,
+                "content": f"选择题题干 {order + 1}",
+                "options": [f"正确选项{order + 1}", "干扰项A", "干扰项B", "干扰项C"],
+                "answer": [0],
+                "explanation": "选择题讲解",
+            }
+        elif qtype == CharplotQuestion.QuestionType.JUDGE:
+            data = {
+                "question_type": qtype,
+                "content": f"判断题题干 {order + 1}",
+                "options": [],
+                "answer": ["true"],
+                "explanation": "判断题讲解",
+            }
+        else:
+            data = {
+                "question_type": qtype,
+                "content": f"填空题题干 {order + 1}: ____",
+                "options": [],
+                "answer": [f"标准答案{order + 1}"],
+                "explanation": "填空题讲解",
+            }
+        CharplotQuestion.objects.create(level=level, order=order, **data)
+    return level
 
 
 def answers_for(level, correct=True, wrong=True):
@@ -111,7 +164,7 @@ class NormalizeAnswerTests(TestCase):
 
 
 # ---------------------------------------------------------------------------
-# stub 题目生成
+# 关卡创建 (Issue 08: 空关待生成 + 章末 boss 关)
 # ---------------------------------------------------------------------------
 
 
@@ -120,68 +173,38 @@ class EnsureLevelsTests(TestCase):
         self.user = create_user()
         self.journey, _, self.kps = make_journey(self.user)
 
-    def test_creates_one_level_per_kp(self):
+    def test_creates_one_level_per_kp_plus_boss(self):
         levels = ensure_levels_for_journey(self.journey)
-        self.assertEqual(len(levels), len(self.kps))
-        self.assertEqual(self.journey.levels.count(), len(self.kps))
+        # 每 kp 1 常规关 + 每章 1 boss 关
+        self.assertEqual(len(levels), len(self.kps) + 1)
+        self.assertEqual(self.journey.levels.count(), len(self.kps) + 1)
 
     def test_idempotent(self):
         ensure_levels_for_journey(self.journey)
         ensure_levels_for_journey(self.journey)
-        self.assertEqual(self.journey.levels.count(), len(self.kps))
+        self.assertEqual(self.journey.levels.count(), len(self.kps) + 1)
 
-    def test_question_count_in_range_and_has_all_types(self):
+    def test_levels_pending_without_questions(self):
+        # 题目渐进生成: 骨架空关 pending, 0 题, 由 FastAPI 任务填充
         ensure_levels_for_journey(self.journey)
-        level = self.journey.levels.first()
-        questions = list(level.questions.all())
-        self.assertEqual(len(questions), 6)
-        types = [q.question_type for q in questions]
-        self.assertIn(CharplotQuestion.QuestionType.CHOICE, types)
-        self.assertIn(CharplotQuestion.QuestionType.JUDGE, types)
-        self.assertIn(CharplotQuestion.QuestionType.FILL, types)
+        for level in self.journey.levels.all():
+            self.assertEqual(
+                level.questions_status, CharplotLevel.QuestionsStatus.PENDING
+            )
+            self.assertEqual(level.questions.count(), 0)
 
-    def test_question_order_easy_to_hard_with_simple_end(self):
-        # 由浅入深: 选择题在前 (识别), 填空在中间 (回忆), 判断简单题收尾
+    def test_seq_increments_and_boss_after_regular(self):
         ensure_levels_for_journey(self.journey)
-        level = self.journey.levels.first()
-        questions = list(level.questions.all())
-        self.assertEqual(
-            questions[0].question_type, CharplotQuestion.QuestionType.CHOICE
-        )
-        self.assertEqual(
-            questions[-1].question_type, CharplotQuestion.QuestionType.JUDGE
-        )
-        self.assertIn(
-            CharplotQuestion.QuestionType.FILL,
-            [q.question_type for q in questions[2:-1]],
-        )
+        levels = list(self.journey.levels.order_by("seq", "id"))
+        self.assertEqual([level.seq for level in levels], [1, 2, 3])
+        self.assertEqual(levels[-1].level_type, CharplotLevel.LevelType.BOSS)
+        self.assertIsNotNone(levels[-1].chapter)
+        self.assertFalse(level_locked(levels[0]))  # 第一章常规关永不锁定
 
-    def test_choice_has_unique_options_with_correct_first(self):
+    def test_boss_locked_until_regular_cleared(self):
         ensure_levels_for_journey(self.journey)
-        level = self.journey.levels.first()
-        choice = level.questions.filter(
-            question_type=CharplotQuestion.QuestionType.CHOICE
-        ).first()
-        self.assertEqual(len(choice.options), 4)
-        self.assertEqual(len(set(choice.options)), 4)
-        self.assertEqual(choice.answer[0], 0)  # 正确项 = options[0]
-
-    def test_choice_question_uses_chapter_context(self):
-        ensure_levels_for_journey(self.journey)
-        level = self.journey.levels.first()
-        choice = level.questions.filter(
-            question_type=CharplotQuestion.QuestionType.CHOICE
-        ).first()
-        self.assertIn("基础章节", choice.options)
-        self.assertIn("基础章节", choice.explanation)
-
-    def test_deterministic_same_questions_after_restart(self):
-        ensure_levels_for_journey(self.journey)
-        level = self.journey.levels.first()
-        before = list(level.questions.values_list("content", "answer"))
-        restart_level(level)
-        after = list(level.questions.values_list("content", "answer"))
-        self.assertEqual(before, after)
+        boss = self.journey.levels.get(level_type=CharplotLevel.LevelType.BOSS)
+        self.assertTrue(level_locked(boss))  # 章内常规关未通关 → boss 锁定
 
 
 # ---------------------------------------------------------------------------
@@ -193,8 +216,7 @@ class CheckAnswerTests(TestCase):
     def setUp(self):
         self.user = create_user()
         self.journey, _, _ = make_journey(self.user)
-        ensure_levels_for_journey(self.journey)
-        self.level = self.journey.levels.first()
+        self.level = make_level_ready(self.journey)
 
     def q(self, question_type):
         return self.level.questions.filter(question_type=question_type).first()
@@ -212,8 +234,13 @@ class CheckAnswerTests(TestCase):
 
     def test_fill_fuzzy_match(self):
         question = self.q(CharplotQuestion.QuestionType.FILL)
-        self.assertTrue(check_answer(question, [" 知识点1 "]))  # 去空白
-        self.assertTrue(check_answer(question, ["知识点１"]))  # 全角数字
+        answer_text = question.answer[0]  # 工厂答案: 标准答案N
+        self.assertTrue(check_answer(question, [f" {answer_text} "]))  # 去空白
+        # 全角数字归一化 (NFKC); 全角字符为测试输入, 非笔误
+        fullwidth = answer_text.translate(
+            str.maketrans("0123456789", "０１２３４５６７８９")  # noqa: RUF001
+        )
+        self.assertTrue(check_answer(question, [fullwidth]))
         self.assertFalse(check_answer(question, ["完全不相关"]))
 
     def test_malformed_answer_is_wrong_not_error(self):
@@ -232,8 +259,7 @@ class SubmitAnswerTests(TestCase):
         self.user = create_user()
         self.profile = self.user.charplot_profile
         self.journey, _, self.kps = make_journey(self.user)
-        ensure_levels_for_journey(self.journey)
-        self.level = self.journey.levels.first()
+        self.level = make_level_ready(self.journey)
         self.kp = self.level.knowledge_point
 
     def current(self):
@@ -304,8 +330,7 @@ class LevelClearTests(TestCase):
         self.user = create_user()
         self.profile = self.user.charplot_profile
         self.journey, _, self.kps = make_journey(self.user)
-        ensure_levels_for_journey(self.journey)
-        self.level = self.journey.levels.first()
+        self.level = make_level_ready(self.journey)
 
     def current(self):
         return self.level.questions.order_by("order", "id")[self.level.current_index]
@@ -339,7 +364,7 @@ class LevelClearTests(TestCase):
     def test_streak_increments_on_consecutive_days(self):
         answer_all(self.level, [True] * 6, today=TODAY)
         # 第二天继续学另一个关卡 → streak=2
-        second = self.journey.levels.all()[1]
+        second = make_level_ready(self.journey, self.kps[1])
         answer_all(second, [True] * 6, today=TODAY + timedelta(days=1))
         self.profile.refresh_from_db()
         self.assertEqual(self.profile.streak, 2)
@@ -347,16 +372,24 @@ class LevelClearTests(TestCase):
 
     def test_streak_breaks_after_gap(self):
         answer_all(self.level, [True] * 6, today=TODAY)
-        second = self.journey.levels.all()[1]
+        second = make_level_ready(self.journey, self.kps[1])
         answer_all(second, [True] * 6, today=TODAY + timedelta(days=3))
         self.profile.refresh_from_db()
         self.assertEqual(self.profile.streak, 1)  # 断连重计
 
     def test_journey_cleared_when_all_levels_cleared(self):
+        # 常规关全清 → 旅程未通关 (boss 关未清); boss 清 → 旅程通关
+        second = make_level_ready(self.journey, self.kps[1])
+        boss = make_level_ready(
+            self.journey,
+            self.kps[0],
+            level_type=CharplotLevel.LevelType.BOSS,
+        )
         answer_all(self.level, [True] * 6)
-        self.assertFalse(self.journey.cleared)
-        second = self.journey.levels.all()[1]
         answer_all(second, [True] * 6)
+        self.journey.refresh_from_db()
+        self.assertFalse(self.journey.cleared)
+        answer_all(boss, [True] * 6)
         self.journey.refresh_from_db()
         self.assertTrue(self.journey.cleared)
 
@@ -387,8 +420,7 @@ class ResumeAndRestartTests(TestCase):
         self.user = create_user()
         self.profile = self.user.charplot_profile
         self.journey, _, _ = make_journey(self.user)
-        ensure_levels_for_journey(self.journey)
-        self.level = self.journey.levels.first()
+        self.level = make_level_ready(self.journey)
 
     def current(self):
         return self.level.questions.order_by("order", "id")[self.level.current_index]
@@ -439,8 +471,7 @@ class QuizApiTests(TestCase):
         self.user = create_user()
         self.client.force_login(self.user)
         self.journey, _, self.kps = make_journey(self.user)
-        ensure_levels_for_journey(self.journey)
-        self.level = self.journey.levels.first()
+        self.level = make_level_ready(self.journey)
         self.level_url = f"/api/charplot/levels/{self.level.id}"
         self.list_url = f"/api/charplot/journeys/{self.journey.id}/levels/"
 
@@ -452,12 +483,17 @@ class QuizApiTests(TestCase):
         resp = self.client.get(f"/api/charplot/journeys/{other_journey.id}/levels/")
         self.assertEqual(resp.status_code, 200)
         payload = resp.json()
-        self.assertEqual(len(payload["levels"]), 1)
+        # 1 kp 常规关 + 1 章末 boss 关; 题目渐进生成 (pending, 0 题)
+        self.assertEqual(len(payload["levels"]), 2)
         item = payload["levels"][0]
         self.assertEqual(item["kp_title"], "知识点1")
-        self.assertEqual(item["question_count"], 6)
+        self.assertEqual(item["question_count"], 0)
+        self.assertEqual(item["questions_status"], "pending")
         self.assertEqual(item["hearts"], MAX_HEARTS)
         self.assertEqual(item["status"], "pending")
+        boss = payload["levels"][1]
+        self.assertEqual(boss["level_type"], "boss")
+        self.assertTrue(boss["locked"])  # 章内常规关未通关 → boss 锁定
 
     def test_level_detail_returns_current_question_without_answer(self):
         resp = self.client.get(f"{self.level_url}/")

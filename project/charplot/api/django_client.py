@@ -92,3 +92,83 @@ async def mark_journey_failed(
         )
     except Exception as exc:
         logger.warning("mark_journey_failed 调用失败 (journey=%s): %s", journey_id, exc)
+
+
+async def claim_level_generation(
+    journey_id: int, level_seq: int, task_id: str
+) -> tuple[bool, dict]:
+    """出题任务抢占 (Issue 08, 内部端点): 原子置 generating 并取回出题输入.
+
+    返回 (claimed, payload): claimed=True 时 payload["input"] 为出题素材
+    (含间隔复习题, 带完整答案); claimed=False 时 payload 为
+    {"reason": "ready"|"generating", "task_id": 现有} (幂等跳过).
+    """
+    path = f"/api/charplot/journeys/{journey_id}/level-generation/"
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+            resp = await client.post(
+                f"{config.DJANGO_API_BASE}{path}",
+                json={"task_id": task_id, "level_seq": level_seq},
+                headers=_internal_headers(),
+            )
+    except httpx.HTTPError as exc:
+        raise RuntimeError(f"出题抢占失败 (网络): {exc}") from exc
+    if resp.status_code not in (200,):
+        detail = resp.text[:200] if resp.text else resp.status_code
+        raise RuntimeError(f"出题抢占失败 ({resp.status_code}): {detail}")
+    body = resp.json()
+    claimed = bool(body.get("claimed"))
+    return claimed, body
+
+
+async def save_level_questions(
+    journey_id: int, level_seq: int, task_id: str, questions: list[dict]
+) -> None:
+    """题目落库, transient 失败重试 1 次 (间隔 1s); 4xx 抛异常不重试."""
+    path = f"/api/charplot/journeys/{journey_id}/level-generation/questions/"
+    last_exc: Exception | None = None
+    for attempt in range(2):
+        try:
+            resp = await _post_internal(
+                path,
+                {"task_id": task_id, "level_seq": level_seq, "questions": questions},
+            )
+        except httpx.HTTPError as exc:
+            last_exc = exc
+            await asyncio.sleep(1.0)
+            continue
+        if 400 <= resp.status_code < 500:
+            raise RuntimeError(
+                f"题目落库被拒绝 ({resp.status_code}): {resp.text[:200]}"
+            )
+        if resp.status_code >= 500:
+            last_exc = RuntimeError(f"Django 服务错误 ({resp.status_code})")
+            await asyncio.sleep(1.0)
+            continue
+        if resp.status_code == 200:
+            return
+        last_exc = RuntimeError(f"意外状态码 {resp.status_code}")
+    raise RuntimeError(f"题目落库失败: {last_exc}")
+
+
+async def mark_level_generation_failed(
+    journey_id: int, level_seq: int, task_id: str, error_message: str
+) -> None:
+    """出题失败标记 (best-effort): Django 不可达时静默, 前端靠 SSE error 兜底."""
+    try:
+        path = f"/api/charplot/journeys/{journey_id}/level-generation/failed/"
+        await _post_internal(
+            path,
+            {
+                "task_id": task_id,
+                "level_seq": level_seq,
+                "error_message": error_message[:1000],
+            },
+        )
+    except Exception as exc:
+        logger.warning(
+            "mark_level_generation_failed 调用失败 (journey=%s, seq=%s): %s",
+            journey_id,
+            level_seq,
+            exc,
+        )

@@ -1,16 +1,20 @@
 <script setup lang="ts">
-// 关卡入口页 (Issue 05): 旅程关卡列表 (首次访问后端懒生成 stub 关卡).
-// 地图页点击知识点节点时带 query.kp 过滤到该知识点关卡; 每关显示
-// 题数/进度/剩余心/状态, 点击进入答题页 (断点续答由后端 current_index 定位).
-import { computed, onMounted, ref } from 'vue'
+// 关卡入口页 (Issue 05/08): 旅程关卡列表 (首次访问后端懒生成关卡骨架).
+// Issue 08 渐进生成: 进入页面时对 frontier (第一个未通关关) 及其下一关触发
+// 出题生成 (预生成), 生成中订阅 SSE 进度, 失败可重试; Boss 关与解锁状态
+// 在卡片上标记. 地图页点击知识点节点时带 query.kp 过滤到该知识点关卡.
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
   ApiError,
   getJourney,
   getLevels,
+  startLevelGeneration,
+  subscribePipeline,
   type JourneyDetail,
   type LevelSummary,
+  type PipelineEvent,
 } from '@/api/client'
 
 const route = useRoute()
@@ -21,6 +25,10 @@ const focusKp = computed(() => Number(route.query.kp) || 0)
 const detail = ref<JourneyDetail | null>(null)
 const levels = ref<LevelSummary[]>([])
 const loading = ref(true)
+// level.id → SSE 关闭函数 (订阅出题生成进度, 卸载时统一清理)
+const genSubs = ref<Record<number, () => void>>({})
+// level.id → 生成进度 (前端展示)
+const genProgress = ref<Record<number, number>>({})
 
 /** query.kp 过滤: 地图页点节点进入只显示该知识点关卡, 无 kp 显示全部. */
 const shownLevels = computed(() =>
@@ -46,21 +54,81 @@ function actionLabel(level: LevelSummary) {
 }
 
 function openLevel(level: LevelSummary) {
+  if (level.locked || level.questions_status === 'generating') return
   router.push(`/journeys/${journeyId.value}/levels/${level.id}`)
+}
+
+async function loadLevels() {
+  const res = await getLevels(journeyId.value)
+  levels.value = res.levels
+}
+
+/** 订阅单关生成进度; done/error → 刷新列表 (失败态在卡片上可重试). */
+function subscribeLevelGen(levelId: number, taskId: string) {
+  genSubs.value[levelId]?.()
+  genProgress.value[levelId] = 0
+  genSubs.value[levelId] = subscribePipeline(taskId, {
+    onEvent: (ev: PipelineEvent) => {
+      if (ev.stage === 'done' || ev.stage === 'error') {
+        genSubs.value[levelId]?.()
+        delete genSubs.value[levelId]
+        delete genProgress.value[levelId]
+        loadLevels().catch(() => {})
+      } else {
+        genProgress.value[levelId] = ev.progress
+      }
+    },
+  })
+}
+
+/** 触发生成 (渐进 + 预生成): frontier 及其下一关; 生成中任务续订阅. */
+async function ensureGeneration() {
+  const sorted = [...levels.value].sort((a, b) => a.seq - b.seq)
+  const frontier = sorted.find((l) => l.status !== 'cleared')
+  if (!frontier) return
+  const targets = sorted.filter(
+    (l) => l.seq === frontier.seq || l.seq === frontier.seq + 1,
+  )
+  for (const level of targets) {
+    if (level.questions_status === 'pending' || level.questions_status === 'failed') {
+      try {
+        const { task_id } = await startLevelGeneration(journeyId.value, level.seq)
+        subscribeLevelGen(level.id, task_id)
+      } catch {
+        /* 生成启动失败静默: 进入关卡时按渐进生成再触发 */
+      }
+    } else if (level.questions_status === 'generating' && level.latest_task_id) {
+      subscribeLevelGen(level.id, level.latest_task_id)
+    }
+  }
+}
+
+/** 生成失败重试 (卡片按钮). */
+async function retryGeneration(level: LevelSummary) {
+  try {
+    const { task_id } = await startLevelGeneration(journeyId.value, level.seq)
+    subscribeLevelGen(level.id, task_id)
+  } catch (e) {
+    ElMessage.error(e instanceof ApiError ? e.message : '生成启动失败, 请重试')
+  }
 }
 
 onMounted(async () => {
   try {
     detail.value = await getJourney(journeyId.value)
     if (detail.value.status === 'ready') {
-      const res = await getLevels(journeyId.value)
-      levels.value = res.levels
+      await loadLevels()
+      await ensureGeneration()
     }
   } catch (e) {
     ElMessage.error(e instanceof ApiError ? e.message : '关卡加载失败, 请稍后重试')
   } finally {
     loading.value = false
   }
+})
+
+onUnmounted(() => {
+  Object.values(genSubs.value).forEach((close) => close())
 })
 </script>
 
@@ -95,23 +163,42 @@ onMounted(async () => {
         v-for="level in shownLevels"
         :key="level.id"
         class="level-card"
-        :class="{ 'is-cleared': level.cleared }"
+        :class="{
+          'is-cleared': level.cleared,
+          'is-boss': level.level_type === 'boss',
+          'is-locked': level.locked,
+        }"
       >
         <div class="level-main">
-          <span class="chapter-tag">{{ level.chapter_title }}</span>
+          <div class="level-tags">
+            <span class="chapter-tag">{{ level.chapter_title }}</span>
+            <span v-if="level.level_type === 'boss'" class="boss-tag">🏆 Boss</span>
+          </div>
           <h2 class="level-kp">{{ level.kp_title }}</h2>
           <div class="level-meta">
-            <span>{{ level.question_count }} 题</span>
-            <template v-if="level.cleared">
-              <span class="meta-dot" aria-hidden="true">·</span>
-              <span>已通关</span>
+            <template v-if="level.questions_status === 'generating'">
+              <span>✨ 题目生成中 {{ genProgress[level.id] ?? 0 }}%</span>
             </template>
-            <template v-else-if="level.current_index > 0">
-              <span class="meta-dot" aria-hidden="true">·</span>
-              <span>进度 {{ level.current_index }}/{{ level.question_count }}</span>
+            <template v-else-if="level.questions_status === 'failed'">
+              <span class="gen-failed-text">题目生成失败</span>
+            </template>
+            <template v-else>
+              <span>{{ level.question_count }} 题</span>
+              <template v-if="level.cleared">
+                <span class="meta-dot" aria-hidden="true">·</span>
+                <span>已通关</span>
+              </template>
+              <template v-else-if="level.current_index > 0">
+                <span class="meta-dot" aria-hidden="true">·</span>
+                <span>进度 {{ level.current_index }}/{{ level.question_count }}</span>
+              </template>
             </template>
             <span class="meta-dot" aria-hidden="true">·</span>
             <span class="meta-hearts" aria-hidden="true">💗 {{ level.hearts }}</span>
+            <template v-if="level.locked">
+              <span class="meta-dot" aria-hidden="true">·</span>
+              <span class="locked-text">🔒 未解锁</span>
+            </template>
           </div>
         </div>
 
@@ -119,10 +206,16 @@ onMounted(async () => {
           <span class="status-tag" :class="STATUS_META[level.status]?.cls">
             {{ STATUS_META[level.status]?.label }}
           </span>
+          <template v-if="level.questions_status === 'failed' && !level.cleared">
+            <el-button type="warning" round @click="retryGeneration(level)">
+              生成失败 · 重试
+            </el-button>
+          </template>
           <el-button
+            v-else
             type="primary"
             round
-            :disabled="level.cleared"
+            :disabled="level.cleared || level.locked || level.questions_status === 'generating'"
             @click="openLevel(level)"
           >
             {{ actionLabel(level) }}
@@ -219,6 +312,23 @@ onMounted(async () => {
   box-shadow: 0 8px 20px rgba(52, 201, 142, 0.08);
 }
 
+/* Boss 关: 高难度标记 (G-5), 弱强调边框 */
+.level-card.is-boss {
+  border: 1.5px solid rgba(251, 114, 153, 0.28);
+}
+
+/* 未解锁: 灰化 */
+.level-card.is-locked {
+  opacity: 0.55;
+}
+
+.level-tags {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
 .chapter-tag {
   display: inline-block;
   font-size: 11px;
@@ -227,7 +337,22 @@ onMounted(async () => {
   background: var(--cp-primary-soft);
   border-radius: 999px;
   padding: 2px 10px;
-  margin-bottom: 6px;
+}
+
+.boss-tag {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  background: linear-gradient(135deg, #fb7299, #f0607e);
+  border-radius: 999px;
+  padding: 2px 10px;
+}
+
+.gen-failed-text,
+.locked-text {
+  color: var(--cp-warn);
+  font-weight: 600;
 }
 
 .level-kp {

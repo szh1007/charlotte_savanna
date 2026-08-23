@@ -10,6 +10,9 @@ from .views_api import (
     JourneyStatusView,
     LevelAnswerView,
     LevelDetailView,
+    LevelGenerationClaimView,
+    LevelGenerationFailedView,
+    LevelGenerationSaveView,
     LevelListView,
     LevelRestartView,
     LoginView,
@@ -60,5 +63,21 @@ urlpatterns = [
     ),
     path(
         "journeys/<int:pk>/status/", JourneyStatusView.as_view(), name="journey-status"
+    ),
+    # 题目生成 (Issue 08, FastAPI → Django)
+    path(
+        "journeys/<int:pk>/level-generation/",
+        LevelGenerationClaimView.as_view(),
+        name="level-generation-claim",
+    ),
+    path(
+        "journeys/<int:pk>/level-generation/questions/",
+        LevelGenerationSaveView.as_view(),
+        name="level-generation-save",
+    ),
+    path(
+        "journeys/<int:pk>/level-generation/failed/",
+        LevelGenerationFailedView.as_view(),
+        name="level-generation-failed",
     ),
 ]

@@ -1,9 +1,14 @@
-"""CharPlot 任务系统 (Issue 03, CONTEXT Q14): FastAPI 异步任务 + Redis 状态 + SSE.
+"""CharPlot 任务系统 (Issue 03/08, CONTEXT Q14): FastAPI 异步任务 + Redis 状态 + SSE.
 
 Redis 数据结构 (db 0, charplot:task: 前缀):
-  charplot:task:{task_id}             HASH  {status, stage, progress, ...}
+  charplot:task:{task_id}             HASH  {status, stage, progress, task_type, ...}
   charplot:task:{task_id}:events      LIST  事件 JSON 串, 下标即事件序号 (SSE id 帧)
 两个 key 均 EXPIRE 24h (任务持久化明确不做, DESIGN.md §8).
+
+任务类型 (task_type): pipeline = 知识管道 (Issue 03); level-generation =
+渐进出题 (Issue 08, DESIGN §4.2). 出题任务 stages: preparing → generating
+→ saving → done/error, SSE 事件名统一 pipeline-progress (DESIGN §4.2 先例:
+不同任务类型不同 stage 列表, 同一事件名).
 
 SSE 恢复: 客户端断线重连带 Last-Event-ID (= 最后收到的序号), 服务端从
 LIST 增量续推, 不丢事件; 服务重启丢内存任务 → GET events 404 → 前端兜底
@@ -23,13 +28,23 @@ from functools import partial
 from redis.asyncio import Redis
 
 from ..pipeline import PipelineInput, run_pipeline
-from .django_client import mark_journey_failed, save_graph_to_django
+from ..pipeline.questions import generate_level_questions
+from .django_client import (
+    claim_level_generation,
+    mark_journey_failed,
+    mark_level_generation_failed,
+    save_graph_to_django,
+    save_level_questions,
+)
 
 logger = logging.getLogger(__name__)
 
 TASK_TTL_SECONDS = 86400  # 任务状态与事件 24h 过期
 EVENT_POLL_INTERVAL = 0.5  # SSE 轮询间隔 (秒)
 TERMINAL_STAGES = {"done", "error"}
+
+TASK_TYPE_PIPELINE = "pipeline"
+TASK_TYPE_LEVEL_GENERATION = "level-generation"
 
 _redis: Redis | None = None
 _tasks_registry: dict[str, asyncio.Task] = {}  # 内存引用保活, 防 GC 中断任务
@@ -54,19 +69,19 @@ def _events_key(task_id: str) -> str:
     return f"charplot:task:{task_id}:events"
 
 
-async def create_task(journey_id: int, input_type: str, content: str) -> str:
-    """初始化任务 hash 并后台执行管道, 返回 task_id."""
+async def _init_task(task_id: str, journey_id: int, task_type: str, stage: str) -> None:
+    """初始化任务 hash (hset + EXPIRE), 内存 registry 由调用方注册执行体."""
     redis = get_redis()
-    task_id = uuid.uuid4().hex
     now = datetime.now(UTC).isoformat()
     async with redis.pipeline() as pipe:
         pipe.hset(
             _task_key(task_id),
             mapping={
                 "status": "running",
-                "stage": "parsing",
+                "stage": stage,
                 "progress": 0,
                 "journey_id": str(journey_id),
+                "task_type": task_type,
                 "error_message": "",
                 "created_at": now,
                 "updated_at": now,
@@ -75,8 +90,24 @@ async def create_task(journey_id: int, input_type: str, content: str) -> str:
         pipe.expire(_task_key(task_id), TASK_TTL_SECONDS)
         pipe.expire(_events_key(task_id), TASK_TTL_SECONDS)
         await pipe.execute()
+
+
+async def create_task(journey_id: int, input_type: str, content: str) -> str:
+    """初始化管道任务 hash 并后台执行, 返回 task_id."""
+    task_id = uuid.uuid4().hex
+    await _init_task(task_id, journey_id, TASK_TYPE_PIPELINE, "parsing")
     _tasks_registry[task_id] = asyncio.create_task(
         _run_task(task_id, journey_id, input_type, content)
+    )
+    return task_id
+
+
+async def create_level_generation_task(journey_id: int, level_seq: int) -> str:
+    """初始化出题任务 hash 并后台执行 (DESIGN §4.2 /ai/levels/generate)."""
+    task_id = uuid.uuid4().hex
+    await _init_task(task_id, journey_id, TASK_TYPE_LEVEL_GENERATION, "preparing")
+    _tasks_registry[task_id] = asyncio.create_task(
+        _run_level_generation_task(task_id, journey_id, level_seq)
     )
     return task_id
 
@@ -92,6 +123,7 @@ async def get_task(task_id: str) -> dict | None:
         "stage": data.get("stage", ""),
         "progress": int(data.get("progress", 0)),
         "error_message": data.get("error_message") or None,
+        "task_type": data.get("task_type", TASK_TYPE_PIPELINE),
     }
 
 
@@ -143,6 +175,46 @@ async def _run_task(
         with contextlib.suppress(Exception):
             # mark 自身已兜底, 此处防御
             await mark_journey_failed(journey_id, task_id, str(exc))
+    finally:
+        _tasks_registry.pop(task_id, None)
+
+
+async def _run_level_generation_task(
+    task_id: str, journey_id: int, level_seq: int
+) -> None:
+    """出题任务执行体 (Issue 08): 抢占 → LLM 生成 → 落库 → done.
+
+    抢占未成功 (关卡已就绪/已有任务在跑) → 直接 done, 幂等由 Django 侧
+    claim 保证; 生成失败 → error + mark_level_generation_failed (best-effort),
+    前端靠 SSE error 事件刷新关卡列表并展示「生成失败 · 重试」.
+    """
+    redis = get_redis()
+    try:
+        await emit(task_id, "preparing", 10, "准备出题素材")
+        claimed, payload = await claim_level_generation(journey_id, level_seq, task_id)
+        if not claimed:
+            reason = payload.get("reason", "unknown")
+            await emit(task_id, "done", 100, f"关卡已就绪或生成中 ({reason}), 跳过")
+            await redis.hset(_task_key(task_id), mapping={"status": "done"})
+            return
+        await emit(task_id, "generating", 60, "生成闯关题目")
+        new_questions = await generate_level_questions(payload["input"])
+        # 间隔复习题由 Django 透传 (含完整答案), 固定置于新题末尾
+        final = [*new_questions, *payload["input"]["review_questions"]]
+        await emit(task_id, "saving", 90, "保存题目")
+        await save_level_questions(journey_id, level_seq, task_id, final)
+        await emit(task_id, "done", 100, "完成, 题目已生成")
+        await redis.hset(_task_key(task_id), mapping={"status": "done"})
+    except Exception as exc:
+        logger.exception("出题任务 %s 失败 (journey=%s)", task_id, journey_id)
+        await emit(task_id, "error", 0, f"题目生成失败: {exc}")
+        await redis.hset(
+            _task_key(task_id),
+            mapping={"status": "error", "error_message": str(exc)[:1000]},
+        )
+        with contextlib.suppress(Exception):
+            # mark 自身已兜底, 此处防御
+            await mark_level_generation_failed(journey_id, level_seq, task_id, str(exc))
     finally:
         _tasks_registry.pop(task_id, None)
 

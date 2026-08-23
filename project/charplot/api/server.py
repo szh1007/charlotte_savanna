@@ -17,7 +17,13 @@ from redis.asyncio import Redis
 
 # .env 加载由 api/config.py 模块顶部完成 (首个被 import 的配置模块), 本模块不重复
 from . import tasks as task_system
-from .schemas import PipelineRequest, PipelineResponse, TaskStatusOut
+from .schemas import (
+    LevelGenerateRequest,
+    LevelGenerateResponse,
+    PipelineRequest,
+    PipelineResponse,
+    TaskStatusOut,
+)
 
 app = FastAPI(title="CharPlot AI Service", version="0.1.0")
 
@@ -67,6 +73,18 @@ async def start_pipeline(req: PipelineRequest):
         req.journey_id, req.input_type, req.content or ""
     )
     return PipelineResponse(task_id=task_id)
+
+
+@app.post("/ai/levels/generate", response_model=LevelGenerateResponse)
+async def generate_level_questions(req: LevelGenerateRequest):
+    """渐进出题 (DESIGN §4.2): 创建出题异步任务, 后台抢占 + LLM 生成 + 落库.
+
+    claimed=False 表示关卡已就绪或已有任务在跑 (幂等跳过), 前端可直接刷新.
+    """
+    task_id = await task_system.create_level_generation_task(
+        req.journey_id, req.level_seq
+    )
+    return LevelGenerateResponse(task_id=task_id)
 
 
 @app.get("/ai/tasks/{task_id}", response_model=TaskStatusOut)

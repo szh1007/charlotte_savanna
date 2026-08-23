@@ -29,14 +29,31 @@ class PipelineResponse(BaseModel):
     task_id: str
 
 
+class LevelGenerateRequest(BaseModel):
+    """渐进出题 (DESIGN §4.2): 按关卡序号触发生成任务."""
+
+    journey_id: int
+    level_seq: int
+
+
+class LevelGenerateResponse(BaseModel):
+    """出题任务创建结果 (幂等/抢占结果由 SSE 事件与关卡状态反映)."""
+
+    task_id: str
+
+
 class TaskStatusOut(BaseModel):
-    """任务状态 (DESIGN §4.2): {status, stage, progress, error_message?}."""
+    """任务状态 (DESIGN §4.2): {status, stage, progress, error_message?}.
+
+    task_type 标记任务类型 (pipeline / level-generation), 前端状态展示用.
+    """
 
     task_id: str
     status: TaskStatus
     stage: str
     progress: int
     error_message: str | None = None
+    task_type: str = "pipeline"
 
 
 class PipelineEvent(BaseModel):

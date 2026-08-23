@@ -289,6 +289,12 @@ export type QuestionType = 'choice' | 'judge' | 'fill'
 /** 关卡状态: 已通关 / 心扣完失败 / 进行中 / 未开始. */
 export type LevelStatus = 'cleared' | 'failed' | 'in_progress' | 'pending'
 
+/** 关卡类型: 常规 / Boss (章节末尾高难度混合题型关, G-5). */
+export type LevelType = 'regular' | 'boss'
+
+/** 题目生成状态 (Issue 08 渐进生成): 待生成/生成中/已就绪/生成失败. */
+export type QuestionsStatus = 'pending' | 'generating' | 'ready' | 'failed'
+
 /** 题目载荷 (不含标准答案, 判分在后端; options 仅选择类型使用). */
 export interface Question {
   id: number
@@ -301,10 +307,15 @@ export interface Question {
 /** 关卡列表项 (GET /api/charplot/journeys/{id}/levels/). */
 export interface LevelSummary {
   id: number
-  kp_id: number
+  seq: number
+  level_type: LevelType
+  kp_id: number | null
   kp_title: string
   chapter_title: string
   question_count: number
+  questions_status: QuestionsStatus
+  latest_task_id: string
+  locked: boolean
   hearts: number
   current_index: number
   cleared: boolean
@@ -324,16 +335,21 @@ export interface LevelReward {
 /** 关卡详情 (GET /api/charplot/levels/{id}/): 进度/心 + 当前题. */
 export interface LevelDetail {
   id: number
-  kp_id: number
+  seq: number
+  level_type: LevelType
+  kp_id: number | null
   kp_title: string
   chapter_id: number
   chapter_title: string
   question_count: number
+  questions_status: QuestionsStatus
+  latest_task_id: string
+  locked: boolean
   hearts: number
   current_index: number
   cleared: boolean
   status: LevelStatus
-  /** 当前题; 通关/心扣完/已答完时为 null (前端渲染结算或重开视图). */
+  /** 当前题; 通关/心扣完/已答完/题目未就绪时为 null (前端按状态分流). */
   question: Question | null
 }
 
@@ -354,7 +370,7 @@ export function getSkillTree(journeyId: number): Promise<SkillTreeData> {
   return request(`/api/charplot/journeys/${journeyId}/skill-tree/`)
 }
 
-/** 关卡列表 (首次访问自动生成 stub 关卡, 后端幂等). */
+/** 关卡列表 (首次访问自动生成关卡骨架, 题目渐进生成, 后端幂等). */
 export function getLevels(journeyId: number): Promise<{ levels: LevelSummary[] }> {
   return request(`/api/charplot/journeys/${journeyId}/levels/`)
 }
@@ -362,6 +378,21 @@ export function getLevels(journeyId: number): Promise<{ levels: LevelSummary[] }
 /** 关卡详情 + 当前题 (断点续答定位源). */
 export function getLevel(levelId: number): Promise<LevelDetail> {
   return request(`/api/charplot/levels/${levelId}/`)
+}
+
+/**
+ * 触发出题生成任务 (Issue 08, POST /ai/levels/generate).
+ * 渐进生成: 进入关卡/预生成下一关时调用; 幂等由后端 claim 保证
+ * (已就绪或已有任务在跑时任务直接 done 跳过).
+ */
+export function startLevelGeneration(
+  journeyId: number,
+  levelSeq: number,
+): Promise<{ task_id: string }> {
+  return request(`/ai/levels/generate`, {
+    method: 'POST',
+    body: { journey_id: journeyId, level_seq: levelSeq },
+  })
 }
 
 /** 提交答案: 判分 + 讲解/来源 + 心动值扣减 + 通关结算. */
@@ -375,7 +406,7 @@ export function answerQuestion(
   })
 }
 
-/** 重开关卡 (5 心扣完): 心与进度重置, 题目不变, Attempt 历史保留. */
+/** 重开关卡 (5 心扣完): 心与进度重置, 题目保持, Attempt 历史保留. */
 export function restartLevel(levelId: number): Promise<LevelDetail> {
   return request(`/api/charplot/levels/${levelId}/restart/`, { method: 'POST' })
 }

@@ -227,6 +227,10 @@ class CharplotKnowledgePoint(models.Model):
         verbose_name="前置依赖",
     )
     error_score = models.PositiveIntegerField(default=0, verbose_name="易错分")
+    last_reviewed_at = models.DateTimeField(
+        null=True, blank=True, verbose_name="最近复习时间"
+    )
+    # Issue 08 间隔复习调度: 复习题被混入新关时更新, 参与时间衰减排序
 
     class Meta:
         db_table = "charplot_knowledge_point"
@@ -244,7 +248,22 @@ class CharplotLevel(models.Model):
     进度持久化字段: hearts 为本关剩余心动值 (5 心, 答错 -1, 扣完需重开),
     current_index 为下一题下标 (0-based), 通关 = cleared. 中途退出再进
     按这两个字段断点续答; 重开 = hearts/current_index 重置, 历史 Attempt 保留.
+
+    Issue 08 渐进生成: questions_status 为题目生成状态机 (pending → generating
+    → ready / failed), 题目由 FastAPI 任务生成后经内部端点落库; seq 为旅程内
+    全局序号 (boss 关无知识点, 排序不依赖 kp). level_type=boss 为章节末尾
+    高难度混合题型关 (G-5), 通关才可进入下一章.
     """
+
+    class LevelType(models.TextChoices):
+        REGULAR = "regular", "常规"
+        BOSS = "boss", "Boss"
+
+    class QuestionsStatus(models.TextChoices):
+        PENDING = "pending", "待生成"
+        GENERATING = "generating", "生成中"
+        READY = "ready", "已就绪"
+        FAILED = "failed", "生成失败"
 
     journey = models.ForeignKey(
         CharplotJourney,
@@ -258,6 +277,34 @@ class CharplotLevel(models.Model):
         related_name="levels",
         verbose_name="知识点",
     )
+    # boss 关覆盖整章知识点, knowledge_point 为章内第一个 (展示锚点), 无单点语义
+    level_type = models.CharField(
+        max_length=16,
+        choices=LevelType.choices,
+        default=LevelType.REGULAR,
+        verbose_name="关卡类型",
+    )
+    chapter = models.ForeignKey(
+        CharplotChapter,
+        on_delete=models.CASCADE,
+        related_name="levels",
+        null=True,
+        blank=True,
+        verbose_name="章节",
+    )
+    # boss 关挂章节 (出题覆盖章内全部知识点); 常规关为冗余快照 (迁移回填)
+    seq = models.PositiveIntegerField(default=0, verbose_name="旅程内序号")
+    # 渐进生成契约中的 level_seq; ensure_levels 创建时按章节/知识点顺序递增
+    questions_status = models.CharField(
+        max_length=16,
+        choices=QuestionsStatus.choices,
+        default=QuestionsStatus.PENDING,
+        verbose_name="题目状态",
+    )
+    latest_task_id = models.CharField(
+        max_length=64, blank=True, verbose_name="最近生成任务 ID"
+    )
+    # 生成任务结束时经内部端点写入; 生成中由前端内存态持有 (SSE 订阅续推)
     hearts = models.PositiveIntegerField(default=5, verbose_name="剩余心动值")
     current_index = models.PositiveIntegerField(default=0, verbose_name="下一题下标")
     cleared = models.BooleanField(default=False, verbose_name="是否已通关")
@@ -273,12 +320,16 @@ class CharplotLevel(models.Model):
             models.Index(
                 fields=["journey", "knowledge_point"],
                 name="idx_level_journey_kp",
-            )
+            ),
+            models.Index(
+                fields=["journey", "seq"],
+                name="idx_level_journey_seq",
+            ),
         ]
-        ordering = ["knowledge_point__order", "id"]
+        ordering = ["seq", "id"]
 
     def __str__(self):
-        return f"charplot_level({self.id}, kp={self.knowledge_point_id})"
+        return f"charplot_level({self.id}, {self.level_type}, seq={self.seq})"
 
 
 class CharplotQuestion(models.Model):
@@ -310,6 +361,16 @@ class CharplotQuestion(models.Model):
     # 选择=int / 判断=str / 填空=list[str], 判分按题型取用
     explanation = models.TextField(blank=True, verbose_name="讲解")
     sources = models.JSONField(default=list, blank=True, verbose_name="来源引用")
+    source_kp = models.ForeignKey(
+        CharplotKnowledgePoint,
+        on_delete=models.SET_NULL,
+        related_name="+",
+        null=True,
+        blank=True,
+        verbose_name="来源知识点",
+    )
+    # Issue 08 间隔复习: 复制历史题到新关时指向来源知识点, 答错易错分
+    # 记在来源上 (否则来源 kp 易错分永远降不下来, 永远在复习候选 Top 20%)
     order = models.PositiveIntegerField(default=0, verbose_name="序号")
 
     class Meta:

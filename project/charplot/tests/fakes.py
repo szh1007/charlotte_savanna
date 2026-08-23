@@ -22,6 +22,59 @@ ANALYSIS_JSON = json.dumps(
     ensure_ascii=False,
 )
 
+QUESTIONS_JSON = json.dumps(
+    {
+        "questions": [
+            {
+                "question_type": "choice",
+                "content": "关于函数一等公民, 以下哪项正确?",
+                "options": [
+                    "函数可作为参数传递",
+                    "函数不能赋值给变量",
+                    "函数无法返回",
+                    "函数不可嵌套",
+                ],
+                "answer": [0],
+                "explanation": "函数是一等公民, 可传递可返回可赋值",
+                "sources": [],
+            },
+            {
+                "question_type": "judge",
+                "content": "闭包能捕获其定义处的词法作用域.",
+                "options": [],
+                "answer": ["true"],
+                "explanation": "闭包持有词法作用域引用",
+                "sources": [],
+            },
+            {
+                "question_type": "fill",
+                "content": "Python 装饰器的语法糖符号是 ____",
+                "options": [],
+                "answer": ["@", "at 符号"],
+                "explanation": "装饰器用 @ 语法标记",
+                "sources": [],
+            },
+            {
+                "question_type": "choice",
+                "content": "带参数装饰器通常需要几层嵌套?",
+                "options": ["三层", "一层", "零层", "任意层"],
+                "answer": [0],
+                "explanation": "外层接收参数, 中层接收函数, 内层接收参数",
+                "sources": [],
+            },
+            {
+                "question_type": "judge",
+                "content": "装饰器只能在函数定义时使用.",
+                "options": [],
+                "answer": ["false"],
+                "explanation": "装饰器也可手动调用包装函数",
+                "sources": [],
+            },
+        ]
+    },
+    ensure_ascii=False,
+)
+
 GRAPH_JSON = json.dumps(
     {
         "version": 1,
@@ -103,6 +156,8 @@ class FakeChatModel(BaseChatModel):
             return self._reply(GRAPH_JSON)
         if "学习材料如下" in text:
             return self._reply(ANALYSIS_JSON)
+        if "道闯关题目" in text:
+            return self._reply(QUESTIONS_JSON)
         raise AssertionError(f"FakeChatModel 未匹配的 prompt: {text[:80]}...")
 
     @staticmethod

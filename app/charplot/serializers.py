@@ -23,7 +23,12 @@ from .models import (
     CharplotQuestion,
     CharplotReviewReport,
 )
-from .services import build_profile_stats, get_streak_loss_warning, level_status
+from .services import (
+    build_profile_stats,
+    get_streak_loss_warning,
+    level_locked,
+    level_status,
+)
 
 User = get_user_model()
 
@@ -215,36 +220,70 @@ class JourneyDetailSerializer(serializers.ModelSerializer):
 # ---------------------------------------------------------------------------
 
 
-class LevelListSerializer(serializers.ModelSerializer):
-    """关卡列表项: 进度 / 剩余心 / 状态, 前端关卡入口渲染."""
+def _boss_title(obj):
+    """Boss 关展示标题 (无单点语义): 「{章名} · Boss 挑战」."""
+    chapter = obj.chapter or obj.knowledge_point.chapter
+    return f"{chapter.title} · Boss 挑战"
 
-    kp_id = serializers.IntegerField(source="knowledge_point_id", read_only=True)
-    kp_title = serializers.CharField(source="knowledge_point.title", read_only=True)
-    chapter_title = serializers.CharField(
-        source="knowledge_point.chapter.title", read_only=True
-    )
+
+class LevelListSerializer(serializers.ModelSerializer):
+    """关卡列表项: 进度 / 剩余心 / 状态 / 生成状态 / 解锁, 前端关卡入口渲染.
+
+    Issue 08: boss 关 kp_id=null、kp_title 为章级标题; locked 由
+    level_locked 计算 (前置章节 Boss 未通关); questions_status 供前端
+    生成中/失败重试三态展示.
+    """
+
+    kp_id = serializers.SerializerMethodField()
+    kp_title = serializers.SerializerMethodField()
+    chapter_title = serializers.SerializerMethodField()
     question_count = serializers.SerializerMethodField()
     status = serializers.SerializerMethodField()
+    locked = serializers.SerializerMethodField()
 
     class Meta:
         model = CharplotLevel
         fields = [
             "id",
+            "seq",
+            "level_type",
             "kp_id",
             "kp_title",
             "chapter_title",
             "question_count",
+            "questions_status",
+            "latest_task_id",
+            "locked",
             "hearts",
             "current_index",
             "cleared",
             "status",
         ]
 
+    def get_kp_id(self, obj):
+        return (
+            None
+            if obj.level_type == CharplotLevel.LevelType.BOSS
+            else obj.knowledge_point_id
+        )
+
+    def get_kp_title(self, obj):
+        if obj.level_type == CharplotLevel.LevelType.BOSS:
+            return _boss_title(obj)
+        return obj.knowledge_point.title
+
+    def get_chapter_title(self, obj):
+        chapter = obj.chapter or obj.knowledge_point.chapter
+        return chapter.title
+
     def get_question_count(self, obj):
         return obj.questions.count()
 
     def get_status(self, obj):
         return level_status(obj)
+
+    def get_locked(self, obj):
+        return level_locked(obj)
 
 
 class QuestionBriefSerializer(serializers.ModelSerializer):
@@ -258,31 +297,34 @@ class QuestionBriefSerializer(serializers.ModelSerializer):
 class LevelDetailSerializer(serializers.ModelSerializer):
     """关卡详情: 进度/心 + 当前题 (断点续答定位源, Issue 05).
 
-    question 为当前题 (current_index 定位), 通关 / 心扣完 / 已答完时返回
-    null, 前端据 level_status 渲染结算或重开视图.
+    question 为当前题 (current_index 定位), 通关 / 心扣完 / 已答完 / 题目未
+    就绪时返回 null, 前端据 questions_status 与 level_status 区分渲染
+    结算 / 重开 / 生成中面板. Issue 08: boss 关 kp_id=null、locked 输出.
     """
 
-    kp_id = serializers.IntegerField(source="knowledge_point_id", read_only=True)
-    kp_title = serializers.CharField(source="knowledge_point.title", read_only=True)
-    chapter_id = serializers.IntegerField(
-        source="knowledge_point.chapter_id", read_only=True
-    )
-    chapter_title = serializers.CharField(
-        source="knowledge_point.chapter.title", read_only=True
-    )
+    kp_id = serializers.SerializerMethodField()
+    kp_title = serializers.SerializerMethodField()
+    chapter_id = serializers.SerializerMethodField()
+    chapter_title = serializers.SerializerMethodField()
     question_count = serializers.SerializerMethodField()
     status = serializers.SerializerMethodField()
+    locked = serializers.SerializerMethodField()
     question = serializers.SerializerMethodField()
 
     class Meta:
         model = CharplotLevel
         fields = [
             "id",
+            "seq",
+            "level_type",
             "kp_id",
             "kp_title",
             "chapter_id",
             "chapter_title",
             "question_count",
+            "questions_status",
+            "latest_task_id",
+            "locked",
             "hearts",
             "current_index",
             "cleared",
@@ -290,15 +332,42 @@ class LevelDetailSerializer(serializers.ModelSerializer):
             "question",
         ]
 
+    def get_kp_id(self, obj):
+        return (
+            None
+            if obj.level_type == CharplotLevel.LevelType.BOSS
+            else obj.knowledge_point_id
+        )
+
+    def get_kp_title(self, obj):
+        return (
+            _boss_title(obj)
+            if obj.level_type == CharplotLevel.LevelType.BOSS
+            else obj.knowledge_point.title
+        )
+
+    def get_chapter_id(self, obj):
+        chapter = obj.chapter or obj.knowledge_point.chapter
+        return chapter.id
+
+    def get_chapter_title(self, obj):
+        chapter = obj.chapter or obj.knowledge_point.chapter
+        return chapter.title
+
     def get_question_count(self, obj):
         return obj.questions.count()
 
     def get_status(self, obj):
         return level_status(obj)
 
+    def get_locked(self, obj):
+        return level_locked(obj)
+
     def get_question(self, obj):
         if obj.cleared or obj.hearts <= 0:
             return None
+        if obj.questions_status != CharplotLevel.QuestionsStatus.READY:
+            return None  # 生成中/失败/待生成: 不暴露旧题
         count = obj.questions.count()
         if count == 0 or obj.current_index >= count:
             return None
