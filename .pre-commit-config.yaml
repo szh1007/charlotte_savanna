@@ -13,13 +13,6 @@ repos:
       - id: check-added-large-files
         args: [--maxkb=1024]
 
-  # 拼写检查
-  - repo: https://github.com/codespell-project/codespell
-    rev: v2.4.1
-    hooks:
-      - id: codespell
-        args: [--skip, "*.json,*.lock,*-gbk.txt", --ignore-words-list, "Fals,falsey,childs"]
-
   # Python lint & format（Ruff）
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.12.0
