@@ -1,6 +1,6 @@
 # 09 — 知识库管理链路
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Blocked by:** 01 — 三端骨架与健康检查, 02 — 账号体系与个人主页
 
@@ -17,9 +17,7 @@
 
 **References:** DESIGN.md §7 步骤 09；PRD C-1/C-2/C-3/C-4；SPEC §6.1 / §8 / Q18、Q18c
 
----
-
-## 实现摘要 (2026-08-24)
+**实现摘要 (2026-08-24, commit `cf99a7a`):**
 
 **Django 侧** (`app/charplot/`)
 - 模型：`CharplotKnowledgeBase`（name/description/cover URL/status 状态机/collection_name 预留/latest_task_id/error_message）+ `CharplotKnowledgeBaseDocument`（file/file_size/is_deleted/deleted_at），迁移 `0007`
