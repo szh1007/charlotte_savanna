@@ -28,8 +28,27 @@ const file = ref<File | null>(null)
 const uploading = ref(false)
 const uploadRef = ref<UploadInstance>()
 
-// 主题卡片墙 (Issue 09): 就绪知识库, 游客也可浏览; 点击直达开旅程为 Issue 11
+// 主题卡片墙 (Issue 09/11): 就绪知识库, 游客也可浏览; 点击直达开旅程
 const topics = ref<Topic[]>([])
+const startingKbId = ref<number | null>(null)
+
+/** 点击主题卡片 → 创建 kb 旅程 → 启动管道 → 详情页接管 SSE (Issue 11). */
+async function startTopicJourney(t: Topic) {
+  if (!auth.user) {
+    router.push({ path: '/login', query: { redirect: '/' } })
+    return
+  }
+  if (startingKbId.value !== null) return // 已有旅程创建中, 防重复点击
+  startingKbId.value = t.id
+  try {
+    const created = await createJourney({ input_type: 'kb', kb_id: t.id })
+    const { task_id } = await startPipeline(created.journey_id, 'kb', undefined, t.id)
+    router.push({ path: `/journeys/${created.journey_id}`, query: { task_id } })
+  } catch (e) {
+    ElMessage.error(e instanceof ApiError ? e.message : '开启旅程失败, 请稍后重试')
+    startingKbId.value = null
+  }
+}
 
 const submitText = computed(() => {
   if (uploading.value) return '正在生成…'
@@ -179,15 +198,37 @@ onMounted(async () => {
       </div>
     </section>
 
-    <!-- 主题知识库 (Issue 09): 管理员预建, 仅就绪库展示; 点击直达开旅程为 Issue 11 -->
+    <!-- 主题知识库 (Issue 09/11): 管理员预建, 仅就绪库展示; 点击直达开旅程 -->
     <section v-if="topics.length" class="topics" aria-label="主题知识库">
       <h2 class="section-title">主题知识库</h2>
       <ul class="topic-grid">
-        <li v-for="t in topics" :key="t.id" class="topic-card">
+        <li
+          v-for="t in topics"
+          :key="t.id"
+          class="topic-card"
+          :class="{ starting: startingKbId === t.id }"
+          role="button"
+          tabindex="0"
+          :aria-label="`开始学习 ${t.name}`"
+          @click="startTopicJourney(t)"
+          @keydown.enter.prevent="startTopicJourney(t)"
+          @keydown.space.prevent="startTopicJourney(t)"
+        >
           <div class="topic-cover">
             <img v-if="t.cover" :src="t.cover" :alt="t.name" loading="lazy" />
             <span v-else class="topic-cover-fallback" aria-hidden="true">
               {{ t.name[0] }}
+            </span>
+            <span class="topic-cover-mask" aria-hidden="true">
+              <el-button
+                round
+                type="primary"
+                class="topic-start-btn"
+                :loading="startingKbId === t.id"
+                @click.stop="startTopicJourney(t)"
+              >
+                {{ startingKbId === t.id ? '开启中…' : '开始学习' }}
+              </el-button>
             </span>
           </div>
           <h3 class="topic-name">{{ t.name }}</h3>
@@ -368,7 +409,7 @@ onMounted(async () => {
   margin: 10px 0 0;
 }
 
-/* ---- 主题知识库 (Issue 09) ---- */
+/* ---- 主题知识库 (Issue 09/11) ---- */
 .topics {
   margin-top: 36px;
 }
@@ -387,17 +428,30 @@ onMounted(async () => {
   border-radius: var(--cp-radius);
   box-shadow: var(--cp-shadow);
   padding: 14px;
+  cursor: pointer;
   transition:
     transform 0.25s ease,
     box-shadow 0.25s ease;
 }
 
-.topic-card:hover {
+.topic-card:hover,
+.topic-card:focus-visible {
   transform: translateY(-2px);
   box-shadow: var(--cp-shadow-hover);
 }
 
+.topic-card:focus-visible {
+  outline: 2px solid var(--cp-primary);
+  outline-offset: 2px;
+}
+
+.topic-card.starting {
+  opacity: 0.7;
+  pointer-events: none;
+}
+
 .topic-cover {
+  position: relative;
   aspect-ratio: 16 / 9;
   border-radius: var(--cp-radius-sm);
   overflow: hidden;
@@ -413,12 +467,40 @@ onMounted(async () => {
   height: 100%;
   object-fit: cover;
   display: block;
+  transition: transform 0.35s ease;
+}
+
+.topic-card:hover .topic-cover img {
+  transform: scale(1.05);
 }
 
 .topic-cover-fallback {
   color: var(--cp-card);
   font-size: 34px;
   font-weight: 800;
+}
+
+/* 开始学习遮罩: hover/键盘聚焦时浮现 (签名交互点, 其余克制) */
+.topic-cover-mask {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(251, 114, 153, 0.28);
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+
+.topic-card:hover .topic-cover-mask,
+.topic-card:focus-visible .topic-cover-mask {
+  opacity: 1;
+}
+
+.topic-start-btn {
+  font-size: 13px;
+  font-weight: 700;
+  padding: 6px 18px;
 }
 
 .topic-name {

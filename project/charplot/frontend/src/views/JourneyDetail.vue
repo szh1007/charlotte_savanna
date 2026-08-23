@@ -77,8 +77,18 @@ function beginSse(nextTaskId: string) {
 async function runPipeline() {
   const d = detail.value
   if (!d) return
+  // kb 旅程 (Issue 11): 重试必须透传 kb_id; 知识库被删 (null) 时无法重试
+  if (d.input_type === 'kb' && !d.kb_id) {
+    ElMessage.error('知识库已删除, 无法重新生成该旅程')
+    return
+  }
   try {
-    const { task_id } = await startPipeline(d.id, d.input_type, d.content || undefined)
+    const { task_id } = await startPipeline(
+      d.id,
+      d.input_type,
+      d.content || undefined,
+      d.input_type === 'kb' ? d.kb_id ?? undefined : undefined,
+    )
     beginSse(task_id)
   } catch (e) {
     ElMessage.error(e instanceof ApiError ? e.message : '启动生成失败, 请稍后重试')
@@ -112,8 +122,11 @@ onUnmounted(() => {
       <header class="detail-head">
         <h1 class="detail-title">{{ detail.title }}</h1>
         <p class="detail-meta">
-          {{ { text: '一句话', link: '网页链接', file: '文件' }[detail.input_type] }}
+          {{ { text: '一句话', link: '网页链接', file: '文件', kb: '知识库' }[detail.input_type] }}
           · 创建于 {{ new Date(detail.created_at).toLocaleDateString() }}
+        </p>
+        <p v-if="detail.input_type === 'kb' && detail.knowledge_base" class="kb-chip">
+          📚 基于知识库 · {{ detail.knowledge_base.name }}
         </p>
       </header>
 
@@ -248,6 +261,18 @@ onUnmounted(() => {
   font-size: 13px;
   color: var(--cp-ink-soft);
   margin: 0;
+}
+
+/* kb 旅程来源标记 (Issue 11): 弱化 chip, 与 meta 同层级 */
+.kb-chip {
+  display: inline-block;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--cp-primary);
+  background: var(--cp-primary-soft);
+  border-radius: 999px;
+  padding: 3px 12px;
+  margin: 8px 0 0;
 }
 
 .panel {

@@ -115,6 +115,7 @@ class CharplotJourney(models.Model):
         TEXT = "text", "纯文本"
         FILE = "file", "文件"
         LINK = "link", "网页链接"
+        KB = "kb", "知识库"
 
     class Status(models.TextChoices):
         GENERATING = "generating", "生成中"
@@ -139,6 +140,16 @@ class CharplotJourney(models.Model):
         blank=True,
         null=True,
         verbose_name="源文件",
+    )
+    # Issue 11: 知识库驱动旅程 (input_type="kb") 关联的知识库; 非 kb 旅程为空.
+    # 软删知识库 SET_NULL 保留旅程历史 (删除知识库不连带删用户旅程)
+    knowledge_base = models.ForeignKey(
+        "CharplotKnowledgeBase",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="journeys",
+        verbose_name="知识库",
     )
     status = models.CharField(
         max_length=16,

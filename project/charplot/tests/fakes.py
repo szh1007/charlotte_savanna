@@ -6,6 +6,7 @@ JSON (analyze → 分析 JSON; deconstruct → 契约图谱 JSON), 支持注入
 """
 
 import json
+from collections.abc import Callable
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage
@@ -130,12 +131,17 @@ class FakeChatModel(BaseChatModel):
     """按 prompt 关键词返回预置 JSON 的假模型.
 
     BaseChatModel 是 pydantic 模型, 字段必须显式声明 (不能 __init__ 赋值).
-    sequence: [(关键词, 响应文本), ...] 优先于默认匹配 (模拟修正反馈);
+    sequence: [(关键词, 响应), ...] 优先于默认匹配 (模拟修正反馈); 响应
+    可为 str 或 Callable[[str], str] (收完整 user prompt 返回 JSON,
+    Issue 11 两轮解构的细化轮 N 次调用需按知识点动态返回).
     fail_first_n: 前 N 次调用返回非 JSON 文本 (模拟 LLM 首次输出非法,
     触发管道重试路径); calls 记录每次调用的人类消息内容, 供断言.
+
+    注意: 重试场景中反馈关键词条目必须排在主关键词之前 (first-match 顺序),
+    且关键词不得命中 query rewriting 的 prompt (rewrite_query 失败会降级).
     """
 
-    sequence: list[tuple[str, str]] = Field(default_factory=list)
+    sequence: list[tuple[str, str | Callable[[str], str]]] = Field(default_factory=list)
     fail_first_n: int = 0
     calls: list[str] = Field(default_factory=list)
 
@@ -149,7 +155,8 @@ class FakeChatModel(BaseChatModel):
         self.calls.append(text)
         for keyword, response in self.sequence:
             if keyword in text:
-                return self._reply(response)
+                payload = response(text) if callable(response) else response
+                return self._reply(payload)
         if len(self.calls) <= self.fail_first_n:
             return self._reply("这不是 JSON, 是一段废话")
         if "解构以下学习主题" in text:

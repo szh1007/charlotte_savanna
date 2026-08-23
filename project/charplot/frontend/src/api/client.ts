@@ -198,8 +198,8 @@ export function buyStreakFreeze(): Promise<{ coins: number; frozen: string }> {
 
 // ---- 旅程与生成链路 (Issue 03) ----
 
-/** 旅程输入类型: 纯文本 / 文件 / 网页链接 (PRD B-1). */
-export type JourneyInputType = 'text' | 'file' | 'link'
+/** 旅程输入类型: 纯文本 / 文件 / 网页链接 / 知识库 (PRD B-1, Issue 11). */
+export type JourneyInputType = 'text' | 'file' | 'link' | 'kb'
 /** 旅程状态: 生成中 / 已就绪 / 生成失败. */
 export type JourneyStatus = 'generating' | 'ready' | 'failed'
 /** 管道任务状态 (CONTRACT.md §2). */
@@ -248,6 +248,9 @@ export interface JourneyDetail {
   created_at: string
   updated_at: string
   chapters: Chapter[]
+  /** kb 旅程 (Issue 11): 知识库 id (重试时透传管道); 知识库被删后为 null. */
+  kb_id: number | null
+  knowledge_base: Topic | null
 }
 
 // ---- 技能树 (Issue 04) ----
@@ -612,11 +615,15 @@ async function requestForm<T>(path: string, form: FormData): Promise<T> {
   return (await res.json()) as T
 }
 
-/** 创建旅程: file → multipart, text/link → JSON; 返回 {journey_id, status}. */
+/**
+ * 创建旅程: file → multipart, text/link/kb → JSON; 返回 {journey_id, status}.
+ * kb 类型 (Issue 11): 必带 kb_id, 后端仅允许就绪知识库开旅程.
+ */
 export function createJourney(input: {
   input_type: JourneyInputType
   content?: string
   file?: File
+  kb_id?: number
 }): Promise<{ journey_id: number; status: JourneyStatus }> {
   if (input.input_type === 'file' && input.file) {
     const form = new FormData()
@@ -626,7 +633,11 @@ export function createJourney(input: {
   }
   return request('/api/charplot/journeys/', {
     method: 'POST',
-    body: { input_type: input.input_type, content: input.content },
+    body: {
+      input_type: input.input_type,
+      content: input.content,
+      kb_id: input.kb_id,
+    },
   })
 }
 
@@ -640,15 +651,16 @@ export function getJourney(id: number): Promise<JourneyDetail> {
   return request(`/api/charplot/journeys/${id}/`)
 }
 
-/** 启动知识管道 (FastAPI), 返回 {task_id}. */
+/** 启动知识管道 (FastAPI), 返回 {task_id}; kb 类型 (Issue 11) 透传 kb_id. */
 export function startPipeline(
   journeyId: number,
   inputType: JourneyInputType,
   content?: string,
+  kbId?: number,
 ): Promise<{ task_id: string }> {
   return request('/ai/pipeline', {
     method: 'POST',
-    body: { journey_id: journeyId, input_type: inputType, content },
+    body: { journey_id: journeyId, input_type: inputType, content, kb_id: kbId },
   })
 }
 

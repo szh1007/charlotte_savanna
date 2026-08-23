@@ -116,12 +116,17 @@ async def _init_task(
         await pipe.execute()
 
 
-async def create_task(journey_id: int, input_type: str, content: str) -> str:
-    """初始化管道任务 hash 并后台执行, 返回 task_id."""
+async def create_task(
+    journey_id: int, input_type: str, content: str, kb_id: int | None = None
+) -> str:
+    """初始化管道任务 hash 并后台执行, 返回 task_id.
+
+    Issue 11: kb 类型旅程透传 kb_id (管道解析输入, 两轮解构检索源).
+    """
     task_id = uuid.uuid4().hex
     await _init_task(task_id, journey_id, TASK_TYPE_PIPELINE, "parsing")
     _tasks_registry[task_id] = asyncio.create_task(
-        _run_task(task_id, journey_id, input_type, content)
+        _run_task(task_id, journey_id, input_type, content, kb_id)
     )
     return task_id
 
@@ -185,7 +190,11 @@ async def emit(task_id: str, stage: str, progress: int, message: str) -> None:
 
 
 async def _run_task(
-    task_id: str, journey_id: int, input_type: str, content: str
+    task_id: str,
+    journey_id: int,
+    input_type: str,
+    content: str,
+    kb_id: int | None = None,
 ) -> None:
     """任务执行体: 管道 → 图谱落库 → done; 任何失败 → error + 失败标记."""
     redis = get_redis()
@@ -193,7 +202,10 @@ async def _run_task(
     try:
         graph = await run_pipeline(
             PipelineInput(
-                journey_id=journey_id, input_type=input_type, content=content or ""
+                journey_id=journey_id,
+                input_type=input_type,
+                content=content or "",
+                kb_id=kb_id,
             ),
             partial(emit, task_id),
         )

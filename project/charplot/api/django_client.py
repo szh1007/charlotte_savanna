@@ -56,6 +56,27 @@ async def fetch_journey_content(journey_id: int) -> tuple[str, bytes]:
     return body.get("filename", "upload"), raw
 
 
+async def fetch_kb_meta(kb_id: int) -> dict:
+    """取知识库元信息 (内部端点, Issue 11 kb 旅程 parse 输入).
+
+    返回 {id, name, description, status}; 4xx (不存在) 与网络错误抛
+    RuntimeError, 由管道转任务 error (前端可重试). status 供管道运行时
+    快速失败 (知识库创建后被下线/删除的竞态).
+    """
+    path = f"/api/charplot/kb/{kb_id}/meta/"
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+            resp = await client.get(
+                f"{config.DJANGO_API_BASE}{path}", headers=_internal_headers()
+            )
+    except httpx.HTTPError as exc:
+        raise RuntimeError(f"取知识库元信息失败 (网络): {exc}") from exc
+    if resp.status_code != 200:
+        detail = resp.text[:200] if resp.text else resp.status_code
+        raise RuntimeError(f"取知识库元信息失败 ({resp.status_code}): {detail}")
+    return resp.json()
+
+
 async def save_graph_to_django(journey_id: int, task_id: str, graph: dict) -> None:
     """图谱落库, transient 失败重试 1 次 (间隔 1s); 4xx 抛异常不重试."""
     path = f"/api/charplot/journeys/{journey_id}/graph/"

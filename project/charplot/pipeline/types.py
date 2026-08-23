@@ -14,12 +14,14 @@ class PipelineInput:
     """管道入参 (保持 Issue 03 签名, tasks.py 复用).
 
     content: text/link 输入为原文/URL; file 输入为空 (文件内容经
-    Django 内部端点获取, 见 stages/parse.py).
+    Django 内部端点获取, 见 stages/parse.py); kb (Issue 11) 输入为
+    知识库驱动旅程, kb_id 指向 Django 侧 CharplotKnowledgeBase.
     """
 
     journey_id: int
-    input_type: str  # text | file | link
+    input_type: str  # text | file | link | kb
     content: str = ""
+    kb_id: int | None = None
 
 
 @dataclass

@@ -75,7 +75,7 @@ async def health():
 async def start_pipeline(req: PipelineRequest):
     """启动知识管道 (DESIGN §4.2): 创建异步任务, 后台执行 stub 管道."""
     task_id = await task_system.create_task(
-        req.journey_id, req.input_type, req.content or ""
+        req.journey_id, req.input_type, req.content or "", req.kb_id
     )
     return PipelineResponse(task_id=task_id)
 

@@ -127,12 +127,28 @@ class CharplotProfileSerializer(serializers.ModelSerializer):
 # ---------------------------------------------------------------------------
 
 
-class JourneyCreateSerializer(serializers.Serializer):
-    """创建旅程: JSON (text/link) 或 multipart (file), DRF 按 Content-Type 选解析器."""
+class TopicSerializer(serializers.ModelSerializer):
+    """主题卡片 (用户端, GET /api/charplot/topics/): 仅就绪知识库.
 
-    input_type = serializers.ChoiceField(choices=["text", "file", "link"])
+    定义在旅程序列化器之前 (JourneyDetailSerializer 嵌套引用); 亦用于
+    JourneyDetail 的 knowledge_base 展示 (Issue 11).
+    """
+
+    class Meta:
+        model = CharplotKnowledgeBase
+        fields = ["id", "name", "description", "cover"]
+
+
+class JourneyCreateSerializer(serializers.Serializer):
+    """创建旅程: JSON (text/link/kb) 或 multipart (file), DRF 按 Content-Type 选解析器.
+
+    Issue 11: kb 类型必带 kb_id, 知识库必须存在且已就绪 (仅就绪库开旅程).
+    """
+
+    input_type = serializers.ChoiceField(choices=["text", "file", "link", "kb"])
     content = serializers.CharField(required=False, allow_blank=True, max_length=20000)
     source_file = serializers.FileField(required=False)
+    kb_id = serializers.IntegerField(required=False, allow_null=True)
 
     def validate(self, attrs):
         input_type = attrs["input_type"]
@@ -141,6 +157,18 @@ class JourneyCreateSerializer(serializers.Serializer):
             if not attrs.get("source_file"):
                 raise serializers.ValidationError("文件输入必须上传 source_file")
             attrs["content"] = ""  # file 输入忽略 content, 文件内容解析是 Issue 07
+        elif input_type == "kb":
+            kb_id = attrs.get("kb_id")
+            if not kb_id:
+                raise serializers.ValidationError("知识库输入必须提供 kb_id")
+            try:
+                kb = CharplotKnowledgeBase.objects.get(pk=kb_id)
+            except CharplotKnowledgeBase.DoesNotExist:
+                raise serializers.ValidationError(f"知识库不存在: {kb_id}")
+            if kb.status != CharplotKnowledgeBase.Status.READY:
+                raise serializers.ValidationError("知识库未就绪, 暂不可开启旅程")
+            attrs["knowledge_base"] = kb  # 视图直接消费, 避免二次查询
+            attrs["content"] = ""
         else:
             if not content:
                 raise serializers.ValidationError("文本/链接输入必须提供 content")
@@ -196,10 +224,13 @@ class ChapterNestedSerializer(serializers.ModelSerializer):
 class JourneyDetailSerializer(serializers.ModelSerializer):
     """旅程详情: 图谱规范化嵌套; graph 快照不返回 (权威 = chapters 嵌套).
 
-    content 返回输入原文, 供前端失败重试时重新启动管道 (POST /ai/pipeline).
+    content 返回输入原文, 供前端失败重试时重新启动管道 (POST /ai/pipeline);
+    kb_id/knowledge_base (Issue 11): kb 旅程重试需 kb_id, 展示需库信息.
     """
 
     chapters = ChapterNestedSerializer(many=True, read_only=True)
+    kb_id = serializers.IntegerField(source="knowledge_base_id", read_only=True)
+    knowledge_base = TopicSerializer(read_only=True)
 
     class Meta:
         model = CharplotJourney
@@ -215,6 +246,8 @@ class JourneyDetailSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
             "chapters",
+            "kb_id",
+            "knowledge_base",
         ]
 
 
@@ -548,11 +581,3 @@ class KnowledgeBaseDetailSerializer(serializers.ModelSerializer):
     def get_deleted_documents(self, obj):
         qs = obj.documents.filter(is_deleted=True).order_by("-deleted_at", "id")
         return KbDocumentSerializer(qs, many=True).data
-
-
-class TopicSerializer(serializers.ModelSerializer):
-    """主题卡片 (用户端, GET /api/charplot/topics/): 仅就绪知识库."""
-
-    class Meta:
-        model = CharplotKnowledgeBase
-        fields = ["id", "name", "description", "cover"]

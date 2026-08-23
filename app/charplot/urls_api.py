@@ -10,6 +10,7 @@ from .views_api import (
     JourneyStatusView,
     KbDeletedDocIdsView,
     KbDocumentContentView,
+    KbMetaView,
     KnowledgeBaseDetailView,
     KnowledgeBaseDocumentRestoreView,
     KnowledgeBaseDocumentsView,
@@ -141,4 +142,6 @@ urlpatterns = [
         KbDeletedDocIdsView.as_view(),
         name="kb-deleted-doc-ids",
     ),
+    # Issue 11 内部端点: 知识库元信息 (kb 旅程管道解析输入)
+    path("kb/<int:pk>/meta/", KbMetaView.as_view(), name="kb-meta"),
 ]

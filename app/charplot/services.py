@@ -212,8 +212,11 @@ class JourneyGraphError(ValueError):
     """图谱契约校验失败 (中文 detail 透传给 FastAPI 落库调用方)."""
 
 
-def derive_journey_title(input_type, content="", filename=""):
-    """从输入推导旅程标题: text/link 取内容首行截断, file 取去扩展名文件名."""
+def derive_journey_title(input_type, content="", filename="", knowledge_base=None):
+    """从输入推导旅程标题: text/link 取内容首行截断, file 取去扩展名文件名,
+    kb (Issue 11) 取知识库名."""
+    if input_type == CharplotJourney.InputType.KB and knowledge_base:
+        return knowledge_base.name[:JOURNEY_TITLE_MAX]
     if input_type == CharplotJourney.InputType.FILE and filename:
         base = os.path.splitext(os.path.basename(filename))[0]
         return base[:JOURNEY_TITLE_MAX]
@@ -225,15 +228,26 @@ def derive_journey_title(input_type, content="", filename=""):
     return title[:JOURNEY_TITLE_MAX]
 
 
-def create_journey(user, input_type, content, source_file=None):
-    """创建旅程: status=generating, title 由输入推导, 源文件一并落库."""
+def create_journey(user, input_type, content, source_file=None, knowledge_base=None):
+    """创建旅程: status=generating, title 由输入推导, 源文件/知识库一并落库.
+
+    Issue 11: kb 旅程挂 knowledge_base (input_type=kb 时由 serializer 校验
+    就绪状态后传入), 供详情页展示与管道解析. 服务层防御性复校验 (覆盖
+    serializer 校验后知识库被下线/删除的竞态, 权威校验在服务层).
+    """
+    if input_type == CharplotJourney.InputType.KB:
+        if knowledge_base is None or not hasattr(knowledge_base, "pk"):
+            raise KnowledgeBaseStateError("知识库不存在, 无法创建旅程")
+        if knowledge_base.status != CharplotKnowledgeBase.Status.READY:
+            raise KnowledgeBaseStateError("知识库未就绪, 暂不可开启旅程")
     filename = source_file.name if source_file else ""
     journey = CharplotJourney.objects.create(
         user=user,
         input_type=input_type,
         content=content or "",
         source_file=source_file,
-        title=derive_journey_title(input_type, content, filename),
+        knowledge_base=knowledge_base,
+        title=derive_journey_title(input_type, content, filename, knowledge_base),
         status=CharplotJourney.Status.GENERATING,
     )
     return journey

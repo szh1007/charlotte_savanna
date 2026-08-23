@@ -14,6 +14,7 @@ from rest_framework.test import APIClient
 from app.charplot.models import (
     CharplotChapter,
     CharplotJourney,
+    CharplotKnowledgeBase,
     CharplotKnowledgePoint,
 )
 from app.charplot.services import (
@@ -145,6 +146,69 @@ class JourneyCreateTests(TestCase):
         self.assertEqual(resp.status_code, 403)
 
 
+def create_kb(
+    status=CharplotKnowledgeBase.Status.READY, name="RAG 实战", description=""
+):
+    """预置知识库 (默认就绪)."""
+    return CharplotKnowledgeBase.objects.create(
+        name=name, status=status, description=description
+    )
+
+
+class JourneyKbCreateTests(TestCase):
+    """知识库驱动旅程创建 (Issue 11): 仅就绪库可开旅程."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.user = create_user()
+        self.client.force_login(self.user)
+
+    def test_create_kb_journey(self):
+        kb = create_kb()
+        resp = self.client.post(
+            JOURNEYS_URL, {"input_type": "kb", "kb_id": kb.id}, format="json"
+        )
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.json()["status"], "generating")
+        journey = CharplotJourney.objects.get(pk=resp.json()["journey_id"])
+        self.assertEqual(journey.input_type, "kb")
+        self.assertEqual(journey.knowledge_base, kb)
+        self.assertEqual(journey.title, "RAG 实战")  # 标题取知识库名
+
+    def test_create_kb_not_ready_rejected(self):
+        for status in (
+            CharplotKnowledgeBase.Status.DRAFT,
+            CharplotKnowledgeBase.Status.INDEXING,
+            CharplotKnowledgeBase.Status.FAILED,
+            CharplotKnowledgeBase.Status.OFFLINE,
+        ):
+            kb = create_kb(status=status, name=f"库-{status}")
+            resp = self.client.post(
+                JOURNEYS_URL, {"input_type": "kb", "kb_id": kb.id}, format="json"
+            )
+            self.assertEqual(resp.status_code, 400, msg=f"status={status}")
+            self.assertIn(
+                "知识库未就绪, 暂不可开启旅程",
+                resp.json().get("non_field_errors", []),
+                msg=f"status={status}",
+            )
+            self.assertFalse(CharplotJourney.objects.filter(knowledge_base=kb).exists())
+
+    def test_create_kb_missing_id_rejected(self):
+        resp = self.client.post(JOURNEYS_URL, {"input_type": "kb"}, format="json")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn(
+            "知识库输入必须提供 kb_id", resp.json().get("non_field_errors", [])
+        )
+
+    def test_create_kb_not_found_rejected(self):
+        resp = self.client.post(
+            JOURNEYS_URL, {"input_type": "kb", "kb_id": 99999}, format="json"
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("知识库不存在: 99999", resp.json().get("non_field_errors", []))
+
+
 class JourneyListTests(TestCase):
     def setUp(self):
         self.client = APIClient()
@@ -223,6 +287,56 @@ class JourneyDetailTests(TestCase):
             user=other, title="他人旅程", input_type="text", content="x"
         )
         resp = self.client.get(f"{JOURNEYS_URL}{other_journey.id}/")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_detail_kb_journey_returns_kb_info(self):
+        kb = create_kb(name="RAG 实战", description="企业级 RAG 全流程")
+        journey = CharplotJourney.objects.create(
+            user=self.user,
+            title=kb.name,
+            input_type="kb",
+            content="",
+            knowledge_base=kb,
+        )
+        resp = self.client.get(f"{JOURNEYS_URL}{journey.id}/")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["input_type"], "kb")
+        self.assertEqual(data["kb_id"], kb.id)
+        self.assertEqual(data["knowledge_base"]["name"], "RAG 实战")
+        self.assertEqual(data["knowledge_base"]["description"], "企业级 RAG 全流程")
+
+
+@override_settings(CHARPLOT_INTERNAL_TOKEN=INTERNAL_TOKEN)
+class KbMetaInternalTests(TestCase):
+    """知识库元信息端点 (内部端点, FastAPI → Django, Issue 11 管道解析输入)."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.kb = create_kb(name="RAG 实战", description="企业级 RAG 全流程")
+        self.url = f"/api/charplot/kb/{self.kb.id}/meta/"
+
+    def test_get_meta_with_token(self):
+        resp = self.client.get(self.url, HTTP_X_INTERNAL_TOKEN=INTERNAL_TOKEN)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(
+            resp.json(),
+            {
+                "id": self.kb.id,
+                "name": "RAG 实战",
+                "description": "企业级 RAG 全流程",
+                "status": "ready",
+            },
+        )
+
+    def test_get_meta_without_token_forbidden(self):
+        resp = self.client.get(self.url)
+        self.assertEqual(resp.status_code, 403)
+
+    def test_get_meta_not_found(self):
+        resp = self.client.get(
+            "/api/charplot/kb/99999/meta/", HTTP_X_INTERNAL_TOKEN=INTERNAL_TOKEN
+        )
         self.assertEqual(resp.status_code, 404)
 
 

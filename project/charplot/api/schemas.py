@@ -7,21 +7,27 @@ from typing import Literal
 
 from pydantic import BaseModel, model_validator
 
-InputType = Literal["text", "file", "link"]
+InputType = Literal["text", "file", "link", "kb"]
 TaskStatus = Literal["running", "done", "error"]
 
 
 class PipelineRequest(BaseModel):
-    """启动知识管道 (DESIGN §4.2): text/link 必带 content, file 可空."""
+    """启动知识管道 (DESIGN §4.2): text/link 必带 content, file 可空, kb 必带 kb_id."""
 
     journey_id: int
     input_type: InputType
     content: str | None = None
+    kb_id: int | None = None
 
     @model_validator(mode="after")
     def _content_required(self):
         if self.input_type in ("text", "link") and not (self.content or "").strip():
             raise ValueError("text/link 输入必须提供 content")
+        if self.input_type == "kb":
+            if self.kb_id is None:
+                raise ValueError("知识库输入必须提供 kb_id")
+        elif self.kb_id is not None:
+            raise ValueError("仅知识库输入可携带 kb_id")
         return self
 
 

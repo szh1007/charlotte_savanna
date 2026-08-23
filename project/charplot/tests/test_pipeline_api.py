@@ -46,10 +46,61 @@ def test_text_input_without_content_rejected(client):
     assert resp.status_code == 422
 
 
-def test_file_input_without_content_accepted(client, mock_django_save):
-    resp = client.post(PIPELINE_URL, json={"journey_id": 1, "input_type": "file"})
+def test_kb_input_without_kb_id_rejected(client):
+    resp = client.post(PIPELINE_URL, json={"journey_id": 1, "input_type": "kb"})
+    assert resp.status_code == 422
+    assert "必须提供 kb_id" in resp.json()["detail"][0]["msg"]
+
+
+def test_kb_id_on_non_kb_input_rejected(client):
+    resp = client.post(
+        PIPELINE_URL,
+        json={"journey_id": 1, "input_type": "text", "content": "x", "kb_id": 7},
+    )
+    assert resp.status_code == 422
+    assert "仅知识库输入" in resp.json()["detail"][0]["msg"]
+
+
+def test_kb_input_full_flow_done(client, monkeypatch, mock_django_save):
+    """kb 旅程 API 全链路: 任务创建 → done → 图谱落库 (两轮解构假件)."""
+    from tests.fakes import FakeChatModel
+    from tests.test_pipeline import (
+        KB_CHUNKS,
+        KB_META_READY,
+        KB_SKELETON_JSON,
+        kb_refine_responder,
+    )
+
+    from project.charplot.api import django_client
+    from project.charplot.pipeline import llm as pipeline_llm
+    from project.charplot.pipeline.sources import kb_source
+
+    async def fake_meta(kb_id):
+        return KB_META_READY
+
+    fake = FakeChatModel(
+        sequence=[
+            ("请为以下知识库构建图谱骨架", KB_SKELETON_JSON),
+            ("请细化以下知识点的依赖边与摘要", kb_refine_responder),
+        ]
+    )
+    monkeypatch.setattr(pipeline_llm, "get_chat_model", lambda: fake)
+    monkeypatch.setattr(django_client, "fetch_kb_meta", fake_meta)
+    monkeypatch.setattr(
+        kb_source, "search_kb", lambda kb_id, query, top_k=None: KB_CHUNKS
+    )
+
+    resp = client.post(
+        PIPELINE_URL,
+        json={"journey_id": 1, "input_type": "kb", "kb_id": 7},
+    )
     assert resp.status_code == 200
-    assert wait_task_status(client, resp.json()["task_id"], "done")
+    task_id = resp.json()["task_id"]
+    assert wait_task_status(client, task_id, "done")
+    # 图谱落库 (mock 记录): graph 为契约 v1
+    saved = [c for c in mock_django_save if c[0] == "save"]
+    assert len(saved) == 1
+    assert saved[0][3]["version"] == 1
 
 
 def test_pipeline_exception_sets_task_error(client, monkeypatch):

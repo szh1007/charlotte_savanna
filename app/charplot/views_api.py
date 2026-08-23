@@ -255,12 +255,17 @@ class JourneyListView(APIView):
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         data = serializer.validated_data
-        journey = create_journey(
-            user=request.user,
-            input_type=data["input_type"],
-            content=data.get("content", ""),
-            source_file=data.get("source_file"),
-        )
+        try:
+            journey = create_journey(
+                user=request.user,
+                input_type=data["input_type"],
+                content=data.get("content", ""),
+                source_file=data.get("source_file"),
+                knowledge_base=data.get("knowledge_base"),
+            )
+        except KnowledgeBaseStateError as exc:
+            # 竞态兜底: serializer 校验后知识库被下线/删除
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(
             {"journey_id": journey.id, "status": journey.status},
             status=status.HTTP_201_CREATED,
@@ -832,3 +837,25 @@ class KbDeletedDocIdsView(APIView):
             knowledge_base_id=pk, is_deleted=True
         ).values_list("id", flat=True)
         return Response({"deleted_doc_ids": list(deleted_ids)})
+
+
+class KbMetaView(APIView):
+    """知识库元信息 (内部端点, FastAPI → Django, Issue 11 管道解析输入).
+
+    kb 类型旅程的 parse 阶段取名称/描述构造材料 (analyze 输入), 状态校验
+    已由 Django 创建旅程时完成 (仅就绪库可开旅程), 此处不重复校验.
+    """
+
+    authentication_classes = []
+    permission_classes = [IsInternalService]
+
+    def get(self, request, pk):
+        kb = get_object_or_404(CharplotKnowledgeBase, pk=pk)
+        return Response(
+            {
+                "id": kb.id,
+                "name": kb.name,
+                "description": kb.description,
+                "status": kb.status,
+            }
+        )

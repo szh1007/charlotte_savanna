@@ -39,6 +39,19 @@ def test_build_sources_skips_document_without_material(monkeypatch):
     assert "document" not in names
 
 
+def test_build_sources_kb_id_returns_only_kb_source(monkeypatch):
+    """知识库旅程 (Issue 11): kb_id 非空时仅注册 KbSource, 不联网/不带文档源."""
+    from project.charplot.api import config
+    from project.charplot.pipeline.sources.kb_source import KbSource
+
+    monkeypatch.setattr(config, "TAVILY_API_KEY", "tvly-test")
+    sources = build_sources(material_text="材料内容", kb_id=7)
+    assert len(sources) == 1
+    assert isinstance(sources[0], KbSource)
+    assert sources[0].name == "kb"
+    assert sources[0].kb_id == 7
+
+
 def test_document_source_keyword_hits():
     text = (
         "第一章 闭包\n\n闭包是词法作用域的实现\n\n第二章 装饰器\n\n装饰器用于包装函数"
