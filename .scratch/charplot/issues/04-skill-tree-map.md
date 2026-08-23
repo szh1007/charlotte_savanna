@@ -1,6 +1,6 @@
 # 04 — 技能树地图
 
-**Status:** ready-for-human
+**Status:** done
 
 **Blocked by:** 03 — 旅程创建与生成链路
 

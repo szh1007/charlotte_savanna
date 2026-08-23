@@ -1,6 +1,6 @@
 # 05 — 闯关答题与通关结算
 
-**Status:** ready-for-human
+**Status:** done
 
 **Blocked by:** 04 — 技能树地图
 

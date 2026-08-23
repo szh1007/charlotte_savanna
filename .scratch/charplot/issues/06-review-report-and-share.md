@@ -1,6 +1,6 @@
 # 06 — 复盘报告与公开分享
 
-**Status:** ready-for-human
+**Status:** done
 
 **Blocked by:** 05 — 闯关答题与通关结算
 

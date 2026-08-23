@@ -1,6 +1,6 @@
 # 01 — 三端骨架与健康检查
 
-**Status:** ready-for-human
+**Status:** done
 
 **Blocked by:** None — can start immediately
 

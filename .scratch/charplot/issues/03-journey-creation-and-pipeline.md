@@ -1,6 +1,6 @@
 # 03 — 旅程创建与生成链路
 
-**Status:** ready-for-human
+**Status:** done
 
 **Blocked by:** 01 — 三端骨架与健康检查, 02 — 账号体系与个人主页
 
