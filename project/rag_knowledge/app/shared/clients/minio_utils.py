@@ -8,10 +8,8 @@ import json
 from minio import Minio
 
 # 导入项目内部配置与日志工具
-from app.shared.config.minio_config import (
-    minio_config,
-)  # MinIO 相关配置(端点, 密钥, 桶名等)
-from app.shared.runtime.logger import logger  # 项目统一日志工具
+from ..config.minio_config import minio_config  # MinIO 相关配置(端点, 密钥, 桶名等)
+from ..runtime.logger import logger  # 项目统一日志工具
 
 # 全局 MinIO 客户端实例(单例模式, 避免重复创建连接, 提升性能)
 _minio_client: Minio | None = None

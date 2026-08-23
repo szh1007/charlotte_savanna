@@ -13,7 +13,7 @@
 import re
 from string import Template
 
-from app.shared.runtime.logger import PROJECT_ROOT, logger
+from .logger import PROJECT_ROOT, logger
 
 # 匹配 {name} 或 {name[0]} / {name['key']} 风格的旧占位符
 # 负向 lookbehind 排除 ${name} 中的 {name}, 避免与 Template 占位符冲突

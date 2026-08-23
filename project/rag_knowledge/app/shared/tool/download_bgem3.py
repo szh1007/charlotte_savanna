@@ -7,7 +7,7 @@ from pathlib import Path
 from modelscope.hub.snapshot_download import snapshot_download
 
 model_id = "BAAI/bge-m3"
-local_cache_dir = Path("D:/__WorkSpace__/.modelscope_cache/models")
+local_cache_dir = Path("D:/__WorkSpace__/modelscope/models")
 
 local_cache_dir.mkdir(parents=True, exist_ok=True)
 

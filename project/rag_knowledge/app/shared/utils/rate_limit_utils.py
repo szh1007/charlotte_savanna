@@ -5,7 +5,7 @@
 import time
 from collections import deque
 
-from app.shared.runtime.logger import logger  # 复用项目全局 logger
+from ..runtime.logger import logger  # 复用项目全局 logger
 
 _GLOBAL_REQUEST_TIMES: deque[float] = deque()
 

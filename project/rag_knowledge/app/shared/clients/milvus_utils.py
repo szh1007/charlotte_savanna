@@ -4,8 +4,8 @@
 
 from pymilvus import AnnSearchRequest, MilvusClient, WeightedRanker
 
-from app.shared.config.milvus_config import milvus_config
-from app.shared.runtime.logger import logger
+from ..config.milvus_config import milvus_config
+from ..runtime.logger import logger
 
 # 全局 Milvus 客户端实例, 实现单例复用
 _milvus_client: MilvusClient | None = None

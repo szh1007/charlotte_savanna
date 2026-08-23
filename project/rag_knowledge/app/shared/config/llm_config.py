@@ -4,7 +4,7 @@ LLM 配置模块, 负责读取对话模型与视觉模型相关环境变量.
 
 from dataclasses import dataclass
 
-from app.shared.config.common import env_float, env_str
+from .common import env_float, env_str
 
 
 @dataclass

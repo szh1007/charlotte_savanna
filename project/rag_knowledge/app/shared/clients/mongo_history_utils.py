@@ -10,7 +10,7 @@ from bson import ObjectId
 from dotenv import load_dotenv
 from pymongo import MongoClient
 
-from app.shared.runtime.logger import logger
+from ..runtime.logger import logger
 
 # 加载 .env 文件中的环境变量, 使 os.getenv 能读取到配置
 load_dotenv()

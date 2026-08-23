@@ -4,8 +4,8 @@
 
 from FlagEmbedding import FlagReranker
 
-from app.shared.config.reranker_config import reranker_config
-from app.shared.runtime.logger import logger
+from ..config.reranker_config import reranker_config
+from ..runtime.logger import logger
 
 _reranker_model: FlagReranker | None = None
 

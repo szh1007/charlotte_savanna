@@ -170,13 +170,13 @@ def step_log(step_name: str):
 
 # -------------------------- 测试代码(验证修复效果) --------------------------
 if __name__ == "__main__":
+    print(f"日志文件输出路径: {LOG_FILE_PATH}")
+
     # [debug]开发调试用, 记录细节, 变量, 上线一般关闭
     logger.debug("[调试]进入主程序入口, 开始初始化日志")
 
     # [info]正常流程日志, 记录程序运行状态
     logger.info("[信息]logger.py 内部调用(仅测试, 业务模块调用会显示正确文件名)")
-
-    print(f"日志文件输出路径: {LOG_FILE_PATH}")
 
     # [warning]警告, 不影响运行, 但需要关注
     logger.warning("[警告]未读取到自定义配置, 使用默认配置")

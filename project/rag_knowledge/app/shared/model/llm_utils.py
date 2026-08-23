@@ -5,8 +5,8 @@
 from langchain_core.exceptions import LangChainException
 from langchain_openai import ChatOpenAI
 
-from app.shared.config.llm_config import llm_config
-from app.shared.runtime.logger import logger
+from ..config.llm_config import llm_config
+from ..runtime.logger import logger
 
 _DEFAULT_LLM_MODEL = "qwen3-32b"
 _DEFAULT_TEMPERATURE = 0.1

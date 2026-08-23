@@ -4,8 +4,8 @@
 
 from pymilvus.model.hybrid import BGEM3EmbeddingFunction
 
-from app.shared.config.embedding_config import embedding_config
-from app.shared.runtime.logger import logger
+from ..config.embedding_config import embedding_config
+from ..runtime.logger import logger
 
 _DEFAULT_EMBEDDING_MODEL = "BAAI/bge-m3"
 _DEFAULT_EMBEDDING_DEVICE = "cpu"

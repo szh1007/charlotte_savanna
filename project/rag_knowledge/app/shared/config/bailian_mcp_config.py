@@ -4,7 +4,7 @@ MCP 配置模块, 负责读取联网检索相关环境变量.
 
 from dataclasses import dataclass
 
-from app.shared.config.common import env_str
+from .common import env_str
 
 
 @dataclass
