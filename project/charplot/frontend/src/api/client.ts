@@ -305,6 +305,8 @@ export interface Question {
   content: string
   options: string[]
   order: number
+  /** 当前用户是否已反馈过此题 (Issue 14, 去重后的持久化状态). */
+  flagged: boolean
 }
 
 /** 关卡列表项 (GET /api/charplot/journeys/{id}/levels/). */
@@ -413,6 +415,27 @@ export function answerQuestion(
 export function restartLevel(levelId: number): Promise<LevelDetail> {
   return request(`/api/charplot/levels/${levelId}/restart/`, { method: 'POST' })
 }
+
+/**
+ * 「题目有问题」反馈标记 (Issue 14, SPEC §7.3 ③ 幻觉防护第三层).
+ * 同一用户对同一题重复标记幂等去重, 响应 {created} 区分首次/重复.
+ */
+export function flagQuestion(
+  questionId: number,
+  reason?: FlagReason,
+): Promise<{ created: boolean }> {
+  return request(`/api/charplot/questions/${questionId}/flag/`, {
+    method: 'POST',
+    body: reason ? { reason } : {},
+  })
+}
+
+/** 可选反馈原因 (与后端 CharplotQuestionFlag.Reason choices 一致). */
+export type FlagReason =
+  | 'answer_error'
+  | 'content_error'
+  | 'explanation_error'
+  | 'other'
 
 // ---- 复盘报告 (Issue 06) ----
 

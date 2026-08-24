@@ -540,6 +540,65 @@ class CharplotReviewReport(models.Model):
         return f"charplot_review_report({self.id}, {self.slug})"
 
 
+class CharplotQuestionFlag(models.Model):
+    """题目反馈标记 (SPEC §7.3 ③ 幻觉防护第三层, Issue 14).
+
+    答题页「题目有问题」入口的落库记录: 题目 + 用户 + 可选原因, 是内容
+    质量信号 (管理员侧列表/计数可见). reason 为可选预设原因 (choices),
+    不选 = 仅标记无原因; unique_together 保证同一用户对同一题只留一条
+    记录 (重复标记幂等去重, 验收标准 4).
+    """
+
+    class Reason(models.TextChoices):
+        ANSWER_ERROR = "answer_error", "答案有误"
+        CONTENT_ERROR = "content_error", "题目内容有误"
+        EXPLANATION_ERROR = "explanation_error", "讲解有误"
+        OTHER = "other", "其他"
+
+    question = models.ForeignKey(
+        CharplotQuestion,
+        on_delete=models.CASCADE,
+        related_name="flags",
+        verbose_name="题目",
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="charplot_question_flags",
+        verbose_name="用户",
+    )
+    reason = models.CharField(
+        max_length=32,
+        choices=Reason.choices,
+        blank=True,
+        default="",
+        verbose_name="原因",
+    )
+    # blank: 可选原因, 不选也允许标记 (仅标记无原因)
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
+
+    class Meta:
+        db_table = "charplot_question_flag"
+        verbose_name = "CharPlot 题目反馈标记"
+        verbose_name_plural = verbose_name
+        constraints = [
+            models.UniqueConstraint(
+                fields=["question", "user"],
+                name="uq_flag_question_user",
+            )
+        ]
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(
+                fields=["question", "-created_at"],
+                name="idx_flag_question_created",
+            )
+        ]
+
+    def __str__(self):
+        return f"charplot_question_flag(q={self.question_id}, u={self.user_id})"
+
+
 class CharplotAttempt(models.Model):
     """答题记录 (SPEC §8) - 逐题事实, 统计与分析的事实源.
 

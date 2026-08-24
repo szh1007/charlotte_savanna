@@ -34,6 +34,7 @@ from .views_api import (
     LoginView,
     LogoutView,
     ProfileView,
+    QuestionFlagView,
     RegisterView,
     SessionView,
     SkillTreeView,
@@ -66,6 +67,8 @@ urlpatterns = [
     path("levels/<int:pk>/", LevelDetailView.as_view(), name="level-detail"),
     path("levels/<int:pk>/answer/", LevelAnswerView.as_view(), name="level-answer"),
     path("levels/<int:pk>/restart/", LevelRestartView.as_view(), name="level-restart"),
+    # 题目反馈标记 (Issue 14, SPEC §7.3 ③)
+    path("questions/<int:pk>/flag/", QuestionFlagView.as_view(), name="question-flag"),
     # 复盘报告 (Issue 06)
     path(
         "journeys/<int:pk>/report/",

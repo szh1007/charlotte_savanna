@@ -11,12 +11,14 @@ import { ElMessage } from 'element-plus'
 import {
   ApiError,
   answerQuestion,
+  flagQuestion,
   getLevel,
   getLevels,
   restartLevel,
   startLevelGeneration,
   subscribePipeline,
   type AnswerResult,
+  type FlagReason,
   type LevelDetail,
   type PipelineEvent,
 } from '@/api/client'
@@ -199,6 +201,21 @@ async function onRestart() {
   }
 }
 
+/** 题目反馈 (Issue 14): 落库 + 已反馈提示; 重复标记由后端幂等去重. */
+async function onFlag(reason: FlagReason | '') {
+  const question = detail.value?.question
+  if (!question) return
+  try {
+    const { created } = await flagQuestion(question.id, reason || undefined)
+    ElMessage.success(created ? '已反馈, 我们会尽快核对' : '这道题你已经反馈过啦')
+    questionCardRef.value?.markFlagged()
+  } catch (e) {
+    ElMessage.error(e instanceof ApiError ? e.message : '反馈提交失败, 请稍后重试')
+  }
+}
+
+const questionCardRef = ref<InstanceType<typeof QuestionCard> | null>(null)
+
 const sources = computed(() => result.value?.sources ?? [])
 
 onMounted(loadLevel)
@@ -265,10 +282,13 @@ onUnmounted(() => closeSse?.())
     <section v-else-if="detail && (phase === 'answering' || phase === 'feedback')" class="quiz-main">
       <QuestionCard
         v-if="detail.question"
+        ref="questionCardRef"
         :question="detail.question"
         :submitted="phase === 'feedback'"
         :is-correct="result?.correct ?? true"
+        :flagged="detail.question.flagged"
         @submit="onSubmit"
+        @flag="onFlag"
       />
 
       <!-- 即时反馈区 (答对答错均展示讲解 + 来源引用, PRD D-4) -->

@@ -23,6 +23,7 @@ from .models import (
     CharplotLevel,
     CharplotProfile,
     CharplotQuestion,
+    CharplotQuestionFlag,
     CharplotReviewReport,
 )
 from .services import (
@@ -323,11 +324,24 @@ class LevelListSerializer(serializers.ModelSerializer):
 
 
 class QuestionBriefSerializer(serializers.ModelSerializer):
-    """题目载荷 (不含 answer, 判分在后端; options 仅选择类型使用)."""
+    """题目载荷 (不含 answer, 判分在后端; options 仅选择类型使用).
+
+    flagged (Issue 14): 当前用户是否已标记过此题 (去重后的持久化状态),
+    供答题页反馈入口恢复「已反馈」展示; 序列化 context 需带 request,
+    否则 (内部调用) 恒为 False.
+    """
+
+    flagged = serializers.SerializerMethodField()
 
     class Meta:
         model = CharplotQuestion
-        fields = ["id", "question_type", "content", "options", "order"]
+        fields = ["id", "question_type", "content", "options", "order", "flagged"]
+
+    def get_flagged(self, obj):
+        request = self.context.get("request")
+        if request is None or not request.user.is_authenticated:
+            return False
+        return obj.flags.filter(user=request.user).exists()
 
 
 class LevelDetailSerializer(serializers.ModelSerializer):
@@ -408,7 +422,8 @@ class LevelDetailSerializer(serializers.ModelSerializer):
         if count == 0 or obj.current_index >= count:
             return None
         current = obj.questions.order_by("order", "id")[obj.current_index]
-        return QuestionBriefSerializer(current).data
+        # context 透传 (Issue 14): flagged 字段按当前用户计算
+        return QuestionBriefSerializer(current, context=self.context).data
 
 
 class AnswerRequestSerializer(serializers.Serializer):
@@ -417,6 +432,17 @@ class AnswerRequestSerializer(serializers.Serializer):
     question_id = serializers.IntegerField()
     answer = serializers.JSONField()
     duration = serializers.IntegerField(required=False, min_value=0, default=0)
+
+
+class QuestionFlagRequestSerializer(serializers.Serializer):
+    """题目反馈标记载荷 (Issue 14): reason 可选, 空 = 仅标记无原因."""
+
+    reason = serializers.ChoiceField(
+        choices=CharplotQuestionFlag.Reason.choices,
+        required=False,
+        allow_blank=True,
+        default="",
+    )
 
 
 # ---------------------------------------------------------------------------

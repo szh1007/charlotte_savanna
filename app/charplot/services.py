@@ -25,6 +25,7 @@ from .models import (
     CharplotLevel,
     CharplotProfile,
     CharplotQuestion,
+    CharplotQuestionFlag,
     CharplotReviewReport,
     CharplotUserEvent,
 )
@@ -1153,6 +1154,21 @@ def restart_level(level):
         level.save(update_fields=["hearts", "current_index", "cleared", "updated_at"])
         CharplotProfile.objects.filter(user=user).update(hearts=MAX_HEARTS)
     return level
+
+
+def flag_question(question, user, reason=""):
+    """题目反馈标记落库 (Issue 14, SPEC §7.3 ③).
+
+    同一用户对同一题只保留一条记录 (unique_together), 重复标记幂等去重,
+    返回 created=False 且不覆盖原记录 (含原 reason); reason 为空 = 仅标记
+    无原因. 返回 (flag, created) 供视图区分首次/重复提示.
+    """
+    flag, created = CharplotQuestionFlag.objects.get_or_create(
+        question=question,
+        user=user,
+        defaults={"reason": reason},
+    )
+    return flag, created
 
 
 # ---------------------------------------------------------------------------

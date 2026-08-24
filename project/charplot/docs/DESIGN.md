@@ -95,7 +95,7 @@ project/charplot/frontend/           # Vue 3 + Vite + TS 前端
 | GET | `/api/journeys/{id}/skill-tree` | 技能树数据（节点/依赖边/点亮状态） | → `{nodes[], edges[]}` |
 | GET | `/api/journeys/{id}/levels` | 关卡列表（按知识点+序号） | → `{levels[]}` |
 | POST | `/api/levels/{id}/answer` | 提交答案：判分 + 讲解 + 心动值扣减 | `{question_id, answer}` → `{correct, explanation, sources[], hearts}` |
-| POST | `/api/questions/{id}/flag` | 「题目有问题」标记 | → 204 |
+| POST | `/api/questions/{id}/flag` | 「题目有问题」标记（重复幂等去重） | `{reason?}` → 200 `{created}` |
 | GET | `/api/journeys/{id}/report` | 复盘报告数据 | → Report |
 | GET | `/r/{slug}` | 公开分享页（只读，无登录可看，OG 标签） | → 页面 |
 | POST | `/api/kb` | 管理员创建知识库（is_staff） | `{name, desc, cover}` → KB |

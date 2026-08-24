@@ -32,6 +32,7 @@ from .models import (
     CharplotKnowledgeBaseDocument,
     CharplotLevel,
     CharplotProfile,
+    CharplotQuestion,
     CharplotReviewReport,
     CharplotUserEvent,
 )
@@ -49,6 +50,7 @@ from .serializers import (
     KnowledgeBaseListSerializer,
     LevelDetailSerializer,
     LevelListSerializer,
+    QuestionFlagRequestSerializer,
     ReviewReportSerializer,
     TopicSerializer,
     UserLoginSerializer,
@@ -71,6 +73,7 @@ from .services import (
     create_kb_documents,
     create_knowledge_base,
     ensure_levels_for_journey,
+    flag_question,
     list_ready_kbs,
     mark_journey_failed,
     mark_kb_index_failed,
@@ -342,7 +345,7 @@ class LevelDetailView(APIView):
 
     def get(self, request, pk):
         level = get_level_for_user(pk, request.user)
-        return Response(LevelDetailSerializer(level).data)
+        return Response(LevelDetailSerializer(level, context={"request": request}).data)
 
 
 class LevelAnswerView(APIView):
@@ -394,7 +397,38 @@ class LevelRestartView(APIView):
                 {"detail": "本关已通关, 无需重开"}, status=status.HTTP_400_BAD_REQUEST
             )
         restart_level(level)
-        return Response(LevelDetailSerializer(level).data)
+        return Response(LevelDetailSerializer(level, context={"request": request}).data)
+
+
+class QuestionFlagView(APIView):
+    """题目反馈标记 (DESIGN §4.1, POST /api/charplot/questions/{id}/flag/).
+
+    Issue 14 (SPEC §7.3 ③ 幻觉防护第三层): 答题页「题目有问题」入口落库.
+    题目归属校验与关卡一致 (仅本人旅程可标记, 404 不泄露存在性);
+    reason 可选 (空 = 仅标记); 同一用户对同一题重复标记幂等去重
+    (get_or_create), 首末均返回 200 {created}, 前端据此提示文案.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        question = get_object_or_404(
+            CharplotQuestion.objects.select_related("level__journey"),
+            pk=pk,
+            level__journey__user=request.user,
+        )
+        serializer = QuestionFlagRequestSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        flag, created = flag_question(
+            question=question,
+            user=request.user,
+            reason=serializer.validated_data["reason"],
+        )
+        return Response(
+            {"created": created, "reason": flag.reason},
+            status=status.HTTP_200_OK,
+        )
 
 
 class JourneyReportView(APIView):

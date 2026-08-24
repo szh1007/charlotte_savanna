@@ -1,4 +1,5 @@
 from django.contrib import admin
+from django.db.models import Count
 
 from .models import (
     CharplotAttempt,
@@ -10,6 +11,7 @@ from .models import (
     CharplotLevel,
     CharplotProfile,
     CharplotQuestion,
+    CharplotQuestionFlag,
     CharplotUserEvent,
 )
 
@@ -103,12 +105,38 @@ class CharplotLevelAdmin(admin.ModelAdmin):
 
 @admin.register(CharplotQuestion)
 class CharplotQuestionAdmin(admin.ModelAdmin):
-    """题目后台管理."""
+    """题目后台管理.
 
-    list_display = ("id", "level", "question_type", "order", "content")
+    flag_count (Issue 14): 反馈标记数, 内容质量信号 (幻觉防护第三层),
+    高标记数题目是待核对候选; annotate 聚合避免 N+1.
+    """
+
+    list_display = ("id", "level", "question_type", "order", "content", "flag_count")
     list_filter = ("question_type",)
     list_select_related = ("level",)
     search_fields = ("content",)
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).annotate(flag_count=Count("flags"))
+
+    @admin.display(description="反馈数")
+    def flag_count(self, obj):
+        return obj.flag_count
+
+
+@admin.register(CharplotQuestionFlag)
+class CharplotQuestionFlagAdmin(admin.ModelAdmin):
+    """题目反馈标记后台管理 (Issue 14): 列表 + 原因过滤 + 用户/内容搜索.
+
+    同一用户对同一题唯一 (unique_together), 列表即全量质量信号;
+    created_at 按标记时间倒序, 最新反馈优先核对.
+    """
+
+    list_display = ("id", "question", "user", "reason", "created_at")
+    list_filter = ("reason",)
+    list_select_related = ("question__level", "user")
+    search_fields = ("question__content", "user__username")
+    readonly_fields = ("question", "user", "reason", "created_at")  # 标记只读
 
 
 @admin.register(CharplotAttempt)
