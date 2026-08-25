@@ -6,8 +6,8 @@ from ...shared.runtime.logger import logger, step_log
 
 @step_log("resolve_input_file")
 def resolve_input_file(state: LoadState) -> LoadState:
-    local_file_path = state.get("local_file_path")
-    if not local_file_path:
+    local_file_path = state.get("local_file_path", "")
+    if not local_file_path.strip():
         logger.error(f"local_file_path 参数为空: {local_file_path}")
         raise ValueError(f"local_file_path 参数为空: {local_file_path}")
 

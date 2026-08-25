@@ -71,3 +71,24 @@ def env_float(name: str, default: float = 0.0) -> float:
         return float(value)
     except ValueError:
         return default
+
+
+def env_int(name: str, default: int = 0) -> int:
+    """
+    读取整数配置.
+
+    Args:
+        name: 环境变量名称.
+        default: 变量不存在, 为空或格式非法时的默认值.
+
+    Returns:
+        int: 转换后的整数值.
+    """
+    value = os.getenv(name)
+    if value is None or value == "":
+        return default
+
+    try:
+        return int(value)
+    except ValueError:
+        return default

@@ -58,5 +58,8 @@ logs/
 # --- assets 资料 ---
 assets/
 
+# --- output 输出 ---
+output/
+
 # --- pytest 缓存 ---
 .pytest_cache/
