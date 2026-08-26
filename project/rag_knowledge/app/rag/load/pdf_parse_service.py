@@ -21,6 +21,7 @@ def parse_pdf_to_markdown(state: LoadState) -> LoadState:
     )
     # 4.更新state
     state["md_path"] = str(ma_path_obj)
+    state["is_md_read_enabled"] = True
     return state
 
 

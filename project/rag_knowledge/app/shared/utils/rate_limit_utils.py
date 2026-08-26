@@ -10,7 +10,7 @@ from ..runtime.logger import logger  # 复用项目全局 logger
 _GLOBAL_REQUEST_TIMES: deque[float] = deque()
 
 
-def apply_api_rate_limit(max_requests: int = 500, window_seconds: int = 60) -> None:
+def apply_api_rate_limit(max_requests: int = 2500, window_seconds: int = 60) -> None:
     """
     通用滑动窗口 API 速率限制器(抽离为公共工具)
     核心逻辑:

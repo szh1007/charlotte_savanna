@@ -11,7 +11,7 @@ from .common import env_float, env_str
 class LLMConfig:
     base_url: str
     api_key: str
-    lv_model: str
+    vl_model: str
     llm_model: str
     llm_temperature: float
 
@@ -19,7 +19,7 @@ class LLMConfig:
 llm_config = LLMConfig(
     base_url=env_str("RK_DEEPSEEK_BASE_URL"),
     api_key=env_str("RK_DEEPSEEK_API_KEY"),
-    lv_model=env_str("RK_VL_MODEL"),
+    vl_model=env_str("RK_VL_MODEL"),
     llm_model=env_str("RK_LLM_DEFAULT_MODEL"),
     llm_temperature=env_float("RK_LLM_DEFAULT_TEMPERATURE"),
 )
