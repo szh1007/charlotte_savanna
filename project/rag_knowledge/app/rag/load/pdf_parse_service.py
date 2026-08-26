@@ -4,7 +4,7 @@ from pathlib import Path
 
 import requests
 
-from ...infra.providers import infra_config
+from ...infra.config import infra_config
 from ...process.load.agent.state import LoadState
 from ...shared.runtime.logger import PROJECT_ROOT, logger, step_log
 

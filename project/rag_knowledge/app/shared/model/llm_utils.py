@@ -2,27 +2,28 @@
 工具模块, 负责提供 llm 相关的辅助能力.
 """
 
+from langchain.chat_models import init_chat_model
 from langchain_core.exceptions import LangChainException
-from langchain_openai import ChatOpenAI
+from langchain_deepseek import ChatDeepSeek
 
 from ..config.llm_config import llm_config
 from ..runtime.logger import logger
 
-_DEFAULT_LLM_MODEL = "qwen3-32b"
+_DEFAULT_LLM_MODEL = "deepseek-v4-flash-vision-exp"
 _DEFAULT_TEMPERATURE = 0.1
-_llm_client_cache: dict[tuple[str, bool], ChatOpenAI] = {}
+_llm_client_cache: dict[tuple[str, bool], ChatDeepSeek] = {}
 
 
-def get_llm_client(model: str | None = None, json_mode: bool = False) -> ChatOpenAI:
+def get_llm_client(model: str | None = None, json_mode: bool = False) -> ChatDeepSeek:
     """
-    获取带全局缓存的 LangChain ChatOpenAI 客户端实例
-    适配 OpenAI/千问/即梦 AI 等**OpenAI 兼容 API**, 支持自定义模型和 JSON 标准化输出
+    获取带全局缓存的 LangChain LLM 客户端实例
+    适配 DeepSeek 等 **OpenAI 兼容 API**, 支持自定义模型和 JSON 标准化输出
     核心特性: 缓存机制 + 配置统一加载 + 异常精准捕获 + 国产模型参数适配
 
     :param model: 模型名称,
                   优先级: 传入参数 > 配置文件 llm_config.llm_model > 内置默认模型
     :param json_mode: 是否开启 JSON 输出模式, 开启后返回标准 json_object 格式
-    :return: 初始化完成的 ChatOpenAI 实例(优先从全局缓存获取, 未命中则新建并缓存)
+    :return: 初始化完成的 ChatDeepSeek 实例 (优先从全局缓存获取, 未命中则新建并缓存)
 
     :raise ValueError: 缺失 API 密钥/基础地址等核心配置
     :raise Exception: 模型初始化失败(LangChain 封装层异常)
@@ -55,11 +56,13 @@ def get_llm_client(model: str | None = None, json_mode: bool = False) -> ChatOpe
     )
 
     # 4. 配置参数组装: 区分[国产模型私有参数]和[OpenAI 通用参数]
-    # extra_body: 千问/即梦等国产模型专属私有参数(LangChain 透传至 API)
-    extra_body = {"enable_thinking": False}  # 千问专属: 关闭思考链输出, 减少冗余内容
+    # extra_body: 部分国产模型专属私有参数(LangChain 透传至 API)
+    # 当前是 deepseek 专属配置: 关闭思考链输出, 减少冗余内容
+    extra_body = {"thinking": {"type": "disabled"}}
 
     # model_kwargs: OpenAI 通用参数, 所有兼容 API 均支持
     model_kwargs = {}
+
     if json_mode:
         # 开启 JSON 标准输出模式, 强制模型返回可解析的 json_object
         model_kwargs["response_format"] = {"type": "json_object"}
@@ -67,7 +70,7 @@ def get_llm_client(model: str | None = None, json_mode: bool = False) -> ChatOpe
 
     # 5. 客户端初始化: 捕获 LangChain 封装层异常, 抛出更友好的提示
     try:
-        llm_client = ChatOpenAI(
+        llm_client = init_chat_model(
             model=target_model,  # 目标模型名
             temperature=llm_config.llm_temperature
             or _DEFAULT_TEMPERATURE,  # 低温度保证输出确定性(0~1)
@@ -79,7 +82,7 @@ def get_llm_client(model: str | None = None, json_mode: bool = False) -> ChatOpe
     except LangChainException as e:
         raise Exception(
             f"[LLM客户端] 模型[{target_model}]初始化失败(LangChain 层): {e!s}"
-        ) from e
+        )
 
     # 6. 新实例存入全局缓存, 供后续调用复用
     _llm_client_cache[cache_key] = llm_client
