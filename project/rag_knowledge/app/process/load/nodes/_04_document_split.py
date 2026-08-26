@@ -1,7 +1,9 @@
+from rich import print as rprint
+
 from ....rag.load.split_service import split_document
-from ....shared.runtime.logger import node_log
+from ....shared.runtime.logger import PROJECT_ROOT, node_log
 from ....shared.utils.task_utils import add_done_task, add_running_task
-from ..agent.state import LoadState
+from ..agent.state import LoadState, create_default_state
 
 """
 语义完成 -> 语义切割 + LangChain 递归切割
@@ -24,3 +26,23 @@ def node_document_split(state: LoadState) -> LoadState:
     state = split_document(state)
     add_done_task(state["task_id"], "node_document_split")
     return state
+
+
+if __name__ == "__main__":
+    test_pdf_path = PROJECT_ROOT / "assets" / "hak180产品安全手册.pdf"
+    test_md_path = (
+        PROJECT_ROOT / "output" / test_pdf_path.stem / f"{test_pdf_path.stem}_new.md"
+    )
+
+    test_state = create_default_state(
+        task_id="test_04_document_split",
+        local_file_path=str(test_pdf_path),
+        md_path=str(test_md_path),
+        pdf_path=str(test_pdf_path),
+        local_dir=str(PROJECT_ROOT / "output"),
+        file_title=test_pdf_path.stem,
+        is_md_read_enabled=True,
+        is_pdf_read_enabled=True,
+    )
+    result = node_document_split(test_state)
+    rprint(result)

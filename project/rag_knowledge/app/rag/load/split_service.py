@@ -21,16 +21,17 @@ def split_document(state: LoadState) -> LoadState:
     chunks = _refine_split_and_merge_chunks(chunks)
 
     # 4.属性对齐
-    padding_chunks_metadata(chunks)
+    _padding_chunks_metadata(chunks)
 
     # 5.备份 chunks json
-    backup_chunks_json(md_path, chunks)
+    _backup_chunks_json(md_path, chunks)
 
     # 6.更新state
     state["chunks"] = chunks
     return state
 
 
+@step_log("_validate_data")
 def _validate_data(state: LoadState) -> tuple[str, str, str]:
     """
     获取并校验数据
@@ -52,17 +53,20 @@ def _validate_data(state: LoadState) -> tuple[str, str, str]:
             logger.error(f"md_content 为空, {md_path} 不存在/不是文件")
             raise ValueError(f"md_content 为空, {md_path} 不存在/不是文件")
 
-        state["md_content"] = Path(md_path).read_text(encoding="utf-8")
+        md_content = Path(md_path).read_text(encoding="utf-8")
+        state["md_content"] = md_content
         logger.warning(f"md_content 为空, 使用 {md_path} 填充")
 
     if not file_title:
-        state["file_title"] = Path(md_path).stem or "default"
+        file_title = Path(md_path).stem or "default"
+        state["file_title"] = file_title
         logger.warning(f"file_title 为空, 使用 {md_path} 填充 / 设为 default")
 
     md_content = md_content.replace("\r\n", "\n").replace("\r", "\n")
     return md_path, md_content, file_title
 
 
+@step_log("_split_document_by_title")
 def _split_document_by_title(md_content: str, file_title: str) -> list[dict[str, str]]:
     """
     先根据多级标题切割文档内容
@@ -91,18 +95,20 @@ def _split_document_by_title(md_content: str, file_title: str) -> list[dict[str,
     title_reg = re.compile(r"^\s*#{1,6}\s.+")
 
     # 3.遍历所有行
-    for line in document_lines:
+    for i, line in enumerate(document_lines):
+        logger.debug(f" |```当前行: line {i}")
+
         line_strip = line.strip()
 
         # 3.1 跳过空行
         if not line_strip:
-            logger.debug("|```当前空行, 跳过")
+            logger.debug(f" |```当前空行, 跳过: line {i}")
             continue
 
         # 3.1 处理代码块
-        if line_strip.startswith("```") or line_strip.startswith("~~~"):
+        if "```" in line_strip or "~~~" in line_strip:
             is_code = not is_code  # 进入为 True, 跳出为 False
-            logger.debug("|```进入代码块" if is_code else "|```跳出代码块")
+            logger.debug(f" |```{'进入' if is_code else '跳出'}代码块: line {i}")
             current_title_lines.append(line_strip)
             continue
 
@@ -112,9 +118,9 @@ def _split_document_by_title(md_content: str, file_title: str) -> list[dict[str,
             if current_title and len(current_title_lines) > 1:
                 chunks.append(
                     {
+                        "file_title": file_title,
                         "title": current_title,
                         "content": "\n".join(current_title_lines),
-                        "file_title": file_title,
                     }
                 )
 
@@ -141,9 +147,9 @@ def _split_document_by_title(md_content: str, file_title: str) -> list[dict[str,
     if current_title and len(current_title_lines) > 1:
         chunks.append(
             {
+                "file_title": file_title,
                 "title": current_title,
                 "content": "\n".join(current_title_lines),
-                "file_title": file_title,
             }
         )
 
@@ -151,6 +157,7 @@ def _split_document_by_title(md_content: str, file_title: str) -> list[dict[str,
     return chunks
 
 
+@step_log("_refine_split_and_merge_chunks")
 def _refine_split_and_merge_chunks(
     chunks: list[dict[str, str]],
 ) -> list[dict[str, str]]:
@@ -172,11 +179,15 @@ def _refine_split_and_merge_chunks(
         else:
             refine_chunks.append(chunk)
 
-    logger.info(f"语义切割 chunks 精细切割后的数量: {len(refine_chunks)}")
+    merge_refine_chunks = _merge_chunk_content(refine_chunks)
 
-    return _merge_chunk_content(refine_chunks)
+    logger.info(
+        f"语义分块后的chunks, 递归分块+合并后的数量: {len(merge_refine_chunks)}"
+    )
+    return merge_refine_chunks
 
 
+@step_log("_merge_chunk_content")
 def _merge_chunk_content(refine_chunks: list[dict[str, str]]) -> list[dict[str, str]]:
     """
     合并同一个 parent_title 下, 前一个chunk小于400且合并后小于1000的chunks
@@ -235,6 +246,7 @@ def _merge_chunk_content(refine_chunks: list[dict[str, str]]) -> list[dict[str, 
     return merge_refine_chunks
 
 
+@step_log("_split_chunk_content")
 def _split_chunk_content(chunk: dict[str, str]) -> list[dict[str, str]]:
     """
     对文档块进行精细切割, 每个文档块的长度不超过最大长度
@@ -270,11 +282,11 @@ def _split_chunk_content(chunk: dict[str, str]) -> list[dict[str, str]]:
             }
         )
 
-    logger.info(f"chunks 递归切割后的数量: {len(sub_chunks)}")
     return sub_chunks
 
 
-def padding_chunks_metadata(chunks: list[dict[str, str]]):
+@step_log("_padding_chunks_metadata")
+def _padding_chunks_metadata(chunks: list[dict[str, str]]):
     """
     补充未精细切割的chunks的属性 parent_title, part
     """
@@ -287,7 +299,8 @@ def padding_chunks_metadata(chunks: list[dict[str, str]]):
     logger.info("chunks 属性对齐完成")
 
 
-def backup_chunks_json(md_path: str, chunks: list[dict[str, str]]):
+@step_log("_backup_chunks_json")
+def _backup_chunks_json(md_path: str, chunks: list[dict[str, str]]):
     """最终 chunks json 备份"""
     json_path_obj: Path = Path(md_path).parent / f"{Path(md_path).stem}.json"
     json_path_obj.write_text(
