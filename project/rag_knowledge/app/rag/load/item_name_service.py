@@ -202,3 +202,4 @@ def _insert_item_name_data(item_name, file_title):
             }
         ],
     )
+    logger.info(f"item_name 数据插入完成: {item_name}, file_title: {file_title}")
