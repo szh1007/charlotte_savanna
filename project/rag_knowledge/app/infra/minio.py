@@ -26,4 +26,4 @@ class InfraMinIO:
 
 
 infra_minio = InfraMinIO()
-print(infra_minio.build_image_url("test", "test.jpg"))
+# print(infra_minio.build_image_url("test", "test.jpg"))

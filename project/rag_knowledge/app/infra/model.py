@@ -1,3 +1,4 @@
+from ..shared.model.embedding_utils import generate_embeddings
 from ..shared.model.llm_utils import get_llm_client
 
 
@@ -7,6 +8,9 @@ class InfraModel:
 
     def llm_model(self, llm_model_name: str | None = None, json_mode: bool = False):
         return get_llm_client(llm_model_name, json_mode)
+
+    def embedding(self, texts: list[str]) -> dict[str, list]:
+        return generate_embeddings(texts)
 
 
 infra_model = InfraModel()

@@ -101,24 +101,14 @@ def generate_embeddings(texts: list[str]) -> dict[str, list]:
         # - 第 0 条文本用 0:3 => indices=[3,8,20] , data=[0.7,0.2,0.1]
         # - 第 1 条文本用 3:5 => indices=[1,9] , data=[0.6,0.4]
         for i in range(len(texts)):
+            start = embeddings["sparse"].indptr[i]
+            end = embeddings["sparse"].indptr[i + 1]
             # 提取第 i 个文本的稀疏向量索引:
             # np.int64 → Python int(满足字典 key 可哈希要求)
-            sparse_indices = (
-                embeddings["sparse"]
-                .indices[
-                    embeddings["sparse"].indptr[i] : embeddings["sparse"].indptr[i + 1]
-                ]
-                .tolist()
-            )
+            sparse_indices = embeddings["sparse"].indices[start:end].tolist()
             # 提取第 i 个文本的稀疏向量权重, 适配 JSON 序列化/接口返回
             # np.float32 -> Python float()
-            sparse_data = (
-                embeddings["sparse"]
-                .data[
-                    embeddings["sparse"].indptr[i] : embeddings["sparse"].indptr[i + 1]
-                ]
-                .tolist()
-            )
+            sparse_data = embeddings["sparse"].data[start:end].tolist()
             # 构造 {特征索引: 归一化权重} 的稀疏向量字典
             sparse_dict = dict(zip(sparse_indices, sparse_data))
             processed_sparse.append(sparse_dict)
