@@ -12,3 +12,8 @@ CHUNK_SIZE = 600
 CHUNK_OVERLAP = 50
 # 最小碎片阈值
 CHUNK_MIN = 400
+
+# 主体识别使用的chunk数量
+ITEM_NAME_CONTEXT_CHUNK_K = 5
+# 主体识别使用的chunk内容最大总字符数
+ITEM_NAME_CONTEXT_TOTAL_MAX_CHARS = 2000

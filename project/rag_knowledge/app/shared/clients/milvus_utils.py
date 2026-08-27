@@ -10,6 +10,18 @@ from ..runtime.logger import logger
 # 全局 Milvus 客户端实例, 实现单例复用
 _milvus_client: MilvusClient | None = None
 
+"""
+使用docker部署Attu (Milvus前端界面)
+1.docker部署
+docker run -d --name attu -p 19520:3000 \
+    -e MILVUS_URL=host.docker.internal:19530 zilliz/attu:v2.4.0
+
+2.登录Attu
+docker-Attu 访问 docker-Milvus
+URL无法使用 127.0.0.1:19530
+应使用: host.docker.internal:19530
+"""
+
 
 def get_milvus_client() -> MilvusClient | None:
     """

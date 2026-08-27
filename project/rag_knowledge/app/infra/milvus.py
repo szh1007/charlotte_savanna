@@ -13,6 +13,11 @@ class InfraMilvus:
         """获取 item_name 集合名称"""
         return infra_config.milvus_config.item_name_collection
 
+    @property
+    def dim(self) -> int:
+        """获取 item_name 集合维度"""
+        return infra_config.milvus_config.dim
+
     def client(self):
         """获取 Milvus 客户端"""
         return get_milvus_client()
