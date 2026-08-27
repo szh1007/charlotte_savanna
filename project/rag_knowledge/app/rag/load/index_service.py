@@ -8,13 +8,13 @@ from ...shared.runtime.logger import logger, step_log
 @step_log("index_chunks")
 def index_chunks(state: LoadState) -> LoadState:
     # 1.获取并校验参数
-    embeddings_content = _validate_data(state)
+    embeddings = _validate_data(state)
 
     # 2.创建chunks集合
     _prepared_chunks_collection()
 
     # 3.插入chunks向量数据到chunks集合
-    _insert_chunks_data(embeddings_content)
+    _insert_chunks_data(embeddings)
 
     return state
 
@@ -22,11 +22,11 @@ def index_chunks(state: LoadState) -> LoadState:
 @step_log("_validate_data")
 def _validate_data(state: LoadState) -> list[dict[str, str]]:
     """获取并校验参数"""
-    embeddings_content = state.get("embeddings_content")
-    if not embeddings_content:
-        logger.error("embeddings_content 为空")
-        raise ValueError("embeddings_content 为空")
-    return embeddings_content
+    embeddings = state.get("embeddings")
+    if not embeddings:
+        logger.error("embeddings 为空")
+        raise ValueError("embeddings 为空")
+    return embeddings
 
 
 @step_log("_prepared_chunks_collection")
@@ -94,9 +94,9 @@ def _prepared_chunks_collection():
 
 
 @step_log("_insert_chunks_data")
-def _insert_chunks_data(embeddings_content: list[dict]):
+def _insert_chunks_data(embeddings: list[dict]):
     """插入数据"""
-    file_title: str = embeddings_content[0].get("file_title")
+    file_title: str = embeddings[0].get("file_title")
     milvus_client = infra_milvus.client()
 
     # 2.先删除旧数据
@@ -107,6 +107,6 @@ def _insert_chunks_data(embeddings_content: list[dict]):
     # 3. 插入数据
     milvus_client.insert(
         collection_name=infra_milvus.chunks_collection,
-        data=embeddings_content,  # 批量插入
+        data=embeddings,  # 批量插入
     )
-    logger.info(f"{file_title}文档chunks导入向量数据库完成: {len(embeddings_content)}")
+    logger.info(f"{file_title}文档chunks导入向量数据库完成: {len(embeddings)}")

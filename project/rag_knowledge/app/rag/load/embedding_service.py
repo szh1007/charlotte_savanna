@@ -15,7 +15,7 @@ def generate_chunk_embeddings(state: LoadState) -> LoadState:
     # 2. 批量chunks生成向量
     _batch_generate_vector(chunks)
 
-    state["embeddings_content"] = chunks
+    state["embeddings"] = chunks
     return state
 
 
@@ -46,6 +46,7 @@ def _validate_data(state: LoadState) -> list[dict[str, str]]:
 @step_log("_batch_generate_vector")
 def _batch_generate_vector(chunks: list[dict[str, str]]):
     """批量chunks生成向量"""
+    count = 0
     for idx in range(0, len(chunks), EMBEDDING_BATCH_SIZE):
         current_chunks = chunks[idx : idx + EMBEDDING_BATCH_SIZE]
         content_list: list[str] = [
@@ -57,6 +58,9 @@ def _batch_generate_vector(chunks: list[dict[str, str]]):
         for idx, chunk in enumerate(current_chunks):
             chunk["sparse_vector"] = sparse_list[idx]
             chunk["dense_vector"] = dense_list[idx]
+
+        count += len(current_chunks)
+        logger.info(f"已生成的向量的chunks: {count}")
 
     logger.info("chunks 已批量生成向量")
     logger.debug(f"chunk-1_dense_vector: {chunks[0]['dense_vector'][:5]}")

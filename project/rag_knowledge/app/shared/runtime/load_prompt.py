@@ -42,12 +42,15 @@ def _resolve_braced(match, kwargs: dict) -> str:
         return "${" + name + "}"
 
     # 有索引: 直接求值替换(如 {image_content[0]}), 兼容 str.format 的索引访问
+    # 值会直接插入模板, 需转义 $ / { / }, 避免被 Template 渲染或 {{ 还原误解析
+    # (PDF 等来源的上下文文本可能含 $ / 花括号)
     idx = index_expr.strip().strip("'\"")
     try:
         resolved = value[int(idx)] if idx.isdigit() else value[idx]
     except (TypeError, KeyError, IndexError, ValueError) as e:
         raise KeyError(f"占位符 {{{name}[{idx}]}} 解析失败: {e}") from e
-    return _to_str(resolved)
+    escaped = _to_str(resolved).replace("$", "$$").replace("{", "{{").replace("}", "}}")
+    return escaped
 
 
 def load_prompt(name: str, **kwargs) -> str:
