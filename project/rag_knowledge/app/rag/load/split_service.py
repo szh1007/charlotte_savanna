@@ -58,7 +58,7 @@ def _validate_data(state: LoadState) -> tuple[str, str, str]:
         logger.warning(f"md_content 为空, 使用 {md_path} 填充")
 
     if not file_title:
-        file_title = Path(md_path).stem or "default"
+        file_title = (Path(md_path).stem or "default").replace("_new", "")
         state["file_title"] = file_title
         logger.warning(f"file_title 为空, 使用 {md_path} 填充 / 设为 default")
 

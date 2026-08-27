@@ -64,7 +64,7 @@ def _validate_date(state: LoadState) -> tuple[list[dict[str, str]], str, str]:
             raise ValueError("chunks为空, 且Markdown文件不存在")
 
     if not file_title:
-        file_title = md_path_obj.stem or "default"
+        file_title = (md_path_obj.stem or "default").replace("_new", "")
         state["file_title"] = file_title
         logger.warning(f"file_title为空, 设置文件默认值: {file_title}")
 
