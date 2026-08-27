@@ -17,3 +17,6 @@ CHUNK_MIN = 400
 ITEM_NAME_CONTEXT_CHUNK_K = 5
 # 主体识别使用的chunk内容最大总字符数
 ITEM_NAME_CONTEXT_TOTAL_MAX_CHARS = 2000
+
+# chunks 批量生成向量的批次大小
+EMBEDDING_BATCH_SIZE = 5
