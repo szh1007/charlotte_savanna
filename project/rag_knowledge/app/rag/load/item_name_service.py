@@ -16,7 +16,7 @@ from .config import ITEM_NAME_CONTEXT_CHUNK_K, ITEM_NAME_CONTEXT_TOTAL_MAX_CHARS
 @step_log("recognize_and_index_item_name")
 def recognize_and_index_item_name(state: LoadState) -> LoadState:
     # 1.获取并校验参数
-    chunks, file_title = _validate_date(state)
+    chunks, file_title, md_path = _validate_date(state)
 
     # 2.调用LLM识别item_name
     item_name = _call_llm_return_item_name(chunks, file_title)
@@ -24,10 +24,13 @@ def recognize_and_index_item_name(state: LoadState) -> LoadState:
     # 3.填充item_name到chunks
     _padding_item_name_to_chunks(chunks, item_name)
 
-    # 4.创建item_name集合
+    # 4.备份带有item_name的chunks到json文件
+    _backup_chunks_json_with_item_name(md_path, chunks)
+
+    # 5.创建item_name集合
     _prepared_item_name_collection()
 
-    # 5.插入item_name向量数据到item_name集合
+    # 6.插入item_name向量数据到item_name集合
     _insert_item_name_data(item_name, file_title)
 
     state["item_name"] = item_name
@@ -36,12 +39,16 @@ def recognize_and_index_item_name(state: LoadState) -> LoadState:
 
 
 @step_log("_validate_date")
-def _validate_date(state: LoadState) -> tuple[list[dict[str, str]], str]:
+def _validate_date(state: LoadState) -> tuple[list[dict[str, str]], str, str]:
+    md_path: str = state.get("md_path", "")
     chunks = state.get("chunks", [])
     file_title = state.get("file_title", "")
 
-    md_path: str = state.get("md_path", "")
-    md_path_obj: Path = Path(md_path) if md_path else None
+    if not md_path:
+        logger.error("md_path 参数为空")
+        raise ValueError("md_path 参数为空")
+
+    md_path_obj: Path = Path(md_path)
 
     if not chunks:
         if md_path_obj.is_file():
@@ -61,7 +68,7 @@ def _validate_date(state: LoadState) -> tuple[list[dict[str, str]], str]:
         state["file_title"] = file_title
         logger.warning(f"file_title为空, 设置文件默认值: {file_title}")
 
-    return chunks, file_title
+    return chunks, file_title, md_path
 
 
 @step_log("_call_llm_return_item_name")
@@ -99,6 +106,15 @@ def _padding_item_name_to_chunks(chunks, item_name):
     """chunks 补充属性 item_name"""
     for chunk in chunks:
         chunk["item_name"] = item_name
+
+
+def _backup_chunks_json_with_item_name(md_path: str, chunks: list[dict[str, str]]):
+    """备份带有item_name的chunks到json文件"""
+    json_path_obj: Path = Path(md_path).parent / f"{Path(md_path).stem}.json"
+    json_path_obj.write_text(
+        data=json.dumps(chunks, ensure_ascii=False, indent=4), encoding="utf-8"
+    )
+    logger.info(f"chunks_with_item_name 数据备份完成, 备份位置:{json_path_obj!s}")
 
 
 @step_log("_prepared_item_name_collection")
