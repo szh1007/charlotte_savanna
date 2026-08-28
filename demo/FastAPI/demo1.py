@@ -1,9 +1,9 @@
 """
 启动方法1
-$ uvicorn demo.FastAPI.utils.demo1:app --reload
+$ uvicorn demo.FastAPI.demo1:app --reload
 
 启动方法2
-$ python demo/FastAPI/utils/demo1.py
+$ python demo/FastAPI/demo1.py
 
 if __name__ == "__main__":
     uvicorn.run(app="demo1:app", host="127.0.0.1", port=8000, reload=True)
@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Annotated
 
 import aiofiles
+import uvicorn
 from fastapi import FastAPI, File, Form, UploadFile
 from pydantic import BaseModel, Field, field_validator
 
@@ -39,7 +40,7 @@ class User(BaseModel):
     )
     edu: Edu = Field(Edu.UNIVERSITY, description="学历")
     skills: list[str] = Field(
-        ["LangChain", "FastAPI"], min_items=2, max_items=10, description="技能"
+        ["LangChain", "FastAPI"], min_length=2, max_length=10, description="技能"
     )
     desc: str | None = Field("", max_length=100, description="描述")
 
@@ -131,3 +132,7 @@ async def upload_file_large(file: UploadFile = File(...)):
         "code": 1,
         "message": "large file uploaded successfully",
     }
+
+
+if __name__ == "__main__":
+    uvicorn.run(app="demo1:app", host="127.0.0.1", port=8000, reload=True)
