@@ -9,10 +9,10 @@ import uvicorn
 from fastapi import BackgroundTasks, FastAPI, File, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse
 
-from ...process.load.agent.main_graph import graph
-from ...process.load.agent.state import create_default_state
-from ...shared.runtime.logger import PROJECT_ROOT, logger
-from ...shared.utils.task_utils import (
+from ..process.load.agent.main_graph import graph
+from ..process.load.agent.state import create_default_state
+from ..shared.runtime.logger import PROJECT_ROOT, logger
+from ..shared.utils.task_utils import (
     get_done_task_list,
     get_running_task_list,
     get_task_status,
@@ -30,7 +30,7 @@ async def root():
 
 @app.get("/upload/frontend", response_class=FileResponse)
 async def upload_frontend():
-    html_path_obj: Path = Path(__file__).parent.parent / "html" / "upload.html"
+    html_path_obj: Path = Path(__file__).parent / "html" / "upload.html"
     return FileResponse(
         path=html_path_obj,
         media_type=guess_type(html_path_obj.name)[0],
@@ -107,7 +107,7 @@ async def upload_status(task_id: str):
 
 if __name__ == "__main__":
     uvicorn.run(
-        app="project.rag_knowledge.app.api.server.upload:app",
+        app="project.rag_knowledge.app.api.server:app",
         host="127.0.0.1",
         port=8100,
         reload=True,
