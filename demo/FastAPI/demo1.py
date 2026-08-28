@@ -10,13 +10,14 @@ if __name__ == "__main__":
 
 """
 
+import time
 from enum import Enum
 from pathlib import Path
 from typing import Annotated
 
 import aiofiles
 import uvicorn
-from fastapi import FastAPI, File, Form, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, UploadFile
 from pydantic import BaseModel, Field, field_validator
 
 app = FastAPI()
@@ -134,5 +135,31 @@ async def upload_file_large(file: UploadFile = File(...)):
     }
 
 
+def biz_task(name: str):
+    print(f"{name} resolving...")
+    time.sleep(5)
+    print(f"{name} resolve done")
+
+
+@app.post("/parse/async")
+async def parse_async(task: BackgroundTasks, file: UploadFile = File(...)):
+    file_path_obj: Path = Path().parent / "demo" / "FastAPI" / file.filename
+
+    data = await file.read()
+    file_path_obj.write_bytes(data)
+
+    # 开启线程级别的异步任务
+    # BackgroundTasks - add_task(): 线程级异步任务
+    #   隔离性好, 消耗重
+    # asyncio - create_task(): 协程级异步任务
+    #   消耗轻, 隔离性差
+    # 都是真并发, 伪并行(因为GIL锁的存在, 而且不会有安全问题)
+    task.add_task(biz_task, name=file_path_obj)
+    return {
+        "code": 0,
+        "message": f"{file_path_obj.name} start resolve",
+    }
+
+
 if __name__ == "__main__":
-    uvicorn.run(app="demo1:app", host="127.0.0.1", port=8000, reload=True)
+    uvicorn.run(app="demo.FastAPI.demo1:app", host="127.0.0.1", port=8000, reload=True)

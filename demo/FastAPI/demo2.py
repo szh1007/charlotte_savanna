@@ -1,5 +1,8 @@
+import asyncio
+
+import uvicorn
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from rich import print as rprint
 
@@ -20,7 +23,7 @@ class ErrorResponse(BaseModel):
 
 
 """
-响应类型: json / html / file
+响应类型: json / html / file / stream
 """
 
 
@@ -44,13 +47,25 @@ async def test3():
     return FileResponse("./demo/FastAPI/demo1.py")
 
 
+async def generate_stream():
+    words = ["test", "stream", "data", "..."]
+    for w in words:
+        await asyncio.sleep(1)
+        yield w.encode("utf-8")
+
+
+@app.get("/test/stream", response_class=StreamingResponse)
+async def test4():
+    return StreamingResponse(generate_stream(), media_type="text/event-stream")
+
+
 """
 异常处理: HTTPException
 """
 
 
 @app.get("/test/exception/{id}")
-async def test4(id: int):
+async def test5(id: int):
     valid_id_list = range(10)
     if id not in valid_id_list:
         raise HTTPException(status_code=404, detail="id not found")
@@ -103,14 +118,17 @@ router = APIRouter(dependencies=[Depends(permission)])  # 路由级依赖注入
 
 
 @app.get("/test/depends/pagenation/{id}")
-async def test5(id: int, pagenation: dict = Depends(pagenation)):
+async def test6(id: int, pagenation: dict = Depends(pagenation)):
     return {"id": id, "name": "charlotte", **pagenation}
 
 
 # @app.get("/test/depends/permission", dependencies=[Depends(permission)])
 @router.get("/depends/permission")
-async def test6():
+async def test7():
     return {"result": "welcome to Admin Dashboard"}
 
 
 app.include_router(router, prefix="/test")
+
+if __name__ == "__main__":
+    uvicorn.run(app="demo.FastAPI.demo2:app", host="127.0.0.1", port=8000, reload=True)
