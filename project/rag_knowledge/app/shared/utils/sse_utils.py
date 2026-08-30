@@ -81,7 +81,7 @@ async def sse_generator(session_id: str, request: Request):
     try:
         # 发送连接建立信号
         print(f"[SSE] Sending ready signal for {session_id}")
-        yield _sse_pack("ready", {})
+        yield _sse_pack(SSEEvent.READY, {})
 
         while True:
             # 若客户端断开, 尽快退出
@@ -104,7 +104,7 @@ async def sse_generator(session_id: str, request: Request):
             # print(f"[SSE] Yielding event {event} for {session_id}")
 
             # 特殊关闭事件
-            if event == "__close__":
+            if event == SSEEvent.CLOSE:
                 print(f"[SSE] Closing signal received for {session_id}")
                 break
 

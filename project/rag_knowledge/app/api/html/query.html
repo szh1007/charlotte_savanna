@@ -62,6 +62,11 @@
       width:36px;height:36px;border-radius:10px;
       background:linear-gradient(135deg, var(--brand), var(--brand2));
       box-shadow:0 8px 18px rgba(26,167,255,.25);
+      display:flex;align-items:center;justify-content:center;
+      line-height:1;
+      color:#fff;font-size:20px;font-weight:700;
+      font-family: Georgia, "Times New Roman", serif;
+      margin-top:2px;
     }
     .title{
       display:flex;
@@ -84,6 +89,8 @@
       border-radius:999px;
       background:#fff;
     }
+    .pill.ok{background:#e8f7ee;border-color:#b7e5c9;color:#1e7d3c}
+    .pill.err{background:#fdeceb;border-color:#f2bab6;color:#c0392b}
     .btn{
       border:none;
       background:linear-gradient(135deg, var(--brand), var(--brand2));
@@ -114,7 +121,8 @@
       margin:10px 0;
       align-items:flex-end;
     }
-    .msg.user{justify-content:flex-end}
+    .msg.user{justify-content:flex-end;align-items:flex-start}
+    .msg.bot{align-items:flex-start}
     /* 关键：只让“消息内容容器”(排除头像)在 flex 中可伸缩，避免被压到“1 个字宽”导致竖排换行 */
     .msg > div:not(.avatar){
       flex:1;
@@ -157,12 +165,12 @@
       color:var(--muted);
       margin-top:6px;
     }
-    .msg.user .meta{color:rgba(255,255,255,.85)}
+    .msg.user .meta{color:var(--muted)}
     details.progress{
       margin-top:8px;
       border:1px dashed rgba(122,134,154,.45);
       border-radius:12px;
-      padding:8px 10px;
+      padding:5px 8px;
       background:rgba(122,134,154,.06);
     }
     details.progress summary{
@@ -171,8 +179,8 @@
       color:var(--muted);
       font-size:12px;
     }
-    .progress ul{margin:8px 0 0 18px;padding:0}
-    .progress li{margin:4px 0;font-size:12px;color:#56657a}
+    .progress ul{margin:2px 0 0 18px;padding:0}
+    .progress li{margin:1px 0;font-size:12px;color:#56657a;display:flex;align-items:center}
 
     .answer-images{
       margin-top:10px;
@@ -265,42 +273,41 @@
   <div class="app">
     <div class="topbar">
       <div class="brand">
-        <div class="logo"></div>
+        <div class="logo">Q</div>
         <div class="title">
           <strong>知识库</strong>
-          <span id="subTitle">在线 · 可查询知识库与联网信息</span>
+          <span id="subTitle"></span>
+          <span id="subTitle">联网搜索并查询知识库</span>
         </div>
       </div>
       <div class="top-actions">
         <label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer;user-select:none;color:var(--muted);margin-right:10px;">
           <input type="checkbox" id="streamToggle" checked> 流式输出
         </label>
-        <span class="pill" id="apiPill">API: 未连接</span>
+        <span class="pill err" id="apiPill">API未连接</span>
         <button class="btn" id="btnClear">清空对话</button>
       </div>
     </div>
 
     <div class="chat" id="chat">
-      <div class="dayline">今天</div>
       <div class="msg bot">
-        <div class="avatar bot">知识库</div>
+        <div class="avatar bot">AI</div>
         <div>
-          <div class="bubble">你好，我是知识库客服。你可以直接提问，我会在“阶段进度”里展示处理过程。</div>
-          <div class="meta">提示：可以问“如何使用万用表测量电压？”</div>
+          <div class="bubble">你好，我是知识库客服。你可以直接提问，我会在阶段进度里展示处理过程。<br>比如你可以提问：如何使用万用表测量电压？</div>
         </div>
       </div>
     </div>
 
     <div class="composer">
-      <textarea id="input" placeholder="请输入问题（Enter 发送，Shift+Enter 换行）"></textarea>
+      <textarea id="input" ></textarea>
       <button class="send" id="send">发送</button>
     </div>
-    <div class="hint">快捷键：<span class="kbd">Enter</span> 发送，<span class="kbd">Shift</span>+<span class="kbd">Enter</span> 换行</div>
+    <div class="hint">发送 <span class="kbd">Enter</span> / 换行 <span class="kbd">Shift</span>+<span class="kbd">Enter</span></div>
   </div>
 
   <script>
     // 默认走查询服务同源地址；如你把页面单独打开（file://），回退到查询服务默认端口。
-    const API_BASE = location.origin.startsWith('http') ? location.origin : 'http://127.0.0.1:8101';
+    const API_BASE = location.origin.startsWith('http') ? location.origin : 'http://127.0.0.1:8100';
     const chatEl = document.getElementById('chat');
     const inputEl = document.getElementById('input');
     const sendBtn = document.getElementById('send');
@@ -550,7 +557,7 @@
       const id = 'bot-his-' + Math.random().toString(36).slice(2);
       const html = `
         <div class="msg bot" id="${id}">
-          <div class="avatar bot">知识库</div>
+          <div class="avatar bot">AI</div>
           <div>
             <div class="bubble"><div class="answer"></div></div>
             <div class="meta">${formatTime(ts)}</div>
@@ -570,7 +577,7 @@
       const id = 'bot-' + Math.random().toString(36).slice(2);
       const html = `
         <div class="msg bot" id="${id}">
-          <div class="avatar bot">知识库</div>
+          <div class="avatar bot">AI</div>
           <div style="min-width: 180px;">
             <div class="bubble">
               <span class="typing"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>
@@ -656,11 +663,15 @@
 
     async function apiHealth(){
       try{
-        const res = await fetch(`${API_BASE}/health`);
+        const res = await fetch(`${API_BASE}/query/health`);
         if(!res.ok) throw new Error('health not ok');
-        apiPill.textContent = `API: 已连接`;
+        apiPill.textContent = `API 已连接`;
+        apiPill.classList.add('ok');
+        apiPill.classList.remove('err');
       }catch(e){
-        apiPill.textContent = `API: 未连接`;
+        apiPill.textContent = `API 未连接`;
+        apiPill.classList.add('err');
+        apiPill.classList.remove('ok');
       }
     }
 
@@ -767,9 +778,14 @@
           bubble.insertBefore(answerEl, bubble.firstChild);
         }
 
-        const es = new EventSource(`${API_BASE}/stream/${session_id}`);
+        const es = new EventSource(`${API_BASE}/query/stream/${session_id}`);
         console.log('[perf] C EventSource created', performance.now(), { session_id });
         let rawAnswerText = '';
+
+        es.addEventListener('ready', (e) => {
+          // SSE 通道建立成功, 将"等待中"更新为"处理中"
+          renderProgress(botMsgEl, [], [], 'processing');
+        });
 
         es.addEventListener('progress', (e) => {
           try{
@@ -808,22 +824,6 @@
           try{
             const d = JSON.parse(e.data || '{}');
             // 流式 delta 可能不包含“【图片】/图片列表”，最终包的 d.answer 才是完整答案；优先使用 d.answer
-            const finalText = (d && typeof d.answer === 'string' && d.answer.trim().length > 0) ? d.answer : (rawAnswerText || answerEl.textContent || '');
-            renderAnswerWithImages(answerEl, finalText, d.image_urls || []);
-          }catch(_){}
-          es.close();
-          sendBtn.disabled = false;
-        });
-
-        es.addEventListener('final_answer', (e) => {
-           // 响应用户的 final_answer 信号，确保图片渲染
-          const typing = botMsgEl.querySelector('.typing');
-          if(typing) typing.remove();
-          const progress = botMsgEl.querySelector('details.progress');
-          if(progress) progress.removeAttribute('open');
-
-          try{
-            const d = JSON.parse(e.data || '{}');
             const finalText = (d && typeof d.answer === 'string' && d.answer.trim().length > 0) ? d.answer : (rawAnswerText || answerEl.textContent || '');
             renderAnswerWithImages(answerEl, finalText, d.image_urls || []);
           }catch(_){}
@@ -887,7 +887,7 @@
     });
 
     apiHealth();
-    setInterval(apiHealth, 5000);
+    setInterval(apiHealth, 60000);
     loadHistory();
     setTimeout(() => inputEl.focus(), 200);
   </script>
