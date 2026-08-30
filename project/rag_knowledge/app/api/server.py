@@ -14,6 +14,7 @@ from ..process.load.agent.main_graph import graph as load_graph
 from ..process.load.agent.state import create_default_state
 from ..process.query.agent.main_graph import graph as query_graph
 from ..process.query.agent.state import create_query_default_state
+from ..shared.clients.mongo_utils import clear_history, get_recent_messages
 from ..shared.runtime.logger import PROJECT_ROOT, logger
 from ..shared.utils.sse_utils import (
     SSEEvent,
@@ -29,6 +30,9 @@ from ..shared.utils.task_utils import (
     update_task_status,
 )
 from .schema import (
+    ChatHistoryDeleteResponse,
+    ChatHistoryItemResponse,
+    ChatHistoryResponse,
     QueryAsyncResponse,
     QueryRequest,
     QuerySyncResponse,
@@ -41,6 +45,7 @@ app = FastAPI()
 
 @app.get("/", include_in_schema=False)
 async def root():
+    """首页导航页"""
     html_path_obj: Path = Path(__file__).parent / "html" / "index.html"
     return FileResponse(
         path=html_path_obj,
@@ -50,6 +55,7 @@ async def root():
 
 @app.get("/upload/frontend", response_class=FileResponse)
 async def upload_frontend():
+    """离线加载并解析文档的前端页面"""
     html_path_obj: Path = Path(__file__).parent / "html" / "upload.html"
     return FileResponse(
         path=html_path_obj,
@@ -58,6 +64,7 @@ async def upload_frontend():
 
 
 def resolve_upload_file(task_id: str, local_file_path: str):
+    """解析上传的文件"""
     state = create_default_state(
         task_id=task_id,
         local_file_path=local_file_path,
@@ -79,6 +86,7 @@ async def upload(
     background_tasks: BackgroundTasks,
     files: Annotated[list[UploadFile], File()],
 ):
+    """离线加载并解析文档的入口"""
     task_ids: list[str] = []
     file_paths: list[str] = []
     for file in files:
@@ -119,6 +127,7 @@ async def upload(
 
 @app.get("/status/{task_id}", response_model=TaskStatusResponse)
 async def get_task_status_view(task_id: str):
+    """获取节点任务状态"""
     return TaskStatusResponse(
         task_id=task_id,
         status=get_task_status(task_id),
@@ -129,12 +138,14 @@ async def get_task_status_view(task_id: str):
 
 @app.get("/query/health")
 async def health():
+    """后端健康检查"""
     logger.info(f"{datetime.now()}: health check success")
     return {"ok": True}
 
 
 @app.get("/query/frontend", response_class=FileResponse)
 async def query_frontend():
+    """用户提问的前端页面"""
     html_path_obj: Path = Path(__file__).parent / "html" / "query.html"
     return FileResponse(
         path=html_path_obj,
@@ -144,6 +155,7 @@ async def query_frontend():
 
 @app.get("/query/stream/{session_id}")
 def query_stream(session_id: str, request: Request):
+    """用户提问的流式响应"""
     logger.info(f"{datetime.now()}: query stream success - {session_id}")
     return StreamingResponse(
         sse_generator(session_id, request),
@@ -152,6 +164,7 @@ def query_stream(session_id: str, request: Request):
 
 
 def query_graph_task(session_id: str, query: str, is_stream: bool = False):
+    """用户提问的查询图流程"""
     state = create_query_default_state(
         session_id=session_id,
         original_query=query,
@@ -198,6 +211,7 @@ def query_graph_task(session_id: str, query: str, is_stream: bool = False):
 
 @app.post("/query")
 async def query(background_tasks: BackgroundTasks, params: QueryRequest):
+    """用户提问的入口"""
     session_id, query, is_stream = params.session_id, params.query, params.is_stream
     logger.info(
         f"session_id: {session_id}, 用户发出提问: {query}, 是否流式返回: {is_stream}"
@@ -232,6 +246,28 @@ async def query(background_tasks: BackgroundTasks, params: QueryRequest):
             done_list=get_done_task_list(session_id),
             error=state.get("error", ""),
         )
+
+
+@app.delete("/history/{session_id}")
+def delete_chat_history(session_id: str):
+    """清空历史聊天记录"""
+    deleted_count = clear_history(session_id)
+    logger.info(f"历史记录已删除: {session_id}, 删除数量: {deleted_count}")
+    return ChatHistoryDeleteResponse(
+        message=f"历史记录已删除: {session_id}",
+        deleted_count=deleted_count,
+    )
+
+
+@app.get("/history/{session_id}")
+def get_chat_history(session_id: str, limit: int = 10):
+    """获取历史聊天记录"""
+    histories = get_recent_messages(session_id, limit)
+    return ChatHistoryResponse(
+        message=f"历史聊天记录加载成功: {session_id}",
+        session_id=session_id,
+        items=[ChatHistoryItemResponse(id=str(h.pop("_id")), **h) for h in histories],
+    )
 
 
 if __name__ == "__main__":

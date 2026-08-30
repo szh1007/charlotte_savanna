@@ -33,3 +33,23 @@ class QuerySyncResponse(CommonResponse):
     image_urls: list[str] = []
     done_list: list[str] = []
     error: str = ""
+
+
+class ChatHistoryDeleteResponse(CommonResponse):
+    deleted_count: int
+
+
+class ChatHistoryItemResponse(BaseModel):
+    id: str = ""
+    session_id: str = ""
+    role: str = ""
+    text: str = ""
+    rewritten_query: str = ""
+    item_names: list[str] = []
+    image_urls: list[str] = []
+    ts: float = 0.0
+
+
+class ChatHistoryResponse(CommonResponse):
+    session_id: str = ""
+    items: list[ChatHistoryItemResponse] = []

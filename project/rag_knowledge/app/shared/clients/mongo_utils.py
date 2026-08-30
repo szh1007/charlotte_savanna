@@ -15,6 +15,30 @@ from ..runtime.logger import logger
 # 加载 .env 文件中的环境变量, 使 os.getenv 能读取到配置
 load_dotenv()
 
+"""
+--- MongoDB 数据库基本CRUD ---
+
+创建+切换数据库: use [DB]
+
+查询 - 且: db.[DB].find({k1:v1, k2: {$gt: v2}})
+查询 - 或: db.[DB].find({$or: [{k1:v1}, {k2: {$gt: v2}}]})
+
+插入 - 1条 / 多条: db.[DB].insertOne({k1:v1, k2:v2, ...}) / insertMany([...])
+
+删除 - 1条 / 多条: db.[DB].deleteOne({k1:v1, k2: {$gt: v2}}) / deleteMany(...)
+    deleteMany(): 清空表
+
+更新 - 1条 / 多条: db.[DB].updateOne({k1:v1, k2: {$gt: v2}}, {$set: {k3:v3, ...}})
+                / updateMany(...)
+
+排序: db.[DB].find(...).sort({age: -1/1}).skip(10).limit(10)
+
+    $not $eq $gt $gte $lt $lte $ne
+
+索引: db.[DB].create_index({"session_id": 1, "ts": -1})
+    查询+排序的索引 1/-1 的搭配使用才有意义
+"""
+
 
 class HistoryMongoTool:
     """
