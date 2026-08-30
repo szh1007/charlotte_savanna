@@ -52,6 +52,18 @@
       border-bottom:1px solid var(--border);
       background:linear-gradient(90deg, rgba(26,167,255,.10), rgba(91,124,250,.10));
     }
+    .back{
+      position:fixed;
+      top:40px;left:200px;
+      z-index:10;
+      display:inline-flex;align-items:center;gap:4px;
+      font-size:12px;color:var(--muted);
+      text-decoration:none;
+      border:1px solid var(--border);
+      padding:6px 10px;border-radius:10px;
+      background:#fff;
+    }
+    .back:hover{color:var(--brand);border-color:rgba(26,167,255,.45)}
     .brand{
       display:flex;
       align-items:center;
@@ -270,6 +282,7 @@
   </style>
 </head>
 <body>
+  <a class="back" href="/">← 返回</a>
   <div class="app">
     <div class="topbar">
       <div class="brand">

@@ -8,7 +8,7 @@ from typing import Annotated
 import uvicorn
 from fastapi import BackgroundTasks, FastAPI, File, UploadFile
 from fastapi.requests import Request
-from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from ..process.load.agent.main_graph import graph as load_graph
 from ..process.load.agent.state import create_default_state
@@ -41,7 +41,11 @@ app = FastAPI()
 
 @app.get("/", include_in_schema=False)
 async def root():
-    return RedirectResponse("/upload/frontend")
+    html_path_obj: Path = Path(__file__).parent / "html" / "index.html"
+    return FileResponse(
+        path=html_path_obj,
+        media_type=guess_type(html_path_obj.name)[0],
+    )
 
 
 @app.get("/upload/frontend", response_class=FileResponse)

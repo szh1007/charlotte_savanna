@@ -47,6 +47,26 @@
         .file-input {
             display: none;
         }
+        .back {
+            position: fixed;
+            top: 25px;
+            left: 250px;
+            z-index: 10;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 14px;
+            color: #7f8c8d;
+            text-decoration: none;
+            border: 1px solid #e0e0e0;
+            padding: 6px 12px;
+            border-radius: 6px;
+            background: #fff;
+        }
+        .back:hover {
+            color: #3498db;
+            border-color: #3498db;
+        }
         .btn {
             background-color: #3498db;
             color: white;
@@ -145,6 +165,8 @@
     </style>
 </head>
 <body>
+
+<a class="back" href="/">← 返回</a>
 
 <div class="container">
     <h1>📄 知识库文件导入</h1>

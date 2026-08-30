@@ -1,0 +1,120 @@
+<!-- 首页：知识库系统功能入口。 -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1.0" />
+  <title>知识库系统</title>
+  <style>
+    :root{
+      --bg:#f3f5f7;
+      --panel:#ffffff;
+      --text:#1f2d3d;
+      --muted:#7a869a;
+      --brand:#1aa7ff;
+      --brand2:#5b7cfa;
+      --border:#e6e9ef;
+      --shadow:0 10px 30px rgba(31,45,61,.12);
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0;
+      font-family: "Segoe UI", "Microsoft YaHei", system-ui, -apple-system, Arial, sans-serif;
+      background: radial-gradient(1200px 600px at 20% 0%, rgba(26,167,255,.18), transparent 60%),
+                  radial-gradient(1000px 500px at 90% 10%, rgba(91,124,250,.18), transparent 55%),
+                  var(--bg);
+      color:var(--text);
+      height:100vh;
+      display:flex;
+      justify-content:center;
+      align-items:center;
+      padding:18px;
+    }
+    .app{
+      width:100%;
+      max-width:720px;
+      background:var(--panel);
+      border:1px solid var(--border);
+      border-radius:16px;
+      box-shadow:var(--shadow);
+      padding:40px 44px;
+      text-align:center;
+    }
+    .logo{
+      width:56px;height:56px;border-radius:14px;
+      background:linear-gradient(135deg, var(--brand), var(--brand2));
+      box-shadow:0 8px 18px rgba(26,167,255,.25);
+      display:flex;align-items:center;justify-content:center;
+      line-height:1;
+      color:#fff;font-size:30px;font-weight:700;
+      font-family: Georgia, "Times New Roman", serif;
+      margin:0 auto 16px;
+    }
+    h1{
+      font-size:20px;
+      margin:0 0 6px;
+    }
+    .sub{
+      font-size:13px;
+      color:var(--muted);
+      margin:0 0 32px;
+    }
+    .cards{
+      display:flex;
+      gap:16px;
+      justify-content:center;
+      flex-wrap:wrap;
+    }
+    .card{
+      flex:1;
+      min-width:200px;
+      display:block;
+      text-decoration:none;
+      color:var(--text);
+      background:#fff;
+      border:1px solid var(--border);
+      border-radius:14px;
+      padding:24px 16px;
+      transition:transform .15s ease, box-shadow .15s ease, border-color .15s ease;
+    }
+    .card:hover{
+      transform:translateY(-3px);
+      box-shadow:var(--shadow);
+      border-color:rgba(26,167,255,.45);
+    }
+    .card .icon{
+      font-size:32px;
+      margin-bottom:10px;
+    }
+    .card strong{
+      display:block;
+      font-size:15px;
+      margin-bottom:6px;
+    }
+    .card span{
+      font-size:12px;
+      color:var(--muted);
+      line-height:1.6;
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="logo">Q</div>
+    <h1>知识库系统</h1>
+    <p class="sub">请选择要使用的功能</p>
+    <div class="cards">
+      <a class="card" href="/upload/frontend">
+        <div class="icon">📥</div>
+        <strong>文件导入</strong>
+        <span>上传 PDF / Markdown 文档, 解析并构建知识库</span>
+      </a>
+      <a class="card" href="/query/frontend">
+        <div class="icon">💬</div>
+        <strong>知识库查询</strong>
+        <span>基于知识库与联网信息进行问答, 支持流式输出</span>
+      </a>
+    </div>
+  </div>
+</body>
+</html>
