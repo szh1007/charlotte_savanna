@@ -164,13 +164,19 @@
       position:relative;
       line-height:1.55;
       font-size:14px;
-      white-space:pre-wrap;
+      /* pre-wrap 只应用于 .answer，避免模板字符串换行/缩进文本节点渲染成空行 */
+      white-space:normal;
       overflow-wrap: break-word;
     }
     .msg.user .bubble{
       background:var(--bubble-user);
       color:#fff;
       border-color:transparent;
+      /* 用户气泡直接承载输入文本，保留换行 */
+      white-space:pre-wrap;
+    }
+    .answer{
+      white-space:pre-wrap;
     }
     .meta{
       font-size:11px;
@@ -179,20 +185,25 @@
     }
     .msg.user .meta{color:var(--muted)}
     details.progress{
-      margin-top:8px;
+      /* 上方与正文间隔一行（14px）；下方 4px + 气泡 padding-bottom 10px = 视觉一行，上下对称 */
+      margin:14px 0 4px;
       border:1px dashed rgba(122,134,154,.45);
-      border-radius:12px;
-      padding:5px 8px;
+      border-radius:10px;
+      padding:3px 8px 4px;
       background:rgba(122,134,154,.06);
+      text-align:left;
+      /* 覆盖 .bubble 的 pre-wrap，避免模板字符串换行/缩进被渲染成空行 */
+      white-space:normal;
     }
     details.progress summary{
       cursor:pointer;
       user-select:none;
       color:var(--muted);
       font-size:12px;
+      line-height:1.6;
     }
-    .progress ul{margin:2px 0 0 18px;padding:0}
-    .progress li{margin:1px 0;font-size:12px;color:#56657a;display:flex;align-items:center}
+    .progress ul{margin:2px 0;padding:0}
+    .progress li{margin:1px 0;font-size:12px;color:#56657a;display:flex;align-items:flex-start}
 
     .answer-images{
       margin-top:10px;
