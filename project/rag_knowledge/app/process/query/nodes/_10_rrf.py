@@ -8,7 +8,7 @@ from ..agent.state import QueryState
 
 @node_log("node_rrf")
 def node_rrf(state: QueryState) -> QueryState:
-    """RRF: 将多路召回的结果(向量、HyDE、Web)进行加权融合排序"""
+    """RRF: 将多路召回的结果(向量、HyDE)进行加权融合排序"""
     cur_func_name = sys._getframe().f_code.co_name
     add_running_task(state["session_id"], cur_func_name, state.get("is_stream"))
     state = fuse_by_rrf(state)

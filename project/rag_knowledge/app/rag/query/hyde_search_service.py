@@ -6,6 +6,7 @@ from ...infra.model import infra_model
 from ...process.query.agent.state import QueryState
 from ...shared.runtime.load_prompt import load_prompt
 from ...shared.runtime.logger import logger, step_log
+from .config import MILVUS_CHUNK_RRF_TOP_K
 
 
 @step_log("search_by_hyde")
@@ -71,7 +72,7 @@ def _select_chunks_in_milvus(
         dense_vector=dense_vector,
         sparse_vector=sparse_vector,
         expr=f"item_name in {item_names}",
-        limit=5 * 2,
+        limit=MILVUS_CHUNK_RRF_TOP_K * 2,
     )
 
     # 3.混合查询
@@ -80,7 +81,7 @@ def _select_chunks_in_milvus(
         reqs=reqs_list,
         ranker_weights=(0.7, 0.3),  # rewritten_query检索, 同时兼顾双方权重
         norm_score=True,
-        limit=5,
+        limit=MILVUS_CHUNK_RRF_TOP_K,
         output_fields=[
             "chunk_id",
             "file_title",
