@@ -34,7 +34,16 @@ def _call_tavily_search(rewritten_query: str):
     web_search_docs = []
     for result in results:
         if result.get("score") > 0.5:
-            web_search_docs.append(result)
+            web_search_docs.append(
+                {
+                    "chunk_id": "",
+                    "title": result.get("title", ""),
+                    "text": result.get("content", ""),
+                    "score": result.get("score", 0.0),
+                    "type": "web_search",
+                    "url": result.get("url", ""),
+                }
+            )
 
     return web_search_docs
 

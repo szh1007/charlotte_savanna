@@ -8,7 +8,7 @@ from ..agent.state import QueryState
 
 @node_log("node_rerank")
 def node_rerank(state: QueryState) -> QueryState:
-    """使用 rerank 模型对 RRF 后的结果进行精确打分重排"""
+    """使用 rerank 模型对 RRF + WEB 结果进行精确打分重排"""
     cur_func_name = sys._getframe().f_code.co_name
     add_running_task(state["session_id"], cur_func_name, state.get("is_stream"))
     state = rerank_documents(state)

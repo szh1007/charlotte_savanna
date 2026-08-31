@@ -13,3 +13,15 @@ ITEM_NAME_CANDIDATE_TOPK = 2
 
 # RRF 排序融合后的 top_k 数量
 MILVUS_CHUNK_RRF_TOP_K = 5
+
+# reraker 相关参数
+# 动态截取的最大值的最小值
+RERANK_MAX_TOPK: int = 10
+RERANK_MIN_TOPK: int = 3
+# 检查断崖的参数
+RERANK_GAP_RATIO: float = 0.2
+RERANK_GAP_ABS: float = 0.2
+# 上下文窗口相关
+RERANK_MAX_INPUT_TOKENS: int = 512  # 挡墙 reranker 模型的上下窗口
+RERANK_SUMMARY_CHAR_RATIO: float = 1.3  # 中文转token的倍率 (经验)
+RERANK_MIN_SUMMARY_CHARS: int = 50  # 压缩后的最少字符数量
