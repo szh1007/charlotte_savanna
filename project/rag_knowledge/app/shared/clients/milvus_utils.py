@@ -70,7 +70,7 @@ def create_hybrid_search_requests(
     """
     # 稠密向量默认搜索参数: 内积(IP), BGE-M3 已做 L2 归一化, IP 等价于余弦相似度
     if dense_params is None:
-        dense_params = {"metric_type": "IP"}
+        dense_params = {"metric_type": "COSINE"}
     # 稀疏向量默认搜索参数: 内积(IP), 适配 BGE-M3 稀疏向量
     if sparse_params is None:
         sparse_params = {"metric_type": "IP"}
@@ -98,7 +98,7 @@ def create_hybrid_search_requests(
 
 
 def hybrid_search(
-    client,
+    client: MilvusClient,
     collection_name,
     reqs,
     ranker_weights=(0.5, 0.5),
