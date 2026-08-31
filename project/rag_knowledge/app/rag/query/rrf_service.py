@@ -4,16 +4,16 @@ from .config import MILVUS_CHUNK_RRF_TOP_K
 
 
 @step_log("_validate_data")
-def _validate_data(state):
+def _validate_data(state: QueryState):
     """获取核心参数并且校验"""
 
     embedding_chunks = state.get("embedding_chunks")
-    embedding_chunks_hyde = state.get("embedding_chunks_hyde")
+    hyde_embedding_chunks = state.get("hyde_embedding_chunks")
 
-    if not embedding_chunks or not embedding_chunks_hyde:
-        logger.error("embedding_chunks / embedding_chunks_hyde 参数为空")
-        raise ValueError("embedding_chunks / embedding_chunks_hyde 参数为空")
-    return embedding_chunks, embedding_chunks_hyde
+    if not embedding_chunks or not hyde_embedding_chunks:
+        logger.error("embedding_chunks / hyde_embedding_chunks 参数为空")
+        raise ValueError("embedding_chunks / hyde_embedding_chunks 参数为空")
+    return embedding_chunks, hyde_embedding_chunks
 
 
 @step_log("_use_rrf_rank")
@@ -55,12 +55,12 @@ def _use_rrf_rank(weights: list, k: int = 60):
 @step_log("fuse_by_rrf")
 def fuse_by_rrf(state: QueryState) -> QueryState:
     # 1.获取并校验参数
-    embedding_chunks, embedding_chunks_hyde = _validate_data(state)
+    embedding_chunks, hyde_embedding_chunks = _validate_data(state)
 
     # 2.RRF排名融合
     weights = [
         (0.5, embedding_chunks),
-        (0.5, embedding_chunks_hyde),
+        (0.5, hyde_embedding_chunks),
     ]
     rrf_chunks = _use_rrf_rank(weights)
 

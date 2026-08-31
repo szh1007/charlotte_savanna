@@ -19,9 +19,9 @@ def node_search_embedding_hyde(state: QueryState) -> QueryState:
     """
     cur_func_name = sys._getframe().f_code.co_name
     add_running_task(state["session_id"], cur_func_name, state.get("is_stream"))
-    embedding_chunks_hyde = search_by_hyde(state)
+    hyde_embedding_chunks = search_by_hyde(state)
     add_done_task(state["session_id"], cur_func_name, state.get("is_stream"))
-    return {"embedding_chunks_hyde": embedding_chunks_hyde}
+    return {"hyde_embedding_chunks": hyde_embedding_chunks}
 
 
 if __name__ == "__main__":

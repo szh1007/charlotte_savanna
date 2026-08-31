@@ -224,8 +224,8 @@ def _select_confirm_candidate_item_names(milvus_dict):
             logger.info(f"{item_name} 未检测到确定主体, 候选主体: {candidate_list}")
 
     return {
-        "confirm": confirm_list,
-        "candidate": candidate_list,
+        "confirm": list(set(confirm_list)),
+        "candidate": list(set(candidate_list)),
     }
 
 
@@ -250,7 +250,9 @@ def _change_state_property(
         return
 
     if candidate_list:
-        state["answer"] = f"未检测到明确的主体, 但有候选可供选择:\n{candidate_list}"
+        state["answer"] = (
+            f"未检测到明确的主体, 但有候选可供选择：\n{'\n'.join(candidate_list)}"  # noqa: RUF001
+        )
         logger.info("未检测到明确的主体, 已更新answer")
         return
 

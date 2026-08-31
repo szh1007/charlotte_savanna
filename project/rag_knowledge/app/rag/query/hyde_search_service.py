@@ -21,9 +21,9 @@ def search_by_hyde(state: QueryState) -> QueryState:
     real_response = _select_chunks_in_milvus(item_names, rewritten_query, hyde_answer)
 
     # 4.解析结果 embedding_chunks
-    embedding_chunks_hyde = _after_deal_milvus_result(real_response)
+    hyde_embedding_chunks = _after_deal_milvus_result(real_response)
 
-    return embedding_chunks_hyde
+    return hyde_embedding_chunks
 
 
 @step_log("_validate_data")
@@ -99,11 +99,11 @@ def _select_chunks_in_milvus(
 @step_log("_after_deal_milvus_result")
 def _after_deal_milvus_result(real_response: list[dict]) -> list[dict]:
     """解析检索结果"""
-    embedding_chunks_hyde: list[dict] = []
+    hyde_embedding_chunks: list[dict] = []
     if real_response:
         for item in real_response:
             chunk = item.get("entity", {})
-            embedding_chunks_hyde.append(
+            hyde_embedding_chunks.append(
                 {
                     "chunk_id": chunk.get("chunk_id"),  # 必要, 后续测评用
                     "file_title": chunk.get("file_title"),
@@ -117,5 +117,5 @@ def _after_deal_milvus_result(real_response: list[dict]) -> list[dict]:
                 }
             )
 
-    logger.info(f"已完成问题向量检索, 检索的数量: {len(embedding_chunks_hyde)}")
-    return embedding_chunks_hyde
+    logger.info(f"已完成问题向量检索, 检索的数量: {len(hyde_embedding_chunks)}")
+    return hyde_embedding_chunks
