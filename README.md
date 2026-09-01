@@ -31,6 +31,7 @@
 | `project/deep_search/` | 子项目 | 深度检索智能体（DeepAgents + FastAPI + Vue） |
 | `project/menu/` | 子项目 | 餐厅智能助手（LangChain Agent + FastAPI + Vue） |
 | `project/video_downloader/` | 子项目 | B 站视频下载站（FastAPI + yt-dlp + Vue，AI 视频总结） |
+| `project/rag_knowledge/` | 子项目 | 工业级 RAG 知识库问答（LangGraph 双图 + Milvus + 评估体系） |
 | `demo/` | 自学教程 | Python / LangChain / LangGraph / DeepAgents / FastAPI 教程 |
 
 ---
@@ -48,6 +49,7 @@
 | **Agent** | DeepAgents 0.7 | `create_deep_agent` 多 subagent 协作 |
 | **向量数据库** | Milvus / ChromaDB / FAISS | 语义检索（HNSW + 余弦相似度） |
 | **知识库** | RAGFlow | 企业知识库问答 |
+| **RAG 组件** | BGE-M3 / bge-reranker-large / MinerU / MinIO / MongoDB | 混合向量、精排、PDF 解析、对象存储、会话历史（rag_knowledge） |
 | **搜索** | Tavily | 联网检索 |
 | **视频处理** | yt-dlp + ffmpeg + SenseVoice | 下载引擎、音视频合并、ASR 转写（video_downloader） |
 | **前端** | Vue 3 + Vite + TS/JS + Element Plus | 组合式 API、WebSocket / SSE |
@@ -67,7 +69,8 @@ charlotte_savanna/
 ├── project/
 │   ├── deep_search/         # 深度检索智能体（DeepAgents + FastAPI + Vue）
 │   ├── menu/                # 餐厅智能助手（LangChain Agent + FastAPI + Vue）
-│   └── video_downloader/    # B 站视频下载站（FastAPI + yt-dlp + Vue）
+│   ├── video_downloader/    # B 站视频下载站（FastAPI + yt-dlp + Vue）
+│   └── rag_knowledge/       # 工业级 RAG 知识库问答（LangGraph + Milvus + 评估体系）
 ├── templates/               # 全局模板（minimall + admin）
 ├── sh/                      # 启动脚本（deep_search / menu / video_downloader 前后端）
 ├── demo/                    # 自学教程（非业务代码）
@@ -122,6 +125,16 @@ charlotte_savanna/
 - **实时进度**：FastAPI SSE 推送任务状态（`task-update` + 心跳）
 - 详见 [`project/video_downloader/README.md`](project/video_downloader/README.md)
 
+### rag_knowledge — 工业级 RAG 知识库问答（子项目）
+
+基于 **LangGraph** 双图的垂直领域知识库问答系统，面向产品说明书 / 技术文档，实践「检索增强生成 + 离线评估」完整闭环。
+
+- **加载链路**：PDF（MinerU 解析）/ Markdown → 图片语义化（VL + MinIO）→ 标题级分块 → 主体识别 → BGE-M3 混合向量 → Milvus 索引
+- **查询链路**：问题改写 + 主体确认 → 三路并行召回（向量 / HyDE / Tavily）→ RRF 融合 → bge-reranker 精排 → 溯源回答（SSE 流式）
+- **会话历史**：MongoDB 存储，多轮指代消解
+- **评估体系**：golden 题库（50 用例）+ 4 层检索指标（精确率 / 召回率 / 必命中率 / MRR@5 / NDCG@5），报告落盘 `app/rag_eval/artifacts/`
+- 详见 [`project/rag_knowledge/README.md`](project/rag_knowledge/README.md)
+
 ### demo — 自学教程（非业务）
 
 Python 基础、LangChain 1.3、LangGraph 1.2、DeepAgents 0.7、FastAPI 的渐进式教程，仅作学习参考。另有 [`SUMMARY.md`](demo/SUMMARY.md)（知识点学习总结）。
@@ -157,6 +170,7 @@ cp .env.example .env               # 填入真实 API Key
 | deep_search | `sh/deep_search_backend.sh` | `sh/deep_search_frontend.sh` |
 | menu | `sh/menu_backend.sh` | `sh/menu_frontend.sh` |
 | video_downloader | `sh/video_downloader_backend.sh` | `sh/video_downloader_frontend.sh` |
+| rag_knowledge | `python -m project.rag_knowledge.app.api.server` | 内建页面 |
 
 子项目前端首次运行需在对应 `ui/` 目录执行 `npm install`。
 
@@ -170,7 +184,7 @@ cp .env.example .env               # 填入真实 API Key
 - **LLM（Embedding）**：`CLOSEAI_*`
 - **数据库**：`MYSQL_*`（Django + demo）、`PGSQL_*`（PostgreSQL demo）
 - **缓存 / 向量**：`REDIS_URL`、`MILVUS_*`（`MILVUS_URL` / `MILVUS_DATABASE_NAME` / `MILVUS_COLLECTION_NAME`）
-- **子项目专用**：`MENU_*`（menu）、`DS_*`（deep_search）；video_downloader 独立 `.env`（`MEMBER_KEY` / `BILI_COOKIE` / `LLM_*` / `ASR_*`）
+- **子项目专用**：`MENU_*`（menu）、`DS_*`（deep_search）、`RK_*`（rag_knowledge）；video_downloader 独立 `.env`（`MEMBER_KEY` / `BILI_COOKIE` / `LLM_*` / `ASR_*`）
 - **Django**：`DJANGO_*`
 - **外部服务**：`TAVILY_API_KEY`、`LANGSMITH_*`
 
@@ -185,6 +199,7 @@ cp .env.example .env               # 填入真实 API Key
 | [project/deep_search/README.md](project/deep_search/README.md) | deep_search 子项目文档 |
 | [project/menu/README.md](project/menu/README.md) | menu 子项目文档 |
 | [project/video_downloader/README.md](project/video_downloader/README.md) | video_downloader 子项目文档 |
+| [project/rag_knowledge/README.md](project/rag_knowledge/README.md) | rag_knowledge 子项目文档 |
 | [docs/](docs/) | Agent 定义、triage 规范、学习笔记 |
 
 ---

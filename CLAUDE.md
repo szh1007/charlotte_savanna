@@ -18,6 +18,7 @@
 | `project/deep_search/` | 子项目 | DeepAgents 深度检索智能体（FastAPI + Vue 前端） |
 | `project/menu/` | 子项目 | 餐厅智能助手（LangChain Agent + FastAPI + Vue） |
 | `project/video_downloader/` | 子项目 | B 站视频下载站（FastAPI + yt-dlp + Vue，AI 视频总结） |
+| `project/rag_knowledge/` | 子项目 | 工业级 RAG 知识库问答（LangGraph 双图 + Milvus + 评估体系） |
 | `demo/` | 自学教程 | 非业务代码，见 §1.1 |
 
 ---
@@ -90,7 +91,7 @@ charlotte_savanna/
 │       ├── tests/               #   test_api / test_models / test_services
 │       ├── todo/redis.md        #   Redis 缓存设计文档（架构/风险/使用）
 │       └── uploads/             #   本地文件上传（.gitignore 排除）
-├── project/                     # 独立子项目（deep_search / menu / video_downloader）
+├── project/                     # 独立子项目（deep_search / menu / video_downloader / rag_knowledge）
 │   ├── deep_search/             #   深度检索智能体（FastAPI + DeepAgents）
 │   │   ├── agent/               #   main_agent + subagents（数据库查询/网络搜索/知识库）
 │   │   ├── api/                 #   FastAPI server / context（会话）/ monitor
@@ -119,6 +120,12 @@ charlotte_savanna/
 │       ├── scripts/             #   E2E 下载 / 字幕 cookie / yt-dlp 探测脚本
 │       ├── README.md            #   子项目文档
 │       └── .env                 #   独立环境变量（不提交）
+│   └── rag_knowledge/           #   工业级 RAG 知识库问答（LangGraph + Milvus + FastAPI）
+│       ├── app/                 #   核心代码: api / process（load+query 双图）/ rag / rag_eval 评估
+│       ├── output/              #   加载产物（MinerU markdown + chunks 备份）
+│       ├── tests/               #   图级冒烟测试 + 评测最小调用样例
+│       ├── README.md            #   子项目文档
+│       └── .env                 #   独立环境变量（RK_ 前缀, 不提交）
 ├── templates/                   # 全局模板目录
 │   ├── minimall/                #   商城页面模板（base + partials）
 │   └── admin/                   #   自定义 Admin 模板
@@ -206,7 +213,15 @@ charlotte_savanna/
 - **AI 视频总结（ADR-0005）**：字幕快路径（`backend/subtitle.py`, 服务端 `BILI_COOKIE` 取官方字幕）→ 兜底 SenseVoice 转写（`backend/asr.py`）→ DeepSeek 生成总结（`backend/llm.py`），SSE 流式输出
 - **前端**：Vue 3 + Vite（`frontend/`），零 UI 库，d3 / markmap 渲染思维导图，详细文档见 `project/video_downloader/README.md`
 
-### 4.6 代码质量
+### 4.6 FastAPI / LangGraph（rag_knowledge 子项目）
+
+- **后端**：FastAPI（`app/api/server.py`，端口 8100，原生 HTML 页面）+ LangGraph 双图（`load_graph` 离线建索引 / `query_graph` 在线问答）
+- **检索链路**：主体识别（item_name）+ 三路并行召回（向量 / HyDE / Tavily）+ RRF 融合 + bge-reranker 精排 + 溯源回答（SSE 流式）
+- **基础设施**：Milvus（`chunks` + `item_name` 两个集合）、MinerU 远程 PDF 解析、MinIO 图片存储、MongoDB 会话历史、BGE-M3 混合向量
+- **评估体系**：`app/rag_eval/` 统一入口 `RagEvalTester`，golden 题库 + 4 层检索指标（精确率/召回率/必命中率/MRR@5/NDCG@5），报告落盘 `artifacts/`
+- **配置**：环境变量 `RK_` 前缀（独立 `.env`），详细文档见 `project/rag_knowledge/README.md`
+
+### 4.7 代码质量
 
 > 注释规范参见系统级 CLAUDE.md 第 6.2 节。
 
@@ -221,7 +236,7 @@ charlotte_savanna/
 
 ## 5. 当前开发状态
 
-> 当前各模块均为学习/测试性质，正式「主流程」尚未确定：minimall 为 Django 测试原型，deep_search / menu / video_downloader 为独立子项目。
+> 当前各模块均为学习/测试性质，正式「主流程」尚未确定：minimall 为 Django 测试原型，deep_search / menu / video_downloader / rag_knowledge 为独立子项目。
 
 ### 5.1 测试原型 — minimall 商城 (`app/minimall/`)
 
@@ -267,7 +282,18 @@ charlotte_savanna/
 
 > 已完成闭环，可通过 `sh/video_downloader_backend.sh` + `sh/video_downloader_frontend.sh` 启动。详细文档见 `project/video_downloader/README.md`。
 
-### 5.5 Demo 目录（仅供学习参考，不计入业务/子项目）
+### 5.5 子项目 — rag_knowledge 知识库问答 (`project/rag_knowledge/`)
+
+| 组件 | 状态 | 说明 |
+|------|------|------|
+| 加载链路（load_graph） | ✅ | PDF（MinerU）/ MD → 图片语义化 → 分块 → 主体识别 → BGE-M3 → Milvus |
+| 查询链路（query_graph） | ✅ | 改写 + 主体确认 → 三路召回（向量/HyDE/Web）→ RRF → Rerank → 溯源回答 |
+| 基础设施 | ✅ | Milvus / MinIO / MongoDB / MinerU 远程解析 / Tavily |
+| 评估体系（rag_eval） | ✅ | golden 题库 50 用例 + 4 层检索指标，报告落盘 artifacts/ |
+
+> 已闭环，通过 `python -m project.rag_knowledge.app.api.server` 启动（127.0.0.1:8100，原生 HTML 页面，无独立前端）。详细文档见 `project/rag_knowledge/README.md`。
+
+### 5.6 Demo 目录（仅供学习参考，不计入业务/子项目）
 
 | 目录 | 状态 | 说明 |
 |------|------|------|
@@ -278,7 +304,7 @@ charlotte_savanna/
 | `demo/FastAPI/` | ✅ 完成 | FastAPI 基础教程（3 个 demo） |
 | `demo/SUMMARY.md` | ✅ 完成 | LangChain/LangGraph/DeepAgents 知识点学习总结 |
 
-### 5.6 基础设施
+### 5.7 基础设施
 
 | 项目 | 状态 | 说明 |
 |------|------|------|
@@ -298,7 +324,7 @@ charlotte_savanna/
 > 通用安全规范（`.env` 管理、API Key 保护、`.gitignore` 检查清单、敏感信息泄露处理）参见系统级 CLAUDE.md 第 3 节。
 
 - 项目 `.env.example` 已提供所需环境变量模板
-- `project/deep_search/.env`、`project/menu/.env`、`project/video_downloader/.env` 为子项目独立环境变量，同样不提交
+- `project/deep_search/.env`、`project/menu/.env`、`project/video_downloader/.env`、`project/rag_knowledge/.env` 为子项目独立环境变量，同样不提交
 - 生产环境设置见 `settings/prod.py`（DEBUG=False + HSTS/HTTPS 加固），由 WSGI/ASGI 加载
 
 ### 6.2 业务工作范围（重要）
@@ -324,6 +350,8 @@ charlotte_savanna/
 - **menu 前端**：`sh/menu_frontend.sh`（或 `cd project/menu/ui && npm run dev`，首次需 `npm install`）
 - **video_downloader 后端**：`sh/video_downloader_backend.sh`（或 `cd project/video_downloader && python -m uvicorn backend.main:app --port 8003`）
 - **video_downloader 前端**：`sh/video_downloader_frontend.sh`（或 `cd project/video_downloader/frontend && npm run dev`，首次需 `npm install`）
+- **rag_knowledge 后端**：`python -m project.rag_knowledge.app.api.server`（127.0.0.1:8100，原生 HTML 页面，无独立前端）
+- **rag_knowledge 评测**：`cd project/rag_knowledge && python -m tests.test_rag_eval_tester`（详见子项目 README §6）
 - **LangGraph CLI**：`langgraph dev`（`langgraph.json` 配置了 graph 入口，指向 `demo/LangGraph_v1.2`）
 - **LangChain 脚本**：在对应 `demo/` 子目录下 `python <script>.py`（脚本内部 `load_dotenv()`）
 - **实验性代码**：教程文件中的注释代码刻意保留，展示不同实现变体
@@ -375,4 +403,4 @@ cd project/video_downloader/frontend && npm install
 
 ---
 
-> **最后更新**：2026-08-22 | **维护者**：Claude Code (charlotte)
+> **最后更新**：2026-09-01 | **维护者**：Claude Code (charlotte)
