@@ -20,19 +20,21 @@ from pathlib import Path
 from statistics import mean
 from unittest.mock import patch
 
-from app.infra.milvus import infra_milvus
-from app.process.load.agent.state import create_default_state
-from app.process.load.nodes._05_item_name_recognition import node_item_name_recognition
-from app.process.load.nodes._06_bge_embedding import node_bge_embedding
-from app.process.load.nodes._07_import_milvus import node_import_milvus
-from app.process.query.agent.state import create_query_default_state
-from app.process.query.nodes._09_1_search_embedding import node_search_embedding
-from app.process.query.nodes._09_2_search_embedding_hyde import (
+from ...app.infra.milvus import infra_milvus
+from ...app.process.load.agent.state import create_default_state
+from ...app.process.load.nodes._05_item_name_recognition import (
+    node_item_name_recognition,
+)
+from ...app.process.load.nodes._06_bge_embedding import node_bge_embedding
+from ...app.process.load.nodes._07_import_milvus import node_import_milvus
+from ...app.process.query.agent.state import create_query_default_state
+from ...app.process.query.nodes._09_1_search_embedding import node_search_embedding
+from ...app.process.query.nodes._09_2_search_embedding_hyde import (
     node_search_embedding_hyde,
 )
-from app.process.query.nodes._10_rrf import node_rrf
-from app.process.query.nodes._11_rerank import node_rerank
-from app.rag_eval.dataset import (
+from ...app.process.query.nodes._10_rrf import node_rrf
+from ...app.process.query.nodes._11_rerank import node_rerank
+from ...app.rag_eval.dataset import (
     ARTIFACTS_DIR,
     IMPORT_CHUNKS_JSON_FILE,
     TEST_FILE_TITLE,
@@ -41,11 +43,11 @@ from app.rag_eval.dataset import (
     build_web_search_docs,
     load_batch_eval_cases,
 )
-from app.rag_eval.metrics import evaluate_query_state
-from app.shared.clients import mongo_utils
-from app.shared.config.embedding_config import embedding_config
-from app.shared.config.milvus_config import milvus_config
-from app.shared.config.reranker_config import reranker_config
+from ...app.rag_eval.metrics import evaluate_query_state
+from ...app.shared.clients import mongo_utils
+from ...app.shared.config.embedding_config import embedding_config
+from ...app.shared.config.milvus_config import milvus_config
+from ...app.shared.config.reranker_config import reranker_config
 
 LAYER_LABELS = {
     "embedding_chunks": "普通检索",

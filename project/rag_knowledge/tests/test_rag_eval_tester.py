@@ -15,7 +15,7 @@ tester.run_eval()
 这个测试文件也可以一起复制过去, 作为最小调用样例.
 """
 
-from app.rag_eval import RagEvalTester
+from ..app.rag_eval import RagEvalTester
 
 
 def run_insert_test_data():
