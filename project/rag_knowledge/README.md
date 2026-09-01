@@ -13,6 +13,7 @@
 | 问答检索 | 问题改写 + 主体确认, 三路并行召回, RRF 融合, Rerank 精排, 流式输出 |
 | 会话能力 | 多轮对话（指代消解）, 历史记录存储（MongoDB） |
 | 输出形式 | 文本答案 + 引用图片, 支持 SSE 流式 |
+| 评估体系 | golden 题库 + 分层检索指标（精确率/召回率/必命中率/MRR@5/NDCG@5）, 报告落盘 artifacts/ |
 
 ### 技术栈
 
@@ -83,6 +84,12 @@ project/rag_knowledge/
 │   │       ├── rerank_service.py             # Rerank 打分 / 排序 / 动态 TopK
 │   │       ├── answer_service.py             # 答案生成 + SSE 推送 + 历史保存
 │   │       └── config.py           #     阈值 / TopK / Rerank 参数
+│   ├── rag_eval/                   # RAG 评估子系统（评测样本 + 指标 + 执行）
+│   │   ├── dataset.py              #   测试知识 / 题库定义与读写
+│   │   ├── metrics.py              #   指标计算（主体命中率 / P / R / 必命中率 / MRR@5 / NDCG@5）
+│   │   ├── runner.py               #   评估执行: 数据入库 -> 批量评测 -> 汇总报告
+│   │   ├── tester.py               #   RagEvalTester 统一入口类
+│   │   └── artifacts/              #   题库 eval_cases.json + 评测报告 eval_report.json
 │   └── shared/                     # 共享层（跨业务复用的基础能力）
 │       ├── clients/                #   milvus_utils（混合检索）/ mongo_utils（历史 CRUD）
 │       ├── config/                 #   各组件环境变量配置（llm / embedding / reranker / milvus / mineru / minio / mongo）
@@ -96,7 +103,7 @@ project/rag_knowledge/
 │   ├── zip/                        #   MinerU 返回的 zip 包
 │   └── ...
 ├── logs/                           # 运行日志
-├── tests/                          # 图级冒烟测试（test_load_graph / test_query_graph / test_run_load_graph）
+├── tests/                          # 图级冒烟测试 + 评测最小调用样例（test_rag_eval_tester）
 └── .env                            # 环境变量（RK_ 前缀, 不提交）
 ```
 
@@ -223,67 +230,124 @@ graph LR
 | 7 | **历史对话误导** | 检查 `history_text` 组装 | 历史中错误信息被带入当前回答。限制历史条数（`QUERY_HISTORY_LIMIT=10`）; 仅保留高置信主体的历史 |
 | 8 | **图片摘要噪音** | 查看 `_new.md` 中图片替换文本 | VL 摘要错误会把错误"事实"注入 chunk。提高 VL 提示词约束; 摘要前增加图片相关性判断 |
 | 9 | **向量检索 TopK 内噪声多** | 检查 `_09` 返回 chunk 的 score 分布 | 混合权重（稠密 0.7 / 稀疏 0.3）不适配当前文档类型时低分噪声混入。调权重 / 加最低分数过滤 |
-| 10 | **无评估体系** | 是否有人工标注的问答测试集 | 没有 golden set 就无法量化"低"在哪。建立评测集 + RAGAS 指标（见 §6） |
+| 10 | **指标无法量化** | 查看 `app/rag_eval/artifacts/eval_report.json` 的 4 层指标 | 评估体系已落地（见 §6）: 用题库 + 分层指标定位薄弱层, 调优后重跑评测对比基线 |
 
 ---
 
-## 6. 可拓展与改进点
+## 6. 评估体系
+
+基于 **golden dataset（题库）+ 分层检索指标** 的离线评测: 测试数据与查询链路均走**真实执行**, 报告落盘 `app/rag_eval/artifacts/`。对外只暴露 `RagEvalTester` 一个入口类。
+
+### 6.1 指标
+
+| 指标 | 含义 | 公式 |
+|------|------|------|
+| 主体命中率 (item_name_hit_rate) | 识别出的主体与题库标注主体的重合度 | 交集数 / 预期主体数 |
+| 精确率 (precision) | 检索结果中真正相关 chunk 的占比 | 命中相关数 / 检索结果数 |
+| 召回率 (recall) | 标注相关 chunk 中被找回的占比 | 命中相关数 / 标注相关数 |
+| 必命中率 (must_hit_rate) | 标注为"关键"的 chunk 是否打中 | 命中关键数 / 标注关键数 |
+| MRR@5 / NDCG@5 | 正确答案在 Top5 中的排序质量 | 首个命中位置倒数 / 位置折扣累积 |
+
+### 6.2 评估流程（两步, 全部走真实链路）
+
+1. **评测数据入库** (`run_insert_test_data`): 读取真实加载产物 `output/hak180产品安全手册/hak180产品安全手册_new.json` → 走真实导入链路（`_05` 主体识别 / `_06` 向量化 / `_07` 导入 Milvus, 完成后 flush 保证检索可见）→ 查询真实 chunk_id, 生成题库 `artifacts/eval_cases.json`（含 `gold_chunk_ids` 相关标注 + `must_hit_chunk_ids` 关键标注）
+2. **批量评测** (`run_eval`): 逐条走真实查询链路（`_09-1` 普通检索 / `_09-2` HyDE / `_10` RRF / `_11` Rerank）→ 每层独立计算指标 → 汇总平均 → 报告落盘 `artifacts/eval_report.json`（汇总 + 每题分层详情）
+
+### 6.3 稳定性设计
+
+- **固定 LLM 不确定性**: 主体识别与 HyDE 输出用 `patch` 固定（题库直接注入 `expected_item_names`, HyDE 输出固定文案）, 排除模型随机性对检索指标的影响
+- **4 层独立评估**: 普通检索 / HyDE 检索 / RRF 融合 / 最终重排结果分别算分, 可定位"哪一层拖了后腿"（基础召回差 / 融合后掉了 / rerank 选错）
+- **Web 占位**: 联网检索用固定占位结果, 避免网络波动干扰, 评测重点聚焦本地召回链路
+
+### 6.4 当前基线（50 用例, 2026-09-01）
+
+| 层级 | 精确率 | 召回率 | 必命中率 | MRR@5 | NDCG@5 |
+|------|--------|--------|----------|-------|--------|
+| 普通检索 | 0.544 | 0.669 | 0.780 | 0.859 | 0.672 |
+| HyDE 检索 | 0.488 | 0.598 | 0.740 | 0.778 | 0.614 |
+| RRF 融合 | 0.536 | 0.660 | 0.760 | 0.834 | 0.660 |
+| 最终重排结果 | 0.625 | 0.562 | 0.760 | 0.792 | 0.586 |
+
+主体命中率 1.0。可读结论: Rerank 提升精确率（0.536 → 0.625）但牺牲召回率（0.660 → 0.562）, 动态 TopK 断崖截断是主要原因（见 §5.2-2）; 可结合 §7 改进方向继续迭代。
+
+### 6.5 运行方式
+
+```bash
+cd project/rag_knowledge   # 评测代码使用 app 包内导入, 需在此目录下运行
+
+# 方式一: 最小调用样例（先入库, 再评测）
+python -m tests.test_rag_eval_tester
+
+# 方式二: 代码内调用
+python -c "
+from app.rag_eval import RagEvalTester
+tester = RagEvalTester()
+tester.run_insert_test_data()   # 首次或知识变更后执行
+tester.run_eval()               # 输出汇总指标, 报告落盘 artifacts/eval_report.json
+"
+```
+
+> 前置依赖: Milvus + BGE-M3 可用; 批量评测额外要求 reranker 模型; 知识库变更后需先重新入库再评测。
+
+---
+
+## 7. 可拓展与改进点
 
 按优先级排序, 每项给出方案参考。
 
-### 6.1 建立评估体系（推荐优先, 一切调优的前提）
+### 7.1 完善评估体系（基础版已落地, 见 §6）
 
-- **问题**: 当前无量化指标, "召回率/准确率低"只能靠感觉定位。
-- **方案参考**: 构建 golden dataset（问题 - 标准答案 - 相关 chunk 标注）; 引入 **RAGAS** 或 LlamaIndex 评测框架, 度量 `faithfulness`（忠实度）/ `answer_relevancy`（回答相关性）/ `context_precision`（上下文精确率）/ `context_recall`（上下文召回率）; 代码中 `chunk_id` 已预留（"必要, 后续测评用"）, 可直接按 chunk_id 计算检索命中率。
+- **现状**: 基于 golden dataset 的分层检索评测已落地（`app/rag_eval/`, 50 用例, 4 层检索指标, 见 §6）, "调优无量化指标"的问题已解决。
+- **方案参考**: 引入 **RAGAS** 或 LlamaIndex 评测框架, 补充生成质量指标 `faithfulness`（忠实度）/ `answer_relevancy`（回答相关性）; 题库扩充多主体 / 跨文档问题; 自定义题库可直接传 `run_batch_eval(case_list=...)`。
 
-### 6.2 增加 BM25 关键词检索路（提升召回率）
+### 7.2 增加 BM25 关键词检索路（提升召回率）
 
 - **问题**: 单一向量检索对专有名词 / 精确匹配不敏感（§5.1-7）。
 - **方案参考**: Milvus 2.5+ 内置全文索引（BM25）; 在 `_09` 增加第三路检索（向量 + 稀疏 + 关键词）, 三路统一进 `_10` RRF 融合, 每路动态权重。
 
-### 6.3 查询意图路由与查询扩展
+### 7.3 查询意图路由与查询扩展
 
 - **问题**: 所有问题走同一检索链路, 简单问题成本高、复杂问题召回不足。
 - **方案参考**: 在 `_08` 后增加意图分类（事实型 / 操作型 / 比较型）; 事实型走轻量单路检索, 操作型启用 HyDE + Web; 检索前做查询扩展（同义词、英文缩写补全, 与 item_name 集合做别名映射）。
 
-### 6.4 引用溯源与可解释回答
+### 7.4 引用溯源与可解释回答
 
 - **问题**: 答案无出处, 无法核验, 也难以发现错误来源。
 - **方案参考**: 生成阶段要求模型按 `[引用序号]` 标注; 返回 `reranked_docs` 的 title / parent_title / score 作为引用元数据; 前端渲染成可点击的引用高亮（chunk 命中片段高亮）。数据已具备（`answer_service` 已提取来源与置信度）。
 
-### 6.5 增量更新与知识库管理
+### 7.5 增量更新与知识库管理
 
 - **问题**: 目前是全量重传（`file_title` 删旧插新）, 文档版本升级无感知。
 - **方案参考**: 引入文档版本号 / 哈希去重; 建立文档管理后台（上架/下架/更新）; 增量只重建变更文档; Milvus 集合按知识域分片隔离。
 
-### 6.6 多主体消歧与用户确认交互
+### 7.6 多主体消歧与用户确认交互
 
 - **问题**: 候选主体（0.60~0.70 区间）目前直接作为答案输出, 交互断裂（§5.1-2）。
 - **方案参考**: `_08` 检测到候选主体时返回候选列表 + 引导用户选择; 前端提供候选点击确认后二次检索（`item_name_confirm_service` 已预留候选逻辑, 前端 query.html 需配套）。
 
-### 6.7 记忆与个性化增强
+### 7.7 记忆与个性化增强
 
 - **问题**: 多轮依赖 MongoDB 原始记录, 无长程记忆。
 - **方案参考**: 引入 LangGraph checkpointer（`PostgresSaver`）管理对话状态; 定期用 LLM 为会话生成摘要压缩长期记忆; 用户画像（偏好主体）辅助检索重排。
 
-### 6.8 缓存与性能优化
+### 7.8 缓存与性能优化
 
 - **问题**: 相同问题反复检索, LLM 调用成本高。
 - **方案参考**: 相似问题缓存（问题 embedding 相似度 > 0.95 直接复用答案, Redis 存储）; BGE-M3 / reranker 已做单例缓存, 可再加服务化（部署为独立推理服务, 多进程共享）; 大文档解析异步化（Celery / 任务队列）。
 
-### 6.9 GraphRAG（图谱增强）
+### 7.9 GraphRAG（图谱增强）
 
 - **问题**: 当前为纯向量 RAG, 多跳推理（"A 部件与 B 部件是否兼容"）能力弱。
 - **方案参考**: 在加载阶段用 LLM 抽取实体-关系三元组构建知识图谱（如 Neo4j / Milvus GraphRAG 模块）; 检索阶段先图召回（实体扩展、多跳路径）再向量召回, 两者融合进 RRF。
 
-### 6.10 多知识库与权限控制
+### 7.10 多知识库与权限控制
 
 - **问题**: 单一 chunks 集合, 无租户隔离。
 - **方案参考**: Milvus 集合按知识库分区（partition）; 检索 expr 增加 `kb_id` 过滤; API 层接入鉴权（JWT）, 控制可见知识域。
 
 ---
 
-## 7. 快速开始
+## 8. 快速开始
 
 ```bash
 # 1. 配置环境变量（参考 .env, 所有变量 RK_ 前缀）
@@ -306,6 +370,9 @@ python -m project.rag_knowledge.app.process.query.nodes._08_item_name_confirm
 
 # 4. 图级测试
 python -m pytest project/rag_knowledge/tests/
+
+# 5. RAG 评估（详见 §6, 需在子项目目录下运行）
+cd project/rag_knowledge && python -m tests.test_rag_eval_tester
 ```
 
 > 前置依赖: Milvus、MongoDB、MinIO 服务需先就绪; MinerU 为远程解析服务（可按部署笔记自建）; BGE-M3 模型本地路径或自动下载。
