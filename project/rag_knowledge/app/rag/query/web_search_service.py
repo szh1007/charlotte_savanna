@@ -28,7 +28,7 @@ def _validate_data(state: QueryState):
 def _call_tavily_search(rewritten_query: str):
     """调用 tavily 搜索引擎"""
     tavily = TavilyClient()
-    search_result = tavily.search(rewritten_query, max_results=10)
+    search_result = tavily.search(rewritten_query, max_results=5)
     results = search_result.get("results", [])
 
     web_search_docs = []
