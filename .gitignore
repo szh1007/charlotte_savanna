@@ -63,3 +63,17 @@ output/
 
 # --- pytest 缓存 ---
 .pytest_cache/
+
+# --- 大型二进制文件 ---
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.7z
+*.rar
+*.iso
+*.dmg
+*.gguf
+*.safetensors
+*.onnx
+*.bin
