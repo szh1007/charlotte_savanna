@@ -15,7 +15,7 @@ tester.run_eval()
 这个测试文件也可以一起复制过去, 作为最小调用样例.
 """
 
-from ..app.rag_eval import RagEvalTester
+from app.rag_eval import RagEvalTester
 
 
 def run_insert_test_data():
@@ -47,8 +47,8 @@ def demo():
     1. 先插入测试数据;
     2. 再执行批量评测.
     """
-    insert_result = run_insert_test_data()
-    print("插入测试数据结果:", insert_result)
+    # insert_result = run_insert_test_data()
+    # print("插入测试数据结果:", insert_result)
 
     eval_result = run_eval()
     print("批量评测结果:", eval_result)
