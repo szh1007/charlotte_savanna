@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import (
 from app.conf.app_config import DBConfig, app_config
 
 
-class MysqlClientManager:
+class MysqlClient:
     def __init__(self, db_config: DBConfig):
         self.config = db_config
         self.engine: AsyncEngine | None = None
@@ -84,9 +84,9 @@ class MysqlClientManager:
         self.session_factory = None
 
 
-dw_client = MysqlClientManager(app_config.db_dw)
+dw_client = MysqlClient(app_config.db_dw)
 
-meta_client = MysqlClientManager(app_config.db_meta)
+meta_client = MysqlClient(app_config.db_meta)
 
 
 if __name__ == "__main__":
