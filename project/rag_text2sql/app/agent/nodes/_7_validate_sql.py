@@ -13,6 +13,7 @@ async def validate_sql(state: DataAgentState, runtime: Runtime[DataAgentContext]
     writer({"stage": "校验sql语句"})
 
     try:
+        print(1 / 0)
         logger.info("SQL校验正确")
         return {"error": None}
     except Exception as e:
