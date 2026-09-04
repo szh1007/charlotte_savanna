@@ -41,7 +41,8 @@ class QdrantConfig:
     host: str
     port: int
     embedding_size: int
-    collection_name: str
+    collection_name_column: str
+    collection_name_metric: str
 
 
 @dataclass

@@ -1,18 +1,18 @@
 from qdrant_client import AsyncQdrantClient, models
 
 from app.conf.app_config import app_config
-from app.models.qdrant import ColumnInfoQdrant
+from app.models.qdrant import MetricInfoQdrant
 
 
-class ColumnQdrantRepository:
-    collection_name = app_config.qdrant.collection_name_column
+class MetricQdrantRepository:
+    collection_name = app_config.qdrant.collection_name_metric
 
     def __init__(self, client: AsyncQdrantClient):
         self.client = client
 
     async def ensure_collection(self):
         """
-        确保存储字段向量的集合存在且为空
+        确保存储指标向量的集合存在且为空
         每次构建先删除旧集合再全量重建
         """
         if await self.client.collection_exists(self.collection_name):
@@ -26,20 +26,20 @@ class ColumnQdrantRepository:
             ),
         )
 
-    async def upsert_column(
+    async def upsert_metric(
         self,
         ids: list[str],
         embeddings: list[list[float]],
-        payloads: list[ColumnInfoQdrant],
+        payloads: list[MetricInfoQdrant],
         batch_size: int = 10,
     ):
         """
-        为字段构建向量索引 points = [(id, vector / embedding, payload), ...]
+        为指标构建向量索引 points = [(id, vector / embedding, payload), ...]
 
         Args:
-            ids: 字段编号列表
-            embeddings: 字段向量列表
-            payloads: 字段元数据列表
+            ids: 指标编号列表
+            embeddings: 指标向量列表
+            payloads: 指标元数据列表
             batch_size: 批次大小, 默认10个
 
         Returns:

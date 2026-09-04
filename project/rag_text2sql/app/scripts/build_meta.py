@@ -9,6 +9,7 @@ from app.repositories.es.column import ColumnEsRepository
 from app.repositories.mysql.dw import DwMysqlRepository
 from app.repositories.mysql.meta import MetaMysqlRepository
 from app.repositories.qdrant.column import ColumnQdrantRepository
+from app.repositories.qdrant.metric import MetricQdrantRepository
 from app.services.meta import MetaService
 
 
@@ -26,6 +27,7 @@ async def build(config_path: Path):
         dw_mysql_repository = DwMysqlRepository(dw_session)
         meta_mysql_repository = MetaMysqlRepository(meta_session)
         column_qdrant_repository = ColumnQdrantRepository(qdrant_client.client)
+        metric_qdrant_repository = MetricQdrantRepository(qdrant_client.client)
         column_es_repository = ColumnEsRepository(es_client.client)
 
         # 4.创建service
@@ -33,6 +35,7 @@ async def build(config_path: Path):
             dw_mysql_repository=dw_mysql_repository,
             meta_mysql_repository=meta_mysql_repository,
             column_qdrant_repository=column_qdrant_repository,
+            metric_qdrant_repository=metric_qdrant_repository,
             embeddings=embedding_client.embeddings,
             column_es_repository=column_es_repository,
         )

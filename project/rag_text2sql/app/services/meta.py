@@ -4,15 +4,21 @@ from langchain_openai import OpenAIEmbeddings
 from Lib.pathlib import Path
 from omegaconf import OmegaConf
 
-from app.conf.meta_config import MetaConfig, TableConfig
+from app.conf.meta_config import MetaConfig, MetricConfig, TableConfig
 from app.core.log import logger
 from app.models.es import ValueInfoEs
-from app.models.mysql import ColumnInfoMySQL, TableInfoMySQL
-from app.models.qdrant import ColumnInfoQdrant
+from app.models.mysql import (
+    ColumnInfoMySQL,
+    ColumnMetricMySQL,
+    MetricInfoMySQL,
+    TableInfoMySQL,
+)
+from app.models.qdrant import ColumnInfoQdrant, MetricInfoQdrant
 from app.repositories.es.column import ColumnEsRepository
 from app.repositories.mysql.dw import DwMysqlRepository
 from app.repositories.mysql.meta import MetaMysqlRepository
 from app.repositories.qdrant.column import ColumnQdrantRepository
+from app.repositories.qdrant.metric import MetricQdrantRepository
 
 
 class MetaService:
@@ -21,6 +27,7 @@ class MetaService:
         dw_mysql_repository: DwMysqlRepository,
         meta_mysql_repository: MetaMysqlRepository,
         column_qdrant_repository: ColumnQdrantRepository,
+        metric_qdrant_repository: MetricQdrantRepository,
         embeddings: OpenAIEmbeddings,
         column_es_repository: ColumnEsRepository,
     ):
@@ -30,6 +37,7 @@ class MetaService:
 
         # qdrant
         self.column_qr = column_qdrant_repository
+        self.metric_qr = metric_qdrant_repository
 
         # embeddings
         self.embeddings = embeddings
@@ -52,6 +60,13 @@ class MetaService:
             await self._save_column_info_to_qdrant(column_infos)
             # 2.3 保存字段取值到ES全文索引库
             await self._save_column_value_to_es(meta_config.tables, column_infos)
+
+        # 3.指标信息的索引构建
+        if meta_config.metrics:
+            # 3.1 保存指标信息到meta数据库
+            metric_infos = await self.save_metric_info_to_meta_db(meta_config.metrics)
+            # 3.2 保存指标信息到qdrant向量数据库
+            await self._save_metric_info_to_qdrant(metric_infos)
 
     async def _save_table_info_to_meta_db(
         self, tables: list[TableConfig]
@@ -205,3 +220,96 @@ class MetaService:
 
         await self.column_er.save_column_values(value_infos)
         logger.info(f"已保存字段取值到ES索引: {len(value_infos)}")
+
+    async def save_metric_info_to_meta_db(
+        self, metrics: list[MetricConfig]
+    ) -> list[MetricInfoMySQL]:
+        metric_infos: list[MetricInfoMySQL] = []
+        column_metrics: list[ColumnMetricMySQL] = []
+
+        for metric in metrics:
+            # metric_info
+            metric_info = MetricInfoMySQL(
+                id=metric.name,
+                name=metric.name,
+                description=metric.description,
+                relevant_columns=metric.relevant_columns,
+                alias=metric.alias,
+            )
+            metric_infos.append(metric_info)
+
+            # metric_info - relevant_columns (每个指标可以关联多个字段)
+            for relevant_column in metric.relevant_columns:
+                column_metric = ColumnMetricMySQL(
+                    column_id=relevant_column,
+                    metric_id=metric.name,
+                )
+                column_metrics.append(column_metric)
+
+        async with self.meta_mr.session.begin():
+            await self.meta_mr.save_metric_infos(metric_infos)
+            logger.info(f"已保存指标信息到meta数据库: {len(metric_infos)}")
+
+            await self.meta_mr.save_column_metrics(column_metrics)
+            logger.info(f"已保存指标字段关联信息到meta数据库: {len(column_metrics)}")
+
+        return metric_infos
+
+    def _convert_metric_info_to_qdrant(self, metric_info: MetricInfoMySQL):
+        return MetricInfoQdrant(
+            id=metric_info.id,
+            name=metric_info.name,
+            description=metric_info.description,
+            relevant_columns=metric_info.relevant_columns,
+            alias=metric_info.alias,
+        )
+
+    async def _save_metric_info_to_qdrant(self, metric_infos: list[MetricInfoMySQL]):
+        # 1.确保存储指标向量信息的集合存在
+        await self.metric_qr.ensure_collection()
+
+        points: list[dict] = []
+
+        # 2.遍历指标信息, 对常用字段构建向量索引
+        # 每个指标需要构建3次payload相同的向量索引: name, description, alias
+        for metric_info in metric_infos:
+            points.append(  # name
+                {
+                    "id": uuid.uuid4(),
+                    "embedding_text": metric_info.name,
+                    "payload": self._convert_metric_info_to_qdrant(metric_info),
+                }
+            )
+            points.append(  # description
+                {
+                    "id": uuid.uuid4(),
+                    "embedding_text": metric_info.description,
+                    "payload": self._convert_metric_info_to_qdrant(metric_info),
+                }
+            )
+            for alia in metric_info.alias:  # alias
+                points.append(
+                    {
+                        "id": uuid.uuid4(),
+                        "embedding_text": alia,
+                        "payload": self._convert_metric_info_to_qdrant(metric_info),
+                    }
+                )
+
+        # 获取所有的ids, payloads, embedding_texts
+        ids, payloads, embedding_texts = [], [], []
+        for point in points:
+            ids.append(point["id"])
+            payloads.append(point["payload"])
+            embedding_texts.append(point["embedding_text"])
+
+        # embedding_texts -> embeddings
+        embeddings = []
+        batch_size = 10
+        for i in range(0, len(embedding_texts), batch_size):
+            batch_embedding_texts = embedding_texts[i : i + batch_size]
+            embedding = await self.embeddings.aembed_documents(batch_embedding_texts)
+            embeddings += embedding
+
+        await self.metric_qr.upsert_metric(ids, embeddings, payloads)
+        logger.info(f"已保存指标向量到qdrant数据库: {len(ids)}")

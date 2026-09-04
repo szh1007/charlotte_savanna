@@ -1,7 +1,12 @@
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.mysql import ColumnInfoMySQL, TableInfoMySQL
+from app.models.mysql import (
+    ColumnInfoMySQL,
+    ColumnMetricMySQL,
+    MetricInfoMySQL,
+    TableInfoMySQL,
+)
 
 
 class MetaMysqlRepository:
@@ -31,3 +36,25 @@ class MetaMysqlRepository:
         """
         await self.session.execute(delete(ColumnInfoMySQL))
         self.session.add_all(column_infos)
+
+    async def save_metric_infos(self, metric_infos: list[MetricInfoMySQL]):
+        """
+        保存指标信息 metric_info 到 meta 数据库
+        先清空旧数据再全量写入, 保证重复构建幂等
+
+        Args:
+            metric_infos: 所有指标的信息列表
+        """
+        await self.session.execute(delete(MetricInfoMySQL))
+        self.session.add_all(metric_infos)
+
+    async def save_column_metrics(self, column_metrics: list[ColumnMetricMySQL]):
+        """
+        保存指标关联信息 column_metric 到 meta 数据库
+        先清空旧数据再全量写入, 保证重复构建幂等
+
+        Args:
+            column_metrics: 所有指标的所有关联信息列表
+        """
+        await self.session.execute(delete(ColumnMetricMySQL))
+        self.session.add_all(column_metrics)
