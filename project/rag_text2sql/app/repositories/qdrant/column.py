@@ -5,25 +5,26 @@ from app.models.qdrant import ColumnInfoQdrant
 
 
 class ColumnQdrantRepository:
-    collection_name = "rag-text2sql-column"
+    collection_name = app_config.qdrant.collection_name
 
     def __init__(self, client: AsyncQdrantClient):
         self.client = client
 
     async def ensure_collection(self):
         """
-        确保存储字段向量的集合存在
+        确保存储字段向量的集合存在且为空
+        每次构建先删除旧集合再全量重建
         """
-        # 判断是否存在
-        if not await self.client.collection_exists(self.collection_name):
-            # 如果不存在, 创建向量集合
-            await self.client.create_collection(
-                collection_name=self.collection_name,
-                vectors_config=models.VectorParams(
-                    size=app_config.qdrant.embedding_size,
-                    distance=models.Distance.COSINE,
-                ),
-            )
+        if await self.client.collection_exists(self.collection_name):
+            await self.client.delete_collection(self.collection_name)
+
+        await self.client.create_collection(
+            collection_name=self.collection_name,
+            vectors_config=models.VectorParams(
+                size=app_config.qdrant.embedding_size,
+                distance=models.Distance.COSINE,
+            ),
+        )
 
     async def upsert_column(
         self,

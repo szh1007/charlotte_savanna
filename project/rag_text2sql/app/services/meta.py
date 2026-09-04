@@ -6,8 +6,10 @@ from omegaconf import OmegaConf
 
 from app.conf.meta_config import MetaConfig, TableConfig
 from app.core.log import logger
+from app.models.es import ValueInfoEs
 from app.models.mysql import ColumnInfoMySQL, TableInfoMySQL
 from app.models.qdrant import ColumnInfoQdrant
+from app.repositories.es.column import ColumnEsRepository
 from app.repositories.mysql.dw import DwMysqlRepository
 from app.repositories.mysql.meta import MetaMysqlRepository
 from app.repositories.qdrant.column import ColumnQdrantRepository
@@ -20,6 +22,7 @@ class MetaService:
         meta_mysql_repository: MetaMysqlRepository,
         column_qdrant_repository: ColumnQdrantRepository,
         embeddings: OpenAIEmbeddings,
+        column_es_repository: ColumnEsRepository,
     ):
         # mysql
         self.dw_mr = dw_mysql_repository
@@ -31,12 +34,15 @@ class MetaService:
         # embeddings
         self.embeddings = embeddings
 
+        # es
+        self.column_er = column_es_repository
+
     async def build(self, config_path: Path):
         # 1.加载配置文件
         context = OmegaConf.load(config_path)
         schema = OmegaConf.structured(MetaConfig)
         meta_config: MetaConfig = OmegaConf.to_object(OmegaConf.merge(schema, context))
-        logger.info(f"配置文件加载完成: {config_path}")
+        logger.info(f"META配置文件加载完成\n{config_path}")
 
         # 2.表信息的索引构建
         if meta_config.tables:
@@ -44,6 +50,8 @@ class MetaService:
             column_infos = await self._save_table_info_to_meta_db(meta_config.tables)
             # 2.2 保存字段信息到qdrant向量数据库
             await self._save_column_info_to_qdrant(column_infos)
+            # 2.3 保存字段取值到ES全文索引库
+            await self._save_column_value_to_es(meta_config.tables, column_infos)
 
     async def _save_table_info_to_meta_db(
         self, tables: list[TableConfig]
@@ -84,6 +92,7 @@ class MetaService:
                 column_infos.append(column_info_mysql)
 
         # 3.保存表信息和字段信息到meta数据库
+        # save内部先清空旧数据再写入, 重复构建幂等
         async with self.meta_mr.session.begin():
             await self.meta_mr.save_table_infos(table_infos)
             logger.info(f"已保存表信息到meta数据库: {len(table_infos)}")
@@ -154,3 +163,45 @@ class MetaService:
 
         await self.column_qr.upsert_column(ids, embeddings, payloads)
         logger.info(f"已保存字段向量信息到qdrant数据库: {len(ids)}")
+
+    async def _save_column_value_to_es(
+        self,
+        tables: list[TableConfig],
+        column_infos: list[ColumnInfoMySQL],
+    ):
+        # 1.确保存储字段取值的索引存在
+        await self.column_er.ensure_index()
+
+        # 2.获取配置中所有字段是否索引的描述
+        column2sync: dict = {}
+        for table in tables:
+            for column in table.columns:
+                column2sync[f"{table.name}.{column.name}"] = column.sync
+
+        # 2.遍历所有字段取值, 构建全文索引
+        # 每个字段要针对已有的不同值多次构建索引, 1个字段 -> n个取值索引
+        value_infos: list[ValueInfoEs] = []
+        for column_info in column_infos:
+            # 判断是否需要索引
+            if column2sync[column_info.id]:
+                # 获取当前字段的所有值
+                column_values: list[str] = await self.dw_mr.get_column_values(
+                    column_info.table_id, column_info.name, 100000
+                )
+
+                sub_value_infos = [
+                    ValueInfoEs(
+                        id=f"{column_info.id}.{column_value}",
+                        value=column_value,
+                        type=column_info.type,
+                        column_id=column_info.id,
+                        column_name=column_info.name,
+                        table_id=column_info.table_id,
+                        table_name=column_info.table_id,
+                    )
+                    for column_value in column_values
+                ]
+                value_infos += sub_value_infos
+
+        await self.column_er.save_column_values(value_infos)
+        logger.info(f"已保存字段取值到ES索引: {len(value_infos)}")

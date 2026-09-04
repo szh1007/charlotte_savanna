@@ -2,8 +2,10 @@ import asyncio
 from pathlib import Path
 
 from app.clients.embedding import embedding_client
+from app.clients.es import es_client
 from app.clients.mysql import dw_client, meta_client
 from app.clients.qdrant import qdrant_client
+from app.repositories.es.column import ColumnEsRepository
 from app.repositories.mysql.dw import DwMysqlRepository
 from app.repositories.mysql.meta import MetaMysqlRepository
 from app.repositories.qdrant.column import ColumnQdrantRepository
@@ -16,6 +18,7 @@ async def build(config_path: Path):
     meta_client.init()
     qdrant_client.init()
     embedding_client.init()
+    es_client.init()
 
     # 2.获取session
     async with dw_client.session() as dw_session, meta_client.session() as meta_session:
@@ -23,6 +26,7 @@ async def build(config_path: Path):
         dw_mysql_repository = DwMysqlRepository(dw_session)
         meta_mysql_repository = MetaMysqlRepository(meta_session)
         column_qdrant_repository = ColumnQdrantRepository(qdrant_client.client)
+        column_es_repository = ColumnEsRepository(es_client.client)
 
         # 4.创建service
         meta_service = MetaService(
@@ -30,6 +34,7 @@ async def build(config_path: Path):
             meta_mysql_repository=meta_mysql_repository,
             column_qdrant_repository=column_qdrant_repository,
             embeddings=embedding_client.embeddings,
+            column_es_repository=column_es_repository,
         )
 
         # 5.构建元数据
@@ -39,6 +44,7 @@ async def build(config_path: Path):
     await dw_client.close()
     await meta_client.close()
     await qdrant_client.close()
+    await es_client.close()
 
 
 if __name__ == "__main__":

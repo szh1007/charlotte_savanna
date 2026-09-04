@@ -16,7 +16,10 @@ class QdrantClient:
         return f"http://{self.config.host}:{self.config.port}"
 
     def init(self):
-        self.client = AsyncQdrantClient(url=self._get_url())
+        self.client = AsyncQdrantClient(
+            url=self._get_url(),
+            check_compatibility=False,  # 跳过服务端版本探测 (UserWarning)
+        )
 
     async def close(self):
         await self.client.close()
