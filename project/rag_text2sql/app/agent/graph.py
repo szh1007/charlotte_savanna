@@ -8,6 +8,7 @@ from app.clients.embedding import embedding_client
 from app.clients.es import es_client
 from app.clients.mysql import dw_client, meta_client
 from app.clients.qdrant import qdrant_client
+from app.repositories.es.value import ValueEsRepository
 from app.repositories.qdrant.column import ColumnQdrantRepository
 from app.repositories.qdrant.metric import MetricQdrantRepository
 
@@ -80,6 +81,7 @@ if __name__ == "__main__":
             embeddings=embedding_client.embeddings,
             column_qdrant_repository=ColumnQdrantRepository(qdrant_client.client),
             metric_qdrant_repository=MetricQdrantRepository(qdrant_client.client),
+            value_es_repository=ValueEsRepository(es_client.client),
         )
 
         # 3.测试执行

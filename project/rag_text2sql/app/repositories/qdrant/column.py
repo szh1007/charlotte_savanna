@@ -79,4 +79,4 @@ class ColumnQdrantRepository:
             query=embedding,
             score_threshold=score_threshold,
         )
-        return [point.payload for point in points.points]
+        return [ColumnInfoQdrant(**point.payload) for point in points.points]

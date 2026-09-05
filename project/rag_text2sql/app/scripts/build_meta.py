@@ -5,7 +5,7 @@ from app.clients.embedding import embedding_client
 from app.clients.es import es_client
 from app.clients.mysql import dw_client, meta_client
 from app.clients.qdrant import qdrant_client
-from app.repositories.es.column import ColumnEsRepository
+from app.repositories.es.value import ValueEsRepository
 from app.repositories.mysql.dw import DwMysqlRepository
 from app.repositories.mysql.meta import MetaMysqlRepository
 from app.repositories.qdrant.column import ColumnQdrantRepository
@@ -28,7 +28,7 @@ async def build(config_path: Path):
         meta_mysql_repository = MetaMysqlRepository(meta_session)
         column_qdrant_repository = ColumnQdrantRepository(qdrant_client.client)
         metric_qdrant_repository = MetricQdrantRepository(qdrant_client.client)
-        column_es_repository = ColumnEsRepository(es_client.client)
+        value_es_repository = ValueEsRepository(es_client.client)
 
         # 4.创建service
         meta_service = MetaService(
@@ -37,7 +37,7 @@ async def build(config_path: Path):
             column_qdrant_repository=column_qdrant_repository,
             metric_qdrant_repository=metric_qdrant_repository,
             embeddings=embedding_client.embeddings,
-            column_es_repository=column_es_repository,
+            value_es_repository=value_es_repository,
         )
 
         # 5.构建元数据

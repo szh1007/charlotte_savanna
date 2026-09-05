@@ -35,17 +35,18 @@ async def recall_column(state: DataAgentState, runtime: Runtime[DataAgentContext
         result = await chain.ainvoke({"query": query})
 
         # 合并关键词
-        keywords = list(set(keywords + result))
-        logger.info(f"关键词列表 - LLM字段扩展完成\n{keywords}")
+        merged_keywords = list(set(keywords + result))
+        extend_keywords = [k for k in merged_keywords if k not in keywords]
+        logger.info(f"关键词列表 - LLM字段扩展完成\n{keywords} + {extend_keywords}")
 
         # 2.字段召回 - qdrant
         # 定义字典结构去除召回的重复字段信息
         # 因为字段信息存储qdrant时, 同一个字段根据 name, description, alias 存储了多次
         # 检索同一个字段的这3个属性如果相似度都较高, 就会重复召回, 所以需要去重
         retrieved_column_map: dict[str, ColumnInfoQdrant] = {}
-        for keyword in keywords:
+        for keyword in merged_keywords:
             embedding = await embeddings.aembed_query(keyword)
-            payloads: list[dict] = await column_qr.search(embedding)
+            payloads: list[ColumnInfoQdrant] = await column_qr.search(embedding)
 
             # 遍历召回结果
             for payload in payloads:

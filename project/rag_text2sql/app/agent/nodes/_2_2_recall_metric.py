@@ -35,17 +35,18 @@ async def recall_metric(state: DataAgentState, runtime: Runtime[DataAgentContext
         result = await chain.ainvoke({"query": query})
 
         # 合并关键词
-        keywords = list(set(keywords + result))
-        logger.info(f"关键词列表 - LLM指标扩展完成\n{keywords}")
+        merged_keywords = list(set(keywords + result))
+        extend_keywords = [k for k in merged_keywords if k not in keywords]
+        logger.info(f"关键词列表 - LLM指标扩展完成\n{keywords} + {extend_keywords}")
 
         # 2.指标召回 - qdrant
         # 定义字典结构去除召回的重复指标信息
         # 因为指标信息存储qdrant时, 同一个指标根据 name, description, alias 存储了多次
         # 检索同一个指标的这3个属性如果相似度都较高, 就会重复召回, 所以需要去重
         retrieved_metric_map: dict[str, MetricInfoQdrant] = {}
-        for keyword in keywords:
+        for keyword in merged_keywords:
             embedding = await embeddings.aembed_query(keyword)
-            payloads: list[dict] = await metric_qr.search(embedding)
+            payloads: list[MetricInfoQdrant] = await metric_qr.search(embedding)
 
             # 遍历召回结果
             for payload in payloads:

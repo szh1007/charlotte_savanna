@@ -79,4 +79,4 @@ class MetricQdrantRepository:
             query=embedding,
             score_threshold=score_threshold,
         )
-        return [point.payload for point in points.points]
+        return [MetricInfoQdrant(**point.payload) for point in points.points]

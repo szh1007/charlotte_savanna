@@ -4,7 +4,7 @@ from app.conf.app_config import app_config
 from app.models.es import ValueInfoEs
 
 
-class ColumnEsRepository:
+class ValueEsRepository:
     es_index_name = app_config.es.index_name
 
     es_index_mappings = {
@@ -60,3 +60,25 @@ class ColumnEsRepository:
                 operations.append(batch_value_info)  # 取值数据
 
             await self.client.bulk(operations=operations)
+
+    async def search(self, keyword: str) -> list[ValueInfoEs]:
+        """
+        字段取值召回
+
+        Args:
+            keyword: 搜索关键词
+
+        Returns:
+            list[ValueInfoEs]: 符合关键词的字段取值列表
+        """
+        resp = await self.client.search(
+            index=self.es_index_name,
+            query={"match": {"value": keyword}},
+        )
+
+        hits = resp["hits"]["hits"]
+
+        if len(hits) == 0:
+            return []
+
+        return [ValueInfoEs(**hit["_source"]) for hit in hits]
