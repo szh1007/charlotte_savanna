@@ -4,6 +4,11 @@ from langgraph.graph import END, StateGraph
 
 from app.agent.context import DataAgentContext
 from app.agent.state import DataAgentState
+from app.clients.embedding import embedding_client
+from app.clients.es import es_client
+from app.clients.mysql import dw_client, meta_client
+from app.clients.qdrant import qdrant_client
+from app.repositories.qdrant.column import ColumnQdrantRepository
 
 from .nodes._1_extract_keywords import extract_keywords
 from .nodes._2_1_recall_column import recall_column
@@ -18,7 +23,6 @@ from .nodes._7_validate_sql import validate_sql
 from .nodes._8_correct_sql import correct_sql
 from .nodes._9_execute_sql import execute_sql
 
-# 创建图
 graph = (
     StateGraph(state_schema=DataAgentState, context_schema=DataAgentContext)
     .add_node("extract_keywords", extract_keywords)
@@ -63,14 +67,31 @@ if __name__ == "__main__":
     # print(graph.get_graph().draw_mermaid())
 
     async def test():
-        state = DataAgentState(query="统计华北地区的销售总额")
-        context = DataAgentContext()
+        # 1.初始化客户端
+        dw_client.init()
+        meta_client.init()
+        qdrant_client.init()
+        embedding_client.init()
+        es_client.init()
 
+        # 2.创建上下文
+        context = DataAgentContext(
+            embeddings=embedding_client.embeddings,
+            column_qdrant_repository=ColumnQdrantRepository(qdrant_client.client),
+        )
+
+        # 3.测试执行
         async for chunk in graph.astream(
-            input=state,
+            input=DataAgentState(query="统计华北地区的销售总额"),
             context=context,
             stream_mode="custom",
         ):
             print(chunk)
+
+        # 4.释放资源
+        await dw_client.close()
+        await meta_client.close()
+        await qdrant_client.close()
+        await es_client.close()
 
     asyncio.run(test())
