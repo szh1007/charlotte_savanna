@@ -9,6 +9,7 @@ from app.clients.es import es_client
 from app.clients.mysql import dw_client, meta_client
 from app.clients.qdrant import qdrant_client
 from app.repositories.qdrant.column import ColumnQdrantRepository
+from app.repositories.qdrant.metric import MetricQdrantRepository
 
 from .nodes._1_extract_keywords import extract_keywords
 from .nodes._2_1_recall_column import recall_column
@@ -78,6 +79,7 @@ if __name__ == "__main__":
         context = DataAgentContext(
             embeddings=embedding_client.embeddings,
             column_qdrant_repository=ColumnQdrantRepository(qdrant_client.client),
+            metric_qdrant_repository=MetricQdrantRepository(qdrant_client.client),
         )
 
         # 3.测试执行

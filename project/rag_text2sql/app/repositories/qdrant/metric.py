@@ -58,3 +58,25 @@ class MetricQdrantRepository:
                 for id, embedding, payload in batch_zipped
             ]
             await self.client.upsert(self.collection_name, points)
+
+    async def search(
+        self,
+        embedding: list[float],
+        score_threshold: float = 0.7,  # 得分阈值 (需要根据大量测试调整)
+    ) -> list[dict]:
+        """
+        指标召回
+
+        Args:
+            embedding: 指标向量, 用于召回
+            score_threshold: 得分阈值, 用于筛选召回结果, 默认0.6
+
+        Returns:
+            list[MetricInfoQdrant]: 召回的指标元数据列表
+        """
+        points = await self.client.query_points(
+            collection_name=self.collection_name,
+            query=embedding,
+            score_threshold=score_threshold,
+        )
+        return [point.payload for point in points.points]

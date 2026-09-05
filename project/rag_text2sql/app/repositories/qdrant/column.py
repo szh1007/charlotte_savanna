@@ -64,6 +64,16 @@ class ColumnQdrantRepository:
         embedding: list[float],
         score_threshold: float = 0.6,  # 得分阈值 (需要根据大量测试调整)
     ) -> list[dict]:
+        """
+        字段召回
+
+        Args:
+            embedding: 字段向量, 用于召回
+            score_threshold: 得分阈值, 用于筛选召回结果, 默认0.6
+
+        Returns:
+            list[ColumnInfoQdrant]: 召回的字段元数据列表
+        """
         points = await self.client.query_points(
             collection_name=self.collection_name,
             query=embedding,
