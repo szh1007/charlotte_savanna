@@ -1,5 +1,3 @@
-import asyncio
-
 from langgraph.runtime import Runtime
 
 from app.agent.context import DataAgentContext
@@ -8,12 +6,11 @@ from app.core.log import logger
 
 
 async def validate_sql(state: DataAgentState, runtime: Runtime[DataAgentContext]):
-    await asyncio.sleep(1)
     writer = runtime.stream_writer
     writer({"stage": "校验sql语句"})
 
     try:
-        print(1 / 0)
+        # print(1 / 0)
         logger.info("SQL校验正确")
         return {"error": None}
     except Exception as e:
