@@ -9,6 +9,8 @@ from app.clients.es import es_client
 from app.clients.mysql import dw_client, meta_client
 from app.clients.qdrant import qdrant_client
 from app.repositories.es.value import ValueEsRepository
+from app.repositories.mysql.dw import DwMysqlRepository
+from app.repositories.mysql.meta import MetaMysqlRepository
 from app.repositories.qdrant.column import ColumnQdrantRepository
 from app.repositories.qdrant.metric import MetricQdrantRepository
 
@@ -76,21 +78,27 @@ if __name__ == "__main__":
         embedding_client.init()
         es_client.init()
 
-        # 2.创建上下文
-        context = DataAgentContext(
-            embeddings=embedding_client.embeddings,
-            column_qdrant_repository=ColumnQdrantRepository(qdrant_client.client),
-            metric_qdrant_repository=MetricQdrantRepository(qdrant_client.client),
-            value_es_repository=ValueEsRepository(es_client.client),
-        )
-
-        # 3.测试执行
-        async for chunk in graph.astream(
-            input=DataAgentState(query="统计华北地区的销售总额"),
-            context=context,
-            stream_mode="custom",
+        async with (
+            dw_client.session() as dw_session,
+            meta_client.session() as meta_session,
         ):
-            print(chunk)
+            # 2.创建上下文
+            context = DataAgentContext(
+                embeddings=embedding_client.embeddings,
+                dw_mysql_repository=DwMysqlRepository(dw_session),
+                meta_mysql_repository=MetaMysqlRepository(meta_session),
+                column_qdrant_repository=ColumnQdrantRepository(qdrant_client.client),
+                metric_qdrant_repository=MetricQdrantRepository(qdrant_client.client),
+                value_es_repository=ValueEsRepository(es_client.client),
+            )
+
+            # 3.测试执行
+            async for chunk in graph.astream(
+                input=DataAgentState(query="统计华北地区的销售总额"),
+                context=context,
+                stream_mode="custom",
+            ):
+                print(chunk)
 
         # 4.释放资源
         await dw_client.close()

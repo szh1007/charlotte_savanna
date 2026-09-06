@@ -4,6 +4,32 @@ from app.models.es import ValueInfoEs
 from app.models.qdrant import ColumnInfoQdrant, MetricInfoQdrant
 
 
+# 列信息封装实体
+class ColumnInfoState(TypedDict):
+    name: str
+    type: str
+    role: str
+    examples: list
+    description: str
+    alias: list[str]
+
+
+# 表信息封装实体
+class TableInfoState(TypedDict):
+    name: str
+    role: str
+    description: str
+    columns: list[ColumnInfoState]
+
+
+# 指标信息封装实体
+class MetricInfoState(TypedDict):
+    name: str
+    description: str
+    relevant_columns: list[str]
+    alias: list[str]
+
+
 class DataAgentState(TypedDict):
     query: str
     error: str
@@ -11,3 +37,5 @@ class DataAgentState(TypedDict):
     retrieved_columns: list[ColumnInfoQdrant]
     retrieved_metrics: list[MetricInfoQdrant]
     retrieved_values: list[ValueInfoEs]
+    table_infos: list[TableInfoState]
+    metric_infos: list[MetricInfoState]

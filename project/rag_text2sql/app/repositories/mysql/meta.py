@@ -1,4 +1,4 @@
-from sqlalchemy import delete
+from sqlalchemy import Select, delete, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.mysql import (
@@ -58,3 +58,50 @@ class MetaMysqlRepository:
         """
         await self.session.execute(delete(ColumnMetricMySQL))
         self.session.add_all(column_metrics)
+
+    async def get_column_info_by_id(self, col_id: str) -> ColumnInfoMySQL:
+        """
+        从 meta 数据库中查询字段信息 column_info
+
+        Args:
+            col_id: 字段 id
+
+        Returns:
+            ColumnInfoMySQL: 字段信息
+        """
+        return await self.session.get(ColumnInfoMySQL, col_id)
+
+    async def get_table_info_by_id(self, table_id: str) -> TableInfoMySQL:
+        """
+        从 meta 数据库中查询表信息 table_info
+
+        Args:
+            table_id: 表 id
+
+        Returns:
+            TableInfoMySQL: 表信息
+        """
+        return await self.session.get(TableInfoMySQL, table_id)
+
+    async def get_key_columns_by_table_id(
+        self,
+        table_id: str,
+    ) -> list[ColumnInfoMySQL]:
+        """
+        从 meta 数据库中查询表的主键和外键
+
+        Args:
+            table_id: 表 id
+
+        Returns:
+            list[ColumnInfoMySQL]: 表的主键和外键列表
+        """
+        sql = """
+            select *
+            from column_info
+            where table_id = :table_id
+            and role in ('primary_key', 'foreign_key')
+        """
+        query = Select(ColumnInfoMySQL).from_statement(text(sql))
+        result = await self.session.execute(query, {"table_id": table_id})
+        return result.scalars().fetchall()
