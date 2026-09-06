@@ -10,9 +10,15 @@ async def validate_sql(state: DataAgentState, runtime: Runtime[DataAgentContext]
     writer({"stage": "校验sql语句"})
 
     try:
-        # print(1 / 0)
-        logger.info("SQL校验正确")
+        # 获取数据和上下文
+        sql = state["sql"]
+        dw_mysql_repository = runtime.context["dw_mysql_repository"]
+
+        # 校验 SQL 语句是否有效
+        await dw_mysql_repository.validate_sql(sql)
+
+        logger.info(f"SQL校验成功\n{sql}")
         return {"error": None}
     except Exception as e:
-        logger.error(f"SQL校验异常: {e!s}")
-        return {"error": str(e)}
+        logger.error(f"SQL校验失败\n{e!s}")
+        return {"error": f"{e!s}"}

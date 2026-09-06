@@ -30,6 +30,17 @@ class MetricInfoState(TypedDict):
     alias: list[str]
 
 
+class DateInfoState(TypedDict):
+    date: str
+    weekday: str
+    quarter: str
+
+
+class DBInfoState(TypedDict):
+    version: str
+    dialect: str
+
+
 class DataAgentState(TypedDict):
     query: str
     error: str
@@ -39,3 +50,6 @@ class DataAgentState(TypedDict):
     retrieved_values: list[ValueInfoEs]
     table_infos: list[TableInfoState]
     metric_infos: list[MetricInfoState]
+    date_info: DateInfoState
+    db_info: DBInfoState
+    sql: str

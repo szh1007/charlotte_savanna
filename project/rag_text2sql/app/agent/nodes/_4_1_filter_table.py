@@ -54,10 +54,10 @@ async def filter_table(state: DataAgentState, runtime: Runtime[DataAgentContext]
 
             if table_name not in result:
                 table_infos.remove(table_info)
-
-            for column in columns[:]:  # 浅拷贝: 遍历中有删除操作, 所以要复制一份
-                if column["name"] not in result[table_name]:
-                    columns.remove(column)
+            else:
+                for column in columns[:]:  # 浅拷贝: 遍历中有删除操作, 所以要复制一份
+                    if column["name"] not in result[table_name]:
+                        columns.remove(column)
 
         logger.info(f"表结构过滤成功\n{[table['name'] for table in table_infos]}")
 

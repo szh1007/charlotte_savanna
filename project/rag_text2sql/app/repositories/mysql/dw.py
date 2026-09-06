@@ -1,6 +1,8 @@
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent.state import DBInfoState
+
 
 class DwMysqlRepository:
     """dw 数据库 CRUD 操作"""
@@ -42,3 +44,36 @@ class DwMysqlRepository:
         sql = f"select distinct {column_name} from {table_name} limit {limit}"
         result = await self.session.execute(text(sql))
         return result.scalars().fetchall()  # scalars() 以列表形式返回单列数据
+
+    async def get_db_info(self) -> DBInfoState:
+        """
+        查询数据库的版本和方言
+        """
+        result = await self.session.execute(text("SELECT VERSION()"))
+        version = result.scalar()
+
+        dialect = self.session.get_bind().dialect.name
+        return DBInfoState(version=version, dialect=dialect)
+
+    async def validate_sql(self, sql: str) -> None:
+        """
+        校验 SQL 语句是否有效
+
+        Args:
+            sql: SQL 语句
+        """
+        await self.session.execute(text(sql))
+
+    async def execute_sql(self, sql: str) -> list:
+        """
+        执行 SQL 语句并返回结果
+
+        Args:
+            sql: SQL 语句
+
+        Returns:
+            执行结果
+        """
+        result = await self.session.execute(text(sql))
+        rows = [dict(row) for row in result.mappings().fetchall()]
+        return rows
