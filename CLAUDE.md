@@ -19,6 +19,7 @@
 | `project/menu/` | 子项目 | 餐厅智能助手（LangChain Agent + FastAPI + Vue） |
 | `project/video_downloader/` | 子项目 | B 站视频下载站（FastAPI + yt-dlp + Vue，AI 视频总结） |
 | `project/rag_knowledge/` | 子项目 | 工业级 RAG 知识库问答（LangGraph 双图 + Milvus + 评估体系） |
+| `project/rag_text2sql/` | 子项目 | RAG Text2SQL 数据查询智能体（LangGraph + Qdrant/ES + MySQL 双库 + Vue） |
 | `demo/` | 自学教程 | 非业务代码，见 §1.1 |
 
 ---
@@ -44,18 +45,19 @@
 | 层级 | 技术 | 版本 |
 |------|------|------|
 | **语言** | Python | 3.13 |
-| **Web 框架** | Django（minimall）+ FastAPI（deep_search / menu / video_downloader） | 6.0 / 0.139 |
+| **Web 框架** | Django（minimall）+ FastAPI（deep_search / menu / video_downloader / rag_knowledge / rag_text2sql） | 6.0 / 0.139 |
 | **数据库** | MySQL + Redis 缓存（django-redis / redis-py） | — |
 | **ORM** | SQLAlchemy（menu 子项目） | 2.0 |
 | **Django 扩展** | DRF + django-filter + django-mptt | 3.17 / 25.2 / 0.18 |
 | **LLM 框架** | LangChain + LangGraph | 1.3 / 1.2 |
 | **Agent** | DeepAgents | 0.7 |
 | **视频处理** | yt-dlp + ffmpeg + SenseVoice（video_downloader 下载与 AI 总结） | — |
-| **向量数据库** | ChromaDB + FAISS + RAGFlow + Milvus | — |
+| **向量数据库** | ChromaDB + FAISS + RAGFlow + Milvus + Qdrant | — |
+| **全文检索** | Elasticsearch（ik 分词, rag_text2sql 取值索引） | — |
 | **前端** | Vue 3 + Vite + TypeScript/JavaScript + Element Plus | — |
 | **代码质量** | Ruff + pre-commit | — |
 | **包管理** | pip + venv + npm | — |
-| **环境管理** | python-dotenv (.env) | — |
+| **环境管理** | python-dotenv (.env) + OmegaConf (conf/*.yaml) | — |
 
 > LLM 提供商、具体模型名、API 端点和 Key 配置参见 `.env.example`。具体模型列表不在本文档中维护，避免过时。
 
@@ -91,7 +93,7 @@ charlotte_savanna/
 │       ├── tests/               #   test_api / test_models / test_services
 │       ├── todo/redis.md        #   Redis 缓存设计文档（架构/风险/使用）
 │       └── uploads/             #   本地文件上传（.gitignore 排除）
-├── project/                     # 独立子项目（deep_search / menu / video_downloader / rag_knowledge）
+├── project/                     # 独立子项目（deep_search / menu / video_downloader / rag_knowledge / rag_text2sql）
 │   ├── deep_search/             #   深度检索智能体（FastAPI + DeepAgents）
 │   │   ├── agent/               #   main_agent + subagents（数据库查询/网络搜索/知识库）
 │   │   ├── api/                 #   FastAPI server / context（会话）/ monitor
@@ -110,7 +112,7 @@ charlotte_savanna/
 │   │   ├── ui/                  #   Vue 3 + Vite + Element Plus 前端
 │   │   ├── README.md            #   子项目文档
 │   │   └── .env                 #   独立环境变量（不提交）
-│   └── video_downloader/        #   B 站视频下载站（FastAPI + yt-dlp + Vue 3）
+│   ├── video_downloader/        #   B 站视频下载站（FastAPI + yt-dlp + Vue 3）
 │       ├── backend/             #   FastAPI 后端（解析/下载/队列/SSE/会员/AI 总结）
 │       ├── frontend/            #   Vue 3 + Vite 前端（零 UI 库, markmap 思维导图）
 │       ├── models/              #   SenseVoice / fsmn-vad 模型（.gitignore, 约 1GB）
@@ -120,12 +122,19 @@ charlotte_savanna/
 │       ├── scripts/             #   E2E 下载 / 字幕 cookie / yt-dlp 探测脚本
 │       ├── README.md            #   子项目文档
 │       └── .env                 #   独立环境变量（不提交）
-│   └── rag_knowledge/           #   工业级 RAG 知识库问答（LangGraph + Milvus + FastAPI）
+│   ├── rag_knowledge/           #   工业级 RAG 知识库问答（LangGraph + Milvus + FastAPI）
 │       ├── app/                 #   核心代码: api / process（load+query 双图）/ rag / rag_eval 评估
 │       ├── output/              #   加载产物（MinerU markdown + chunks 备份）
 │       ├── tests/               #   图级冒烟测试 + 评测最小调用样例
 │       ├── README.md            #   子项目文档
 │       └── .env                 #   独立环境变量（RK_ 前缀, 不提交）
+│   └── rag_text2sql/            #   RAG Text2SQL 查询智能体（LangGraph + Qdrant/ES + MySQL 双库 + Vue）
+│       ├── app/                 #   核心代码: agent（9 节点图）/ api / clients / repositories / services / scripts
+│       ├── conf/                #   本地私有配置（app_config / meta_config, *.yaml 被 gitignore）
+│       ├── prompts/             #   提示词模板（关键词扩展 / 过滤 / SQL 生成 / 校正）
+│       ├── frontend/            #   Vue 3 + Vite 前端（端口 8201, SSE 步骤流 + 结果表格）
+│       ├── logs/                #   运行日志（本地, 不提交）
+│       └── README.md            #   子项目文档
 ├── templates/                   # 全局模板目录
 │   ├── minimall/                #   商城页面模板（base + partials）
 │   └── admin/                   #   自定义 Admin 模板
@@ -221,7 +230,16 @@ charlotte_savanna/
 - **评估体系**：`app/rag_eval/` 统一入口 `RagEvalTester`，golden 题库 + 4 层检索指标（精确率/召回率/必命中率/MRR@5/NDCG@5），报告落盘 `artifacts/`
 - **配置**：环境变量 `RK_` 前缀（独立 `.env`），详细文档见 `project/rag_knowledge/README.md`
 
-### 4.7 代码质量
+### 4.7 FastAPI / LangGraph（rag_text2sql 子项目）
+
+- **后端**：FastAPI（`main.py`, 端口 8200, SSE 流式）+ LangGraph 单图 9 节点（`app/agent/graph.py`），DeepSeek 生成 + jieba 关键词抽取
+- **数据架构**：MySQL 双库 —— `meta`（元数据: table_info / column_info / metric_info / column_metric）+ `dw`（数仓业务数据）；`conf/meta_config.yaml` 声明式建模表 / 字段 / 指标
+- **三级语义索引**：列 / 指标按 name / description / alias 向量化入 Qdrant（bge-large-zh-v1.5, 1024 维）+ sync 列的字段取值全量同步 ES（ik 分词），`python -m app.scripts.build_meta` 幂等构建
+- **查询链路**：jieba 关键词 → LLM 语义扩展 → 三路并行召回（列 / 指标 / 取值）→ 合并补齐（指标关联列 + 主外键）→ LLM 过滤表字段与指标 → 生成 SQL → 真实执行校验 → 失败自动校正一次 → 执行返回
+- **配置**：`conf/app_config.yaml` + `conf/meta_config.yaml` 本地私有（根 .gitignore `*.yaml` 已忽略, 不提交），无独立 `.env`；结构示例见子项目 README §5.2
+- **前端**：Vue 3 + Vite（`frontend/`, 端口 8201, `/api` 代理到 8200），召回率/准确率排查与改进方向见 `project/rag_text2sql/README.md` §6 ~ §8
+
+### 4.8 代码质量
 
 > 注释规范参见系统级 CLAUDE.md 第 6.2 节。
 
@@ -236,7 +254,7 @@ charlotte_savanna/
 
 ## 5. 当前开发状态
 
-> 当前各模块均为学习/测试性质，正式「主流程」尚未确定：minimall 为 Django 测试原型，deep_search / menu / video_downloader / rag_knowledge 为独立子项目。
+> 当前各模块均为学习/测试性质，正式「主流程」尚未确定：minimall 为 Django 测试原型，deep_search / menu / video_downloader / rag_knowledge / rag_text2sql 为独立子项目。
 
 ### 5.1 测试原型 — minimall 商城 (`app/minimall/`)
 
@@ -293,7 +311,19 @@ charlotte_savanna/
 
 > 已闭环，通过 `python -m project.rag_knowledge.app.api.server` 启动（127.0.0.1:8100，原生 HTML 页面，无独立前端）。详细文档见 `project/rag_knowledge/README.md`。
 
-### 5.6 Demo 目录（仅供学习参考，不计入业务/子项目）
+### 5.6 子项目 — rag_text2sql 查询智能体 (`project/rag_text2sql/`)
+
+| 组件 | 状态 | 说明 |
+|------|------|------|
+| 元数据索引构建 (`scripts/build_meta.py`) | ✅ | meta_config.yaml → meta MySQL + Qdrant（列/指标）+ ES（字段取值） |
+| Agent (`app/agent/graph.py`) | ✅ | LangGraph 单图 9 节点: 关键词 → 三路召回 → 合并补齐 → LLM 过滤 → 生成/校验/校正/执行 |
+| API (`main.py`) | ✅ | FastAPI SSE（端口 8200, POST /api/query） |
+| 前端 (`frontend/`) | ✅ | Vue 3 + Vite（端口 8201, /api 代理, SSE 步骤流 + 结果表格） |
+| 评估体系 | ❌ | 暂无, 分层搭建建议见子项目 README §7 |
+
+> 已闭环，`cd project/rag_text2sql && python main.py`（127.0.0.1:8200）+ `cd frontend && npm run dev`（8201）启动。召回率/准确率偏低排查与改进方向见子项目 README §6 ~ §8。
+
+### 5.7 Demo 目录（仅供学习参考，不计入业务/子项目）
 
 | 目录 | 状态 | 说明 |
 |------|------|------|
@@ -304,7 +334,7 @@ charlotte_savanna/
 | `demo/FastAPI/` | ✅ 完成 | FastAPI 基础教程（3 个 demo） |
 | `demo/SUMMARY.md` | ✅ 完成 | LangChain/LangGraph/DeepAgents 知识点学习总结 |
 
-### 5.7 基础设施
+### 5.8 基础设施
 
 | 项目 | 状态 | 说明 |
 |------|------|------|
@@ -325,6 +355,7 @@ charlotte_savanna/
 
 - 项目 `.env.example` 已提供所需环境变量模板
 - `project/deep_search/.env`、`project/menu/.env`、`project/video_downloader/.env`、`project/rag_knowledge/.env` 为子项目独立环境变量，同样不提交
+- `project/rag_text2sql/conf/*.yaml`（app_config / meta_config）为本地私有配置，根 .gitignore `*.yaml` 已忽略，同样不提交
 - 生产环境设置见 `settings/prod.py`（DEBUG=False + HSTS/HTTPS 加固），由 WSGI/ASGI 加载
 
 ### 6.2 业务工作范围（重要）
@@ -352,6 +383,9 @@ charlotte_savanna/
 - **video_downloader 前端**：`sh/video_downloader_frontend.sh`（或 `cd project/video_downloader/frontend && npm run dev`，首次需 `npm install`）
 - **rag_knowledge 后端**：`python -m project.rag_knowledge.app.api.server`（127.0.0.1:8100，原生 HTML 页面，无独立前端）
 - **rag_knowledge 评测**：`cd project/rag_knowledge && python -m tests.test_rag_eval_tester`（详见子项目 README §6）
+- **rag_text2sql 建索引**：`cd project/rag_text2sql && python -m app.scripts.build_meta`（依赖 MySQL meta/dw + Qdrant + ES + Embedding 服务）
+- **rag_text2sql 后端**：`cd project/rag_text2sql && python main.py`（127.0.0.1:8200，配置见 conf/*.yaml）
+- **rag_text2sql 前端**：`cd project/rag_text2sql/frontend && npm run dev`（127.0.0.1:8201，首次需 `npm install`）
 - **LangGraph CLI**：`langgraph dev`（`langgraph.json` 配置了 graph 入口，指向 `demo/LangGraph_v1.2`）
 - **LangChain 脚本**：在对应 `demo/` 子目录下 `python <script>.py`（脚本内部 `load_dotenv()`）
 - **实验性代码**：教程文件中的注释代码刻意保留，展示不同实现变体
@@ -366,9 +400,10 @@ pip freeze > requirements.txt      # 更新
 cd project/deep_search/ui && npm install
 cd project/menu/ui && npm install
 cd project/video_downloader/frontend && npm install
+cd project/rag_text2sql/frontend && npm install
 ```
 
-核心依赖：Django 6.0、DRF、LangChain/LangGraph 1.x、DeepAgents、FastAPI、PyMySQL、SQLAlchemy、django-redis、redis-py、ChromaDB、FAISS、RAGFlow SDK、Milvus、python-dotenv、Tavily、yt-dlp、ffmpeg
+核心依赖：Django 6.0、DRF、LangChain/LangGraph 1.x、DeepAgents、FastAPI、PyMySQL、SQLAlchemy、django-redis、redis-py、ChromaDB、FAISS、RAGFlow SDK、Milvus、Qdrant、Elasticsearch、python-dotenv、Tavily、yt-dlp、ffmpeg
 
 ### 6.5 Claude Code 说明
 
@@ -403,4 +438,4 @@ cd project/video_downloader/frontend && npm install
 
 ---
 
-> **最后更新**：2026-09-01 | **维护者**：Claude Code (charlotte)
+> **最后更新**：2026-09-07 | **维护者**：Claude Code (charlotte)

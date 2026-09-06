@@ -32,6 +32,7 @@
 | `project/menu/` | 子项目 | 餐厅智能助手（LangChain Agent + FastAPI + Vue） |
 | `project/video_downloader/` | 子项目 | B 站视频下载站（FastAPI + yt-dlp + Vue，AI 视频总结） |
 | `project/rag_knowledge/` | 子项目 | 工业级 RAG 知识库问答（LangGraph 双图 + Milvus + 评估体系） |
+| `project/rag_text2sql/` | 子项目 | RAG Text2SQL 查询智能体（LangGraph + Qdrant/ES + MySQL 双库 + Vue） |
 | `demo/` | 自学教程 | Python / LangChain / LangGraph / DeepAgents / FastAPI 教程 |
 
 ---
@@ -41,20 +42,21 @@
 | 层级 | 技术 | 说明 |
 |------|------|------|
 | **语言** | Python 3.13 | 类型注解、asyncio、ContextVar |
-| **Web 框架** | Django 6.0 / FastAPI 0.139 | Django 用于 minimall，FastAPI 用于三个子项目 |
+| **Web 框架** | Django 6.0 / FastAPI 0.139 | Django 用于 minimall，FastAPI 用于五个子项目 |
 | **Django 扩展** | DRF + django-filter + django-mptt | REST API、过滤、树形分类 |
 | **ORM / DB** | PyMySQL / SQLAlchemy 2.0 | MySQL（参数化查询） |
 | **缓存** | Redis（django-redis / redis-py） | L2 缓存、击穿/穿透/雪崩防护、熔断 |
 | **LLM 框架** | LangChain 1.3 + LangGraph 1.2 | LCEL、`@tool`、`StateGraph` + checkpointer |
 | **Agent** | DeepAgents 0.7 | `create_deep_agent` 多 subagent 协作 |
-| **向量数据库** | Milvus / ChromaDB / FAISS | 语义检索（HNSW + 余弦相似度） |
+| **向量数据库** | Milvus / Qdrant / ChromaDB / FAISS | 语义检索（HNSW + 余弦相似度） |
+| **全文检索** | Elasticsearch（ik 分词） | 字段取值索引（rag_text2sql） |
 | **知识库** | RAGFlow | 企业知识库问答 |
 | **RAG 组件** | BGE-M3 / bge-reranker-large / MinerU / MinIO / MongoDB | 混合向量、精排、PDF 解析、对象存储、会话历史（rag_knowledge） |
 | **搜索** | Tavily | 联网检索 |
 | **视频处理** | yt-dlp + ffmpeg + SenseVoice | 下载引擎、音视频合并、ASR 转写（video_downloader） |
 | **前端** | Vue 3 + Vite + TS/JS + Element Plus | 组合式 API、WebSocket / SSE |
 | **代码质量** | Ruff + pre-commit | 静态检查、格式化、提交校验 |
-| **配置管理** | python-dotenv | `.env` 环境变量隔离 |
+| **配置管理** | python-dotenv / OmegaConf | `.env` 环境变量隔离；rag_text2sql 用 conf/*.yaml |
 
 > 具体模型名、API 端点与 Key 配置参见 `.env.example`。
 
@@ -70,7 +72,8 @@ charlotte_savanna/
 │   ├── deep_search/         # 深度检索智能体（DeepAgents + FastAPI + Vue）
 │   ├── menu/                # 餐厅智能助手（LangChain Agent + FastAPI + Vue）
 │   ├── video_downloader/    # B 站视频下载站（FastAPI + yt-dlp + Vue）
-│   └── rag_knowledge/       # 工业级 RAG 知识库问答（LangGraph + Milvus + 评估体系）
+│   ├── rag_knowledge/       # 工业级 RAG 知识库问答（LangGraph + Milvus + 评估体系）
+│   └── rag_text2sql/        # RAG Text2SQL 查询智能体（LangGraph + Qdrant/ES + MySQL 双库）
 ├── templates/               # 全局模板（minimall + admin）
 ├── sh/                      # 启动脚本（deep_search / menu / video_downloader 前后端）
 ├── demo/                    # 自学教程（非业务代码）
@@ -135,6 +138,17 @@ charlotte_savanna/
 - **评估体系**：golden 题库（50 用例）+ 4 层检索指标（精确率 / 召回率 / 必命中率 / MRR@5 / NDCG@5），报告落盘 `app/rag_eval/artifacts/`
 - 详见 [`project/rag_knowledge/README.md`](project/rag_knowledge/README.md)
 
+### rag_text2sql — RAG Text2SQL 查询智能体（子项目）
+
+基于 **LangGraph** 的数据仓库自然语言查询系统，面向数仓星型模型，实践「元数据三级语义索引 + Schema Linking + 生成-校验闭环」的 Text2SQL 路线。
+
+- **元数据建模**：`conf/meta_config.yaml` 声明式建模表 / 字段 / 指标（含别名与口径），`python -m app.scripts.build_meta` 幂等构建
+- **三级语义索引**：列 / 指标按 name / description / alias 向量化入 Qdrant（bge-large-zh-v1.5），维度列字段取值全量同步 ES（ik 分词）
+- **查询链路**：jieba 关键词 → LLM 语义扩展 → 三路并行召回（列 / 指标 / 取值）→ 合并补齐（指标关联列 + 主外键）→ LLM 过滤表字段与指标 → 生成 SQL → 真实执行校验 → 失败自动校正 → 执行返回（SSE 流式）
+- **双库架构**：MySQL `meta`（元数据）+ `dw`（数仓业务数据，端口 3307）；配置用本地私有 conf/*.yaml（不提交）
+- **前端**：Vue 3 + Vite（SSE 步骤流 + 结果表格），召回率/准确率排查手册见子项目 README §6
+- 详见 [`project/rag_text2sql/README.md`](project/rag_text2sql/README.md)
+
 ### demo — 自学教程（非业务）
 
 Python 基础、LangChain 1.3、LangGraph 1.2、DeepAgents 0.7、FastAPI 的渐进式教程，仅作学习参考。另有 [`SUMMARY.md`](demo/SUMMARY.md)（知识点学习总结）。
@@ -171,6 +185,7 @@ cp .env.example .env               # 填入真实 API Key
 | menu | `sh/menu_backend.sh` | `sh/menu_frontend.sh` |
 | video_downloader | `sh/video_downloader_backend.sh` | `sh/video_downloader_frontend.sh` |
 | rag_knowledge | `python -m project.rag_knowledge.app.api.server` | 内建页面 |
+| rag_text2sql | `cd project/rag_text2sql && python main.py` | `cd project/rag_text2sql/frontend && npm run dev` |
 
 子项目前端首次运行需在对应 `ui/` 目录执行 `npm install`。
 
@@ -184,7 +199,7 @@ cp .env.example .env               # 填入真实 API Key
 - **LLM（Embedding）**：`CLOSEAI_*`
 - **数据库**：`MYSQL_*`（Django + demo）、`PGSQL_*`（PostgreSQL demo）
 - **缓存 / 向量**：`REDIS_URL`、`MILVUS_*`（`MILVUS_URL` / `MILVUS_DATABASE_NAME` / `MILVUS_COLLECTION_NAME`）
-- **子项目专用**：`MENU_*`（menu）、`DS_*`（deep_search）、`RK_*`（rag_knowledge）；video_downloader 独立 `.env`（`MEMBER_KEY` / `BILI_COOKIE` / `LLM_*` / `ASR_*`）
+- **子项目专用**：`MENU_*`（menu）、`DS_*`（deep_search）、`RK_*`（rag_knowledge）；video_downloader 独立 `.env`（`MEMBER_KEY` / `BILI_COOKIE` / `LLM_*` / `ASR_*`）；rag_text2sql 不依赖 `.env`（配置在子项目 `conf/*.yaml`，本地私有不提交）
 - **Django**：`DJANGO_*`
 - **外部服务**：`TAVILY_API_KEY`、`LANGSMITH_*`
 
@@ -200,6 +215,7 @@ cp .env.example .env               # 填入真实 API Key
 | [project/menu/README.md](project/menu/README.md) | menu 子项目文档 |
 | [project/video_downloader/README.md](project/video_downloader/README.md) | video_downloader 子项目文档 |
 | [project/rag_knowledge/README.md](project/rag_knowledge/README.md) | rag_knowledge 子项目文档 |
+| [project/rag_text2sql/README.md](project/rag_text2sql/README.md) | rag_text2sql 子项目文档 |
 | [docs/](docs/) | Agent 定义、triage 规范、学习笔记 |
 
 ---
