@@ -20,6 +20,7 @@
 | `project/video_downloader/` | 子项目 | B 站视频下载站（FastAPI + yt-dlp + Vue，AI 视频总结） |
 | `project/rag_knowledge/` | 子项目 | 工业级 RAG 知识库问答（LangGraph 双图 + Milvus + 评估体系） |
 | `project/rag_text2sql/` | 子项目 | RAG Text2SQL 数据查询智能体（LangGraph + Qdrant/ES + MySQL 双库 + Vue） |
+| `app/charplot/` + `project/charplot/` | 子项目 | AI 闯关学习网站（双后端：Django 账号/闯关规则 + FastAPI AI 能力 + Vue 前端, LangGraph/DeepAgents/LangChain 三件套） |
 | `demo/` | 自学教程 | 非业务代码，见 §1.1 |
 
 ---
@@ -45,7 +46,7 @@
 | 层级 | 技术 | 版本 |
 |------|------|------|
 | **语言** | Python | 3.13 |
-| **Web 框架** | Django（minimall）+ FastAPI（deep_search / menu / video_downloader / rag_knowledge / rag_text2sql） | 6.0 / 0.139 |
+| **Web 框架** | Django（minimall + charplot 主应用）+ FastAPI（deep_search / menu / video_downloader / rag_knowledge / rag_text2sql / charplot AI 端） | 6.0 / 0.139 |
 | **数据库** | MySQL + Redis 缓存（django-redis / redis-py） | — |
 | **ORM** | SQLAlchemy（menu 子项目） | 2.0 |
 | **Django 扩展** | DRF + django-filter + django-mptt | 3.17 / 25.2 / 0.18 |
@@ -73,27 +74,37 @@ charlotte_savanna/
 │   │   ├── base.py              #   通用配置（DB/Redis/DRF/i18n/静态媒体）
 │   │   ├── dev.py               #   开发环境（DEBUG=True, ALLOWED_HOSTS 宽松）
 │   │   └── prod.py              #   生产环境（DEBUG=False, 安全加固）
-│   ├── urls.py                  # 根路由（/、admin/、minimall/、api/minimall/）
+│   ├── urls.py                  # 根路由（/、admin/、minimall/、api/minimall/、api/charplot/、/r/）
 │   ├── wsgi.py / asgi.py        # 部署入口
 │   └── __init__.py
 ├── app/                         # Django 业务子应用统一目录
-│   └── minimall/                #   商城应用（AppConfig: MinimallConfig, label=minimall）
-│       ├── models.py            #   9 个模型：Profile/Category(MPTT)/Product/ProductImage/Cart/CartItem/ShippingAddress/Order/OrderItem
-│       ├── views_buyer.py       #   API 视图（DRF）
-│       ├── views_html.py        #   页面视图（CBV）
-│       ├── services.py          #   业务逻辑层（订单、余额等）
-│       ├── serializers.py       #   DRF 序列化器
-│       ├── cache.py             #   Redis 二级缓存（击穿/穿透/雪崩防护 + 熔断）
-│       ├── signals.py           #   缓存失效 Signal（post_save/delete + on_commit）
-│       ├── permissions.py       #   权限类
-│       ├── context_processors.py / filters.py / utils.py
-│       ├── urls_api.py          #   API 路由（/api/minimall/...）
-│       ├── urls_html.py         #   页面路由（/minimall/...）
-│       ├── migrations/          #   17 个迁移
-│       ├── tests/               #   test_api / test_models / test_services
-│       ├── todo/redis.md        #   Redis 缓存设计文档（架构/风险/使用）
-│       └── uploads/             #   本地文件上传（.gitignore 排除）
-├── project/                     # 独立子项目（deep_search / menu / video_downloader / rag_knowledge / rag_text2sql）
+│   ├── minimall/                #   商城应用（AppConfig: MinimallConfig, label=minimall）
+│   │   ├── models.py            #   9 个模型: Profile/Category(MPTT)/Product/ProductImage/Cart/CartItem/ShippingAddress/Order/OrderItem
+│   │   ├── views_buyer.py       #   API 视图（DRF）
+│   │   ├── views_html.py        #   页面视图（CBV）
+│   │   ├── services.py          #   业务逻辑层（订单、余额等）
+│   │   ├── serializers.py       #   DRF 序列化器
+│   │   ├── cache.py             #   Redis 二级缓存（击穿/穿透/雪崩防护 + 熔断）
+│   │   ├── signals.py           #   缓存失效 Signal（post_save/delete + on_commit）
+│   │   ├── permissions.py       #   权限类
+│   │   ├── context_processors.py / filters.py / utils.py
+│   │   ├── urls_api.py          #   API 路由（/api/minimall/...）
+│   │   ├── urls_html.py         #   页面路由（/minimall/...）
+│   │   ├── migrations/          #   17 个迁移
+│   │   ├── tests/               #   test_api / test_models / test_services
+│   │   ├── todo/redis.md        #   Redis 缓存设计文档（架构/风险/使用）
+│   │   └── uploads/             #   本地文件上传（.gitignore 排除）
+│   ├── charplot/                #   CharPlot 闯关学习主应用（label=charplot, 双后端数据端）
+│   │   ├── models.py            #   12 张表: profile / user_event / journey / chapter / knowledge_point / level /
+│   │   │                        #   question / attempt / review_report / question_flag / knowledge_base(+document)
+│   │   ├── services.py          #   规则层: 判分/心动值/重开/XP/连胜冻结/易错分/间隔复习/validate_graph
+│   │   ├── views_api.py         #   内部端点（X-Internal-Token）+ 用户端点
+│   │   ├── views_html.py        #   /r/{slug} 公开分享页（CBV）
+│   │   ├── dashboard.py         #   掌握度 / 活动 / 易错点聚合查询
+│   │   ├── urls_api.py / urls_html.py / serializers.py / permissions.py / signals.py
+│   │   ├── migrations/          #   9 个迁移
+│   │   └── tests/               #   265 用例（含内部端点认证 / 规则层）
+├── project/                     # 独立子项目（deep_search / menu / video_downloader / rag_knowledge / rag_text2sql / charplot）
 │   ├── deep_search/             #   深度检索智能体（FastAPI + DeepAgents）
 │   │   ├── agent/               #   main_agent + subagents（数据库查询/网络搜索/知识库）
 │   │   ├── api/                 #   FastAPI server / context（会话）/ monitor
@@ -113,38 +124,59 @@ charlotte_savanna/
 │   │   ├── README.md            #   子项目文档
 │   │   └── .env                 #   独立环境变量（不提交）
 │   ├── video_downloader/        #   B 站视频下载站（FastAPI + yt-dlp + Vue 3）
-│       ├── backend/             #   FastAPI 后端（解析/下载/队列/SSE/会员/AI 总结）
-│       ├── frontend/            #   Vue 3 + Vite 前端（零 UI 库, markmap 思维导图）
-│       ├── models/              #   SenseVoice / fsmn-vad 模型（.gitignore, 约 1GB）
-│       ├── downloads/           #   交付文件目录（TTL 清理, .gitignore）
-│       ├── docs/                #   CONTEXT / DESIGN / ADR-0001 ~ 0008
-│       ├── tests/               #   HTTP seam 自动化测试（119 个）
-│       ├── scripts/             #   E2E 下载 / 字幕 cookie / yt-dlp 探测脚本
-│       ├── README.md            #   子项目文档
-│       └── .env                 #   独立环境变量（不提交）
+│   │   ├── backend/             #   FastAPI 后端（解析/下载/队列/SSE/会员/AI 总结）
+│   │   ├── frontend/            #   Vue 3 + Vite 前端（零 UI 库, markmap 思维导图）
+│   │   ├── models/              #   SenseVoice / fsmn-vad 模型（.gitignore, 约 1GB）
+│   │   ├── downloads/           #   交付文件目录（TTL 清理, .gitignore）
+│   │   ├── docs/                #   CONTEXT / DESIGN / ADR-0001 ~ 0008
+│   │   ├── tests/               #   HTTP seam 自动化测试（119 个）
+│   │   ├── scripts/             #   E2E 下载 / 字幕 cookie / yt-dlp 探测脚本
+│   │   ├── README.md            #   子项目文档
+│   │   └── .env                 #   独立环境变量（不提交）
 │   ├── rag_knowledge/           #   工业级 RAG 知识库问答（LangGraph + Milvus + FastAPI）
-│       ├── app/                 #   核心代码: api / process（load+query 双图）/ rag / rag_eval 评估
-│       ├── output/              #   加载产物（MinerU markdown + chunks 备份）
-│       ├── tests/               #   图级冒烟测试 + 评测最小调用样例
-│       ├── README.md            #   子项目文档
-│       └── .env                 #   独立环境变量（RK_ 前缀, 不提交）
-│   └── rag_text2sql/            #   RAG Text2SQL 查询智能体（LangGraph + Qdrant/ES + MySQL 双库 + Vue）
-│       ├── app/                 #   核心代码: agent（9 节点图）/ api / clients / repositories / services / scripts
-│       ├── conf/                #   本地私有配置（app_config / meta_config, *.yaml 被 gitignore）
-│       ├── prompts/             #   提示词模板（关键词扩展 / 过滤 / SQL 生成 / 校正）
-│       ├── frontend/            #   Vue 3 + Vite 前端（端口 8201, SSE 步骤流 + 结果表格）
-│       ├── logs/                #   运行日志（本地, 不提交）
-│       └── README.md            #   子项目文档
+│   │   ├── app/                 #   核心代码: api / process（load+query 双图）/ rag / rag_eval 评估
+│   │   ├── output/              #   加载产物（MinerU markdown + chunks 备份）
+│   │   ├── tests/               #   图级冒烟测试 + 评测最小调用样例
+│   │   ├── README.md            #   子项目文档
+│   │   └── .env                 #   独立环境变量（RK_ 前缀, 不提交）
+│   ├── rag_text2sql/            #   RAG Text2SQL 查询智能体（LangGraph + Qdrant/ES + MySQL 双库 + Vue）
+│   │   ├── app/                 #   核心代码: agent（9 节点图）/ api / clients / repositories / services / scripts
+│   │   ├── conf/                #   本地私有配置（app_config / meta_config, *.yaml 被 gitignore）
+│   │   ├── prompts/             #   提示词模板（关键词扩展 / 过滤 / SQL 生成 / 校正）
+│   │   ├── frontend/            #   Vue 3 + Vite 前端（端口 8201, SSE 步骤流 + 结果表格）
+│   │   ├── logs/                #   运行日志（本地, 不提交）
+│   │   └── README.md            #   子项目文档
+│   ├── charplot/                #   CharPlot AI 能力端（双后端 AI 侧, 端口 8004）
+│   │   ├── api/                 #   server.py（7 个 /ai/* 端点）/ tasks.py（任务系统 + SSE）
+│   │   │                        #   django_client.py（13 个内部端点客户端）/ config / schemas
+│   │   ├── pipeline/            #   知识管道: sources/（检索源抽象: 网络/Context7/文档/知识库）
+│   │   │                        #   + stages/ + graph.py（LangGraph 4 阶段图）
+│   │   ├── agents/              #   DeepAgents 检索 subagent（@tool 源封装）
+│   │   ├── rag/                 #   索引(chunking/embeddings/milvus) + 检索(retriever/rewrite/rerank)
+│   │   │                        #   本地模型 bge-m3 / bge-reranker-v2-m3（modelscope 预下载, 缺失降级）
+│   │   ├── prompt/              #   prompt 配置（analyze/search/deconstruct/questions/status_summary）
+│   │   ├── frontend/            #   Vue 3 + Vite 前端（端口 9004, /api→8000, /ai→8004）
+│   │   ├── docs/                #   CONTEXT / CONTRACT / DESIGN / QA + adr/0001~0004
+│   │   ├── tests/               #   FastAPI 侧测试（9 文件, Redis /15 隔离 + Fake LLM）
+│   │   ├── .env / .env.example  #   CHARPLOT_* 独立环境变量（不提交 / 模板）
+│   │   └── README.md            #   子项目文档
 ├── templates/                   # 全局模板目录
 │   ├── minimall/                #   商城页面模板（base + partials）
+│   ├── charplot/                #   report_share.html（/r/{slug} 公开分享页）
 │   └── admin/                   #   自定义 Admin 模板
-├── sh/                          # 启动脚本
+├── sh/                          # 各子项目启动脚本（后端 = FastAPI/AI 端, 前端 = Vue dev server）
+│   ├── _status_.sh              #   查看全部项目运行进程（ps 归并: PID/端口/内存/命令）
 │   ├── deep_search_backend.sh   #   启动 deep_search 后端
 │   ├── deep_search_frontend.sh  #   启动 deep_search 前端
 │   ├── menu_backend.sh          #   启动 menu 后端
 │   ├── menu_frontend.sh         #   启动 menu 前端
 │   ├── video_downloader_backend.sh  #   启动 video_downloader 后端
-│   └── video_downloader_frontend.sh #   启动 video_downloader 前端
+│   ├── video_downloader_frontend.sh #   启动 video_downloader 前端
+│   ├── rag_knowledge.sh         #   启动 rag_knowledge 后端（8100, 无独立前端）
+│   ├── rag_text2sql_backend.sh  #   启动 rag_text2sql 后端
+│   ├── rag_text2sql_frontend.sh #   启动 rag_text2sql 前端
+│   ├── charplot_backend.sh      #   启动 charplot FastAPI AI 能力端（8004; Django 侧随主项目 8000）
+│   └── charplot_frontend.sh     #   启动 charplot 前端
 ├── demo/                        # [Demo] 自学教程代码（非业务，忽略）
 │   ├── Base/                    #   Python 基础
 │   ├── LangChain_v1.3/          #   LangChain 1.3 教程
@@ -239,7 +271,19 @@ charlotte_savanna/
 - **配置**：`conf/app_config.yaml` + `conf/meta_config.yaml` 本地私有（根 .gitignore `*.yaml` 已忽略, 不提交），无独立 `.env`；结构示例见子项目 README §5.2
 - **前端**：Vue 3 + Vite（`frontend/`, 端口 8201, `/api` 代理到 8200），召回率/准确率排查与改进方向见 `project/rag_text2sql/README.md` §6 ~ §8
 
-### 4.8 代码质量
+### 4.8 Django + FastAPI 双后端（charplot 子项目）
+
+> CharPlot = AI 闯关学习网站（输入知识 → 图谱解构 → 渐进出题 → 游戏化闯关）。业务术语/产品决策见 `project/charplot/docs/CONTEXT.md`，数据契约见 `docs/CONTRACT.md`（权威），架构问答见 `docs/QA.md`。实施按 `.scratch/charplot/issues/01~14` 垂直切片，已全部闭环。
+
+- **双后端微服务（ADR-0001）**：Django（`app/charplot`, 8000）= 账号/学习数据/闯关交互规则/知识库元数据/Dashboard；FastAPI（`project/charplot/api/server.py`, 8004）= AI 能力（知识管道 / RAG / 题目生成 / 任务系统）
+- **闯关交互归 Django（ADR-0003）**：判分/心动值/XP/连胜/易错分/间隔复习为纯规则 + 预生成讲解，LLM 不参与答题路径；**RAG 全链路归 FastAPI**，Django 只存知识库元数据
+- **服务间认证**：FastAPI 调 Django 内部端点（图谱落库/出题 claim/索引 claim 等 13 个）一律 `X-Internal-Token`（`CHARPLOT_INTERNAL_TOKEN` 两端 .env 同值, fail closed）；不存在 Django → FastAPI 反向调用
+- **三件套分工**：LangGraph = 管道编排（`pipeline/` 4 阶段图）· DeepAgents = 检索/解构 subagent（`agents/`）· LangChain = RAG 组件（`rag/`：按类型调优切分 + Milvus 混合检索 + rerank + query rewrite）
+- **本地模型（仅 2 个）**：bge-m3（embedding）+ bge-reranker-v2-m3（rerank），modelscope 预下载到本地目录（`CHARPLOT_MODELSCOPE_ROOT`, 默认 `D:/__WorkSpace__/modelscope`, `models/BAAI/` 平铺）；加载前 `config.resolve_local_model_path` 校验存在 —— embedding 缺失报错、rerank 缺失降级不精排，均不触发库级自动下载
+- **任务系统**：FastAPI 异步任务 + Redis（`/4`）+ SSE（`pipeline-progress`, Last-Event-ID 续推）；任务不持久化（重启丢失 → 前端兜底重新生成）；claim 幂等 + 10 分钟陈旧可重抢
+- **前端**：Vue 3 + Vite + Element Plus 动漫主题 + vue-flow 技能树（`frontend/`, 9004, /api /r→8000, /ai→8004），详细文档见 `project/charplot/README.md`
+
+### 4.9 代码质量
 
 > 注释规范参见系统级 CLAUDE.md 第 6.2 节。
 
@@ -254,7 +298,7 @@ charlotte_savanna/
 
 ## 5. 当前开发状态
 
-> 当前各模块均为学习/测试性质，正式「主流程」尚未确定：minimall 为 Django 测试原型，deep_search / menu / video_downloader / rag_knowledge / rag_text2sql 为独立子项目。
+> 当前各模块均为学习/测试性质，正式「主流程」尚未确定：minimall 为 Django 测试原型，deep_search / menu / video_downloader / rag_knowledge / rag_text2sql / charplot 为独立子项目。
 
 ### 5.1 测试原型 — minimall 商城 (`app/minimall/`)
 
@@ -323,7 +367,20 @@ charlotte_savanna/
 
 > 已闭环，`cd project/rag_text2sql && python main.py`（127.0.0.1:8200）+ `cd frontend && npm run dev`（8201）启动。召回率/准确率偏低排查与改进方向见子项目 README §6 ~ §8。
 
-### 5.7 Demo 目录（仅供学习参考，不计入业务/子项目）
+### 5.7 子项目 — charplot 闯关学习网站（双后端, `app/charplot` + `project/charplot/`）
+
+| 组件 | 状态 | 说明 |
+|------|------|------|
+| Django 数据端（`app/charplot/`） | ✅ | 12 表 + 41 路由（13 个内部端点 X-Internal-Token fail closed）+ 规则层（判分/心动值/重开/XP/连胜冻结/易错分/间隔复习），265 用例 |
+| FastAPI AI 端（`project/charplot/api/`） | ✅ | 7 个 `/ai/*` 端点（端口 8004）+ 任务系统（Redis /4 + SSE 续推），LangGraph 管道图 + DeepAgents 检索 + LangChain RAG 真实接线 |
+| 知识管道（`pipeline/`） | ✅ | 解析(txt/md/html/pdf/docx/pptx/链接) → 主内容分析 → 联网搜索增强 → 图谱解构, 检索源可插拔（网络/Context7/文档/知识库） |
+| RAG 链路（`rag/`） | ✅ | modelscope 本地 bge-m3 embedding + bge-reranker-v2-m3 rerank（必配链路）, Milvus 混合检索 + 软删 filter |
+| 前端（`frontend/`） | ✅ | Vue 3 + Element Plus 动漫主题（9004, /api /r→8000, /ai→8004）, 11 个 view 全部接通 |
+| 文档体系（`docs/`） | ✅ | CONTEXT / CONTRACT / DESIGN / QA + adr/0001~0004, tickets 见 .scratch/charplot/issues/ |
+
+> 业务链路已闭环（Issue 01~14, 2026-09-08 三侧契约核对零断链）。已实现：旅程创建 → 图谱落库 → 技能树 → 渐进出题（间隔复习混入）→ 闯关答题 → 复盘分享 → Dashboard + LLM 状态总结 + 知识库管理。启动与已知边界见 `project/charplot/README.md`。
+
+### 5.8 Demo 目录（仅供学习参考，不计入业务/子项目）
 
 | 目录 | 状态 | 说明 |
 |------|------|------|
@@ -334,11 +391,11 @@ charlotte_savanna/
 | `demo/FastAPI/` | ✅ 完成 | FastAPI 基础教程（3 个 demo） |
 | `demo/SUMMARY.md` | ✅ 完成 | LangChain/LangGraph/DeepAgents 知识点学习总结 |
 
-### 5.8 基础设施
+### 5.9 基础设施
 
 | 项目 | 状态 | 说明 |
 |------|------|------|
-| .env 管理 | ✅ | `.env.example` 提供模板（Django/OpenAI/DeepSeek/Tavily/LangSmith/MySQL/PG/Redis/Milvus） |
+| .env 管理 | ✅ | `.env.example` 提供模板（Django/OpenAI/DeepSeek/Tavily/LangSmith/MySQL/PG/Redis/Milvus/CHARPLOT_*） |
 | 数据库/缓存 | ✅ | MySQL + Redis（django-redis），配置环境变量化 |
 | 代码质量 | ✅ | Ruff + pre-commit 已接入 |
 | 依赖管理 | ✅ | `requirements.txt` 已生成（267 个包） |
@@ -354,7 +411,7 @@ charlotte_savanna/
 > 通用安全规范（`.env` 管理、API Key 保护、`.gitignore` 检查清单、敏感信息泄露处理）参见系统级 CLAUDE.md 第 3 节。
 
 - 项目 `.env.example` 已提供所需环境变量模板
-- `project/deep_search/.env`、`project/menu/.env`、`project/video_downloader/.env`、`project/rag_knowledge/.env` 为子项目独立环境变量，同样不提交
+- `project/deep_search/.env`、`project/menu/.env`、`project/video_downloader/.env`、`project/rag_knowledge/.env`、`project/charplot/.env` 为子项目独立环境变量，同样不提交（charplot 为 `CHARPLOT_*` 前缀；`CHARPLOT_INTERNAL_TOKEN` 与 Django 侧同值）
 - `project/rag_text2sql/conf/*.yaml`（app_config / meta_config）为本地私有配置，根 .gitignore `*.yaml` 已忽略，同样不提交
 - 生产环境设置见 `settings/prod.py`（DEBUG=False + HSTS/HTTPS 加固），由 WSGI/ASGI 加载
 
@@ -381,11 +438,14 @@ charlotte_savanna/
 - **menu 前端**：`sh/menu_frontend.sh`（或 `cd project/menu/ui && npm run dev`，首次需 `npm install`）
 - **video_downloader 后端**：`sh/video_downloader_backend.sh`（或 `cd project/video_downloader && python -m uvicorn backend.main:app --port 8003`）
 - **video_downloader 前端**：`sh/video_downloader_frontend.sh`（或 `cd project/video_downloader/frontend && npm run dev`，首次需 `npm install`）
-- **rag_knowledge 后端**：`python -m project.rag_knowledge.app.api.server`（127.0.0.1:8100，原生 HTML 页面，无独立前端）
+- **rag_knowledge 后端**：`sh/rag_knowledge.sh`（或 `python -m project.rag_knowledge.app.api.server`, 127.0.0.1:8100, 原生 HTML 页面，无独立前端）
 - **rag_knowledge 评测**：`cd project/rag_knowledge && python -m tests.test_rag_eval_tester`（详见子项目 README §6）
 - **rag_text2sql 建索引**：`cd project/rag_text2sql && python -m app.scripts.build_meta`（依赖 MySQL meta/dw + Qdrant + ES + Embedding 服务）
-- **rag_text2sql 后端**：`cd project/rag_text2sql && python main.py`（127.0.0.1:8200，配置见 conf/*.yaml）
-- **rag_text2sql 前端**：`cd project/rag_text2sql/frontend && npm run dev`（127.0.0.1:8201，首次需 `npm install`）
+- **rag_text2sql 后端**：`sh/rag_text2sql_backend.sh`（或 `cd project/rag_text2sql && python main.py`, 127.0.0.1:8200, 配置见 conf/*.yaml）
+- **rag_text2sql 前端**：`sh/rag_text2sql_frontend.sh`（或 `cd project/rag_text2sql/frontend && npm run dev`, 127.0.0.1:8201）
+- **charplot 后端**：`sh/charplot_backend.sh`（或 `python -m project.charplot.api.server`, 127.0.0.1:8004, AI 能力端; Django 侧随主项目 8000 启动, 前置 MySQL/Redis/Milvus + modelscope 本地模型）
+- **charplot 前端**：`sh/charplot_frontend.sh`（或 `cd project/charplot/frontend && npm run dev`, 127.0.0.1:9004）
+- **进程状态**：`sh/_status_.sh`（查看各项目运行进程: PID/端口/内存/启动命令）
 - **LangGraph CLI**：`langgraph dev`（`langgraph.json` 配置了 graph 入口，指向 `demo/LangGraph_v1.2`）
 - **LangChain 脚本**：在对应 `demo/` 子目录下 `python <script>.py`（脚本内部 `load_dotenv()`）
 - **实验性代码**：教程文件中的注释代码刻意保留，展示不同实现变体
@@ -401,6 +461,7 @@ cd project/deep_search/ui && npm install
 cd project/menu/ui && npm install
 cd project/video_downloader/frontend && npm install
 cd project/rag_text2sql/frontend && npm install
+cd project/charplot/frontend && npm install
 ```
 
 核心依赖：Django 6.0、DRF、LangChain/LangGraph 1.x、DeepAgents、FastAPI、PyMySQL、SQLAlchemy、django-redis、redis-py、ChromaDB、FAISS、RAGFlow SDK、Milvus、Qdrant、Elasticsearch、python-dotenv、Tavily、yt-dlp、ffmpeg
@@ -438,4 +499,4 @@ cd project/rag_text2sql/frontend && npm install
 
 ---
 
-> **最后更新**：2026-09-07 | **维护者**：Claude Code (charlotte)
+> **最后更新**：2026-09-08 | **维护者**：Claude Code (charlotte)

@@ -33,6 +33,7 @@
 | `project/video_downloader/` | 子项目 | B 站视频下载站（FastAPI + yt-dlp + Vue，AI 视频总结） |
 | `project/rag_knowledge/` | 子项目 | 工业级 RAG 知识库问答（LangGraph 双图 + Milvus + 评估体系） |
 | `project/rag_text2sql/` | 子项目 | RAG Text2SQL 查询智能体（LangGraph + Qdrant/ES + MySQL 双库 + Vue） |
+| `app/charplot/` + `project/charplot/` | 子项目 | AI 闯关学习网站（双后端: Django 账号/闯关规则 + FastAPI AI 能力 + Vue, 三件套实践） |
 | `demo/` | 自学教程 | Python / LangChain / LangGraph / DeepAgents / FastAPI 教程 |
 
 ---
@@ -42,7 +43,7 @@
 | 层级 | 技术 | 说明 |
 |------|------|------|
 | **语言** | Python 3.13 | 类型注解、asyncio、ContextVar |
-| **Web 框架** | Django 6.0 / FastAPI 0.139 | Django 用于 minimall，FastAPI 用于五个子项目 |
+| **Web 框架** | Django 6.0 / FastAPI 0.139 | Django 用于 minimall / charplot 主应用，FastAPI 用于六个子项目 AI 端 |
 | **Django 扩展** | DRF + django-filter + django-mptt | REST API、过滤、树形分类 |
 | **ORM / DB** | PyMySQL / SQLAlchemy 2.0 | MySQL（参数化查询） |
 | **缓存** | Redis（django-redis / redis-py） | L2 缓存、击穿/穿透/雪崩防护、熔断 |
@@ -51,7 +52,7 @@
 | **向量数据库** | Milvus / Qdrant / ChromaDB / FAISS | 语义检索（HNSW + 余弦相似度） |
 | **全文检索** | Elasticsearch（ik 分词） | 字段取值索引（rag_text2sql） |
 | **知识库** | RAGFlow | 企业知识库问答 |
-| **RAG 组件** | BGE-M3 / bge-reranker-large / MinerU / MinIO / MongoDB | 混合向量、精排、PDF 解析、对象存储、会话历史（rag_knowledge） |
+| **RAG 组件** | BGE-M3 / bge-reranker-large / MinerU / MinIO / MongoDB | 混合向量、精排、PDF 解析、对象存储、会话历史（rag_knowledge）；bge-m3 + bge-reranker-v2-m3 本地模型（charplot, modelscope 预下载） |
 | **搜索** | Tavily | 联网检索 |
 | **视频处理** | yt-dlp + ffmpeg + SenseVoice | 下载引擎、音视频合并、ASR 转写（video_downloader） |
 | **前端** | Vue 3 + Vite + TS/JS + Element Plus | 组合式 API、WebSocket / SSE |
@@ -67,15 +68,21 @@
 ```
 charlotte_savanna/
 ├── charlotte_savanna/       # Django 配置包（settings 拆分 dev/prod）
-├── app/minimall/            # 商城业务（Django，9 个模型 + 缓存）
+├── app/
+│   ├── minimall/            # 商城业务（Django，9 个模型 + 缓存）
+│   └── charplot/            # CharPlot 闯关学习数据端（Django，12 表 + 规则层）
 ├── project/
 │   ├── deep_search/         # 深度检索智能体（DeepAgents + FastAPI + Vue）
 │   ├── menu/                # 餐厅智能助手（LangChain Agent + FastAPI + Vue）
 │   ├── video_downloader/    # B 站视频下载站（FastAPI + yt-dlp + Vue）
 │   ├── rag_knowledge/       # 工业级 RAG 知识库问答（LangGraph + Milvus + 评估体系）
-│   └── rag_text2sql/        # RAG Text2SQL 查询智能体（LangGraph + Qdrant/ES + MySQL 双库）
-├── templates/               # 全局模板（minimall + admin）
-├── sh/                      # 启动脚本（deep_search / menu / video_downloader 前后端）
+│   ├── rag_text2sql/        # RAG Text2SQL 查询智能体（LangGraph + Qdrant/ES + MySQL 双库）
+│   └── charplot/            # CharPlot AI 能力端（FastAPI + LangGraph/DeepAgents/LangChain + Vue）
+├── templates/
+│   ├── minimall/            # 商城页面模板（base + partials）
+│   ├── charplot/            # report_share.html（/r/{slug} 公开分享页）
+│   └── admin/               # 自定义 Admin 模板
+├── sh/                      # 各子项目启动脚本（后端/AI 端 + 前端, 见快速开始启动表）
 ├── demo/                    # 自学教程（非业务代码）
 │   └── SUMMARY.md           # 知识点学习总结
 ├── docs/                    # Agent 定义、triage 规范、学习笔记
@@ -149,6 +156,16 @@ charlotte_savanna/
 - **前端**：Vue 3 + Vite（SSE 步骤流 + 结果表格），召回率/准确率排查手册见子项目 README §6
 - 详见 [`project/rag_text2sql/README.md`](project/rag_text2sql/README.md)
 
+### charplot — AI 闯关学习网站（双后端子项目）
+
+输入想学的知识（一句话 / 文档 / 网页 / 管理员预建知识库）→ AI 自动获取并解构成技能树图谱 → 渐进生成闯关题目 → 游戏化答题（心动值 / 连胜 / XP）→ 通关复盘可分享。实践「Django 状态端 + FastAPI AI 能力端」双后端微服务与 LangGraph / DeepAgents / LangChain 三件套分工（文档先行模式：CONTEXT / CONTRACT / DESIGN / QA + 4 个 ADR + 14 个 Issue tickets）。
+
+- **知识管道（LangGraph）**：解析（txt/md/html/pdf/docx/pptx/网页链接）→ LLM 主内容分析 → 联网搜索增强（Tavily / Context7 / 文档 / 知识库检索源可插拔）→ 图谱解构（章节 → 知识点 + 前置依赖边）
+- **闯关规则（Django 纯规则, 无 LLM）**：判分（选择/判断/填空三题型）/ 5 心动值安全失败 / 断点续答重开 / XP 等级 / 连胜冻结 / 间隔复习混入 Top 20% 易错题（易错分 × 时间衰减）
+- **RAG 知识库（LangChain, FastAPI 侧）**：管理员上传文档 → bge-m3 切分 embedding → Milvus 混合检索 + query rewrite + bge-reranker-v2-m3 精排（本地 modelscope 模型, rerank 缺失自动降级）→ 主题卡片直达 Journey
+- **后台分析**：掌握度矩阵 / 活动统计 / 易错清单（事实聚合）+ LLM 文字版状态总结 + 题目反馈标记
+- 详见 [`project/charplot/README.md`](project/charplot/README.md)
+
 ### demo — 自学教程（非业务）
 
 Python 基础、LangChain 1.3、LangGraph 1.2、DeepAgents 0.7、FastAPI 的渐进式教程，仅作学习参考。另有 [`SUMMARY.md`](demo/SUMMARY.md)（知识点学习总结）。
@@ -160,7 +177,7 @@ Python 基础、LangChain 1.3、LangGraph 1.2、DeepAgents 0.7、FastAPI 的渐�
 ### 环境要求
 
 - Python 3.13、Node.js 18+
-- MySQL、Redis（必需）；Milvus（menu 子项目语义检索需要）
+- MySQL、Redis（必需）；Milvus（menu 语义检索 / charplot 知识库 RAG 需要）
 
 ### 安装
 
@@ -184,10 +201,11 @@ cp .env.example .env               # 填入真实 API Key
 | deep_search | `sh/deep_search_backend.sh` | `sh/deep_search_frontend.sh` |
 | menu | `sh/menu_backend.sh` | `sh/menu_frontend.sh` |
 | video_downloader | `sh/video_downloader_backend.sh` | `sh/video_downloader_frontend.sh` |
-| rag_knowledge | `python -m project.rag_knowledge.app.api.server` | 内建页面 |
-| rag_text2sql | `cd project/rag_text2sql && python main.py` | `cd project/rag_text2sql/frontend && npm run dev` |
+| rag_knowledge | `sh/rag_knowledge.sh`（8100, 无独立前端） | 内建页面 |
+| rag_text2sql | `sh/rag_text2sql_backend.sh` | `sh/rag_text2sql_frontend.sh` |
+| charplot | Django 主项目 `python manage.py runserver`（8000）+ `sh/charplot_backend.sh`（AI 端 8004） | `sh/charplot_frontend.sh`（9004） |
 
-子项目前端首次运行需在对应 `ui/` 目录执行 `npm install`。
+所有子项目后端/前端脚本均在 `sh/` 目录；前端脚本首次运行自动执行 `npm install`（deep_search / menu 对应 `ui/` 目录，其余为 `frontend/`）。Django 主项目依赖 MySQL + Redis；charplot 额外依赖 Milvus + modelscope 本地模型。
 
 ---
 
@@ -199,7 +217,7 @@ cp .env.example .env               # 填入真实 API Key
 - **LLM（Embedding）**：`CLOSEAI_*`
 - **数据库**：`MYSQL_*`（Django + demo）、`PGSQL_*`（PostgreSQL demo）
 - **缓存 / 向量**：`REDIS_URL`、`MILVUS_*`（`MILVUS_URL` / `MILVUS_DATABASE_NAME` / `MILVUS_COLLECTION_NAME`）
-- **子项目专用**：`MENU_*`（menu）、`DS_*`（deep_search）、`RK_*`（rag_knowledge）；video_downloader 独立 `.env`（`MEMBER_KEY` / `BILI_COOKIE` / `LLM_*` / `ASR_*`）；rag_text2sql 不依赖 `.env`（配置在子项目 `conf/*.yaml`，本地私有不提交）
+- **子项目专用**：`MENU_*`（menu）、`DS_*`（deep_search）、`RK_*`（rag_knowledge）、`CHARPLOT_*`（charplot, 含 `CHARPLOT_MODELSCOPE_ROOT` 本地模型根与两端同值的 `CHARPLOT_INTERNAL_TOKEN`）；video_downloader 独立 `.env`（`MEMBER_KEY` / `BILI_COOKIE` / `LLM_*` / `ASR_*`）；rag_text2sql 不依赖 `.env`（配置在子项目 `conf/*.yaml`，本地私有不提交）
 - **Django**：`DJANGO_*`
 - **外部服务**：`TAVILY_API_KEY`、`LANGSMITH_*`
 
@@ -216,6 +234,7 @@ cp .env.example .env               # 填入真实 API Key
 | [project/video_downloader/README.md](project/video_downloader/README.md) | video_downloader 子项目文档 |
 | [project/rag_knowledge/README.md](project/rag_knowledge/README.md) | rag_knowledge 子项目文档 |
 | [project/rag_text2sql/README.md](project/rag_text2sql/README.md) | rag_text2sql 子项目文档 |
+| [project/charplot/README.md](project/charplot/README.md) | charplot 子项目文档（架构 / 流程 / 启动 / 已知问题） |
 | [docs/](docs/) | Agent 定义、triage 规范、学习笔记 |
 
 ---
