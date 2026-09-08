@@ -42,6 +42,12 @@ LINK_FETCH_TIMEOUT = float(os.environ.get("CHARPLOT_LINK_FETCH_TIMEOUT", "10"))
 LLM_RETRIES = int(os.environ.get("CHARPLOT_LLM_RETRIES", "1"))
 
 # ---- RAG 全链路 (Issue 10, rag/ 模块) ----
+# modelscope 本地模型根目录 (modelscope 下载平铺结构: {root}/models/{org}/{name}).
+# 模型加载前经 resolve_local_model_path 解析到本地目录, 本地缺失时报错
+# (embedding) / 降级 (rerank), 杜绝库静默从 HF 重新下载 (bge-m3 约 2GB)
+MODELSCOPE_ROOT = os.environ.get(
+    "CHARPLOT_MODELSCOPE_ROOT", r"D:/__WorkSpace__/modelscope"
+)
 # Milvus 向量库地址 (与 deep_search 共用实例, 值相同但变量名独立;
 # 未配置时索引/检索不可用)
 MILVUS_URL = os.environ.get("CHARPLOT_MILVUS_URL", "http://localhost:19530")
@@ -49,8 +55,12 @@ MILVUS_URL = os.environ.get("CHARPLOT_MILVUS_URL", "http://localhost:19530")
 # bge-m3 (pymilvus BGEM3EmbeddingFunction, 本地模型稠密+稀疏一次出),
 # 新增模型实现 Embedder 协议并在 get_embedder 注册
 EMBEDDING_MODEL = os.environ.get("CHARPLOT_EMBEDDING_MODEL", "bge-m3")
-# bge-m3 本地模型路径/名称 (HuggingFace 名或本地目录), 设备与 fp16 加速
-EMBEDDING_MODEL_NAME = os.environ.get("CHARPLOT_EMBEDDING_MODEL_NAME", "BAAI/bge-m3")
+# bge-m3 本地模型路径 (modelscope 下载目录, 或 "BAAI/bge-m3" 风格引用 →
+# 加载前自动解析 MODELSCOPE_ROOT/models/BAAI/bge-m3), 设备与 fp16 加速
+EMBEDDING_MODEL_NAME = os.environ.get(
+    "CHARPLOT_EMBEDDING_MODEL_NAME",
+    str(Path(MODELSCOPE_ROOT) / "models" / "BAAI" / "bge-m3"),
+)
 EMBEDDING_DEVICE = os.environ.get("CHARPLOT_EMBEDDING_DEVICE", "cpu")
 EMBEDDING_FP16 = os.environ.get("CHARPLOT_EMBEDDING_FP16", "false").lower() in (
     "1",
@@ -63,8 +73,12 @@ EMBEDDING_DIM = int(os.environ.get("CHARPLOT_EMBEDDING_DIM", "1024"))
 CHUNK_SIZE = int(os.environ.get("CHARPLOT_CHUNK_SIZE", "500"))
 CHUNK_OVERLAP = int(os.environ.get("CHARPLOT_CHUNK_OVERLAP", "50"))
 # Rerank 模型 (必配链路, 抽象可切换): 本地 bge-reranker-v2-m3
-# (FlagReranker), 配置留空 = 降级不重排 (warning, 模型下载为主动行为)
-RERANKER_MODEL = os.environ.get("CHARPLOT_RERANKER_MODEL", "BAAI/bge-reranker-v2-m3")
+# (FlagReranker), 值为 modelscope 本地路径 / HF 风格引用 (经 resolve_local_model_path
+# 解析); 本地未找到 = 降级 Noop 不精排 (warning 日志明示原因), 不触发自动下载
+RERANKER_MODEL = os.environ.get(
+    "CHARPLOT_RERANKER_MODEL",
+    str(Path(MODELSCOPE_ROOT) / "models" / "BAAI" / "bge-reranker-v2-m3"),
+)
 RERANKER_DEVICE = os.environ.get("CHARPLOT_RERANKER_DEVICE", "cpu")
 RERANKER_FP16 = os.environ.get("CHARPLOT_RERANKER_FP16", "false").lower() in (
     "1",
@@ -80,3 +94,24 @@ QUERY_REWRITE = os.environ.get("CHARPLOT_QUERY_REWRITE", "true").lower() in (
     "true",
     "yes",
 )
+
+
+def resolve_local_model_path(model_ref: str) -> str | None:
+    """把模型引用解析为**已存在**的本地模型目录 (含 config.json), 否则 None.
+
+    解析顺序:
+    1. 引用本身即本地目录 (绝对/相对路径, 如 .env 里显式配置的 modelscope 路径)
+    2. `org/name` 风格引用 (HF / modelscope 命名, 如 "BAAI/bge-m3") →
+       拼接 MODELSCOPE_ROOT/models/{org}/{name} 平铺布局
+
+    返回 None 表示本地不存在 → 调用方据此报错 (embedding) 或降级 (rerank),
+    不触发库级自动下载.
+    """
+    ref = Path(model_ref.strip())
+    if ref.is_dir() and (ref / "config.json").is_file():
+        return str(ref)
+    if len(ref.parts) == 2:  # org/name 风格引用
+        candidate = Path(MODELSCOPE_ROOT) / "models" / ref.parts[0] / ref.parts[1]
+        if (candidate / "config.json").is_file():
+            return str(candidate)
+    return None
