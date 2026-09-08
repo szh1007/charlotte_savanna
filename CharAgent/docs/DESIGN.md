@@ -89,7 +89,7 @@ while not done:
 
 | 阶段 | 范围 | 难点 | 产出物 | 验收标准 |
 |------|------|------|--------|----------|
-| **P0** | 核心 loop + 可靠性 + 测试 | #1-5、#10-11、#13、#61-63、#65 | model.py + tool.py + loop.py + stream.py + retry.py + checkpoint/ + models.py + alembic/ + tests/ | 带工具的 agent loop 跑通；checkpoint 可断点续跑；mock LLM 单测通过 |
+| **P0** | 核心 loop + 可靠性 + 测试 | #1-5、#10-11、#13、#61-63、#65 | model/ + tool/ + loop/ + stream/ + hooks/ + retry/ + checkpoint/ + alembic/ + tests/ | 带工具的 agent loop 跑通；checkpoint 可断点续跑；mock LLM 单测通过 |
 | **P1** | 可靠性加固 + 安全 + RAG + demo | #6-7、#14-27、#29-30、#35、#38、#45-47 | server（SSE 接口）+ 客服 demo + 安全/降级/队列/RAG 模块 | 客服 demo 端到端跑通（提问→检索→回复→转人工）；SSE 流式输出；高危操作需审批 |
 | **P2** | 记忆/成本/可观测/多 agent/能力扩展/评估/工程化 | #8-9、#12、#28、#31-34、#36-37、#39-44、#48-60、#64、#66-67 | 记忆/成本/可观测/多 agent/MCP/Skills/Eval/数据模型/部署/工程底座模块 | 完整生产级能力：多租户隔离、成本追踪、指标告警、多 agent 协作、评估回归、无状态水平扩展 |
 
@@ -162,35 +162,34 @@ while not done:
 
 ```text
 CharAgent/
+├── __init__.py                 # 框架包入口（公共 API 汇聚导出）
 ├── docs/
 │   ├── DESIGN.md               # 项目总览（本文件）：核心架构 / 技术栈 / 选型 / 难点清单 / 面试导航
 │   ├── CONTEXT.md              # 领域术语表（glossary）
 │   ├── design/                 # 详细设计文档（01-架构 / 02-数据模型 / 03-API / 04-测试 / 05-路线图）
 │   ├── adr/                    # 架构决策记录（0001-0007）
 │   └── difficulties/           # 70 个编号难点详细清单（14 个分类文件）
-├── CharAgent/                  # 框架包（agent runtime，业务无关）
-│   ├── __init__.py
-│   ├── model.py                # P0  ChatModel 协议 + httpx/openai 双实现 + reasoning 兼容
-│   ├── tool.py                 # P0  @tool 装饰器 + JSON schema 生成
-│   ├── loop.py                 # P0  手写 agent loop（并行/纠错/循环防护）
-│   ├── stream.py               # P0  流式事件（SSE）
-│   ├── hooks.py                # P0  hook 注册表骨架（空注册零成本，ADR-0007）
-│   ├── retry.py                # P0  重试 + 退避 + 幂等键
-│   ├── checkpoint/             # P0  base / memory / redis / postgres + 序列化协议
-│   ├── guard.py                # P1  输入/输出护栏 + 脱敏 + HITL + 审计
-│   ├── ratelimit.py            # P1  限流算法（固定/滑动窗口 + 令牌桶/漏桶）
-│   ├── lock.py                 # P1  分布式锁
-│   ├── logging.py              # P1  结构化日志 + Prometheus 指标最小集
-│   ├── rag/                    # P1  数据摄取 / 检索 / 评估
-│   └── plugins/                # P2  可插拔模块（配置注册 + 惰性 import，ADR-0007）
-│       ├── memory/             # P2  四层记忆 + 多租户隔离
-│       ├── cost/               # P2  成本追踪 + token 计量 + 分级路由 + 缓存 + batch
-│       ├── observability/      # P2  日志 + 指标 + trace + 版本化
-│       ├── multiagent/         # P2  Supervisor / P2P / handoff
-│       ├── mcp/                # P2  MCP client + server
-│       ├── skills/             # P2  Agent Skills
-│       ├── eval/               # P2  评估 + 调试 + 数据飞轮
-│       └── context_engineering/ # P2  上下文工程 + 意图澄清
+├── model/                      # P0  ChatModel 协议 + httpx/openai 双实现 + reasoning 兼容
+├── tool/                       # P0  @tool 装饰器 + JSON schema 生成
+├── loop/                       # P0  手写 agent loop（并行/纠错/循环防护）
+├── stream/                     # P0  流式事件总线（thinking/tool_call/tool_result/final + reasoning）
+├── hooks/                      # P0  hook 注册表骨架（空注册零成本，ADR-0007）
+├── retry/                      # P0  重试 + 退避 + 幂等键
+├── checkpoint/                 # P0  base / memory / redis / postgres + 序列化协议
+├── guard/                      # P1  输入/输出护栏 + 脱敏 + HITL + 审计
+├── ratelimit/                  # P1  限流算法（固定/滑动窗口 + 令牌桶/漏桶）
+├── lock/                       # P1  分布式锁
+├── logging/                    # P1  结构化日志 + Prometheus 指标最小集
+├── rag/                        # P1  数据摄取 / 检索 / 评估
+├── plugins/                    # P2  可插拔模块（配置注册 + 惰性 import，ADR-0007）
+│   ├── memory/                 # P2  四层记忆 + 多租户隔离
+│   ├── cost/                   # P2  成本追踪 + token 计量 + 分级路由 + 缓存 + batch
+│   ├── observability/          # P2  日志 + 指标 + trace + 版本化
+│   ├── multiagent/             # P2  Supervisor / P2P / handoff
+│   ├── mcp/                    # P2  MCP client + server
+│   ├── skills/                 # P2  Agent Skills
+│   ├── eval/                   # P2  评估 + 调试 + 数据飞轮
+│   └── context_engineering/    # P2  上下文工程 + 意图澄清
 ├── server/                     # P1  FastAPI 服务（SSE 接口 + 任务队列）
 ├── demo/                       # P1  智能客服 demo（Ticket / Escalation）
 └── tests/                      # P0  单元 / 集成 / E2E 测试
