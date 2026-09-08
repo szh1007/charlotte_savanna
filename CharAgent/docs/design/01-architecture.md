@@ -9,7 +9,7 @@
 
 | 层 | 职责 | 阶段 |
 |----|------|------|
-| 框架层 `handcraft_agent/` | 业务无关的 agent runtime（model / tool / loop / stream / checkpoint / guard / ratelimit / lock / rag） | P0-P2 |
+| 框架层 `CharAgent/` | 业务无关的 agent runtime（model / tool / loop / stream / checkpoint / guard / ratelimit / lock / rag） | P0-P2 |
 | 服务层 `server/` | FastAPI + SSE + TaskQueue，承载 RAG 检索与客服业务工具注册 | P1 |
 | Demo 层 `demo/` | 电商售后客服：Ticket / Escalation / HITL 审批，业务工具集 | P1 |
 | 前端 | Vue 3 + EventSource：`/chat` 用户端 + `/admin` 审批/接管台 | P1 |
@@ -31,7 +31,7 @@ flowchart TB
         HITL["HITL 审批模块"]
     end
 
-    subgraph Framework["handcraft_agent 框架包"]
+    subgraph Framework["CharAgent 框架包"]
         Loop["AgentLoop (while 循环)"]
         Model["ChatModel 协议<br/>httpx 裸调 / openai SDK 双适配器"]
         Tool["@tool 注册 + JSON schema"]
@@ -127,7 +127,7 @@ while not done:
 | `on_tool_executed` | 工具执行完成 | observability（工具成功率）、audit |
 | `on_event` | 每个 StreamEvent 产生 | observability（trace 采集） |
 
-注册表骨架 P0 落地（`handcraft_agent/hooks.py`，空注册零成本）。
+注册表骨架 P0 落地（`CharAgent/hooks.py`，空注册零成本）。
 
 ### 4.3 SPI（可替换接口）
 
@@ -141,7 +141,7 @@ while not done:
 
 ### 4.4 P2 挂载机制
 
-- P2 模块目录：`handcraft_agent/plugins/<module>/`（multiagent / mcp / skills / memory / cost / observability / eval / context_engineering）
+- P2 模块目录：`CharAgent/plugins/<module>/`（multiagent / mcp / skills / memory / cost / observability / eval / context_engineering）
 - 启用方式：配置 `PLUGINS={"memory": {}, "cost": {...}}` + 惰性 import（`importlib` 按配置加载）
 - 依赖方向：**P2 → 核心**单向依赖，核心只提供 hook 点与 SPI
 

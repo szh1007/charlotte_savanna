@@ -17,7 +17,7 @@
 | P0-7 | 五实体数据模型（thread/run/message/tool_call/checkpoint）定义 + Postgres 表 + alembic 初始化 | `models.py` + `alembic/` | #5, #12(实体部分) |
 | P0-8 | 分层测试 + MockLLM（固定/脚本化/录制回放）+ 轨迹断言 + 快照测试 | `tests/` | #61, #62, #63 |
 
-验收：CLI `python -m handcraft_agent.cli` 跑通带工具问答；checkpoint 中断续跑演示；`pytest tests/` 全绿。
+验收：CLI `python -m CharAgent.cli` 跑通带工具问答；checkpoint 中断续跑演示；`pytest tests/` 全绿。
 
 ## P1：可靠性加固 + 安全 + RAG + 客服 demo
 
@@ -36,7 +36,7 @@
 | P1-9 | RAG：文档摄取（pypdf + 清洗 + 元数据 + chunk）、Milvus 检索（metadata 过滤 + 引用溯源）、语义缓存 SPI 预留 | `rag/` | #45, #46, #47 |
 | P1-10 | 结构化输出（response_format + json_schema + 校验重试）、上下文压缩（摘要 + 截断，不破坏 tool 结构） | `loop.py` | #6, #7 |
 | P1-11 | Token 计量（请求前预估 + usage 回填 + 预算挂钩） | `retry.py` / `model.py` | #35 |
-| P1-12 | 结构化日志（structlog JSON + request_id/trace_id/thread_id 贯穿 + 脱敏前置）+ 指标最小集（Prometheus 文本格式） | `handcraft_agent/logging.py` + 核心层配置（observability 插件属 P2） | #38, #39 |
+| P1-12 | 结构化日志（structlog JSON + request_id/trace_id/thread_id 贯穿 + 脱敏前置）+ 指标最小集（Prometheus 文本格式） | `CharAgent/logging.py` + 核心层配置（observability 插件属 P2） | #38, #39 |
 | P1-13 | 客服 demo：业务工具集（订单查询 / 物流 / 退款审批 / FAQ / 知识库检索 / 转人工）、Ticket/Escalation/Approval 表、转人工接管流程 | `demo/` | #19, #25 |
 | P1-14 | 前端：Vue 3 + EventSource（`/chat` 用户端 + `/admin` 审批/接管台）、事件渐进渲染 | `ui/` | #4 |
 

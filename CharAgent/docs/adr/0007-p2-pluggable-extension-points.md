@@ -11,13 +11,13 @@
 
 ## 决策
 
-核心库（`handcraft_agent/`）只定义三类轻量扩展机制：
+核心库（`CharAgent/`）只定义三类轻量扩展机制：
 
 1. **事件总线**：StreamEvent 四类事件（thinking / tool_call / tool_result / final）本就是 P0 的流式输出通道，P2 模块（observability、cost）订阅同一条事件流
 2. **hook 点**：`before_turn` / `after_turn` / `on_model_call` / `on_tool_executed` 等生命周期回调，注册表骨架 P0 落地（空实现零成本），P2 模块（memory、guard 扩展）按需挂载
 3. **SPI**：可替换接口——`ChatModel` / `CheckpointSaver` / `EmbeddingProvider` / `ModelRouter` / `SemanticCache`，P2 提供新实现类经配置注册
 
-P2 模块作为同仓库独立子包（`handcraft_agent/plugins/` 平级目录），**配置注册 + 惰性 import** 启用，核心代码不出现对 P2 的 import。
+P2 模块作为同仓库独立子包（`CharAgent/plugins/` 平级目录），**配置注册 + 惰性 import** 启用，核心代码不出现对 P2 的 import。
 
 ## 决策记录
 

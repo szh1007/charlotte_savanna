@@ -1,8 +1,8 @@
-# SPEC: handcraft_agent — 手写 Agent Runtime + 电商售后智能客服
+# SPEC: CharAgent — 手写 Agent Runtime + 电商售后智能客服
 
 > Status: ready-for-agent
 > Type: spec
-> 来源: `project/handcraft_agent/`（README + CONTEXT + docs/design/01-05 + docs/adr/0001-0007 + docs/difficulties/01-14）
+> 来源: `CharAgent/docs/`（DESIGN + CONTEXT + design/01-05 + adr/0001-0007 + difficulties/01-14）
 > 编制: 2026-08-18 | 关联决策: 13 轮设计访谈（已全部落盘为 ADR 与 design 文档）
 
 ---
@@ -17,7 +17,7 @@
 
 ## 2. Solution
 
-从零实现一个**业务无关的 agent runtime 框架包**（`handcraft_agent/`），在其上构建**电商售后客服 demo**（FastAPI + SSE + Vue 前端双路由），覆盖 70 个编号难点：
+从零实现一个**业务无关的 agent runtime 框架包**（`CharAgent/`），在其上构建**电商售后客服 demo**（FastAPI + SSE + Vue 前端双路由），覆盖 70 个编号难点：
 
 - **P0 框架核心**：手写 agent loop（并行工具、错误自纠错、循环防护）、ChatModel 协议（httpx 裸调 + openai SDK 双适配器）、@tool 装饰器、流式事件总线 + hook 骨架、重试退避、checkpoint 三实现、五实体数据模型 + alembic、分层测试（CLI 可演示）
 - **P1 服务 + demo 闭环**：FastAPI server（REST + SSE + TaskQueue）、熔断/超时/幂等/Saga/分布式锁/限流、四层安全护栏 + HITL 审批 + 脱敏 + 审计、RAG（Milvus 检索）、结构化输出、日志指标、客服 demo 端到端（提问→检索→回复→转人工）、Vue 前端（/chat + /admin）
@@ -29,7 +29,7 @@
 
 ### 学习者（框架使用方）
 
-1. 作为学习者，我想用 CLI（`python -m handcraft_agent.cli`）直接跑通一个带工具的问答，以便不依赖 server 就能验证 agent loop 行为。
+1. 作为学习者，我想用 CLI（`python -m CharAgent.cli`）直接跑通一个带工具的问答，以便不依赖 server 就能验证 agent loop 行为。
 2. 作为学习者，我想查看手写 agent loop 的完整实现（while 循环：模型决策→并行工具执行→tool_result 消息回填→事件产出），以便理解 LangGraph/DeepAgents 黑盒之下发生了什么。
 3. 作为学习者，我想通过 httpx 裸调实现看清 `/chat/completions` 协议细节（tool_calls 结构 / usage / finish_reason / reasoning_content / SSE 流式），以便理解 SDK 帮我藏了什么。
 4. 作为学习者，我想对比 httpx 裸调与 openai SDK 两个适配器对同一输入产生等价结果，以便评估「自研 vs SDK」的取舍。
@@ -93,11 +93,11 @@
 
 | 层 | 位置 | 职责 | 阶段 |
 |----|------|------|------|
-| 框架层 | `handcraft_agent/` | 业务无关 runtime：model / tool / loop / stream / hooks / retry / checkpoint / guard / ratelimit / lock / rag / logging | P0-P2 |
+| 框架层 | `CharAgent/` | 业务无关 runtime：model / tool / loop / stream / hooks / retry / checkpoint / guard / ratelimit / lock / rag / logging | P0-P2 |
 | 服务层 | `server/` | FastAPI + REST + SSE + TaskQueue，RAG 检索与业务工具注册 | P1 |
 | Demo 层 | `demo/` | 电商售后客服：业务工具集 + Ticket/Escalation/Approval | P1 |
 | 前端 | `ui/`（Vue 3 + EventSource） | `/chat` 用户端 + `/admin` 审批/接管台 | P1 |
-| P2 插件 | `handcraft_agent/plugins/`（8 模块） | multiagent / mcp / skills / memory / cost / observability / eval / context_engineering | P2 |
+| P2 插件 | `CharAgent/plugins/`（8 模块） | multiagent / mcp / skills / memory / cost / observability / eval / context_engineering | P2 |
 
 ### 4.2 核心协议与接口
 
@@ -222,7 +222,7 @@ E2E 的 SSE 事件序列断言是核心验收 seam：`thinking → tool_call →
 
 - **前置服务**（本机已具备）：Postgres（本机）、Redis（Docker）、Milvus（Docker）、MySQL（minimall 库，只读账号）；`.env` 按 `.env.example` 配置
 - **依赖**：已登记 requirements.txt（新增 alembic / pytest / pytest-asyncio / respx）；Python 3.13 + 根 .venv 复用
-- **启动入口**：P0 `python -m handcraft_agent.cli`；P1 `python -m server.main` + `npm run dev`
+- **启动入口**：P0 `python -m CharAgent.cli`；P1 `python -m server.main` + `npm run dev`
 - **测试运行**：`pytest tests/`（默认全 mock）；`RUN_INTEGRATION=1 pytest tests/integration/`；checkpoint Postgres 测试需本机 PG
-- **文档体系**：README（总览+难点索引）/ CONTEXT（术语表）/ docs/design/（01 架构、02 数据模型、03 API 协议、04 测试计划、05 路线图）/ docs/adr/（0001-0007）/ docs/difficulties/（14 类 70 编号）
+- **文档体系**：docs/DESIGN.md（总览+难点索引）/ docs/CONTEXT.md（术语表）/ docs/design/（01 架构、02 数据模型、03 API 协议、04 测试计划、05 路线图）/ docs/adr/（0001-0007）/ docs/difficulties/（14 类 70 编号）
 - **实施起点**：P0-1（model.py ChatModel 协议 + 双适配器 + reasoning 兼容分支）→ P0-2（tool.py）并行，依赖顺序见 05-roadmap.md §依赖顺序要点

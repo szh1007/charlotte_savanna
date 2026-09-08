@@ -1,4 +1,4 @@
-# handcraft_agent
+# CharAgent
 
 一个从零手写的轻量 AI Agent 运行时框架 + 智能客服 demo，用于吃透 Agent 底层原理（工具调用循环、状态管理、流式、安全、成本、可观测）
 

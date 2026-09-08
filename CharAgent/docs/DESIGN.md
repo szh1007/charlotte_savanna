@@ -1,4 +1,4 @@
-# handcraft_agent
+# CharAgent
 
 从零手写的轻量 AI Agent 运行时框架 + 智能客服 demo。目标：吃透 AI Agent 底层原理（agent loop、状态管理、流式、安全、成本、可观测、测试、评估），覆盖企业级 Agent 项目的常见问题、难点与面试考点。
 
@@ -77,13 +77,13 @@ while not done:
 
 | ADR | 决策 | 一句话理由 |
 |-----|------|-----------|
-| [0001](docs/adr/0001-thin-chatmodel-protocol.md) | 薄 `ChatModel` 协议，不做多 provider 抽象 | 胶水层偏离「手写 loop」主线 |
-| [0002](docs/adr/0002-checkpoint-redis-postgres-dual.md) | Checkpoint 用 Redis + Postgres 双实现 | 两种存储语义差异，SQLite 无法体现 |
-| [0003](docs/adr/0003-httpx-raw-plus-openai-sdk-dual-adapter.md) | httpx 裸调 + openai SDK 双适配器 | 看清协议细节 + 贴近生产实际 |
-| [0004](docs/adr/0004-generic-framework-plus-support-demo.md) | 通用框架 + 电商售后客服 demo 双形态 | 框架难点全覆盖 + 业务落地自证 |
-| [0005](docs/adr/0005-sse-streaming.md) | 流式输出用 SSE，非 WebSocket | 单向推送刚好匹配，可直通转发 |
-| [0006](docs/adr/0006-inprocess-asyncio-task-queue.md) | 进程内 asyncio 队列起步，预留分布式 MQ | 单实例阶段零部署，抽象保切换 |
-| [0007](docs/adr/0007-p2-pluggable-extension-points.md) | P2 模块可插拔化（事件总线 + hook + SPI） | P2 与 P0/P1 低耦合，互不影响验收 |
+| [0001](adr/0001-thin-chatmodel-protocol.md) | 薄 `ChatModel` 协议，不做多 provider 抽象 | 胶水层偏离「手写 loop」主线 |
+| [0002](adr/0002-checkpoint-redis-postgres-dual.md) | Checkpoint 用 Redis + Postgres 双实现 | 两种存储语义差异，SQLite 无法体现 |
+| [0003](adr/0003-httpx-raw-plus-openai-sdk-dual-adapter.md) | httpx 裸调 + openai SDK 双适配器 | 看清协议细节 + 贴近生产实际 |
+| [0004](adr/0004-generic-framework-plus-support-demo.md) | 通用框架 + 电商售后客服 demo 双形态 | 框架难点全覆盖 + 业务落地自证 |
+| [0005](adr/0005-sse-streaming.md) | 流式输出用 SSE，非 WebSocket | 单向推送刚好匹配，可直通转发 |
+| [0006](adr/0006-inprocess-asyncio-task-queue.md) | 进程内 asyncio 队列起步，预留分布式 MQ | 单实例阶段零部署，抽象保切换 |
+| [0007](adr/0007-p2-pluggable-extension-points.md) | P2 模块可插拔化（事件总线 + hook + SPI） | P2 与 P0/P1 低耦合，互不影响验收 |
 
 ## 分阶段计划
 
@@ -101,20 +101,20 @@ while not done:
 
 | 类别 | 难点编号 | 详细文件 |
 |------|---------|---------|
-| ① 核心循环 | #1-12 | [01-core-loop.md](docs/difficulties/01-core-loop.md) |
-| ② 稳定性/降级 | #13-22 | [02-stability.md](docs/difficulties/02-stability.md) |
-| ③ 安全 | #23-30 | [03-security.md](docs/difficulties/03-security.md) |
-| ④ 记忆 | #31-33 | [04-memory.md](docs/difficulties/04-memory.md) |
-| ⑤ 成本 | #34-37 | [05-cost.md](docs/difficulties/05-cost.md) |
-| ⑥ 可观测 | #38-41 | [06-observability.md](docs/difficulties/06-observability.md) |
-| ⑦ 多 agent | #42-44 | [07-multiagent.md](docs/difficulties/07-multiagent.md) |
-| ⑧ RAG | #45-49 | [08-rag.md](docs/difficulties/08-rag.md) |
-| ⑨ 能力扩展 | #50-54 | [09-extensions.md](docs/difficulties/09-extensions.md) |
-| ⑩ 架构与策略 | #55-57 | [10-architecture.md](docs/difficulties/10-architecture.md) |
-| ⑪ 评估与迭代 | #58-60 | [11-evaluation.md](docs/difficulties/11-evaluation.md) |
-| ⑫ 测试 | #61-63 | [12-testing.md](docs/difficulties/12-testing.md) |
-| ⑬ 工程化与部署 | #64-67 | [13-engineering.md](docs/difficulties/13-engineering.md) |
-| ⑭ 横切基础点 | #68-70 | [14-cross-cutting.md](docs/difficulties/14-cross-cutting.md) |
+| ① 核心循环 | #1-12 | [01-core-loop.md](difficulties/01-core-loop.md) |
+| ② 稳定性/降级 | #13-22 | [02-stability.md](difficulties/02-stability.md) |
+| ③ 安全 | #23-30 | [03-security.md](difficulties/03-security.md) |
+| ④ 记忆 | #31-33 | [04-memory.md](difficulties/04-memory.md) |
+| ⑤ 成本 | #34-37 | [05-cost.md](difficulties/05-cost.md) |
+| ⑥ 可观测 | #38-41 | [06-observability.md](difficulties/06-observability.md) |
+| ⑦ 多 agent | #42-44 | [07-multiagent.md](difficulties/07-multiagent.md) |
+| ⑧ RAG | #45-49 | [08-rag.md](difficulties/08-rag.md) |
+| ⑨ 能力扩展 | #50-54 | [09-extensions.md](difficulties/09-extensions.md) |
+| ⑩ 架构与策略 | #55-57 | [10-architecture.md](difficulties/10-architecture.md) |
+| ⑪ 评估与迭代 | #58-60 | [11-evaluation.md](difficulties/11-evaluation.md) |
+| ⑫ 测试 | #61-63 | [12-testing.md](difficulties/12-testing.md) |
+| ⑬ 工程化与部署 | #64-67 | [13-engineering.md](difficulties/13-engineering.md) |
+| ⑭ 横切基础点 | #68-70 | [14-cross-cutting.md](difficulties/14-cross-cutting.md) |
 
 ### 难点编号分布
 
@@ -161,13 +161,14 @@ while not done:
 ## 目录结构
 
 ```text
-handcraft_agent/
-├── README.md                   # 项目说明 + 70 点难点清单 + 面试导航
-├── CONTEXT.md                  # 领域术语表（glossary）
+CharAgent/
 ├── docs/
+│   ├── DESIGN.md               # 项目总览（本文件）：核心架构 / 技术栈 / 选型 / 难点清单 / 面试导航
+│   ├── CONTEXT.md              # 领域术语表（glossary）
 │   ├── design/                 # 详细设计文档（01-架构 / 02-数据模型 / 03-API / 04-测试 / 05-路线图）
-│   └── adr/                     # 架构决策记录（0001-0007）
-├── handcraft_agent/            # 框架包（agent runtime，业务无关）
+│   ├── adr/                    # 架构决策记录（0001-0007）
+│   └── difficulties/           # 70 个编号难点详细清单（14 个分类文件）
+├── CharAgent/                  # 框架包（agent runtime，业务无关）
 │   ├── __init__.py
 │   ├── model.py                # P0  ChatModel 协议 + httpx/openai 双实现 + reasoning 兼容
 │   ├── tool.py                 # P0  @tool 装饰器 + JSON schema 生成
@@ -179,15 +180,15 @@ handcraft_agent/
 │   ├── ratelimit.py            # P1  限流算法（固定/滑动窗口 + 令牌桶/漏桶）
 │   ├── lock.py                 # P1  分布式锁
 │   ├── rag/                    # P1  数据摄取 / 检索 / 评估
-│   ├── plugins/                # P2  可插拔模块（配置注册 + 惰性 import，ADR-0007）
-│   │   ├── memory/             # P2  四层记忆 + 多租户隔离
-│   │   ├── cost/               # P2  成本追踪 + token 计量 + 分级路由 + 缓存 + batch
-│   │   ├── observability/      # P2  日志 + 指标 + trace + 版本化
-│   │   ├── multiagent/         # P2  Supervisor / P2P / handoff
-│   │   ├── mcp/                # P2  MCP client + server
-│   │   ├── skills/             # P2  Agent Skills
-│   │   ├── eval/               # P2  评估 + 调试 + 数据飞轮
-│   │   └── context_engineering/ # P2  上下文工程 + 意图澄清
+│   └── plugins/                # P2  可插拔模块（配置注册 + 惰性 import，ADR-0007）
+│       ├── memory/             # P2  四层记忆 + 多租户隔离
+│       ├── cost/               # P2  成本追踪 + token 计量 + 分级路由 + 缓存 + batch
+│       ├── observability/      # P2  日志 + 指标 + trace + 版本化
+│       ├── multiagent/         # P2  Supervisor / P2P / handoff
+│       ├── mcp/                # P2  MCP client + server
+│       ├── skills/             # P2  Agent Skills
+│       ├── eval/               # P2  评估 + 调试 + 数据飞轮
+│       └── context_engineering/ # P2  上下文工程 + 意图澄清
 ├── server/                     # P1  FastAPI 服务（SSE 接口 + 任务队列）
 ├── demo/                       # P1  智能客服 demo（Ticket / Escalation）
 └── tests/                      # P0  单元 / 集成 / E2E 测试
@@ -199,13 +200,13 @@ handcraft_agent/
 
 | 阶段 | 运行入口 | 说明 |
 |------|---------|------|
-| P0 | `python -m handcraft_agent.cli` | CLI 跑通 loop（不依赖 server），checkpoint 断点续跑 + 单测 |
+| P0 | `python -m CharAgent.cli` | CLI 跑通 loop（不依赖 server），checkpoint 断点续跑 + 单测 |
 | P1 | `python -m server.main` + 前端 `npm run dev` | FastAPI + SSE，客服 demo 端到端 |
 | P2 | 各插件按需启用 | 评估集跑分、trace 面板、记忆/多 agent 演示 |
 
 ## 文档索引
 
 - [CONTEXT.md](CONTEXT.md) — 领域术语表
-- [docs/design/](docs/design/) — 详细设计文档（01-架构总览 / 02-数据模型 / 03-Server API 与事件协议 / 04-测试计划 / 05-路线图）
-- [docs/adr/](docs/adr/) — 架构决策记录（0001-0007，与实现同步演进）
-- [docs/difficulties/](docs/difficulties/) — 70 个编号难点详细清单（14 个分类文件）
+- [design/](design/) — 详细设计文档（01-架构总览 / 02-数据模型 / 03-Server API 与事件协议 / 04-测试计划 / 05-路线图）
+- [adr/](adr/) — 架构决策记录（0001-0007，与实现同步演进）
+- [difficulties/](difficulties/) — 70 个编号难点详细清单（14 个分类文件）
