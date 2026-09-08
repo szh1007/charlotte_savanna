@@ -7,6 +7,6 @@
 **Status:** ready-for-agent
 
 - [ ] openai SDK 适配器实现 ChatModel 协议（非流式 + 流式）
-- [ ] 契约测试：httpx 裸调 vs openai SDK 对同一 mock 输入产生等价 ModelResponse（#61 契约测试）
+- [ ] 契约测试：httpx 裸调 vs openai SDK 对同一 mock 输入产生等价 ModelResponse（#63 契约测试）
 - [ ] reasoning_content 两实现均正确分离（有/无推理字段两分支）
 - [ ] 流式 delta 累积结果与非流式一致

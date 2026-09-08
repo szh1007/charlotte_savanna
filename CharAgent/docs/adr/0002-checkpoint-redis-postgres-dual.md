@@ -1,7 +1,7 @@
 # ADR-0002: Checkpoint 用 Redis + Postgres 双实现（跳过 SQLite）
 
 - 状态: accepted
-- 日期: 2026-08-18（自 README 选型 0002 拆出；补充确认：本机 Postgres 与 Redis 均已运行）
+- 日期: 2026-08-18（自 DESIGN.md 选型 0002 拆出；补充确认：本机 Postgres 与 Redis 均已运行）
 - 考虑过的方案: SQLite——拒绝，无法体现并发与事务语义差异；仅 InMemory——拒绝，无法演示生产级持久化
 - 后果: 需维护 Redis/Postgres 连接管理；本地运行需 Redis + Postgres 服务
 

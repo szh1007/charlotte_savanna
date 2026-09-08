@@ -87,7 +87,7 @@
 
 ## 4. Implementation Decisions
 
-> 全部决策来源：`docs/adr/0001-0007` + `docs/design/01-05` + 13 轮设计访谈（2026-08-18）。此处为总纲，冲突时以 ADR/design 文档为准。
+> 全部决策来源：`CharAgent/docs/adr/0001-0007` + `CharAgent/docs/design/01-05` + 13 轮设计访谈（2026-08-18）。此处为总纲，冲突时以 ADR/design 文档为准。
 
 ### 4.1 架构分层
 
@@ -224,5 +224,5 @@ E2E 的 SSE 事件序列断言是核心验收 seam：`thinking → tool_call →
 - **依赖**：已登记 requirements.txt（新增 alembic / pytest / pytest-asyncio / respx）；Python 3.13 + 根 .venv 复用
 - **启动入口**：P0 `python -m CharAgent.cli`；P1 `python -m server.main` + `npm run dev`
 - **测试运行**：`pytest tests/`（默认全 mock）；`RUN_INTEGRATION=1 pytest tests/integration/`；checkpoint Postgres 测试需本机 PG
-- **文档体系**：docs/DESIGN.md（总览+难点索引）/ docs/CONTEXT.md（术语表）/ docs/design/（01 架构、02 数据模型、03 API 协议、04 测试计划、05 路线图）/ docs/adr/（0001-0007）/ docs/difficulties/（14 类 70 编号）
-- **实施起点**：P0-1（model.py ChatModel 协议 + 双适配器 + reasoning 兼容分支）→ P0-2（tool.py）并行，依赖顺序见 05-roadmap.md §依赖顺序要点
+- **文档体系**：CharAgent/docs/DESIGN.md（总览+难点索引）/ CharAgent/docs/CONTEXT.md（术语表）/ CharAgent/docs/design/（01 架构、02 数据模型、03 API 协议、04 测试计划、05 路线图）/ CharAgent/docs/adr/（0001-0007）/ CharAgent/docs/difficulties/（14 类 70 编号）
+- **实施起点**：P0-1（model.py ChatModel 协议 + 双适配器 + reasoning 兼容分支）→ P0-2（tool.py）并行，依赖顺序见 CharAgent/docs/design/05-roadmap.md §依赖顺序要点

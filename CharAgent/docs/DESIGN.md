@@ -89,7 +89,7 @@ while not done:
 
 | 阶段 | 范围 | 难点 | 产出物 | 验收标准 |
 |------|------|------|--------|----------|
-| **P0** | 核心 loop + 可靠性 + 测试 | #1-5、#10-11、#13、#61-63、#65 | model.py + tool.py + loop.py + stream.py + retry.py + checkpoint/ + tests/ | 带工具的 agent loop 跑通；checkpoint 可断点续跑；mock LLM 单测通过 |
+| **P0** | 核心 loop + 可靠性 + 测试 | #1-5、#10-11、#13、#61-63、#65 | model.py + tool.py + loop.py + stream.py + retry.py + checkpoint/ + models.py + alembic/ + tests/ | 带工具的 agent loop 跑通；checkpoint 可断点续跑；mock LLM 单测通过 |
 | **P1** | 可靠性加固 + 安全 + RAG + demo | #6-7、#14-27、#29-30、#35、#38、#45-47 | server（SSE 接口）+ 客服 demo + 安全/降级/队列/RAG 模块 | 客服 demo 端到端跑通（提问→检索→回复→转人工）；SSE 流式输出；高危操作需审批 |
 | **P2** | 记忆/成本/可观测/多 agent/能力扩展/评估/工程化 | #8-9、#12、#28、#31-34、#36-37、#39-44、#48-60、#64、#66-67 | 记忆/成本/可观测/多 agent/MCP/Skills/Eval/数据模型/部署/工程底座模块 | 完整生产级能力：多租户隔离、成本追踪、指标告警、多 agent 协作、评估回归、无状态水平扩展 |
 
@@ -174,11 +174,13 @@ CharAgent/
 │   ├── tool.py                 # P0  @tool 装饰器 + JSON schema 生成
 │   ├── loop.py                 # P0  手写 agent loop（并行/纠错/循环防护）
 │   ├── stream.py               # P0  流式事件（SSE）
+│   ├── hooks.py                # P0  hook 注册表骨架（空注册零成本，ADR-0007）
 │   ├── retry.py                # P0  重试 + 退避 + 幂等键
 │   ├── checkpoint/             # P0  base / memory / redis / postgres + 序列化协议
 │   ├── guard.py                # P1  输入/输出护栏 + 脱敏 + HITL + 审计
 │   ├── ratelimit.py            # P1  限流算法（固定/滑动窗口 + 令牌桶/漏桶）
 │   ├── lock.py                 # P1  分布式锁
+│   ├── logging.py              # P1  结构化日志 + Prometheus 指标最小集
 │   ├── rag/                    # P1  数据摄取 / 检索 / 评估
 │   └── plugins/                # P2  可插拔模块（配置注册 + 惰性 import，ADR-0007）
 │       ├── memory/             # P2  四层记忆 + 多租户隔离
