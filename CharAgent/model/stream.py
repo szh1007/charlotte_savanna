@@ -1,10 +1,13 @@
-"""SSE 流式解析: chunk delta 累积为完整响应 (issue 01 检查项: delta 累积).
+"""流式 chunk 累积: delta 增量拼装为完整响应 (issue 01 检查项: delta 累积).
+
+SSE 线协议逐行解析在 client 侧完成, 本模块只处理已反序列化的
+chunk 对象 (SDK 端同样调用, 故不依赖 SSE 文本格式).
 
 - content / reasoning_content 增量拼接 (#11)
 - tool_calls 按 index 分片累积: id / name 首 chunk 给, arguments 增量拼接 (#10)
 - usage-only chunk (stream_options.include_usage) 收尾累积 token 计量
 
-增量字段类型校验与 parsing.parse_chat_completion 一致: 畸形 chunk (如多模态
+增量字段类型校验与 parse.parse_chat_completion 一致: 畸形 chunk (如多模态
 content 数组) 抛 ModelProtocolError 而非裸 TypeError.
 """
 
@@ -14,9 +17,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from CharAgent.model.errors import ModelProtocolError
-from CharAgent.model.parsing import parse_finish_reason, parse_usage
-from CharAgent.model.types import FinishReason, ModelResponse, ModelToolCall, Usage
+from CharAgent.model.parse import parse_finish_reason, parse_usage
+from CharAgent.model.utils.errors import ModelProtocolError
+from CharAgent.model.utils.types import (
+    FinishReason,
+    ModelResponse,
+    ModelToolCall,
+    Usage,
+)
 
 
 @dataclass(slots=True)

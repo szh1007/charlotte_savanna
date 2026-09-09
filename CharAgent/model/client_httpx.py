@@ -1,7 +1,7 @@
 """httpx 裸调适配器: 自己拼 POST /chat/completions, 解析响应与 SSE 流 (ADR-0003).
 
 教学定位: 本类显式展示 SDK 隐藏的协议细节 (请求体 / tool_calls 结构 / delta 累积);
-行为与 openai SDK 适配器 (sdk.py) 等价, issue 02 契约测试约束.
+行为与 openai SDK 适配器 (client_sdk.py) 等价, issue 02 契约测试约束.
 
 - _resolve_payload: 组装请求体 (调用级参数优先于实例默认, None 不携带)
 - _post: 请求发送 + 错误语义映射 (超时/连接 -> 瞬态, 非 2xx -> ModelStatusError)
@@ -17,25 +17,25 @@ from typing import Any
 
 import httpx
 
-from CharAgent.model.config import (
+from CharAgent.model.parse import extract_error_message, parse_chat_completion
+from CharAgent.model.stream import (
+    _StreamAccumulator,
+    apply_sse_chunk,
+    build_stream_response,
+)
+from CharAgent.model.utils.config import (
     DEFAULT_BASE_URL,
     DEFAULT_MODEL,
     strip_provider_prefix,
 )
-from CharAgent.model.errors import (
+from CharAgent.model.utils.errors import (
     ModelConfigError,
     ModelConnectionError,
     ModelProtocolError,
     ModelStatusError,
     ModelTimeoutError,
 )
-from CharAgent.model.parsing import extract_error_message, parse_chat_completion
-from CharAgent.model.sse import (
-    _StreamAccumulator,
-    apply_sse_chunk,
-    build_stream_response,
-)
-from CharAgent.model.types import ModelMessage, ModelResponse, ToolSpec
+from CharAgent.model.utils.types import ModelMessage, ModelResponse, ToolSpec
 
 
 class HttpXChatModel:

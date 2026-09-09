@@ -2,7 +2,7 @@
 
 覆盖 issue 01 检查项: tool_calls 结构 / reasoning 分离 / finish_reason 取值 /
 usage 映射 / SSE delta 累积状态机 / 环境变量构建.
-网络侧行为见 test_model_httpx.py.
+网络侧行为见 test_client_httpx.py.
 """
 
 from __future__ import annotations
@@ -20,19 +20,19 @@ from CharAgent.model import (
     chat_model_from_env,
     openai_chat_model_from_env,
 )
-from CharAgent.model.config import strip_provider_prefix
-from CharAgent.model.parsing import (
+from CharAgent.model.parse import (
     parse_chat_completion,
     parse_finish_reason,
     parse_tool_calls,
     parse_usage,
 )
-from CharAgent.model.sse import (
+from CharAgent.model.stream import (
     _accumulate_delta,
     _StreamAccumulator,
     apply_sse_chunk,
     build_stream_response,
 )
+from CharAgent.model.utils.config import strip_provider_prefix
 
 # ---------------------------------------------------------------------------
 # 样本: 以真实 DeepSeek 响应结构为准 (非流式 message.reasoning_content / 流式 delta)

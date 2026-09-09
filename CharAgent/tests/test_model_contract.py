@@ -5,7 +5,7 @@ ModelResponse —— 语义字段 (content / reasoning / finish_reason / tool_ca
 usage / model) 全等; raw 允许差异 (SDK model_dump 与 wire 有规范化差异).
 
 同时约束请求侧: 对同一调用参数, 两适配器发出的请求体相等
-(openai SDK 对显式 None 参数不剔除, 需与 http._resolve_payload 保持
+(openai SDK 对显式 None 参数不剔除, 需与 client_httpx._resolve_payload 保持
 「None 不携带」同语义, 此处防两处实现 drift).
 
 网络由 respx 拦截, 不触网.

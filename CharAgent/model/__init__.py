@@ -13,21 +13,24 @@
 messages 与 tools 使用 OpenAI 兼容 wire dict 直通 /chat/completions, 不引入中间
 消息模型, SDK 适配器与 MockLLM (issue 09) 复用同一格式.
 
-模块分工 (按用途拆分, 便于审查):
-- config.py   适配器共享配置: 默认端点 / 模型名 / provider 前缀剥离
-- types.py    响应数据结构: FinishReason / ModelToolCall / Usage / ModelResponse
-- errors.py   异常语义: 瞬态 / 永久区分 (retryable, 供 P0-5 retry 判断)
-- parsing.py  响应解析纯函数 (非流式字段映射 + 错误体提取, 双适配器共用)
-- sse.py      SSE 流式 delta 累积状态机 (内容 / reasoning / tool_calls 分片)
-- protocol.py ChatModel 薄协议 (SPI, 双适配器与 MockLLM 实现同一协议)
-- http.py     httpx 裸调适配器 + 环境变量工厂
-- sdk.py      openai SDK 适配器 (响应 / chunk 对象 model_dump 回 wire 结构,
-              复用同一组解析纯函数保证与 http.py 行为一致)
+模块分工 (顶层 = 协议行为模块, utils/ = 静态支撑物, 便于审查):
+- protocol.py       ChatModel 薄协议 (SPI, 双适配器与 MockLLM 实现同一协议)
+- client_httpx.py   httpx 裸调适配器 + 环境变量工厂
+- client_sdk.py     openai SDK 适配器 (响应 / chunk 对象 model_dump 回 wire 结构,
+                    复用同一组解析纯函数保证与 client_httpx.py 行为一致)
+- parse.py          响应解析纯函数 (非流式字段映射 + 错误体提取, 双适配器共用)
+- stream.py         流式 delta 累积状态机 (内容 / reasoning / tool_calls 分片)
+- utils/config.py   适配器共享配置: 默认端点 / 模型名 / provider 前缀剥离
+- utils/errors.py   异常语义: 瞬态 / 永久区分 (retryable, 供 P0-5 retry 判断)
+- utils/types.py    响应数据结构: FinishReason / ModelToolCall / Usage / ModelResponse
 """
 
 from __future__ import annotations
 
-from CharAgent.model.errors import (
+from CharAgent.model.client_httpx import HttpXChatModel, chat_model_from_env
+from CharAgent.model.client_sdk import OpenAIChatModel, openai_chat_model_from_env
+from CharAgent.model.protocol import ChatModel
+from CharAgent.model.utils.errors import (
     ModelConfigError,
     ModelConnectionError,
     ModelError,
@@ -35,10 +38,7 @@ from CharAgent.model.errors import (
     ModelStatusError,
     ModelTimeoutError,
 )
-from CharAgent.model.http import HttpXChatModel, chat_model_from_env
-from CharAgent.model.protocol import ChatModel
-from CharAgent.model.sdk import OpenAIChatModel, openai_chat_model_from_env
-from CharAgent.model.types import (
+from CharAgent.model.utils.types import (
     FinishReason,
     ModelMessage,
     ModelResponse,

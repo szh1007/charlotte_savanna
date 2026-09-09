@@ -1,23 +1,23 @@
 """openai SDK 适配器: SDK 封装传输 / SSE 行解析 / JSON 反序列化 (ADR-0003, issue 02).
 
-教学对比 (与 http.py 并列, 同一 ChatModel 协议):
-- http.py: 手拼 /chat/completions 请求体, 手解 SSE 文本行, 手调 json.loads,
-  自己把 wire JSON 解析为 ModelResponse
-- sdk.py:  参数传给 client.chat.completions.create, 传输 / SSE 解析 /
+教学对比 (与 client_httpx.py 并列, 同一 ChatModel 协议):
+- client_httpx.py: 手拼 /chat/completions 请求体, 手解 SSE 文本行,
+  手调 json.loads, 自己把 wire JSON 解析为 ModelResponse
+- client_sdk.py:   参数传给 client.chat.completions.create, 传输 / SSE 解析 /
   反序列化全由 SDK 完成 (内建重试已关, max_retries=0, 统一归 P0-5 retry 层);
-  拿到响应 / chunk 对象后 model_dump() 还原为 wire 结构, 喂给与 http.py
-  同一组解析纯函数 (parsing / sse) —— 「SDK 帮你藏了什么」: 藏的是传输与
+  拿到响应 / chunk 对象后 model_dump() 还原为 wire 结构, 喂给与 client_httpx.py
+  同一组解析纯函数 (parse / stream) —— 「SDK 帮你藏了什么」: 藏的是传输与
   序列化细节, 协议字段语义 (tool_calls / reasoning / usage) 不变.
 
 两适配器行为一致性 (对同一输入产出等价 ModelResponse) 由契约测试
 tests/test_model_contract.py 约束 (#63); 模型名 / base_url / 采样参数语义
-与 http.py 对齐 (DeepSeek OpenAI 兼容端点), 默认配置见 config.py.
+与 client_httpx.py 对齐 (DeepSeek OpenAI 兼容端点), 默认配置见 utils/config.py.
 
 注意: openai SDK 对显式传入的 None 参数不会剔除 (会发 "tools": null 等),
-因此请求参数组装与 http._resolve_payload 相同的「None 不携带」语义,
+因此请求参数组装与 client_httpx._resolve_payload 相同的「None 不携带」语义,
 否则与服务端默认行为产生差异.
 
-配置入口: openai_chat_model_from_env 与 http.chat_model_from_env 同语义,
+配置入口: openai_chat_model_from_env 与 client_httpx.chat_model_from_env 同语义,
 同一个根 .env 的 DEEPSEEK_* 变量按需构建任一适配器.
 """
 
@@ -30,12 +30,18 @@ from typing import Any
 
 import openai
 
-from CharAgent.model.config import (
+from CharAgent.model.parse import extract_error_message, parse_chat_completion
+from CharAgent.model.stream import (
+    _StreamAccumulator,
+    apply_sse_chunk,
+    build_stream_response,
+)
+from CharAgent.model.utils.config import (
     DEFAULT_BASE_URL,
     DEFAULT_MODEL,
     strip_provider_prefix,
 )
-from CharAgent.model.errors import (
+from CharAgent.model.utils.errors import (
     ModelConfigError,
     ModelConnectionError,
     ModelError,
@@ -43,17 +49,11 @@ from CharAgent.model.errors import (
     ModelStatusError,
     ModelTimeoutError,
 )
-from CharAgent.model.parsing import extract_error_message, parse_chat_completion
-from CharAgent.model.sse import (
-    _StreamAccumulator,
-    apply_sse_chunk,
-    build_stream_response,
-)
-from CharAgent.model.types import ModelMessage, ModelResponse, ToolSpec
+from CharAgent.model.utils.types import ModelMessage, ModelResponse, ToolSpec
 
 
 def _map_api_error(exc: openai.APIError) -> ModelError:
-    """openai SDK 异常层级 -> 本项目错误语义 (与 http.py 映射一致, 供 retry 判断).
+    """openai SDK 异常层级 -> 本项目错误语义 (与 client_httpx.py 一致, 供 retry 判断).
 
     覆盖: 超时 / 连接失败 -> 瞬态, 非 2xx -> ModelStatusError (429 / 5xx 瞬态,
     其余 4xx 永久).
@@ -98,7 +98,7 @@ class OpenAIChatModel:
 
         Args:
             api_key: DeepSeek API Key (必填, 参考根 .env.example).
-            base_url: API 根地址, 可含 /v1 路径, 与 http.py 同语义.
+            base_url: API 根地址, 可含 /v1 路径, 与 client_httpx.py 同语义.
             model: OpenAI 兼容模型名 (裸名, 无 provider 前缀).
             timeout: 单次请求超时秒数, 默认 60, 语义同 HttpXChatModel.timeout.
             temperature: 默认采样温度, 调用级可覆盖 (#68).
@@ -118,7 +118,7 @@ class OpenAIChatModel:
         self._temperature = temperature
         self._top_p = top_p
         self._seed = seed
-        # max_retries=0: 重试策略统一归 P0-5 retry 层 (与 http.py 一致),
+        # max_retries=0: 重试策略统一归 P0-5 retry 层 (与 client_httpx.py 一致),
         # SDK 内建重试会绕过业务重试的退避 / 熔断 / 幂等设计
         self._client = openai.AsyncOpenAI(
             api_key=api_key, base_url=base_url, timeout=timeout, max_retries=0
@@ -134,7 +134,7 @@ class OpenAIChatModel:
         top_p: float | None,
         seed: int | None,
     ) -> dict[str, Any]:
-        """组装 create() 调用参数: 与 http._resolve_payload 同语义.
+        """组装 create() 调用参数: 与 client_httpx._resolve_payload 同语义.
 
         None 不携带 (SDK 对显式 None 不剔除, 会发 "tools": null 等服务端
         可能不接受的 null 值, 因此不能直接透传).
@@ -171,7 +171,7 @@ class OpenAIChatModel:
         stream: bool = False,
     ) -> ModelResponse:
         """见 ChatModel.generate. SDK 返回对象 model_dump() 回 wire 结构后,
-        走与 http.py 相同的解析纯函数 (parse_chat_completion / apply_sse_chunk).
+        走与 client_httpx.py 相同的解析纯函数 (parse_chat_completion / apply_sse_chunk).
         """
         kwargs = self._resolve_kwargs(
             messages,
@@ -187,7 +187,8 @@ class OpenAIChatModel:
             raise _map_api_error(exc) from exc
         except json.JSONDecodeError as exc:
             # SDK 对 2xx + content-type json 但 body 非法的响应抛裸 JSONDecodeError
-            # (不经 APIError 层级), 与 http.py 的「非 JSON -> ModelProtocolError」对齐
+            # (不经 APIError 层级), 与 client_httpx.py 的
+            # 「非 JSON -> ModelProtocolError」对齐
             raise ModelProtocolError("非流式响应不是合法 JSON") from exc
         if not stream:
             if not hasattr(completion, "model_dump"):
@@ -200,7 +201,7 @@ class OpenAIChatModel:
     async def _accumulate_stream(self, stream: Any) -> ModelResponse:
         """SDK 流式 chunk 逐块累积 (内容 / reasoning / tool_calls 分片).
 
-        chunk.model_dump() 后喂给与 http._generate_stream 相同的
+        chunk.model_dump() 后喂给与 client_httpx._generate_stream 相同的
         apply_sse_chunk / build_stream_response —— 同一累积状态机约束
         双适配器流式结果一致 (issue 02 契约).
         """
@@ -212,7 +213,7 @@ class OpenAIChatModel:
             raise _map_api_error(exc) from exc
         except json.JSONDecodeError as exc:
             # 流内坏 JSON 行: SDK 迭代解析时抛裸 JSONDecodeError,
-            # 文案与 http.py 的 SSE 畸形报错同语义 (含前 100 字符上下文)
+            # 文案与 client_httpx.py 的 SSE 畸形报错同语义 (含前 100 字符上下文)
             malformed = getattr(exc, "doc", "") or str(exc)
             raise ModelProtocolError(
                 f"SSE chunk 不是合法 JSON: {str(malformed)[:100]!r}"
@@ -239,7 +240,7 @@ def openai_chat_model_from_env(
     base_url: str | None = None,
     model: str | None = None,
 ) -> OpenAIChatModel:
-    """从环境变量构建 SDK 适配器: 与 http.chat_model_from_env 同语义.
+    """从环境变量构建 SDK 适配器: 与 client_httpx.chat_model_from_env 同语义.
 
     同一组根 .env 变量 (DEEPSEEK_API_KEY / DEEPSEEK_API_BASE /
     DEEPSEEK_MODEL_NAME), 按需选择 httpx 裸调或 openai SDK 实现;

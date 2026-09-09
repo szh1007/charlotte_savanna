@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from CharAgent.model.types import ModelMessage, ModelResponse, ToolSpec
+from CharAgent.model.utils.types import ModelMessage, ModelResponse, ToolSpec
 
 
 class ChatModel(Protocol):

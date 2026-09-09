@@ -14,8 +14,8 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
-from CharAgent.model.errors import ModelProtocolError
-from CharAgent.model.types import (
+from CharAgent.model.utils.errors import ModelProtocolError
+from CharAgent.model.utils.types import (
     FinishReason,
     ModelResponse,
     ModelToolCall,
