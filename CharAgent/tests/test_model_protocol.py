@@ -2,7 +2,7 @@
 
 覆盖 issue 01 检查项: tool_calls 结构 / reasoning 分离 / finish_reason 取值 /
 usage 映射 / SSE delta 累积状态机 / 环境变量构建.
-网络侧行为见 test_client_httpx.py.
+网络侧行为见 test_model_client_httpx.py.
 """
 
 from __future__ import annotations
