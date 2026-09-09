@@ -1,4 +1,8 @@
-"""非流式 /chat/completions 响应解析 (纯函数, 不依赖网络, 可直接单测).
+"""/chat/completions 响应解析纯函数 (不依赖网络, 可直接单测).
+
+- 非流式成功响应: choices / message / finish_reason / usage 字段映射
+- 错误响应体: extract_error_message 提取可读错误信息
+  (httpx 裸调与 openai SDK 适配器共用, 保证错误语义一致)
 
 字段缺失视为畸形响应并显式抛 ModelProtocolError, 供上层决定重试或纠错
 (而非静默返回残缺结果).
@@ -6,6 +10,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from typing import Any
 
@@ -16,6 +21,21 @@ from CharAgent.model.types import (
     ModelToolCall,
     Usage,
 )
+
+
+def extract_error_message(body: str) -> str:
+    """从错误响应体提取可读信息: 优先 OpenAI 风格 {"error": {"message"}}.
+
+    非 JSON 错误体回退截断原文.
+    """
+    try:
+        data = json.loads(body)
+        error = data.get("error")
+        if isinstance(error, dict) and error.get("message"):
+            return str(error["message"])
+    except (json.JSONDecodeError, AttributeError):
+        pass
+    return body[:300] or "(空响应体)"
 
 
 def parse_finish_reason(value: Any) -> FinishReason:

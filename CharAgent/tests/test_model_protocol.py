@@ -18,8 +18,9 @@ from CharAgent.model import (
     ModelResponse,
     ModelToolCall,
     chat_model_from_env,
+    openai_chat_model_from_env,
 )
-from CharAgent.model.http import _strip_provider_prefix
+from CharAgent.model.config import strip_provider_prefix
 from CharAgent.model.parsing import (
     parse_chat_completion,
     parse_finish_reason,
@@ -570,7 +571,7 @@ def test_model_response_has_tool_calls_property() -> None:
     ],
 )
 def test_strip_provider_prefix(raw: str, expected: str) -> None:
-    assert _strip_provider_prefix(raw) == expected
+    assert strip_provider_prefix(raw) == expected
 
 
 def test_chat_model_from_env_strips_langchain_prefix() -> None:
@@ -604,3 +605,20 @@ def test_chat_model_from_env_explicit_empty_api_key_raises() -> None:
     """显式 api_key 为空串视为配置错误, 不静默回退 env (显式覆盖优先级语义)."""
     with pytest.raises(ModelConfigError, match="DEEPSEEK_API_KEY"):
         chat_model_from_env({"DEEPSEEK_API_KEY": "sk-env"}, api_key="")
+
+
+async def test_both_from_env_factories_resolve_same_config() -> None:
+    """双适配器工厂对同一 env 解析出相同 model / base_url (配置入口一致, 防 drift)."""
+    env = {
+        "DEEPSEEK_API_KEY": "sk-test",
+        "DEEPSEEK_MODEL_NAME": "deepseek:deepseek-v4-flash",
+    }
+    http_model = chat_model_from_env(env)
+    sdk_model = openai_chat_model_from_env(env)
+    try:
+        assert http_model.model == sdk_model.model == "deepseek-v4-flash"
+        assert http_model.base_url == sdk_model.base_url == "https://api.deepseek.com"
+        assert sdk_model.api_key == http_model.api_key == "sk-test"
+    finally:
+        await http_model.aclose()
+        await sdk_model.aclose()

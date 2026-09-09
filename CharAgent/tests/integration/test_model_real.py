@@ -1,7 +1,9 @@
-"""真实 DeepSeek API 集成测试 (issue 01: RUN_INTEGRATION=1 可跑).
+"""真实 DeepSeek API 集成测试 (issue 01 + 02: RUN_INTEGRATION=1 可跑).
 
 验证真实协议字段: 非流式 tool_calls 结构 / usage / finish_reason /
-reasoning_content 分离, SSE 流式 delta 累积, tools wire 格式被真实端点接受.
+reasoning_content 分离, SSE 流式 delta 累积, tools wire 格式被真实端点接受,
+以及 openai SDK 适配器在真实端点上 behavior 与 httpx 适配器一致
+(SDK 的 extra 字段保留 reasoning_content, 流式 delta 同样累积).
 默认跳过, 运行: RUN_INTEGRATION=1 pytest tests/integration/
 (需根 .env 配置 DEEPSEEK_* 密钥)
 """
@@ -16,7 +18,13 @@ import pytest
 from dotenv import load_dotenv
 from helpers import TOOL_SCHEMA
 
-from CharAgent.model import FinishReason, HttpXChatModel, chat_model_from_env
+from CharAgent.model import (
+    FinishReason,
+    HttpXChatModel,
+    OpenAIChatModel,
+    chat_model_from_env,
+    openai_chat_model_from_env,
+)
 
 # 根 .env 位于本文件向上三层: tests/integration -> tests -> CharAgent -> 仓库根
 load_dotenv(Path(__file__).resolve().parents[3] / ".env")
@@ -37,6 +45,11 @@ if not os.getenv("DEEPSEEK_API_KEY"):
 def make_chat_model() -> HttpXChatModel:
     """复用 .env 的 DEEPSEEK_* 配置 (模型名前缀自动剥离, 见 chat_model_from_env)."""
     return chat_model_from_env()
+
+
+def make_sdk_model() -> OpenAIChatModel:
+    """SDK 适配器, 同一 .env 配置构建 (与 httpx 侧同配置, 便于对比行为)."""
+    return openai_chat_model_from_env()
 
 
 async def test_non_stream_text_fields() -> None:
@@ -108,3 +121,42 @@ async def test_tools_wire_format_accepted() -> None:
     assert call.name == "query_order"
     arguments = json.loads(call.arguments)  # arguments 是合法 JSON 字符串
     assert arguments["order_no"] == "20260701123456"
+
+
+# ---------------------------------------------------------------------------
+# issue 02: openai SDK 适配器在真实端点上的行为验证 (与 httpx 适配器同配置)
+# ---------------------------------------------------------------------------
+
+
+async def test_sdk_non_stream_reasoning_content_separated() -> None:
+    """SDK 路径: 真实 reasoning_content 经 SDK extra 字段保留并分离 (#11)."""
+    sdk = make_sdk_model()
+    response = await sdk.generate(
+        [{"role": "user", "content": "17 乘以 23 等于多少?只回答数字"}],
+        temperature=0,
+    )
+    await sdk.aclose()
+    assert response.reasoning  # SDK 未丢弃推理字段 (extra 保留)
+    assert response.content
+    assert response.content != response.reasoning
+    assert response.finish_reason is FinishReason.STOP
+    assert response.usage is not None and response.usage.total_tokens > 0
+    assert response.model == sdk.model  # SDK 回显模型名与实际配置一致
+
+
+async def test_sdk_stream_accumulates_reasoning_and_usage() -> None:
+    """SDK 流式: 真实 delta 分片 (含 reasoning_content) 经 chunk 累积为完整响应."""
+    sdk = make_sdk_model()
+    response = await sdk.generate(
+        [{"role": "user", "content": "用一句话解释什么是 idempotency key"}],
+        temperature=0,
+        stream=True,
+    )
+    await sdk.aclose()
+    assert response.content and isinstance(response.content, str)
+    assert response.reasoning  # 流式 delta.reasoning_content 经 SDK chunk 累积成功
+    assert response.finish_reason is FinishReason.STOP
+    assert (
+        response.usage is not None and response.usage.total_tokens > 0
+    )  # include_usage 生效 (SDK 末 chunk usage)
+    assert response.model == sdk.model

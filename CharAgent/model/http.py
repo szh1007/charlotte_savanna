@@ -1,7 +1,7 @@
 """httpx 裸调适配器: 自己拼 POST /chat/completions, 解析响应与 SSE 流 (ADR-0003).
 
 教学定位: 本类显式展示 SDK 隐藏的协议细节 (请求体 / tool_calls 结构 / delta 累积);
-行为与 openai SDK 适配器等价 (issue 02 契约测试约束).
+行为与 openai SDK 适配器 (sdk.py) 等价, issue 02 契约测试约束.
 
 - _resolve_payload: 组装请求体 (调用级参数优先于实例默认, None 不携带)
 - _post: 请求发送 + 错误语义映射 (超时/连接 -> 瞬态, 非 2xx -> ModelStatusError)
@@ -17,6 +17,11 @@ from typing import Any
 
 import httpx
 
+from CharAgent.model.config import (
+    DEFAULT_BASE_URL,
+    DEFAULT_MODEL,
+    strip_provider_prefix,
+)
 from CharAgent.model.errors import (
     ModelConfigError,
     ModelConnectionError,
@@ -24,31 +29,13 @@ from CharAgent.model.errors import (
     ModelStatusError,
     ModelTimeoutError,
 )
-from CharAgent.model.parsing import parse_chat_completion
+from CharAgent.model.parsing import extract_error_message, parse_chat_completion
 from CharAgent.model.sse import (
     _StreamAccumulator,
     apply_sse_chunk,
     build_stream_response,
 )
 from CharAgent.model.types import ModelMessage, ModelResponse, ToolSpec
-
-DEFAULT_BASE_URL = "https://api.deepseek.com"
-DEFAULT_MODEL = "deepseek-v4-flash"
-
-
-def _extract_error_message(body: str) -> str:
-    """从错误响应体提取可读信息: 优先 OpenAI 风格 {"error": {"message"}}.
-
-    非 JSON 错误体回退截断原文.
-    """
-    try:
-        data = json.loads(body)
-        error = data.get("error")
-        if isinstance(error, dict) and error.get("message"):
-            return str(error["message"])
-    except (json.JSONDecodeError, AttributeError):
-        pass
-    return body[:300] or "(空响应体)"
 
 
 class HttpXChatModel:
@@ -157,7 +144,7 @@ class HttpXChatModel:
         if response.status_code >= 400:
             await response.aread()  # 读取错误体 (流式响应同样适用)
             raise ModelStatusError(
-                response.status_code, _extract_error_message(response.text)
+                response.status_code, extract_error_message(response.text)
             )
         return response
 
@@ -237,17 +224,6 @@ class HttpXChatModel:
         await self.aclose()
 
 
-def _strip_provider_prefix(model: str) -> str:
-    """剥离 LangChain 风格 provider:model 前缀 (如 deepseek:deepseek-v4-flash).
-
-    根 .env.example 的 DEEPSEEK_MODEL_NAME 为 LangChain demo 共享, 裸调端点只接受裸名.
-    """
-    if ":" in model:
-        _, _, name = model.partition(":")
-        return name
-    return model
-
-
 def chat_model_from_env(
     env: Mapping[str, str] | None = None,
     *,
@@ -283,5 +259,5 @@ def chat_model_from_env(
     return HttpXChatModel(
         api_key=key,
         base_url=resolved_base,
-        model=_strip_provider_prefix(resolved_model),
+        model=strip_provider_prefix(resolved_model),
     )
