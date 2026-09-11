@@ -211,3 +211,32 @@ async def test_unknown_tool_name_backfilled_actionable() -> None:
     assert "ghost_tool" in backfilled
     assert "echo" in backfilled  # 列出可用工具引导模型改选
     assert result.content == "抱歉, 我没有这个工具"
+
+
+async def test_mixed_known_and_unknown_tools_in_one_message() -> None:
+    """同一 assistant 消息里已知 + 幻觉工具: 同批处理, 各自结果独立回填.
+
+    真实端点上模型常一次给出多个 tool_call, 个别名字幻觉 —— 已知的必须
+    照常执行 (不被未知的拖累), 未知的回填可操作错误 (#1 + #2 交叉).
+    """
+    model = ScriptedModel(
+        [
+            tool_call_response(
+                make_tool_call("echo", '{"message": "hi"}', call_id="call_ok"),
+                make_tool_call("ghost", '{"x": 1}', call_id="call_ghost"),
+            ),
+            text_response("处理完毕"),
+        ]
+    )
+    loop = AgentLoop(model=model, tools=[tool(_echo, name="echo")])
+    result = await loop.run([dict(USER_MSG)])
+
+    tool_msgs = [m for m in result.messages if m["role"] == "tool"]
+    assert len(tool_msgs) == 2
+    # 保序: 与 tool_calls 声明顺序一致, 且各自配对正确的 tool_call_id
+    assert tool_msgs[0]["tool_call_id"] == "call_ok"
+    assert tool_msgs[0]["content"] == "echo:hi"  # 已知工具正常执行
+    assert tool_msgs[1]["tool_call_id"] == "call_ghost"
+    assert "ghost" in tool_msgs[1]["content"]  # 未知工具回填可操作错误
+    assert "echo" in tool_msgs[1]["content"]  # 并列出可用工具
+    assert result.content == "处理完毕"

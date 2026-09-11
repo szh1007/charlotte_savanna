@@ -26,7 +26,7 @@ from mock_llm import (
     tool_call_response,
 )
 
-from CharAgent.agent import AgentLoop, LoopGuard, LoopOutcome
+from CharAgent.agent import AgentLoop, GuardConfigError, LoopGuard, LoopOutcome
 from CharAgent.model.utils.types import FinishReason, ModelMessage, ModelResponse, Usage
 from CharAgent.tool import Tool, tool
 
@@ -81,6 +81,119 @@ def _make_slow_model_step(
 
 ECHO_TOOL = tool(_echo, name="echo")
 TOOL_CALL_STEP = tool_call_response(make_tool_call("echo", '{"message": "x"}'))
+
+
+# ---------------------------------------------------------------------------
+# LoopGuard 纯单元判定 (端到端用例覆盖行为, 这里锁死精确边界与优先级)
+# ---------------------------------------------------------------------------
+
+
+def test_check_after_turn_boundary_is_inclusive() -> None:
+    """边界语义: 恰好等于上限即触发 (>= 而非 >), 差 1 不触发.
+
+    端到端用例只能测到「超限」, 测不出「恰好等于」这个语义选择。
+    """
+    guard = LoopGuard(max_turns=3, max_total_tokens=100)
+    guard.start()
+
+    assert guard.check_after_turn(turn_count=2, total_tokens=99) is None
+    assert guard.check_after_turn(turn_count=3, total_tokens=0) is LoopOutcome.MAX_TURNS
+    assert (
+        guard.check_after_turn(turn_count=2, total_tokens=100)
+        is LoopOutcome.TOKEN_BUDGET
+    )
+
+
+def test_check_after_turn_priority_order() -> None:
+    """三种限制同时命中时的判定优先级: max_turns > token 预算 > wall-clock."""
+    everything = LoopGuard(max_turns=1, max_total_tokens=1, max_duration_seconds=1e-9)
+    everything.start()
+    assert (
+        everything.check_after_turn(turn_count=5, total_tokens=999)
+        is LoopOutcome.MAX_TURNS
+    )
+
+    no_turns = LoopGuard(max_turns=99, max_total_tokens=1, max_duration_seconds=1e-9)
+    no_turns.start()
+    assert (
+        no_turns.check_after_turn(turn_count=1, total_tokens=1)
+        is LoopOutcome.TOKEN_BUDGET
+    )
+
+
+def test_check_after_turn_unlimited_when_none() -> None:
+    """未配置的维度不参与判定 (None = 不限制), 只有 max_turns 兜底."""
+    guard = LoopGuard(max_turns=10)  # 另两项默认 None
+    guard.start()
+
+    assert guard.check_after_turn(turn_count=9, total_tokens=10**9) is None
+    assert guard.check_after_turn(turn_count=10, total_tokens=10**9) is (
+        LoopOutcome.MAX_TURNS
+    )
+
+
+def test_time_limit_boundary_with_injected_clock() -> None:
+    """wall-clock 边界: 恰好等于预算即触发 (固定时钟, 零抖动)."""
+    clock = _FakeClock()
+    guard = LoopGuard(max_duration_seconds=5.0, _time_source=clock)
+    guard.start()
+
+    clock.now = 4.9
+    assert guard.check_after_turn(turn_count=1, total_tokens=0) is None
+    clock.now = 5.0
+    assert (
+        guard.check_after_turn(turn_count=1, total_tokens=0) is LoopOutcome.TIME_LIMIT
+    )
+
+
+def test_elapsed_ms_zero_before_start() -> None:
+    """未 start() 时 elapsed_ms 恒 0 (docstring 契约, 防未初始化计时被误用)."""
+    guard = LoopGuard()
+    assert guard.elapsed_ms == 0.0
+
+
+def test_guard_rejects_non_positive_bounds() -> None:
+    """非法上限一律构造期报错 (fail fast, 不静默放行)."""
+    with pytest.raises(GuardConfigError, match="max_turns"):
+        LoopGuard(max_turns=0)
+    with pytest.raises(GuardConfigError, match="max_total_tokens"):
+        LoopGuard(max_total_tokens=0)
+    with pytest.raises(GuardConfigError, match="max_duration_seconds"):
+        LoopGuard(max_duration_seconds=0)
+
+
+async def test_guard_timer_resets_between_runs() -> None:
+    """复用同一 guard 实例: 每次 run 重新 start() 计时, 上一 run 耗时不计入.
+
+    若 start() 未重新调用, 第二次 run 会带着第一次的耗时直接撞上时长预算。
+    """
+    clock = _FakeClock()
+    guard = LoopGuard(max_duration_seconds=0.05, _time_source=clock)
+
+    async def slow_step(messages: list[ModelMessage]) -> ModelResponse:
+        """脚本元素: 把时钟推到 0.06s (首次 run 耗时超预算)."""
+        clock.now = 0.06
+        return text_response("第一次")
+
+    model = ScriptedModel(
+        [
+            slow_step,
+            # 第二次 run: 先转一轮工具 —— 走 guard 判定点, 才能真正验证重置
+            tool_call_response(make_tool_call("echo", '{"message": "x"}')),
+            text_response("第二次"),
+        ]
+    )
+    loop = AgentLoop(model=model, tools=[ECHO_TOOL], guard=guard)
+
+    first = await loop.run([dict(USER_MSG)])
+    assert first.outcome is LoopOutcome.FINISHED
+    assert first.elapsed_ms == 60.0  # 固定时钟 → 确定性
+
+    clock.now = 0.10  # 时钟继续走, 但起点应已重置为 0.10
+    second = await loop.run([dict(USER_MSG)])
+    assert second.outcome is LoopOutcome.FINISHED  # 未带上第一次的耗时
+    assert second.turn_count == 2
+    assert second.elapsed_ms == 0.0
 
 
 # ---------------------------------------------------------------------------

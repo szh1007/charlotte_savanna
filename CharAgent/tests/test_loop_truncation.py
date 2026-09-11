@@ -22,8 +22,8 @@ from mock_llm import (
     tool_call_response,
 )
 
-from CharAgent.agent import AgentLoop, LoopOutcome, TruncationStrategy
-from CharAgent.model.utils.types import FinishReason, ModelResponse
+from CharAgent.agent import AgentLoop, LoopGuard, LoopOutcome, TruncationStrategy
+from CharAgent.model.utils.types import FinishReason, ModelResponse, Usage
 from CharAgent.tool import tool
 
 USER_MSG = {"role": "user", "content": "写一篇长文"}
@@ -36,9 +36,11 @@ def _echo(
     return f"echo:{message}"
 
 
-def _length_response(content: str | None) -> ModelResponse:
-    """截断响应工厂: 部分内容 + finish_reason=length."""
-    return text_response(content, finish_reason=FinishReason.LENGTH)
+def _length_response(
+    content: str | None, *, usage: Usage | None = None
+) -> ModelResponse:
+    """截断响应工厂: 部分内容 + finish_reason=length (usage 供预算用例)."""
+    return text_response(content, finish_reason=FinishReason.LENGTH, usage=usage)
 
 
 ECHO_TOOL = tool(_echo, name="echo")
@@ -162,6 +164,34 @@ async def test_length_condense_drops_prefix_and_reasks() -> None:
 
     # 原文不丢: 完整保留在 TurnRecord.response (日志/checkpoint 可取)
     assert result.turns[0].response.content == PREFIX
+
+
+async def test_truncation_tokens_count_toward_guard_budget() -> None:
+    """截断轮的 token 同样计入 guard 预算 (#3 x #10 交叉).
+
+    真实场景: 小窗口下模型反复截断同样烧 token —— 熔断由 token 预算兜底,
+    不能因为「不是在调工具」就漏计.
+    """
+    model = ScriptedModel(
+        [
+            _length_response(PREFIX, usage=Usage(total_tokens=40)),
+            _length_response(PREFIX, usage=Usage(total_tokens=40)),
+            text_response(SUFFIX),  # 不会走到: 第 2 轮后即被预算拦住
+        ]
+    )
+    loop = AgentLoop(
+        model=model,
+        tools=[ECHO_TOOL],
+        max_truncations=5,
+        guard=LoopGuard(max_turns=10, max_total_tokens=80),
+    )
+    result = await loop.run([dict(USER_MSG)])
+
+    assert result.outcome is LoopOutcome.TOKEN_BUDGET
+    assert result.truncation_count == 2  # 两次截断的 token 都被计入
+    assert result.total_tokens == 80
+    assert len(model.calls) == 2  # 未发起第 3 次
+    assert result.content is None  # 刹车停, 无最终答复
 
 
 # ---------------------------------------------------------------------------

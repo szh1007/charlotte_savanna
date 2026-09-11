@@ -43,10 +43,22 @@ def _add(
     return a + b
 
 
+def _empty() -> str:
+    """空返回载体: 工具返回空串 (回填保真边界)."""
+    return ""
+
+
+def _big() -> str:
+    """超长返回载体: 工具返回大段文本 (回填不截断)."""
+    return "x" * 5000
+
+
 # 显式命名注册 (函数名 _echo/_add 带下划线, 注册名应去掉); 各测试共享同
 # 一 Tool 实例, 断言 to_spec 时引用一致
 ECHO_TOOL = tool(_echo, name="echo")
 ADD_TOOL = tool(_add, name="add")
+EMPTY_TOOL = tool(_empty, name="empty")
+BIG_TOOL = tool(_big, name="big")
 
 USER_MSG = {"role": "user", "content": "你好"}
 
@@ -289,6 +301,101 @@ def test_loop_max_truncations_validated() -> None:
     """AgentLoop 非法截断重试上限 → 构造期报错 (截断防护参数有效性)."""
     with pytest.raises(LoopConfigError, match="max_truncations"):
         AgentLoop(model=ScriptedModel([]), max_truncations=0)
+
+
+async def test_assistant_content_alongside_tool_calls() -> None:
+    """模型边叙述边调工具 (官方思考模式样例的常见形态).
+
+    叙述文本随 assistant 消息进 wire 保真, 但**不进最终答案** (#11 双通道)。
+    """
+    model = ScriptedModel(
+        [
+            tool_call_response(
+                make_tool_call("echo", '{"message": "hi"}'),
+                content="让我先查一下订单",
+            ),
+            text_response("订单已发货"),
+        ]
+    )
+    loop = AgentLoop(model=model, tools=[ECHO_TOOL])
+    result = await loop.run([dict(USER_MSG)])
+
+    assert result.outcome is LoopOutcome.FINISHED
+    # 叙述保真入 wire: 同一条 assistant 消息同时带 content 与 tool_calls
+    assert result.messages[1]["content"] == "让我先查一下订单"
+    assert result.messages[1]["tool_calls"][0]["function"]["name"] == "echo"
+    # 但不混入最终答案 (最终答案只取终止轮)
+    assert result.content == "订单已发货"
+    # 下一轮模型能看到这段叙述 (上下文连续)
+    assert model.calls[1]["messages"][1]["content"] == "让我先查一下订单"
+
+
+async def test_content_filter_terminates_without_retry() -> None:
+    """finish_reason=content_filter: 按终止处理, 不重试也不进截断路径.
+
+    loop 只负责终止循环并如实上报 finish_reason, 拦截语义 (是否对用户
+    展示 / 降级话术) 由调用方决定 (输出护栏属 P1-6)。
+    """
+    model = ScriptedModel(
+        [text_response(None, finish_reason=FinishReason.CONTENT_FILTER)]
+    )
+    loop = AgentLoop(model=model)
+    result = await loop.run([dict(USER_MSG)])
+
+    assert result.outcome is LoopOutcome.FINISHED
+    assert result.finish_reason is FinishReason.CONTENT_FILTER
+    assert result.content is None  # 被拦截, 无正文
+    assert result.truncation_count == 0  # 不走截断处理
+    assert len(model.calls) == 1  # 不重试
+
+
+async def test_tool_result_backfilled_verbatim() -> None:
+    """工具返回值原样回填: 空串仍产生 tool 消息, 超长不截断."""
+    big = "x" * 5000
+    model = ScriptedModel(
+        [
+            tool_call_response(make_tool_call("empty")),
+            tool_call_response(make_tool_call("big")),
+            text_response("完成"),
+        ]
+    )
+    loop = AgentLoop(model=model, tools=[EMPTY_TOOL, BIG_TOOL])
+    result = await loop.run([dict(USER_MSG)])
+
+    tool_msgs = [m for m in result.messages if m["role"] == "tool"]
+    assert len(tool_msgs) == 2
+    # 空串不丢消息 —— 配对结构 (assistant.tool_calls ↔ tool) 必须完整
+    assert tool_msgs[0]["content"] == ""
+    assert tool_msgs[0]["tool_call_id"] == "call_empty"
+    # 超长原样回填, 框架不做长度裁剪 (上下文治理归 compaction, 非 loop)
+    assert tool_msgs[1]["content"] == big
+
+
+async def test_run_state_isolated_across_runs_on_same_instance() -> None:
+    """同一 AgentLoop 实例连续 run: turns / turn_count / tokens 逐 run 独立.
+
+    server 层按 run 复用同一 loop 实例 (见 AgentLoop docstring), 上一 run 的
+    轮数与 token 不得累加到下一 run。
+    """
+    model = ScriptedModel(
+        [
+            tool_call_response(
+                make_tool_call("echo", '{"message": "a"}'),
+                usage=Usage(total_tokens=10),
+            ),
+            text_response("第一次", usage=Usage(total_tokens=20)),
+            text_response("第二次", usage=Usage(total_tokens=5)),
+        ]
+    )
+    loop = AgentLoop(model=model, tools=[ECHO_TOOL])
+    first = await loop.run([dict(USER_MSG)])
+    second = await loop.run([dict(USER_MSG)])
+
+    assert (first.turn_count, first.total_tokens, len(first.turns)) == (2, 30, 2)
+    # 第二次 run 从零起算, 不承接第一次的轮次与用量
+    assert (second.turn_count, second.total_tokens, len(second.turns)) == (1, 5, 1)
+    assert second.turns[0].turn == 1  # 轮次编号重新从 1 开始
+    assert second.content == "第二次"
 
 
 async def test_sampling_and_thinking_params_passed_every_turn() -> None:

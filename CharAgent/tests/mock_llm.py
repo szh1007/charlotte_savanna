@@ -53,12 +53,18 @@ def text_response(
 
 def tool_call_response(
     *calls: ModelToolCall,
+    content: str | None = None,
     finish_reason: FinishReason = FinishReason.TOOL_CALLS,
     usage: Usage | None = None,
 ) -> ModelResponse:
-    """带 tool_calls 的响应工厂 (模型要调工具, 默认 finish=tool_calls)."""
+    """带 tool_calls 的响应工厂 (模型要调工具, 默认 finish=tool_calls).
+
+    content 可同时给出 (非 None) —— 真实端点上模型常「边叙述边调工具」
+    (官方思考模式样例的输出即 content="Let me check..." + tool_calls 并存),
+    该形态下叙述进 wire 历史但不进最终答案。
+    """
     return ModelResponse(
-        content=None,
+        content=content,
         tool_calls=list(calls),
         finish_reason=finish_reason,
         usage=usage,
