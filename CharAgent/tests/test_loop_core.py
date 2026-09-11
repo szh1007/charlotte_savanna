@@ -349,6 +349,44 @@ async def test_content_filter_terminates_without_retry() -> None:
     assert len(model.calls) == 1  # 不重试
 
 
+async def test_insufficient_system_resource_yields_interrupted_outcome() -> None:
+    """finish_reason=insufficient_system_resource: 服务端中断, 半截内容不当答复.
+
+    官方语义是生成被打断 (瞬态), 重放决策归调用方 / P0-5 retry; 本层只如实
+    上报 outcome 与 finish_reason, 且不把可能残缺的正文当最终答案返回.
+    """
+    model = ScriptedModel(
+        [
+            text_response(
+                "订单 20260701123456 已",
+                finish_reason=FinishReason.INSUFFICIENT_SYSTEM_RESOURCE,
+            )
+        ]
+    )
+    loop = AgentLoop(model=model)
+    result = await loop.run([dict(USER_MSG)])
+
+    assert result.outcome is LoopOutcome.SERVER_INTERRUPTED
+    assert result.finish_reason is FinishReason.INSUFFICIENT_SYSTEM_RESOURCE
+    assert result.content is None  # 半截正文不外泄
+    assert result.truncation_count == 0  # 不走截断续写路径
+    assert len(model.calls) == 1  # 本层不重试
+    # 半截原文保真: wire 历史与轮次快照仍可查到, 供排查 / 重放
+    assert result.messages[-1]["content"] == "订单 20260701123456 已"
+    assert result.turns[-1].response.content == "订单 20260701123456 已"
+
+
+async def test_aborted_finish_reason_yields_interrupted_outcome() -> None:
+    """finish_reason=aborted: 生成被中断, 同样判 SERVER_INTERRUPTED 而非正常结束."""
+    model = ScriptedModel([text_response(None, finish_reason=FinishReason.ABORTED)])
+    loop = AgentLoop(model=model)
+    result = await loop.run([dict(USER_MSG)])
+
+    assert result.outcome is LoopOutcome.SERVER_INTERRUPTED
+    assert result.finish_reason is FinishReason.ABORTED
+    assert result.content is None
+
+
 async def test_tool_result_backfilled_verbatim() -> None:
     """工具返回值原样回填: 空串仍产生 tool 消息, 超长不截断."""
     big = "x" * 5000

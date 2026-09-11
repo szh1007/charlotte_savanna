@@ -27,12 +27,12 @@ from CharAgent.model.parse import (
     parse_usage,
 )
 from CharAgent.model.stream import (
-    _accumulate_delta,
-    _StreamAccumulator,
+    StreamAccumulator,
+    accumulate_delta,
     apply_sse_chunk,
     build_stream_response,
 )
-from CharAgent.model.utils.config import strip_provider_prefix
+from CharAgent.model.utils.config import check_thinking_params, strip_provider_prefix
 
 # ---------------------------------------------------------------------------
 # 样本: 以真实 DeepSeek 响应结构为准 (非流式 message.reasoning_content / 流式 delta)
@@ -44,7 +44,7 @@ def completion_with_reasoning() -> dict[str, Any]:
         "id": "chatcmpl-test-001",
         "object": "chat.completion",
         "created": 1788850824,
-        "model": "deepseek-v4-flash",
+        "model": "deepseek-flash",
         "choices": [
             {
                 "index": 0,
@@ -65,7 +65,7 @@ def tool_calls_completion() -> dict[str, Any]:
     """并行 tool_calls: 同在一个 assistant message 保持并行语义 (#1)."""
     return {
         "id": "chatcmpl-test-002",
-        "model": "deepseek-v4-flash",
+        "model": "deepseek-flash",
         "choices": [
             {
                 "index": 0,
@@ -99,7 +99,7 @@ def tool_calls_completion() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# finish_reason 映射 (#10 四种取值 + 未知值畸形)
+# finish_reason 映射 (#10 官方六种取值 + 未知值畸形)
 # ---------------------------------------------------------------------------
 
 
@@ -110,6 +110,9 @@ def tool_calls_completion() -> dict[str, Any]:
         ("tool_calls", FinishReason.TOOL_CALLS),
         ("length", FinishReason.LENGTH),
         ("content_filter", FinishReason.CONTENT_FILTER),
+        # 服务端中断两值: 官方枚举成员, 不是畸形 (曾漏枚举被误判为协议错误)
+        ("insufficient_system_resource", FinishReason.INSUFFICIENT_SYSTEM_RESOURCE),
+        ("aborted", FinishReason.ABORTED),
         (FinishReason.LENGTH, FinishReason.LENGTH),  # 已枚举值直接通过
     ],
 )
@@ -188,9 +191,26 @@ def test_parse_usage_maps_openai_fields() -> None:
     assert usage.output_tokens == 12
     assert usage.total_tokens == 101
     assert usage.reasoning_tokens is None  # 非推理统计字段缺失时兼容 None (#11)
+    assert usage.cache_hit_tokens is None
+    assert usage.cache_miss_tokens is None
 
 
-def test_parse_usage_includes_reasoning_tokens_when_present() -> None:
+def test_parse_usage_reads_reasoning_tokens_from_nested_details() -> None:
+    """reasoning_tokens 在 completion_tokens_details 下 (官方层级), 非顶层."""
+    usage = parse_usage(
+        {
+            "prompt_tokens": 89,
+            "completion_tokens": 30,
+            "total_tokens": 119,
+            "completion_tokens_details": {"reasoning_tokens": 18},
+        }
+    )
+    assert usage is not None
+    assert usage.reasoning_tokens == 18
+
+
+def test_parse_usage_ignores_top_level_reasoning_tokens() -> None:
+    """顶层 reasoning_tokens 非官方 schema 字段, 不再当数据源 (旧实现误读位置)."""
     usage = parse_usage(
         {
             "prompt_tokens": 89,
@@ -200,7 +220,53 @@ def test_parse_usage_includes_reasoning_tokens_when_present() -> None:
         }
     )
     assert usage is not None
-    assert usage.reasoning_tokens == 18
+    assert usage.reasoning_tokens is None
+
+
+def test_parse_usage_reads_cache_hit_and_miss_tokens() -> None:
+    """缓存计量: 顶层 prompt_cache_hit/miss_tokens 优先 (成本核算依赖命中折扣)."""
+    usage = parse_usage(
+        {
+            "prompt_tokens": 89,
+            "completion_tokens": 12,
+            "total_tokens": 101,
+            "prompt_cache_hit_tokens": 64,
+            "prompt_cache_miss_tokens": 25,
+        }
+    )
+    assert usage is not None
+    assert usage.cache_hit_tokens == 64
+    assert usage.cache_miss_tokens == 25
+
+
+def test_parse_usage_falls_back_to_cached_tokens() -> None:
+    """顶层命中字段缺失时回退 prompt_tokens_details.cached_tokens (官方声明同值)."""
+    usage = parse_usage(
+        {
+            "prompt_tokens": 89,
+            "completion_tokens": 12,
+            "total_tokens": 101,
+            "prompt_tokens_details": {"cached_tokens": 32},
+        }
+    )
+    assert usage is not None
+    assert usage.cache_hit_tokens == 32
+
+
+@pytest.mark.parametrize("malformed", [{"completion_tokens_details": None}, "legacy"])
+def test_parse_usage_tolerates_malformed_details(malformed: object) -> None:
+    """usage 子结构类型不符 (null / 字符串) 归空映射, 不抛裸 TypeError."""
+    data: dict[str, object] = {
+        "prompt_tokens": 1,
+        "completion_tokens": 1,
+        "total_tokens": 2,
+    }
+    data["completion_tokens_details"] = malformed
+    data["prompt_tokens_details"] = malformed
+    usage = parse_usage(data)  # type: ignore[arg-type]
+    assert usage is not None
+    assert usage.reasoning_tokens is None
+    assert usage.cache_hit_tokens is None
 
 
 def test_parse_usage_returns_none_when_missing() -> None:
@@ -219,7 +285,7 @@ def test_parse_completion_text_and_reasoning_separated() -> None:
     assert response.content == "订单已发货"
     assert response.reasoning == "用户查询物流, 先核对订单号"
     assert response.finish_reason is FinishReason.STOP
-    assert response.model == "deepseek-v4-flash"
+    assert response.model == "deepseek-flash"
     assert not response.has_tool_calls
     assert response.usage is not None
     assert response.usage.total_tokens == 101
@@ -294,7 +360,7 @@ def test_parse_completion_rejects_multimodal_content_array() -> None:
 
 
 def test_stream_accumulates_content_and_reasoning_deltas() -> None:
-    acc = _StreamAccumulator()
+    acc = StreamAccumulator()
     apply_sse_chunk(
         acc,
         {
@@ -338,7 +404,7 @@ def test_stream_accumulates_content_and_reasoning_deltas() -> None:
 
 def test_stream_tool_call_arguments_delta_concatenated() -> None:
     """tool_calls 的 arguments 是分片 delta, 按 index 拼接 JSON 而非整段返回 (#10)."""
-    acc = _StreamAccumulator()
+    acc = StreamAccumulator()
     apply_sse_chunk(
         acc,
         {
@@ -405,7 +471,7 @@ def test_stream_tool_call_arguments_delta_concatenated() -> None:
 
 def test_stream_parallel_tool_calls_ordered_by_index() -> None:
     """并行 tool_calls 流式按 index 分片交错到达, 组装后仍保持原始顺序."""
-    acc = _StreamAccumulator()
+    acc = StreamAccumulator()
     apply_sse_chunk(
         acc,
         {
@@ -438,32 +504,66 @@ def test_stream_parallel_tool_calls_ordered_by_index() -> None:
     assert [call.id for call in response.tool_calls] == ["call_a", "call_b"]
 
 
-def test_stream_usage_only_chunk_sets_usage() -> None:
-    """include_usage 的收尾 usage chunk (choices 为空) 被正确累积."""
-    acc = _StreamAccumulator()
+def test_stream_usage_attached_to_final_chunk() -> None:
+    """usage 附着在末块上 (官方形态): 该块 delta 无内容且 finish_reason 非 null."""
+    acc = StreamAccumulator()
     apply_sse_chunk(
         acc,
         {"choices": [{"index": 0, "delta": {"content": "ok"}, "finish_reason": None}]},
     )
     apply_sse_chunk(
-        acc, {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
+        acc,
+        {
+            "model": "deepseek-flash",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"content": "", "role": None},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 20,
+                "completion_tokens": 3,
+                "total_tokens": 23,
+                "completion_tokens_details": {"reasoning_tokens": 1},
+            },
+        },
+    )
+    response = build_stream_response(acc)
+    assert response.finish_reason is FinishReason.STOP
+    assert response.content == "ok"  # 末块空 delta 不污染正文
+    assert response.usage is not None
+    assert response.usage.total_tokens == 23
+    assert response.usage.reasoning_tokens == 1
+    assert response.model == "deepseek-flash"
+
+
+def test_stream_null_usage_chunks_tolerated() -> None:
+    """include_usage 下除末块外所有块 usage 均为 null, 不得覆盖已累积值."""
+    acc = StreamAccumulator()
+    apply_sse_chunk(
+        acc,
+        {
+            "choices": [
+                {"index": 0, "delta": {"content": "ok"}, "finish_reason": None}
+            ],
+            "usage": None,
+        },
     )
     apply_sse_chunk(
         acc,
         {
-            "model": "deepseek-v4-flash",
-            "choices": [],
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
             "usage": {"prompt_tokens": 20, "completion_tokens": 3, "total_tokens": 23},
         },
     )
     response = build_stream_response(acc)
-    assert response.usage is not None
-    assert response.usage.total_tokens == 23
-    assert response.model == "deepseek-v4-flash"
+    assert response.usage is not None and response.usage.total_tokens == 23
 
 
 def test_stream_without_usage_chunk_tolerated() -> None:
-    acc = _StreamAccumulator()
+    acc = StreamAccumulator()
     apply_sse_chunk(
         acc,
         {"choices": [{"index": 0, "delta": {"content": "ok"}, "finish_reason": None}]},
@@ -474,26 +574,26 @@ def test_stream_without_usage_chunk_tolerated() -> None:
     assert build_stream_response(acc).usage is None
 
 
-def test_stream_accumulate_delta_raises_on_tool_call_without_index() -> None:
-    acc = _StreamAccumulator()
+def test_streamaccumulate_delta_raises_on_tool_call_without_index() -> None:
+    acc = StreamAccumulator()
     with pytest.raises(ModelProtocolError, match="index"):
-        _accumulate_delta(
+        accumulate_delta(
             acc, {"tool_calls": [{"id": "call_1", "function": {"name": "x"}}]}
         )
 
 
-def test_stream_accumulate_delta_rejects_non_string_content() -> None:
+def test_streamaccumulate_delta_rejects_non_string_content() -> None:
     """畸形 delta (多模态 content 数组) 抛 ModelProtocolError 而非裸 TypeError."""
-    acc = _StreamAccumulator()
+    acc = StreamAccumulator()
     with pytest.raises(ModelProtocolError, match="content"):
-        _accumulate_delta(acc, {"content": [{"type": "text", "text": "hi"}]})
+        accumulate_delta(acc, {"content": [{"type": "text", "text": "hi"}]})
 
 
-def test_stream_accumulate_delta_rejects_non_string_arguments() -> None:
+def test_streamaccumulate_delta_rejects_non_string_arguments() -> None:
     """arguments 分片 delta 非字符串 (畸形) 同样按协议错误报出."""
-    acc = _StreamAccumulator()
+    acc = StreamAccumulator()
     with pytest.raises(ModelProtocolError, match="arguments"):
-        _accumulate_delta(
+        accumulate_delta(
             acc,
             {
                 "tool_calls": [
@@ -512,7 +612,7 @@ def test_stream_accumulate_delta_rejects_non_string_arguments() -> None:
 
 def test_build_stream_response_requires_finish_reason() -> None:
     """流结束仍无 finish_reason (断流) 视为畸形, 不返回残缺结果."""
-    acc = _StreamAccumulator()
+    acc = StreamAccumulator()
     apply_sse_chunk(
         acc,
         {
@@ -526,7 +626,7 @@ def test_build_stream_response_requires_finish_reason() -> None:
 
 
 def test_build_stream_response_rejects_incomplete_tool_call() -> None:
-    acc = _StreamAccumulator()
+    acc = StreamAccumulator()
     apply_sse_chunk(
         acc,
         {
@@ -566,12 +666,60 @@ def test_model_response_has_tool_calls_property() -> None:
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
-        ("deepseek-v4-flash", "deepseek-v4-flash"),  # 裸名原样
-        ("deepseek:deepseek-v4-flash", "deepseek-v4-flash"),  # LangChain 风格前缀剥离
+        ("deepseek-flash", "deepseek-flash"),  # 裸名原样
+        ("deepseek:deepseek-flash", "deepseek-flash"),  # LangChain 风格前缀剥离
     ],
 )
 def test_strip_provider_prefix(raw: str, expected: str) -> None:
     assert strip_provider_prefix(raw) == expected
+
+
+# ---------------------------------------------------------------------------
+# thinking / reasoning_effort 校验 (两条思考模式开关路径)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("thinking", "reasoning_effort"),
+    [
+        (None, None),
+        (True, None),
+        (None, "high"),
+        (True, "high"),  # 同向: 都开
+        (True, "max"),
+        (True, "medium"),  # 兼容别名
+        (False, None),
+        (False, "none"),  # 同向: 都关
+        (None, "none"),  # none 单独出现即关闭思考模式
+    ],
+)
+def test_check_thinking_params_accepts_consistent(
+    thinking: bool | None, reasoning_effort: str | None
+) -> None:
+    check_thinking_params(thinking, reasoning_effort)  # 不抛异常即通过
+
+
+@pytest.mark.parametrize(
+    ("thinking", "reasoning_effort"),
+    [
+        (False, "low"),  # disabled 与开启型 effort 矛盾
+        (False, "high"),
+        (False, "max"),
+        (True, "none"),  # enabled 与 none (关闭型) 矛盾
+    ],
+)
+def test_check_thinking_params_rejects_conflict(
+    thinking: bool, reasoning_effort: str
+) -> None:
+    with pytest.raises(ModelConfigError, match="矛盾"):
+        check_thinking_params(thinking, reasoning_effort)
+
+
+@pytest.mark.parametrize("effort", ["hihg", "HIGH", "medium2", ""])
+def test_check_thinking_params_rejects_unknown_effort(effort: str) -> None:
+    """取值不在官方集合内直接报错 —— 拼写错误不会静默发给服务端."""
+    with pytest.raises(ModelConfigError, match="reasoning_effort"):
+        check_thinking_params(None, effort)
 
 
 def test_chat_model_from_env_strips_langchain_prefix() -> None:
@@ -579,10 +727,10 @@ def test_chat_model_from_env_strips_langchain_prefix() -> None:
     model = chat_model_from_env(
         {
             "DEEPSEEK_API_KEY": "sk-test",
-            "DEEPSEEK_MODEL_NAME": "deepseek:deepseek-v4-flash",
+            "DEEPSEEK_MODEL_NAME": "deepseek:deepseek-flash",
         }
     )
-    assert model.model == "deepseek-v4-flash"
+    assert model.model == "deepseek-flash"
     assert model.base_url == "https://api.deepseek.com"  # 未配置时用官方默认
 
 
@@ -611,12 +759,12 @@ async def test_both_from_env_factories_resolve_same_config() -> None:
     """双适配器工厂对同一 env 解析出相同 model / base_url (配置入口一致, 防 drift)."""
     env = {
         "DEEPSEEK_API_KEY": "sk-test",
-        "DEEPSEEK_MODEL_NAME": "deepseek:deepseek-v4-flash",
+        "DEEPSEEK_MODEL_NAME": "deepseek:deepseek-flash",
     }
     http_model = chat_model_from_env(env)
     sdk_model = openai_chat_model_from_env(env)
     try:
-        assert http_model.model == sdk_model.model == "deepseek-v4-flash"
+        assert http_model.model == sdk_model.model == "deepseek-flash"
         assert http_model.base_url == sdk_model.base_url == "https://api.deepseek.com"
         assert sdk_model.api_key == http_model.api_key == "sk-test"
     finally:

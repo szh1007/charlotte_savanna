@@ -47,7 +47,7 @@ def text_response(
         finish_reason=finish_reason,
         reasoning=reasoning,
         usage=usage,
-        model="deepseek-v4-flash",
+        model="deepseek-flash",
     )
 
 
@@ -68,7 +68,7 @@ def tool_call_response(
         tool_calls=list(calls),
         finish_reason=finish_reason,
         usage=usage,
-        model="deepseek-v4-flash",
+        model="deepseek-flash",
     )
 
 

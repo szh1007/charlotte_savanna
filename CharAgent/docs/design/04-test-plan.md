@@ -8,7 +8,7 @@
 |----|------|------|---------|
 | 单元 | pytest + pytest-asyncio | 单模块逻辑：model 解析、tool schema 生成、loop 分支、序列化协议、限流算法、锁 | ✅ 全 mock |
 | 集成 | pytest + respx | 模块交互：httpx 裸调 vs openai SDK 行为一致（同组测试约束，ADR-0003）；checkpoint 双实现语义对比；SSE 事件流组装 | ✅ 全 mock |
-| 真实集成 | pytest（`-m integration`） | 打真实 DeepSeek：httpx 裸调协议字段正确性（tool_calls 结构 / usage / finish_reason / reasoning_content）、流式 delta 累积、reasoner 的 reasoning_content 分离；agent loop 多轮工具路径与强制截断 | 🔶 marker 默认排除 |
+| 真实集成 | pytest（`-m integration`） | 打真实 DeepSeek：httpx 裸调协议字段正确性（tool_calls 结构 / usage / finish_reason / reasoning_content）、流式 delta 累积、思考模式下 reasoning_content 与正文分离；agent loop 多轮工具路径与强制截断 | 🔶 marker 默认排除 |
 | E2E | pytest + httpx | 完整链路：REST → TaskQueue → loop → 工具 → SSE 事件序列断言 | ✅ mock LLM + 打桩外部服务 |
 | 前端 | Vitest（可选） | EventSource 事件渲染 | P1 后期 |
 

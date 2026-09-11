@@ -1,7 +1,8 @@
 # ADR-0003: LLM 调用层用 httpx 裸调 + openai SDK 双适配器
 
 - 状态: accepted
-- 日期: 2026-08-18（自 DESIGN.md 选型 0003 拆出；补充确认：接入模型为 `deepseek-v4-flash`，DeepSeek 官方 base，OpenAI 兼容协议）
+- 日期: 2026-08-18（自 DESIGN.md 选型 0003 拆出；补充确认：接入模型为 `deepseek-flash`，DeepSeek 官方 base，OpenAI 兼容协议）
+- 注: 本 ADR 原文写作 `deepseek-v4-flash`；该模型名已于 2026-09-10 随 DeepSeek-V4.1-Flash 上线被 `deepseek-flash` 取代（旧名暂时路由到新模型），文中记为现役名
 - 考虑过的方案: 仅 openai SDK——拒绝，看不到协议细节；仅 httpx 裸调——拒绝，不贴近生产实际
 - 后果: 两套 model 实现需保持行为一致（用同一组测试约束；真实 API 集成测试验证协议字段正确性）
 

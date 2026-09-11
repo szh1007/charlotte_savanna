@@ -27,7 +27,7 @@
        快照 (供 checkpoint 落盘, P0-6).
 - turn_count  整个 run 里模型决策了几次 = 几次 generate 调用.
 
-循环怎么停 (两种停法, 区别很重要):
+循环怎么停 (三种停法, 区别很重要):
 1. 模型自己停: 读完历史后决定不再调工具, 直接给出最终答复
    (finish_reason=stop) -> 正常结束, outcome=FINISHED, content=最终答复
    例外: 模型没答完就被截断 (finish_reason=length), 内容不完整不能当答案
@@ -38,6 +38,11 @@
    预算超限, 框架不再发起下一次模型决策 -> 此时没有最终答复
    (content=None), outcome=MAX_TURNS / TOKEN_BUDGET / TIME_LIMIT,
    刹车实现见 guard.py (LoopGuard)
+3. 上游中断停: 服务端没把这次生成跑完 (finish_reason=
+   insufficient_system_resource 资源不足 / aborted 被中断) -> 内容可能是
+   半截, 不能当最终答复返回, outcome=SERVER_INTERRUPTED. 资源不足属瞬态,
+   官方指引稍后重试 —— 但**重试不归本层** (归 P0-5 retry), 本层只如实上报,
+   由调用方决定是否重放
 
 本文件其他要点:
 - 错误自纠错 (#2): 工具失败不终止 —— 失败原因以 tool 消息回填给模型
@@ -58,9 +63,11 @@ from CharAgent.agent.utils.messages import (
     TRUNCATION_CONDENSE_TEXT,
     TRUNCATION_CONTINUE_TEXT,
     assistant_wire,
+    count_tokens,
     tool_wire,
 )
 from CharAgent.agent.utils.types import (
+    SERVER_INTERRUPTED,
     LoopOutcome,
     LoopResult,
     TruncationStrategy,
@@ -72,18 +79,8 @@ from CharAgent.model.utils.types import (
     ModelMessage,
     ModelToolCall,
     ToolSpec,
-    Usage,
 )
 from CharAgent.tool import Tool, ToolExecution, execute_tool
-
-
-def _count_tokens(usage: Usage | None) -> int:
-    """单次响应的 token 消耗 (无 usage 的响应计 0, 如部分 mock/流式)."""
-    if usage is None:
-        return 0
-    if usage.total_tokens is not None:
-        return usage.total_tokens
-    return (usage.input_tokens or 0) + (usage.output_tokens or 0)
 
 
 class AgentLoop:
@@ -106,12 +103,14 @@ class AgentLoop:
         temperature / top_p / seed: 采样参数透传每次 generate (#68),
             None 表示不传 (上游默认). **思考模式下 temperature 不生效**,
             top_p 下限 0.95, seed 仅保证 content 可复现 (reasoning 不可复现).
-        max_tokens: 单次输出上限透传; 思维链与正文共享该配额, 设得过小会
-            频繁触发 length 截断 (即上面的截断处理路径). None 表示不传
-            (走上游默认, 长输出可能被截断).
+        max_tokens: 单次输出上限透传 (官方取值 1 ~ 384K); 思维链与正文共享该
+            配额, 设得过小会频繁触发 length 截断 (即上面的截断处理路径).
+            None 表示不传 (走上游默认: 非思考 8K, 思考 64K, effort=max 时 128K).
         thinking: 思考模式开关透传, None 走上游默认 (开启, effort=high);
             关闭可省 token 但推理类任务质量下降.
-        reasoning_effort: 思考强度透传 (low/high/max), None 走上游默认 (high).
+        reasoning_effort: 思考强度透传 (low/high/max, 兼容别名由上游归一;
+            "none" 关闭思考模式), None 走上游默认 (high). 与 thinking 同时
+            显式传入且方向相反时, 模型调用期报 ModelConfigError.
     """
 
     def __init__(
@@ -263,7 +262,7 @@ class AgentLoop:
                 reasoning_effort=self._reasoning_effort,
             )
             turn_count += 1
-            total_tokens += (turn_tokens := _count_tokens(response.usage))
+            total_tokens += (turn_tokens := count_tokens(response.usage))
 
             # 2. 按 finish_reason 分支: 工具 / 截断 / 终止
             if response.has_tool_calls:
@@ -303,6 +302,14 @@ class AgentLoop:
                         {"role": "system", "content": TRUNCATION_CONTINUE_TEXT}
                     )
                     content_parts.append(response.content or "")
+            elif response.finish_reason in SERVER_INTERRUPTED:
+                # 上游中断: 服务端没跑完这次生成 (资源不足 / 被中断), content
+                # 可能只是半截, 不能当最终答复返回 (content 保持 None). 半截
+                # 原文仍保真入历史与 TurnRecord.response, 供调用方排查或重放;
+                # 重试决策不归本层 (归 P0-5 retry)
+                history.append(assistant_wire(response))
+                outcome = LoopOutcome.SERVER_INTERRUPTED
+                done = True
             else:
                 # 自然终止 (stop / content_filter 等非继续信号): content_filter
                 # 仅在此终止循环, 拦截语义由调用方依据 finish_reason 决定

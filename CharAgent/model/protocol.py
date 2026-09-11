@@ -41,13 +41,17 @@ class ChatModel(Protocol):
                 **思考模式下下限为 0.95** (更小的值被静默抬升); 非思考模式恒为 1.0.
             seed: 随机种子, 固定后同输入同输出 (#61 / #68).
                 实测限定: 思考模式下仅 content 可复现, reasoning 每次不同.
-            max_tokens: 单次输出上限. 推理模型的思维链与正文**共享**该配额
-                (reasoning_tokens 计入 completion_tokens), 故需为思考留出余量.
-                None 表示不传 (走上游默认, 长输出会以 finish_reason=length 截断).
+            max_tokens: 单次输出上限. 官方取值 1 ~ 384K (393216); None 表示不传
+                (走上游默认: 非思考 8K, 思考 64K, effort=max 时 128K, 长输出会
+                以 finish_reason=length 截断). 推理模型的思维链与正文**共享**
+                该配额 (reasoning_tokens 计入 completion_tokens), 故需为思考
+                留出余量.
             thinking: 思考模式开关, None 表示不传 (上游默认开启且 effort=high).
                 关闭可显著省 token 与上下文, 但推理类任务质量会下降.
             reasoning_effort: 思考强度, None 表示不传 (上游默认 high). 上游按
-                low/high/max 归一 (minimal/medium/xhigh/ultra 亦接受, 见映射表).
+                low/high/max 归一 (minimal/medium/xhigh/ultra 亦接受, 见映射表);
+                另接受 "none" —— 与 thinking=False 等效的第二条关闭路径.
+                与 thinking 同时显式传入且方向相反时报 ModelConfigError.
             stream: True 时走 SSE 并在内部累积 delta,
                     返回与非流式相同的完整 ModelResponse.
         """

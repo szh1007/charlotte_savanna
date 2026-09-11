@@ -22,10 +22,10 @@ from CharAgent.model.utils.types import (
 
 
 class LoopOutcome(StrEnum):
-    """Loop 结束原因全集 (loop 与 guard 共享): 自然完成 / 软限制 / 截断放弃.
+    """Loop 结束原因全集 (loop 与 guard 共享): 自然完成 / 软限制 / 截断放弃 / 上游中断.
 
-    FINISHED / TRUNCATION_LIMIT 由 AgentLoop 判定; MAX_TURNS / TOKEN_BUDGET /
-    TIME_LIMIT 由 LoopGuard.check_after_turn 判定.
+    FINISHED / TRUNCATION_LIMIT / SERVER_INTERRUPTED 由 AgentLoop 判定;
+    MAX_TURNS / TOKEN_BUDGET / TIME_LIMIT 由 LoopGuard.check_after_turn 判定.
     """
 
     FINISHED = "finished"  # 模型给出最终答案 (finish_reason=stop), 正常结束
@@ -33,6 +33,21 @@ class LoopOutcome(StrEnum):
     TOKEN_BUDGET = "token_budget"  # 累计 token 达到 max_total_tokens 仍要继续
     TIME_LIMIT = "time_limit"  # 运行时长达到 max_duration_seconds 仍要继续
     TRUNCATION_LIMIT = "truncation_limit"  # 连续 length 截断超过重试上限
+    # 服务端中断 (insufficient_system_resource / aborted): 生成被打断, 内容
+    # 可能只是半截, 故不作最终答复返回. 资源不足属瞬态, 重放决策留给调用方
+    # (框架重试归 P0-5 retry 层)
+    SERVER_INTERRUPTED = "server_interrupted"
+
+
+# 服务端中断的 finish_reason (非模型自然结束): 生成被打断, content 可能只是
+# 半截, 不能当最终答复返回 (官方语义见 model/utils/types.FinishReason);
+# AgentLoop 据此判 LoopOutcome.SERVER_INTERRUPTED
+SERVER_INTERRUPTED: frozenset[FinishReason] = frozenset(
+    {
+        FinishReason.INSUFFICIENT_SYSTEM_RESOURCE,
+        FinishReason.ABORTED,
+    }
+)
 
 
 class TruncationStrategy(StrEnum):
@@ -67,7 +82,7 @@ class LoopResult:
         messages: run 结束时完整消息历史 (wire), 供 checkpoint 落盘或
             继续下一轮对话 (调用方可直接作为下次 run 的输入).
         content: 最终答复正文; 无正文时为 None (纯工具调用收尾 / guard 触发 /
-            截断放弃等). 截断续写 (CONTINUE) 场景最终答案跨多条 assistant
+            截断放弃 / 上游中断等). 截断续写 (CONTINUE) 场景最终答案跨多条 assistant
             消息 (截断前缀 + 续写段), 此处已由 AgentLoop 拼合为完整文本 ——
             分段原文仍可在 messages 与 turns 中查到 (保真不丢).
         finish_reason: 最后一次模型响应的终止原因 (tool_calls/length 等).

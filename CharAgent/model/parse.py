@@ -39,7 +39,10 @@ def extract_error_message(body: str) -> str:
 
 
 def parse_finish_reason(value: Any) -> FinishReason:
-    """finish_reason 四值映射; 未知取值视为协议畸形, 显式报错而非静默吞掉."""
+    """finish_reason 六值映射 (对齐官方枚举).
+
+    未知取值视为协议畸形, 显式报错而非静默吞掉.
+    """
     if isinstance(value, FinishReason):
         return value
     try:
@@ -48,15 +51,32 @@ def parse_finish_reason(value: Any) -> FinishReason:
         raise ModelProtocolError(f"未知 finish_reason: {value!r}") from exc
 
 
+def _as_mapping(value: Any) -> Mapping[str, Any]:
+    """usage 子结构护栏: 非 dict (缺失 / null / 类型不符) 一律归空映射."""
+    return value if isinstance(value, dict) else {}
+
+
 def parse_usage(data: Mapping[str, Any] | None) -> Usage | None:
-    """usage 字段映射; 响应不带 usage 时返回 None (流式未开 include_usage 的场景)."""
+    """usage 字段映射; 响应不带 usage 时返回 None (流式未开 include_usage 的场景).
+
+    reasoning / 缓存字段按官方层级读取 —— reasoning_tokens 在
+    completion_tokens_details 下 (顶层无该字段); 缓存命中优先取顶层
+    prompt_cache_hit_tokens, 缺失时回退 prompt_tokens_details.cached_tokens
+    (官方声明两者同值).
+    """
     if not data:
         return None
+    completion_details = _as_mapping(data.get("completion_tokens_details"))
+    cache_hit = data.get("prompt_cache_hit_tokens")
+    if cache_hit is None:
+        cache_hit = _as_mapping(data.get("prompt_tokens_details")).get("cached_tokens")
     return Usage(
         input_tokens=data.get("prompt_tokens"),
         output_tokens=data.get("completion_tokens"),
         total_tokens=data.get("total_tokens"),
-        reasoning_tokens=data.get("reasoning_tokens"),
+        reasoning_tokens=completion_details.get("reasoning_tokens"),
+        cache_hit_tokens=cache_hit,
+        cache_miss_tokens=data.get("prompt_cache_miss_tokens"),
     )
 
 

@@ -8,7 +8,7 @@
 
 | # | 任务 | 落点文件 | 难点 |
 |---|------|---------|------|
-| P0-1 | `ChatModel` 协议 + httpx 裸调 / openai SDK 双适配器（DeepSeek `deepseek-v4-flash`，含 reasoning_content 兼容分支） | `model.py` | #11, #68, ADR-0001/0003 |
+| P0-1 | `ChatModel` 协议 + httpx 裸调 / openai SDK 双适配器（DeepSeek `deepseek-flash`，含 reasoning_content 兼容分支） | `model.py` | #11, #68, ADR-0001/0003 |
 | P0-2 | `@tool` 装饰器 + JSON schema 生成（参数设计、描述规范） | `tool.py` | #10, #70, #68 |
 | P0-3 | 手写 agent loop：并行工具（gather + return_exceptions）、错误自纠错（可操作错误回填）、循环防护（max_turns / token 预算 / wall-clock / kill switch）、finish_reason 处理（length 截断） | `loop.py` | #1, #2, #3, #10, #65 |
 | P0-4 | 流式事件状态机（四类事件 + reasoning 增量），事件总线 + hook 注册表骨架（空实现） | `stream.py` + `hooks.py` | #4, #11, ADR-0007 |

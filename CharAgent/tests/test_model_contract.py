@@ -32,6 +32,7 @@ from helpers import (
 from CharAgent.model import (
     FinishReason,
     HttpXChatModel,
+    ModelConfigError,
     ModelProtocolError,
     ModelResponse,
     OpenAIChatModel,
@@ -53,7 +54,7 @@ ModelPair = tuple[HttpXChatModel, OpenAIChatModel]
 @pytest_asyncio.fixture
 async def model_pair() -> ModelPair:
     """同一构造参数的 httpx 裸调 + openai SDK 实例 (契约对比基准)."""
-    kwargs = {"api_key": API_KEY, "base_url": BASE_URL, "model": "deepseek-v4-flash"}
+    kwargs = {"api_key": API_KEY, "base_url": BASE_URL, "model": "deepseek-flash"}
     http_model = HttpXChatModel(**kwargs)
     sdk_model = OpenAIChatModel(**kwargs)
     yield http_model, sdk_model
@@ -155,7 +156,7 @@ async def test_request_body_full_params_equivalent(model_pair: ModelPair) -> Non
     http_body = await _capture_request(http_model, **kwargs)
     sdk_body = await _capture_request(sdk_model, **kwargs)
     assert http_body == sdk_body
-    assert sdk_body["model"] == "deepseek-v4-flash"
+    assert sdk_body["model"] == "deepseek-flash"
     assert sdk_body["tools"] == [TOOL_SCHEMA]
     assert sdk_body["temperature"] == 0.2
     assert sdk_body["seed"] == 42
@@ -168,16 +169,42 @@ async def test_request_body_thinking_params_equivalent(model_pair: ModelPair) ->
 
     SDK 侧这两个 DeepSeek 特有参数经 extra_body 合并, httpx 侧直接进 body ——
     本用例约束两者最终发出的请求体逐字节一致 (extra_body 是 SDK 特有通路,
-    不测就会 drift).
+    不测就会 drift). 组合需自洽: thinking=False 配 "none", thinking=True 配
+    开启型 effort (矛盾组合由 test_thinking_conflict_rejected_consistently 覆盖).
     """
     http_model, sdk_model = model_pair
-    kwargs = {"max_tokens": 512, "thinking": False, "reasoning_effort": "low"}
+    kwargs = {"max_tokens": 512, "thinking": False, "reasoning_effort": "none"}
     http_body = await _capture_request(http_model, **kwargs)
     sdk_body = await _capture_request(sdk_model, **kwargs)
     assert http_body == sdk_body
     assert sdk_body["max_tokens"] == 512
     assert sdk_body["thinking"] == {"type": "disabled"}
-    assert sdk_body["reasoning_effort"] == "low"
+    assert sdk_body["reasoning_effort"] == "none"
+
+
+@pytest.mark.parametrize(
+    ("thinking", "reasoning_effort"),
+    [(False, "low"), (True, "none")],
+)
+async def test_thinking_conflict_rejected_consistently(
+    model_pair: ModelPair, thinking: bool, reasoning_effort: str
+) -> None:
+    """矛盾组合两适配器一致拒绝: 都是 ModelConfigError, 且不发请求 (fail fast)."""
+    http_model, sdk_model = model_pair
+    conflict = {"thinking": thinking, "reasoning_effort": reasoning_effort}
+    with pytest.raises(ModelConfigError, match="矛盾"):
+        await http_model.generate(MESSAGES, **conflict)
+    with pytest.raises(ModelConfigError, match="矛盾"):
+        await sdk_model.generate(MESSAGES, **conflict)
+
+
+async def test_invalid_reasoning_effort_rejected_by_both(model_pair: ModelPair) -> None:
+    """effort 取值不在官方集合内同样两适配器一致报错 (防拼写错误静默发出)."""
+    http_model, sdk_model = model_pair
+    with pytest.raises(ModelConfigError, match="reasoning_effort"):
+        await http_model.generate(MESSAGES, reasoning_effort="hihg")
+    with pytest.raises(ModelConfigError, match="reasoning_effort"):
+        await sdk_model.generate(MESSAGES, reasoning_effort="hihg")
 
 
 async def test_request_body_instance_default_thinking_equivalent() -> None:
@@ -262,7 +289,7 @@ async def test_non_stream_tool_calls_equivalent(model_pair: ModelPair) -> None:
     http_model, sdk_model = model_pair
     body = {
         "id": "chatcmpl-mock-002",
-        "model": "deepseek-v4-flash",
+        "model": "deepseek-flash",
         "choices": [
             {
                 "index": 0,
@@ -325,7 +352,7 @@ async def test_non_stream_other_finish_reasons_equivalent(
 
 
 def _stream_body_text() -> str:
-    """内容分片 + reasoning 分片交错 + usage 收尾 chunk 的完整 SSE 流."""
+    """内容分片 + reasoning 分片交错, 末块带 finish_reason 与 usage 的完整 SSE 流."""
     return "".join(
         [
             sse_chunk(
@@ -384,12 +411,9 @@ def _stream_body_text() -> str:
                 }
             ),
             sse_chunk(
-                {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
-            ),
-            sse_chunk(
                 {
-                    "model": "deepseek-v4-flash",
-                    "choices": [],
+                    "model": "deepseek-flash",
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
                     "usage": {
                         "prompt_tokens": 20,
                         "completion_tokens": 3,
@@ -413,8 +437,8 @@ async def test_stream_content_and_reasoning_equivalent(model_pair: ModelPair) ->
     assert via_sdk.reasoning == "先核对订单号"  # reasoning 增量单独累积 (#11)
     assert via_sdk.finish_reason is FinishReason.STOP
     assert via_sdk.usage is not None
-    assert via_sdk.usage.total_tokens == 23  # usage-only chunk 收尾累积
-    assert via_sdk.model == "deepseek-v4-flash"
+    assert via_sdk.usage.total_tokens == 23  # 末块 usage 累积
+    assert via_sdk.model == "deepseek-flash"
 
 
 async def test_stream_tool_calls_fragments_equivalent(model_pair: ModelPair) -> None:

@@ -32,13 +32,14 @@ import openai
 
 from CharAgent.model.parse import extract_error_message, parse_chat_completion
 from CharAgent.model.stream import (
-    _StreamAccumulator,
+    StreamAccumulator,
     apply_sse_chunk,
     build_stream_response,
 )
 from CharAgent.model.utils.config import (
     DEFAULT_BASE_URL,
     DEFAULT_MODEL,
+    check_thinking_params,
     strip_provider_prefix,
 )
 from CharAgent.model.utils.errors import (
@@ -109,9 +110,14 @@ class OpenAIChatModel:
             top_p: 默认核采样参数, 调用级可覆盖 (#68);
                 **思考模式下下限 0.95**, 非思考模式恒为 1.0.
             seed: 默认随机种子 (#61 / #68); 思考模式下仅 content 可复现.
-            max_tokens: 默认单次输出上限 (思维链与正文共享配额).
+            max_tokens: 默认单次输出上限. 官方取值 1 ~ 384K (393216); 不传时
+                非思考默认 8K, 思考默认 64K (effort=max 时 128K). 思维链与
+                正文共享该配额 (reasoning_tokens 计入 completion_tokens).
             thinking: 默认思考模式开关 (True/False), None 走上游默认 (开启).
-            reasoning_effort: 默认思考强度 (low/high/max), None 走上游默认 (high).
+            reasoning_effort: 默认思考强度 (low/high/max; 兼容别名
+                minimal/medium/xhigh/ultra 由上游归一), None 走上游默认 (high).
+                另接受 "none" —— 与 thinking=False 等效的**第二条关闭路径**,
+                两者同时显式传入且方向相反时报 ModelConfigError.
 
         Raises:
             ModelConfigError: api_key 为空时.
@@ -171,13 +177,15 @@ class OpenAIChatModel:
                 kwargs[key] = resolved
         # thinking / reasoning_effort 是 DeepSeek 特有参数, 经 extra_body 合并进
         # 请求体 —— 不依赖 SDK 版本是否认识这两个形参, 结果与 httpx 裸调一致
-        extra: dict[str, Any] = {}
         resolved_thinking = thinking if thinking is not None else self._thinking
-        if resolved_thinking is not None:
-            extra["thinking"] = {"type": "enabled" if resolved_thinking else "disabled"}
         resolved_effort = (
             reasoning_effort if reasoning_effort is not None else self._reasoning_effort
         )
+        # 两条思考模式开关路径的取值与冲突校验 (与 httpx 适配器同语义)
+        check_thinking_params(resolved_thinking, resolved_effort)
+        extra: dict[str, Any] = {}
+        if resolved_thinking is not None:
+            extra["thinking"] = {"type": "enabled" if resolved_thinking else "disabled"}
         if resolved_effort is not None:
             extra["reasoning_effort"] = resolved_effort
         if extra:
@@ -239,7 +247,7 @@ class OpenAIChatModel:
         apply_sse_chunk / build_stream_response —— 同一累积状态机约束
         双适配器流式结果一致 (issue 02 契约).
         """
-        accumulator = _StreamAccumulator()
+        accumulator = StreamAccumulator()
         try:
             async for chunk in stream:
                 apply_sse_chunk(accumulator, chunk.model_dump())

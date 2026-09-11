@@ -34,7 +34,7 @@ USER_MSG = {"role": "user", "content": "反复查询直到完成"}
 
 
 class _FakeClock:
-    """固定时钟: 值由测试手动推进, 经 LoopGuard._time_source 注入缝使用.
+    """固定时钟: 值由测试手动推进, 经 LoopGuard.time_source 注入缝使用.
 
     wall-clock 测试由此完全确定化 (真实时间 + 短预算只剩 10ms 余量,
     慢 CI 上有抖动风险; #61 注入随机/时间源的原则).
@@ -135,7 +135,7 @@ def test_check_after_turn_unlimited_when_none() -> None:
 def test_time_limit_boundary_with_injected_clock() -> None:
     """wall-clock 边界: 恰好等于预算即触发 (固定时钟, 零抖动)."""
     clock = _FakeClock()
-    guard = LoopGuard(max_duration_seconds=5.0, _time_source=clock)
+    guard = LoopGuard(max_duration_seconds=5.0, time_source=clock)
     guard.start()
 
     clock.now = 4.9
@@ -168,7 +168,7 @@ async def test_guard_timer_resets_between_runs() -> None:
     若 start() 未重新调用, 第二次 run 会带着第一次的耗时直接撞上时长预算。
     """
     clock = _FakeClock()
-    guard = LoopGuard(max_duration_seconds=0.05, _time_source=clock)
+    guard = LoopGuard(max_duration_seconds=0.05, time_source=clock)
 
     async def slow_step(messages: list[ModelMessage]) -> ModelResponse:
         """脚本元素: 把时钟推到 0.06s (首次 run 耗时超预算)."""
@@ -313,7 +313,7 @@ async def test_wall_clock_stops_loop() -> None:
     loop = AgentLoop(
         model=model,
         tools=[ECHO_TOOL],
-        guard=LoopGuard(max_duration_seconds=0.05, _time_source=clock),
+        guard=LoopGuard(max_duration_seconds=0.05, time_source=clock),
     )
     result = await loop.run([dict(USER_MSG)])
 

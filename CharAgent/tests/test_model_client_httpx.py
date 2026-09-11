@@ -77,7 +77,7 @@ async def test_non_stream_request_wire_format(chat_model: HttpXChatModel) -> Non
     request = route.calls.last.request
     assert request.headers["authorization"] == f"Bearer {API_KEY}"
     payload = json.loads(request.content)
-    assert payload["model"] == "deepseek-v4-flash"
+    assert payload["model"] == "deepseek-flash"
     assert payload["messages"] == MESSAGES
     assert payload["tools"] == [TOOL_SCHEMA]
     assert payload["stream"] is False
@@ -117,7 +117,7 @@ async def test_non_stream_parses_text_and_usage(chat_model: HttpXChatModel) -> N
     assert response.usage is not None
     assert response.usage.input_tokens == 89
     assert response.usage.total_tokens == 101
-    assert response.model == "deepseek-v4-flash"
+    assert response.model == "deepseek-flash"
     assert not response.has_tool_calls
 
 
@@ -125,7 +125,7 @@ async def test_non_stream_tool_calls_response(chat_model: HttpXChatModel) -> Non
     """非流式 tool_calls 响应: content null, finish tool_calls, arguments 保真."""
     body = {
         "id": "chatcmpl-mock-002",
-        "model": "deepseek-v4-flash",
+        "model": "deepseek-flash",
         "choices": [
             {
                 "index": 0,
@@ -355,10 +355,12 @@ async def test_stream_tool_calls_delta_accumulation(chat_model: HttpXChatModel) 
     assert call.arguments == '{"order_no": "20260701123456"}'
 
 
-async def test_stream_usage_only_chunk_is_attached(chat_model: HttpXChatModel) -> None:
-    """include_usage 收尾 chunk (choices 空) 累积到 usage.
+async def test_stream_usage_attached_to_final_chunk(
+    chat_model: HttpXChatModel,
+) -> None:
+    """include_usage 的 usage 附着在末块 (含 finish_reason, delta 为空) 并累积.
 
-    服务端不支持时 usage 保持 None.
+    官方形态: 不单独下发只含 usage 的块; 服务端不支持时 usage 保持 None.
     """
     body = "".join(
         [
@@ -370,16 +372,14 @@ async def test_stream_usage_only_chunk_is_attached(chat_model: HttpXChatModel) -
                 }
             ),
             sse_chunk(
-                {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
-            ),
-            sse_chunk(
                 {
-                    "model": "deepseek-v4-flash",
-                    "choices": [],
+                    "model": "deepseek-flash",
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
                     "usage": {
                         "prompt_tokens": 20,
                         "completion_tokens": 3,
                         "total_tokens": 23,
+                        "completion_tokens_details": {"reasoning_tokens": 2},
                     },
                 }
             ),
@@ -389,9 +389,11 @@ async def test_stream_usage_only_chunk_is_attached(chat_model: HttpXChatModel) -
     async with respx.mock() as router:
         router.post(CHAT_URL).mock(return_value=httpx.Response(200, text=body))
         response = await chat_model.generate(MESSAGES, stream=True)
+    assert response.finish_reason is FinishReason.STOP
     assert response.usage is not None
     assert response.usage.total_tokens == 23
-    assert response.model == "deepseek-v4-flash"
+    assert response.usage.reasoning_tokens == 2  # 嵌套层级被正确读取
+    assert response.model == "deepseek-flash"
 
 
 async def test_stream_malformed_chunk_raises_protocol_error(

@@ -12,7 +12,7 @@ import json
 
 from CharAgent.tool import execute_tool
 from CharAgent.tool.tools_demo import (
-    _MOCK_ORDERS,
+    MOCK_ORDERS,
     batch_convert_lengths,
     convert_length,
     count_text_stats,
@@ -167,5 +167,5 @@ async def test_dual_implementations_same_output_for_same_input():
     assert (
         pydantic_execution.content
         == manual_execution.content
-        == (f"订单 20260630024680: {_MOCK_ORDERS['20260630024680']}")
+        == (f"订单 20260630024680: {MOCK_ORDERS['20260630024680']}")
     )

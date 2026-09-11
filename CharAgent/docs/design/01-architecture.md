@@ -136,7 +136,7 @@ while not done:
 | `ChatModel` | DeepSeek httpx 裸调 / openai SDK（ADR-0003） | — |
 | `CheckpointSaver` | InMemory / Redis / Postgres（ADR-0002） | — |
 | `EmbeddingProvider` | CloseAI `text-embedding-3-large` | 本地 BGE |
-| `ModelRouter` | 默认直连（单模型 `deepseek-v4-flash`） | 分级路由（#36） |
+| `ModelRouter` | 默认直连（单模型 `deepseek-flash`） | 分级路由（#36） |
 | `SemanticCache` | 无（P1 不启用） | 语义缓存（#36） |
 
 ### 4.4 P2 挂载机制
@@ -157,7 +157,7 @@ while not done:
 | 队列 | 进程内 asyncio 起步，TaskQueue 抽象预留 MQ | 0006 |
 | P2 形态 | 轻量扩展点（事件总线 + hook + SPI），配置注册 | 0007 |
 | 向量库 | 直接上 Milvus（本机 Docker），embedding 用 CloseAI `text-embedding-3-large` | 访谈决策（2026-08-18） |
-| 模型 | 单模型 deepseek-v4-flash（推理模型，reasoning_content 真实存在） | 0003 补充 |
+| 模型 | 单模型 deepseek-flash（推理模型，reasoning_content 真实存在） | 0003 补充 |
 | demo 存储 | Ticket 等 demo 表落 Postgres（alembic），订单只读 MySQL（只读账号，演示 #24） | 0004 补充 |
 
 ## 6. P1 部署拓扑

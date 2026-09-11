@@ -40,7 +40,7 @@ def text_completion_json(*, reasoning: str | None = "核对订单号") -> dict[s
         message["reasoning_content"] = reasoning
     return {
         "id": "chatcmpl-mock-001",
-        "model": "deepseek-v4-flash",
+        "model": "deepseek-flash",
         "choices": [
             {"index": 0, "message": message, "logprobs": None, "finish_reason": "stop"}
         ],

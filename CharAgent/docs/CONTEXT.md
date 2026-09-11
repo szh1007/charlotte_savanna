@@ -61,7 +61,7 @@ _Avoid_: LLM, 模型客户端
 _Avoid_: 响应, 输出
 
 **FinishReason**:
-模型响应的终止原因，含 stop（结束）/ tool_calls（继续调工具）/ length（token 截断）/ content_filter（被拦截），决定 loop 继续还是结束。
+模型响应的终止原因，含 stop（结束）/ tool_calls（继续调工具）/ length（token 截断）/ content_filter（被拦截）/ insufficient_system_resource（服务端推理资源不足，生成被打断）/ aborted（生成被中断），决定 loop 继续还是结束。后两者是**服务端中断**（非模型自然结束），内容可能只是半截，AgentLoop 据此判 SERVER_INTERRUPTED 而非 FINISHED。
 _Avoid_: 结束标记, 停止原因
 
 **Reasoning**:
@@ -213,7 +213,7 @@ _Avoid_: 新鲜度权重
 _Avoid_: 计费
 
 **TokenMetering**:
-Token 计量，tiktoken / BPE 原理，不同模型 tokenizer 差异；请求前预估做预算截断与成本核算。
+Token 计量，tiktoken / BPE 原理，不同模型 tokenizer 差异；请求前预估做预算截断与成本核算。响应侧字段按官方层级取：推理 token 在 `usage.completion_tokens_details.reasoning_tokens`（非顶层），缓存命中/未命中在 `usage.prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`（命中单价约为未命中的 1/50，不区分会高估成本）；三者均映射到 `Usage`（`reasoning_tokens` / `cache_hit_tokens` / `cache_miss_tokens`）。
 _Avoid_: token 统计, token 计算
 
 **ModelRouter**:

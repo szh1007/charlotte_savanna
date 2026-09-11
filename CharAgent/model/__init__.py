@@ -13,6 +13,12 @@
 messages 与 tools 使用 OpenAI 兼容 wire dict 直通 /chat/completions, 不引入中间
 消息模型, SDK 适配器与 MockLLM (issue 09) 复用同一格式.
 
+对接边界 (官方有 / 本项目未实现, 详表见 docs/DESIGN.md §已知能力边界):
+strict 模式(Beta) / user_id / response_format / tool_choice / logprobs / stop.
+扩展时以官方文档为准 —— DeepSeek 在 OpenAI 语义外有自有约定, 例如
+finish_reason 共六值、usage.reasoning_tokens 在 completion_tokens_details
+下而非顶层、思考模式有 thinking 与 reasoning_effort 两条开关路径.
+
 模块分工 (顶层 = 协议行为模块, utils/ = 静态支撑物, 便于审查):
 - protocol.py       ChatModel 薄协议 (SPI, 双适配器与 MockLLM 实现同一协议)
 - client_httpx.py   httpx 裸调适配器 + 环境变量工厂

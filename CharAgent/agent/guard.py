@@ -57,14 +57,14 @@ class LoopGuard:
         max_total_tokens: 单次 run 累计 token 预算 (usage.total_tokens
             累加, 无 usage 的响应计 0). None 表示不限制.
         max_duration_seconds: 单次 run 墙钟总时长预算, None 表示不限制.
-        _time_source: 计时器注入点 (默认 time.monotonic, 测试可换固定时钟,
+        time_source: 计时器注入点 (默认 time.monotonic, 测试可换固定时钟,
             见 test_loop_guard.py 的 wall-clock 用例).
     """
 
     max_turns: int = 10
     max_total_tokens: int | None = None
     max_duration_seconds: float | None = None
-    _time_source: Callable[[], float] = field(default=time.monotonic, repr=False)
+    time_source: Callable[[], float] = field(default=time.monotonic, repr=False)
     _started: float | None = field(init=False, default=None, repr=False)
 
     def __post_init__(self) -> None:
@@ -83,14 +83,14 @@ class LoopGuard:
 
     def start(self) -> None:
         """开始计时 (AgentLoop.run 进入循环前调用一次)."""
-        self._started = self._time_source()
+        self._started = self.time_source()
 
     @property
     def elapsed_ms(self) -> float:
         """自 start() 起的墙钟耗时 (毫秒); 未 start() 时恒 0."""
         if self._started is None:
             return 0.0
-        return (self._time_source() - self._started) * 1000
+        return (self.time_source() - self._started) * 1000
 
     def check_after_turn(
         self,

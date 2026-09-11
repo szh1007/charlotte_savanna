@@ -17,12 +17,21 @@ type ToolSpec = dict[str, Any]
 
 
 class FinishReason(StrEnum):
-    """模型响应的终止原因, 决定 loop 继续还是结束 (difficulties #10)."""
+    """模型响应的终止原因, 决定 loop 继续还是结束 (difficulties #10).
+
+    六个取值与官方 /chat/completions 枚举一一对应; 后两个是**服务端中断**
+    (非模型自然结束), 内容可能只是半截 —— AgentLoop 据此判 SERVER_INTERRUPTED,
+    不当最终答复返回.
+    """
 
     STOP = "stop"  # 正常结束, 可返回给用户
     TOOL_CALLS = "tool_calls"  # 模型要调工具, loop 继续
     LENGTH = "length"  # token 截断, 结果不完整, 需续写或精简 (#10)
     CONTENT_FILTER = "content_filter"  # 被安全策略拦截
+    INSUFFICIENT_SYSTEM_RESOURCE = (
+        "insufficient_system_resource"  # 服务端推理资源不足, 生成被打断 (瞬态)
+    )
+    ABORTED = "aborted"  # 生成过程被中断
 
 
 @dataclass(slots=True)
@@ -41,13 +50,22 @@ class ModelToolCall:
 class Usage:
     """
     token 计量
-    (OpenAI usage 结构映射; reasoning_tokens 为 DeepSeek 扩展, 缺失时 None).
+    (OpenAI usage 结构映射; reasoning / 缓存字段为 DeepSeek 扩展, 缺失时 None).
+
+    字段层级对齐官方响应 schema:
+    - reasoning_tokens 位于 usage.completion_tokens_details 下 (非顶层)
+    - cache_hit_tokens 取顶层 prompt_cache_hit_tokens, 与
+      prompt_tokens_details.cached_tokens 同值 (后者作兼容回退)
     """
 
     input_tokens: int | None = None  # prompt_tokens
     output_tokens: int | None = None  # completion_tokens
     total_tokens: int | None = None
-    reasoning_tokens: int | None = None  # 推理 token 数, 计入成本与上下文 (#11)
+    # completion_tokens_details.reasoning_tokens, 计入成本与上下文 (#11)
+    reasoning_tokens: int | None = None
+    # prompt_cache_hit_tokens: 命中上下文缓存的输入 token
+    cache_hit_tokens: int | None = None
+    cache_miss_tokens: int | None = None  # prompt_cache_miss_tokens: 未命中缓存的输入
 
 
 @dataclass(slots=True)

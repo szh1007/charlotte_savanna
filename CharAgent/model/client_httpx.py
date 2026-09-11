@@ -19,13 +19,14 @@ import httpx
 
 from CharAgent.model.parse import extract_error_message, parse_chat_completion
 from CharAgent.model.stream import (
-    _StreamAccumulator,
+    StreamAccumulator,
     apply_sse_chunk,
     build_stream_response,
 )
 from CharAgent.model.utils.config import (
     DEFAULT_BASE_URL,
     DEFAULT_MODEL,
+    check_thinking_params,
     strip_provider_prefix,
 )
 from CharAgent.model.utils.errors import (
@@ -72,9 +73,14 @@ class HttpXChatModel:
             top_p: 默认核采样参数, 调用级可覆盖 (#68);
                 **思考模式下下限 0.95**, 非思考模式恒为 1.0.
             seed: 默认随机种子 (#61 / #68); 思考模式下仅 content 可复现.
-            max_tokens: 默认单次输出上限 (思维链与正文共享配额).
+            max_tokens: 默认单次输出上限. 官方取值 1 ~ 384K (393216); 不传时
+                非思考默认 8K, 思考默认 64K (effort=max 时 128K). 思维链与
+                正文共享该配额 (reasoning_tokens 计入 completion_tokens).
             thinking: 默认思考模式开关 (True/False), None 走上游默认 (开启).
-            reasoning_effort: 默认思考强度 (low/high/max), None 走上游默认 (high).
+            reasoning_effort: 默认思考强度 (low/high/max; 兼容别名
+                minimal/medium/xhigh/ultra 由上游归一), None 走上游默认 (high).
+                另接受 "none" —— 与 thinking=False 等效的**第二条关闭路径**,
+                两者同时显式传入且方向相反时构造 / 调用期报 ModelConfigError.
 
         Raises:
             ModelConfigError: api_key 为空时.
@@ -124,17 +130,24 @@ class HttpXChatModel:
             ("top_p", top_p, self._top_p),
             ("seed", seed, self._seed),
             ("max_tokens", max_tokens, self._max_tokens),
-            ("reasoning_effort", reasoning_effort, self._reasoning_effort),
         ):
             resolved = call_value if call_value is not None else instance_default
             if resolved is not None:
                 payload[key] = resolved
         resolved_thinking = thinking if thinking is not None else self._thinking
+        resolved_effort = (
+            reasoning_effort if reasoning_effort is not None else self._reasoning_effort
+        )
+        # thinking 与 reasoning_effort 是两条独立的思考模式开关路径, 先校验
+        # 取值合法且不互相矛盾再发请求 (详见 utils/config.check_thinking_params)
+        check_thinking_params(resolved_thinking, resolved_effort)
         if resolved_thinking is not None:
             # 上游在 body 顶层识别 thinking 对象; bool 归一为 enabled/disabled
             payload["thinking"] = {
                 "type": "enabled" if resolved_thinking else "disabled"
             }
+        if resolved_effort is not None:
+            payload["reasoning_effort"] = resolved_effort
         if stream:
             # 请求尾部追加 usage chunk, 流式累积结果才有 token 计量
             # (#11 reasoning token 计入成本)
@@ -213,7 +226,7 @@ class HttpXChatModel:
         (内容 / reasoning / tool_calls arguments).
         """
         response = await self._post(payload, stream=True)
-        accumulator = _StreamAccumulator()
+        accumulator = StreamAccumulator()
         try:
             async for line in response.aiter_lines():
                 stripped = line.strip()

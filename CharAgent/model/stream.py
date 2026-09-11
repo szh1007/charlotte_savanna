@@ -5,7 +5,7 @@ chunk 对象 (SDK 端同样调用, 故不依赖 SSE 文本格式).
 
 - content / reasoning_content 增量拼接 (#11)
 - tool_calls 按 index 分片累积: id / name 首 chunk 给, arguments 增量拼接 (#10)
-- usage-only chunk (stream_options.include_usage) 收尾累积 token 计量
+- 末块 usage 收尾累积 token 计量 (stream_options.include_usage)
 
 增量字段类型校验与 parse.parse_chat_completion 一致: 畸形 chunk (如多模态
 content 数组) 抛 ModelProtocolError 而非裸 TypeError.
@@ -40,7 +40,7 @@ class _ToolCallPart:
 
 
 @dataclass(slots=True)
-class _StreamAccumulator:
+class StreamAccumulator:
     """一次 SSE 流式响应的累积状态. chunk.choices[0].delta 的增量字段拼接为完整内容."""
 
     content: str = ""
@@ -51,7 +51,7 @@ class _StreamAccumulator:
     model: str | None = None
 
 
-def _accumulate_delta(acc: _StreamAccumulator, delta: Mapping[str, Any]) -> None:
+def accumulate_delta(acc: StreamAccumulator, delta: Mapping[str, Any]) -> None:
     """
     累积单个 delta 分片:
         content / reasoning_content 增量拼接,
@@ -110,10 +110,16 @@ def _accumulate_delta(acc: _StreamAccumulator, delta: Mapping[str, Any]) -> None
                 part.arguments += arg_delta
 
 
-def apply_sse_chunk(acc: _StreamAccumulator, chunk: Mapping[str, Any]) -> None:
-    """
-    应用单个 SSE chunk. 约定:
-    usage 独立 chunk (choices 为空, stream_options.include_usage).
+def apply_sse_chunk(acc: StreamAccumulator, chunk: Mapping[str, Any]) -> None:
+    """应用单个 SSE chunk.
+
+    usage 的到达形态 (官方 stream_options.include_usage 约定): **不存在只含
+    usage 的块** —— 统计信息附加在 [DONE] 之前的最后一个内容块上, 该块
+    choices 只有一个元素, delta 无新增内容且 finish_reason 非 null. 开启
+    include_usage 后所有块都带 usage 字段, 除末块外值均为 null.
+
+    本函数先读 usage 再处理 choices, 两种时序都能正确累积 (choices 为空的
+    块也容错跳过), 不依赖块的出现顺序.
     """
     if not isinstance(chunk, dict):
         raise ModelProtocolError(
@@ -126,7 +132,7 @@ def apply_sse_chunk(acc: _StreamAccumulator, chunk: Mapping[str, Any]) -> None:
         acc.usage = parse_usage(usage)
     choices = chunk.get("choices") or []
     if not choices:
-        return  # usage-only chunk
+        return  # 无 choices 的块 (容错分支, 官方不单独下发 usage 块)
     choice = choices[0]
     if not isinstance(choice, dict):
         raise ModelProtocolError(
@@ -134,13 +140,13 @@ def apply_sse_chunk(acc: _StreamAccumulator, chunk: Mapping[str, Any]) -> None:
         )
     delta = choice.get("delta")
     if isinstance(delta, dict) and delta:
-        _accumulate_delta(acc, delta)
+        accumulate_delta(acc, delta)
     finish_reason = choice.get("finish_reason")
     if finish_reason is not None:
         acc.finish_reason = parse_finish_reason(finish_reason)
 
 
-def build_stream_response(acc: _StreamAccumulator) -> ModelResponse:
+def build_stream_response(acc: StreamAccumulator) -> ModelResponse:
     """流式累积状态 -> 完整 ModelResponse. 流结束仍无 finish_reason 视为断流畸形."""
     if acc.finish_reason is None:
         raise ModelProtocolError("SSE 流结束但未收到 finish_reason, 响应不完整")

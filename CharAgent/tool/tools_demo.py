@@ -217,7 +217,7 @@ def count_text_stats(
 # ---------------------------------------------------------------------------
 
 # 演示 mock 数据 (固定订单表; 真实客服查询属 P1-13 demo 层接入数据源, 形态不变)
-_MOCK_ORDERS: dict[str, str] = {
+MOCK_ORDERS: dict[str, str] = {
     "20260701123456": "已发货, 预计 2026-07-05 送达 (承运: 顺丰 SF7890123456)",
     "20260702098765": "待发货, 预计 2026-07-08 送达",
     "20260630024680": "已签收 (签收时间 2026-07-03 14:20)",
@@ -239,7 +239,7 @@ def query_order_status(
     未提供订单号时应先向用户索要, 不要猜测订单号. 返回状态文本,
     查无此单时返回提示信息.
     """
-    status = _MOCK_ORDERS.get(order_no)
+    status = MOCK_ORDERS.get(order_no)
     if status is None:
         return f"未查询到订单 {order_no} 的记录, 请与用户核对订单号"
     return f"订单 {order_no}: {status}"
@@ -269,7 +269,7 @@ def query_order_status_manual(order_no: str) -> str:
         raise ToolActionableError(
             f"order_no 应为 14 位数字, 实际 {order_no!r}, 请核对后重试"
         )
-    status = _MOCK_ORDERS.get(order_no)
+    status = MOCK_ORDERS.get(order_no)
     if status is None:
         return f"未查询到订单 {order_no} 的记录, 请与用户核对订单号"
     return f"订单 {order_no}: {status}"

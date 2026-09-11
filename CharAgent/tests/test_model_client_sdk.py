@@ -31,9 +31,7 @@ MESSAGES: list[dict[str, str]] = [
 @pytest_asyncio.fixture
 async def openai_model():
     """真实 SDK 适配器实例, 测试用 respx 拦截其底层 httpx 网络请求."""
-    model = OpenAIChatModel(
-        api_key=API_KEY, base_url=BASE_URL, model="deepseek-v4-flash"
-    )
+    model = OpenAIChatModel(api_key=API_KEY, base_url=BASE_URL, model="deepseek-flash")
     yield model
     await model.aclose()
 
@@ -67,7 +65,7 @@ async def test_non_stream_parses_text_reasoning_and_usage(
     assert response.finish_reason is FinishReason.STOP
     assert response.usage is not None
     assert response.usage.total_tokens == 101
-    assert response.model == "deepseek-v4-flash"
+    assert response.model == "deepseek-flash"
     assert not response.has_tool_calls
 
 
@@ -92,7 +90,7 @@ async def test_non_stream_without_reasoning_field(
 async def test_stream_accumulates_content_and_usage(
     openai_model: OpenAIChatModel,
 ) -> None:
-    """SDK 流式: chunk 累积 + usage-only chunk 收尾, 结果与非流式同构."""
+    """SDK 流式: chunk 累积 + 末块 usage (官方形态), 结果与非流式同构."""
     body = "".join(
         [
             sse_chunk(
@@ -118,16 +116,14 @@ async def test_stream_accumulates_content_and_usage(
                 }
             ),
             sse_chunk(
-                {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
-            ),
-            sse_chunk(
                 {
-                    "model": "deepseek-v4-flash",
-                    "choices": [],
+                    "model": "deepseek-flash",
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
                     "usage": {
                         "prompt_tokens": 20,
                         "completion_tokens": 3,
                         "total_tokens": 23,
+                        "completion_tokens_details": {"reasoning_tokens": 1},
                     },
                 }
             ),
@@ -141,7 +137,8 @@ async def test_stream_accumulates_content_and_usage(
     assert response.finish_reason is FinishReason.STOP
     assert response.usage is not None
     assert response.usage.total_tokens == 23
-    assert response.model == "deepseek-v4-flash"
+    assert response.usage.reasoning_tokens == 1
+    assert response.model == "deepseek-flash"
 
 
 # ---------------------------------------------------------------------------

@@ -58,7 +58,7 @@ while not done:
 | 类别 | 技术 |
 |------|------|
 | 语言 | Python 3.13 |
-| 模型接入 | httpx 裸调 + openai SDK（DeepSeek `deepseek-v4-flash`，OpenAI 兼容 base_url） |
+| 模型接入 | httpx 裸调 + openai SDK（DeepSeek `deepseek-flash`，OpenAI 兼容 base_url） |
 | Embedding | CloseAI（OpenAI 兼容代理）`text-embedding-3-large` |
 | 存储 | Redis（Docker，缓存 / checkpoint / 分布式锁）+ Postgres（checkpoint 历史） |
 | 向量库 | Milvus（本机 Docker，直接采用） |
@@ -204,6 +204,24 @@ CharAgent/
 | P0 | `python -m CharAgent.cli` | CLI 跑通 loop（不依赖 server），checkpoint 断点续跑 + 单测 |
 | P1 | `python -m server.main` + 前端 `npm run dev` | FastAPI + SSE，客服 demo 端到端 |
 | P2 | 各插件按需启用 | 评估集跑分、trace 面板、记忆/多 agent 演示 |
+
+## 已知能力边界（DeepSeek 对接）
+
+以下是官方 `/chat/completions` 已有、但本项目**有意未实现**的能力。不是缺陷，是 P0 阶段的取舍；扩展时直接读官方文档，不要按 OpenAI 语义推测。
+
+| 能力 | 现状 | 说明 |
+|------|------|------|
+| `strict` 模式（Beta） | 未启用 | 需 `base_url` 加 `/beta` 且每个 function 带 `strict: true`；官方对 schema 有硬约束（object 所有属性必须 required、`additionalProperties: false`、不支持 `minLength`/`maxItems` 等），当前两个 schema 引擎产出的形状不满足，**直接打开会被服务端拒绝** |
+| `user_id` | 未实现 | 用于 KVCache 缓存隔离 / 内容安全 / 调度隔离 |
+| `response_format` | 未实现 | `{"type": "json_object"}` JSON Output |
+| `tool_choice` | 未实现 | 默认 `auto`。注意**思考模式下不支持 `required` 和指定具体 tool，会返 400** |
+| `logprobs` / `top_logprobs` / `stop` | 未实现 | 与现有链路无关 |
+| 对话前缀续写（Beta） | 未采用 | 续写走 prompt 式（见 difficulties #10），理由见 `difficulties/01-core-loop.md` |
+
+另有两处官方语义需特别留意（都已在代码与测试中落实）：
+
+1. **`finish_reason` 有六个取值**，其中 `insufficient_system_resource`（资源不足，瞬态）与 `aborted` 属服务端中断，不能当正常结束处理；漏枚举会被误判成协议畸形。
+2. **`usage` 字段层级**：`reasoning_tokens` 在 `completion_tokens_details` 下（顶层没有），缓存计量在 `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`。
 
 ## 文档索引
 
