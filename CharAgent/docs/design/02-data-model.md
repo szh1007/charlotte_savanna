@@ -40,7 +40,7 @@
 | run_id | str (FK, nullable) | 归属执行（手工人工回复无 run） |
 | role | enum | user / assistant / tool / system |
 | content | text | 文本内容（assistant 的 final 回答） |
-| reasoning | text | assistant 的 reasoning_content，**存储但不回填历史**（#11） |
+| reasoning | text | assistant 的 reasoning_content，**存储**（供前端折叠展示与审计；与 `hidden` 字段无关，这是内容不是可见性开关）。注意与 wire 历史区分：官方文档要求带 `tools` 的请求回传该字段（称缺失即 400；本机实测 2026-09-11 未触发 400，框架仍按文档执行以保留交错思考） |
 | tool_call_ids | jsonb | 该 assistant 消息关联的 tool_call 列表（保持并行语义 #1） |
 | hidden | bool | 内部消息（系统注入、压缩摘要）不对前端展示 |
 | created_at | datetime | 索引：thread_id + created_at |

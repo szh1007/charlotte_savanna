@@ -47,7 +47,7 @@ class Usage:
     input_tokens: int | None = None  # prompt_tokens
     output_tokens: int | None = None  # completion_tokens
     total_tokens: int | None = None
-    reasoning_tokens: int | None = None  # 推理 token, 计入成本但不回填历史 (#11)
+    reasoning_tokens: int | None = None  # 推理 token 数, 计入成本与上下文 (#11)
 
 
 @dataclass(slots=True)
@@ -57,7 +57,7 @@ class ModelResponse:
     content: str | None  # 最终文本; 纯工具调用回复常为 None
     tool_calls: list[ModelToolCall] = field(default_factory=list)
     finish_reason: FinishReason = FinishReason.STOP
-    reasoning: str | None = None  # reasoning_content 分离 (#11), 存而不回填历史
+    reasoning: str | None = None  # reasoning_content 与 content 分离 (#11)
     usage: Usage | None = None
     model: str | None = None  # API 回显的模型名
     raw: dict[str, Any] | None = None  # 原始响应, 供排查与录制回放样本 (#61)

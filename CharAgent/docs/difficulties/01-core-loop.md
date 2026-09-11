@@ -47,9 +47,12 @@
 | | | | • tool 参数 JSON schema 设计：required/optional、enum、嵌套对象、约束条件，schema 质量直接影响模型填参正确率 | |
 | | | | • finish_reason 四种取值：stop（正常结束）/ tool_calls（要调工具，loop 继续）/ length（token 截断，需特殊处理）/ content_filter（被安全拦截） | |
 | | | | • length 截断时结果不完整，要么续写、要么提示模型精简，不能当正常答案返回 | |
+| | | | • 续写选型：CONTINUE 用 **prompt 式续写**（前缀回填 + system 指令「接着被截断的位置继续输出」），**未采用** DeepSeek 的对话前缀续写（末条消息 `prefix: True` + `base_url=/beta`）。实测（2026-09-11，`max_tokens=100` 强造两次截断）：两处接缝均为跨消息完整句，最终 401 字零重复 —— prompt 式已够用。不采用的理由：① `base_url` 是 client 级配置，为一条边缘路径把全框架押上 beta 测试通道不划算；② 前缀续写要求末条消息为 `assistant`，与「`tool` 消息必须紧跟带 `tool_calls` 的 `assistant`」结构冲突；③ 与思考模式的交互官方未定义（定价页称 FIM 补全仅在非思考模式可用）；④ 该特性本意是**输出格式引导**（强制代码块 / JSON 开头），不是截断续写 | |
 | 11 | 推理模型 reasoning 处理 | • 推理模型（DeepSeek R1 / o1）会先输出一段 reasoning_content（思维链），再输出最终答案，两者要分离处理 | P0 |
 | | | | • 流式场景下 reasoning 也是增量输出，要单独作为一类事件推给前端（区别于 #4 的 thinking / tool_call） | |
-| | | | • reasoning 的 token 计入成本和上下文窗口，但不应该回填进消息历史（否则历史无限膨胀） | |
+| | | | • reasoning 的 token 计入成本和上下文窗口。**官方文档要求带 `tools` 的请求回填 wire 历史**（称缺失或为空即 400），且会被拼接进上下文；2026-09-11 实测 11 组条件（`deepseek-flash` / `deepseek-v4-pro` / `deepseek-reasoner` / `deepseek-chat` × 默认与 beta 端点 × httpx 裸调与官方 SDK 样例流程 × 流式与非流式 × 缺失 / 空串 / null / 部分回传四种回传形态）均未复现该 400；但不复现不等于契约不存在（社区有 400 报告，触发条件可能更窄或灰度中），框架仍按文档执行以保留交错思考（模型跨工具调用复用推理链）。不带 `tools` 时 API 忽略该字段 | |
+| | | | • reasoning 与 content 分属**两条通道**：前端折叠展示（Thinking 区，见 03-api.md §2），不混入正文。两个「历史」要分清 —— 它进模型侧 wire 上下文，也存进 Message 记录（供重连重建） | |
+| | | | • 「历史膨胀」的治理靠 context compaction（P1-10），不靠丢弃 reasoning | |
 | | | | • 非推理模型没有 reasoning_content 字段，模型层要兼容有无该字段的差异 | |
 | 12 | Agent 后端数据模型 | • 核心实体：thread（会话）/ run（一次执行）/ message（消息）/ tool_call（工具调用）/ checkpoint（快照）/ event（事件） | P2 |
 | | | | • 字段设计：id、tenant_id/user_id（多租户）、时间戳、状态、版本 | |

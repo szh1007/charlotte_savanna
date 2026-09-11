@@ -11,3 +11,6 @@
 - [ ] 每事件带 seq 序号
 - [ ] hook 注册表骨架：5 个 hook 点 + 注册 API，空注册零开销（ADR-0007 扩展点）
 - [ ] reasoning 事件与历史分离验证（#11）
+- [ ] delta 与 final 的权威性约定：delta 仅作渐进预览，`final.content` 为权威值（前端收到即覆盖缓冲）——CONDENSE 丢弃的截断前缀已按 delta 推送过，只累加会显示作废内容（#10）
+- [ ] thinking / final 的文本边界：非终止轮（工具轮等）的 assistant 正文归 thinking，终止轮才归 final；该边界 loop 侧已算出（AgentLoop 中「工具轮打断拼合链」的 content_parts.clear 处即同一判断），直接复用不重新推导
+- [ ] guard 刹车（MAX_TURNS / TIME_LIMIT / TRUNCATION_LIMIT，此时 LoopResult.content=None）的事件契约：走 error 事件还是带降级说明的 final，需在 03-api.md §2 定案

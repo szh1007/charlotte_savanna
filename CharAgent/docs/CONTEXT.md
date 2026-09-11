@@ -65,7 +65,7 @@ _Avoid_: 响应, 输出
 _Avoid_: 结束标记, 停止原因
 
 **Reasoning**:
-推理模型的思维链（reasoning_content），流式增量输出、计入成本与窗口但不回填历史，模型层需兼容有无该字段。
+推理模型的思维链（reasoning_content），流式增量输出、计入成本与上下文窗口。官方文档要求带 `tools` 时回填 wire 历史（称缺失即 400），且会被拼接进上下文；本机实测（2026-09-11，`deepseek-flash`）缺失未触发 400，框架仍按文档执行以保留交错思考。不带 `tools` 时 API 忽略该字段。模型层需兼容有无该字段。
 _Avoid_: 思考过程, CoT, 思维链
 
 **StreamEvent**:
@@ -365,7 +365,7 @@ mock 模型，固定返回 / 脚本化序列返回 / 录制回放，让 loop 测
 _Avoid_: 模型桩
 
 **DeterministicTest**:
-确定性测试，temperature=0 + seed + 注入随机源保证同输入同输出，避免 flaky。
+确定性测试，temperature=0 + seed + 注入随机源保证同输入同输出，避免 flaky。注意思考模式下 `temperature` 不生效（上游忽略但不报错）、`top_p` 下限被抬至 0.95，且 `seed` 仅保证 content 可复现（reasoning 每次不同）。
 _Avoid_: 稳定测试
 
 **TrajectoryAssertion**:

@@ -1,11 +1,12 @@
-"""真实 DeepSeek API 集成测试 (issue 01 + 02: RUN_INTEGRATION=1 可跑).
+"""真实 DeepSeek API 集成测试 (issue 01 + 02; marker: integration).
 
 验证真实协议字段: 非流式 tool_calls 结构 / usage / finish_reason /
 reasoning_content 分离, SSE 流式 delta 累积, tools wire 格式被真实端点接受,
 以及 openai SDK 适配器在真实端点上 behavior 与 httpx 适配器一致
 (SDK 的 extra 字段保留 reasoning_content, 流式 delta 同样累积).
-默认跳过, 运行: RUN_INTEGRATION=1 pytest tests/integration/
-(需根 .env 配置 DEEPSEEK_* 密钥)
+默认排除 (pytest.ini 的 addopts = -m "not integration"), 运行:
+    pytest -m integration
+(需根 .env 配置 DEEPSEEK_* 密钥; 调真实端点, 会消耗额度)
 """
 
 from __future__ import annotations
@@ -29,12 +30,7 @@ from CharAgent.model import (
 # 根 .env 位于本文件向上三层: tests/integration -> tests -> CharAgent -> 仓库根
 load_dotenv(Path(__file__).resolve().parents[3] / ".env")
 
-pytestmark = [
-    pytest.mark.skipif(
-        os.getenv("RUN_INTEGRATION") != "1",
-        reason="真实 API 集成测试需 RUN_INTEGRATION=1 (防止 CI 与日常测试触网计费)",
-    ),
-]
+pytestmark = pytest.mark.integration
 
 if not os.getenv("DEEPSEEK_API_KEY"):
     pytest.skip(

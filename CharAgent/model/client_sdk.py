@@ -93,6 +93,9 @@ class OpenAIChatModel:
         temperature: float | None = None,
         top_p: float | None = None,
         seed: int | None = None,
+        max_tokens: int | None = None,
+        thinking: bool | None = None,
+        reasoning_effort: str | None = None,
     ) -> None:
         """构造 openai SDK 适配器 (底层 client 惰性发请求, 复用连接池).
 
@@ -101,9 +104,14 @@ class OpenAIChatModel:
             base_url: API 根地址, 可含 /v1 路径, 与 client_httpx.py 同语义.
             model: OpenAI 兼容模型名 (裸名, 无 provider 前缀).
             timeout: 单次请求超时秒数, 默认 60, 语义同 HttpXChatModel.timeout.
-            temperature: 默认采样温度, 调用级可覆盖 (#68).
-            top_p: 默认核采样参数, 调用级可覆盖 (#68).
-            seed: 默认随机种子, 固定后同输入同输出 (#61 / #68).
+            temperature: 默认采样温度, 调用级可覆盖 (#68);
+                **思考模式下不生效** (上游忽略, 不报错).
+            top_p: 默认核采样参数, 调用级可覆盖 (#68);
+                **思考模式下下限 0.95**, 非思考模式恒为 1.0.
+            seed: 默认随机种子 (#61 / #68); 思考模式下仅 content 可复现.
+            max_tokens: 默认单次输出上限 (思维链与正文共享配额).
+            thinking: 默认思考模式开关 (True/False), None 走上游默认 (开启).
+            reasoning_effort: 默认思考强度 (low/high/max), None 走上游默认 (high).
 
         Raises:
             ModelConfigError: api_key 为空时.
@@ -118,6 +126,9 @@ class OpenAIChatModel:
         self._temperature = temperature
         self._top_p = top_p
         self._seed = seed
+        self._max_tokens = max_tokens
+        self._thinking = thinking
+        self._reasoning_effort = reasoning_effort
         # max_retries=0: 重试策略统一归 P0-5 retry 层 (与 client_httpx.py 一致),
         # SDK 内建重试会绕过业务重试的退避 / 熔断 / 幂等设计
         self._client = openai.AsyncOpenAI(
@@ -133,6 +144,9 @@ class OpenAIChatModel:
         temperature: float | None,
         top_p: float | None,
         seed: int | None,
+        max_tokens: int | None,
+        thinking: bool | None,
+        reasoning_effort: str | None,
     ) -> dict[str, Any]:
         """组装 create() 调用参数: 与 client_httpx._resolve_payload 同语义.
 
@@ -150,10 +164,24 @@ class OpenAIChatModel:
             ("temperature", temperature, self._temperature),
             ("top_p", top_p, self._top_p),
             ("seed", seed, self._seed),
+            ("max_tokens", max_tokens, self._max_tokens),
         ):
             resolved = call_value if call_value is not None else instance_default
             if resolved is not None:
                 kwargs[key] = resolved
+        # thinking / reasoning_effort 是 DeepSeek 特有参数, 经 extra_body 合并进
+        # 请求体 —— 不依赖 SDK 版本是否认识这两个形参, 结果与 httpx 裸调一致
+        extra: dict[str, Any] = {}
+        resolved_thinking = thinking if thinking is not None else self._thinking
+        if resolved_thinking is not None:
+            extra["thinking"] = {"type": "enabled" if resolved_thinking else "disabled"}
+        resolved_effort = (
+            reasoning_effort if reasoning_effort is not None else self._reasoning_effort
+        )
+        if resolved_effort is not None:
+            extra["reasoning_effort"] = resolved_effort
+        if extra:
+            kwargs["extra_body"] = extra
         if stream:
             # 请求尾部追加 usage chunk, 流式累积结果才有 token 计量
             # (#11 reasoning token 计入成本)
@@ -168,6 +196,9 @@ class OpenAIChatModel:
         temperature: float | None = None,
         top_p: float | None = None,
         seed: int | None = None,
+        max_tokens: int | None = None,
+        thinking: bool | None = None,
+        reasoning_effort: str | None = None,
         stream: bool = False,
     ) -> ModelResponse:
         """见 ChatModel.generate. SDK 返回对象 model_dump() 回 wire 结构后,
@@ -180,6 +211,9 @@ class OpenAIChatModel:
             temperature=temperature,
             top_p=top_p,
             seed=seed,
+            max_tokens=max_tokens,
+            thinking=thinking,
+            reasoning_effort=reasoning_effort,
         )
         try:
             completion = await self._client.chat.completions.create(**kwargs)

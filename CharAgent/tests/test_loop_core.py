@@ -4,7 +4,8 @@
 - 单工具调用: 调用 → tool 消息回填 → 模型二次决策正确, 全程轨迹断言
   (模型每轮看到了什么 / 历史 wire 结构精确形状)
 - 消息历史保真: 可续接下一轮对话; 调用方输入列表不被污染
-- reasoning 分离 (#11): 不入消息历史, 完整保留在 TurnRecord.response
+- reasoning 契约 (#11): 回填 wire 历史 (带 tools 时必须回传, 否则真实端点
+  400), 但不混入 content 字段 (展示走 reasoning 事件, 另一条通道)
 - 无工具路径: 单轮直接出答案; tools 参数直通协议
 - 构造校验: 工具名重复报错
 
@@ -196,8 +197,12 @@ async def test_input_messages_not_mutated() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_reasoning_never_backfilled_into_history() -> None:
-    """reasoning 分离 (#11): 不入消息历史, 完整保留在 TurnRecord.response."""
+async def test_reasoning_backfilled_into_history_for_api_contract() -> None:
+    """reasoning 回填 wire 历史 (#11 + DeepSeek 思考模式契约).
+
+    官方文档要求带 tools 的请求完整回传 reasoning_content (称缺失即 400);
+    本机实测未强制, 框架仍按文档执行以保留交错思考。
+    """
     model = ScriptedModel(
         [
             tool_call_response(make_tool_call("echo", '{"message": "hi"}')),
@@ -207,12 +212,33 @@ async def test_reasoning_never_backfilled_into_history() -> None:
     loop = AgentLoop(model=model, tools=[ECHO_TOOL])
     result = await loop.run([dict(USER_MSG)])
 
-    for message in result.messages:
-        assert "reasoning_content" not in message
-    # 第二轮 (自然终止轮) 的响应全文在 TurnRecord 里, reasoning 不丢
+    # 终止轮 assistant 消息携带 reasoning_content (API 契约要求回传)
+    assert result.messages[-1]["reasoning_content"] == "核对参数: message=hi"
+    # 但不混入 content 字段 (展示走 reasoning 事件, 是另一条通道)
+    assert result.content == "回声: hi"
     assert result.turns[-1].response.reasoning == "核对参数: message=hi"
-    # reasoning 也不出现在模型下一轮看到的输入里 (不入上下文 #11)
-    assert "核对参数" not in json.dumps(model.calls[-1]["messages"], ensure_ascii=False)
+
+
+async def test_reasoning_visible_in_next_turn_request() -> None:
+    """上一轮的 reasoning 出现在下一轮请求里 (API 侧会拼接进上下文)."""
+    model = ScriptedModel(
+        [
+            text_response(
+                "前半段",
+                finish_reason=FinishReason.LENGTH,
+                reasoning="先规划文章结构",
+            ),
+            text_response("后半段"),
+        ]
+    )
+    loop = AgentLoop(model=model)
+    await loop.run([dict(USER_MSG)])
+
+    sent = json.dumps(model.calls[1]["messages"], ensure_ascii=False)
+    assert "先规划文章结构" in sent
+    # reasoning 与 content 同属一条 assistant 消息 (顺序保真)
+    assert model.calls[1]["messages"][1]["reasoning_content"] == "先规划文章结构"
+    assert model.calls[1]["messages"][1]["content"] == "前半段"
 
 
 async def test_no_tools_single_round_answer() -> None:
@@ -263,6 +289,36 @@ def test_loop_max_truncations_validated() -> None:
     """AgentLoop 非法截断重试上限 → 构造期报错 (截断防护参数有效性)."""
     with pytest.raises(LoopConfigError, match="max_truncations"):
         AgentLoop(model=ScriptedModel([]), max_truncations=0)
+
+
+async def test_sampling_and_thinking_params_passed_every_turn() -> None:
+    """透传契约 (#68 + 思考模式): 构造参数逐轮原样交给模型, 框架不改写."""
+    model = ScriptedModel(
+        [
+            tool_call_response(make_tool_call("echo", '{"message": "hi"}')),
+            text_response("好"),
+        ]
+    )
+    loop = AgentLoop(
+        model=model,
+        tools=[ECHO_TOOL],
+        temperature=0.1,
+        top_p=0.8,
+        seed=42,
+        max_tokens=512,
+        thinking=False,
+        reasoning_effort="low",
+    )
+    await loop.run([dict(USER_MSG)])
+
+    assert len(model.calls) == 2  # 两轮都要带上 (不能只首轮)
+    for call in model.calls:
+        assert call["temperature"] == 0.1
+        assert call["top_p"] == 0.8
+        assert call["seed"] == 42
+        assert call["max_tokens"] == 512
+        assert call["thinking"] is False
+        assert call["reasoning_effort"] == "low"
 
 
 async def test_usage_accumulated() -> None:

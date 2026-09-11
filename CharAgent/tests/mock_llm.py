@@ -99,6 +99,9 @@ class ScriptedModel:
         temperature: float | None = None,
         top_p: float | None = None,
         seed: int | None = None,
+        max_tokens: int | None = None,
+        thinking: bool | None = None,
+        reasoning_effort: str | None = None,
         stream: bool = False,
     ) -> ModelResponse:
         """ChatModel 协议实现: 记录请求 → 弹脚本下一条响应.
@@ -117,6 +120,9 @@ class ScriptedModel:
                 "temperature": temperature,
                 "top_p": top_p,
                 "seed": seed,
+                "max_tokens": max_tokens,
+                "thinking": thinking,
+                "reasoning_effort": reasoning_effort,
                 "stream": stream,
             }
         )

@@ -163,6 +163,47 @@ async def test_request_body_full_params_equivalent(model_pair: ModelPair) -> Non
     assert "stream_options" not in sdk_body  # 非流式无 usage chunk 概念
 
 
+async def test_request_body_thinking_params_equivalent(model_pair: ModelPair) -> None:
+    """思考模式参数: max_tokens + thinking + reasoning_effort 两适配器同构.
+
+    SDK 侧这两个 DeepSeek 特有参数经 extra_body 合并, httpx 侧直接进 body ——
+    本用例约束两者最终发出的请求体逐字节一致 (extra_body 是 SDK 特有通路,
+    不测就会 drift).
+    """
+    http_model, sdk_model = model_pair
+    kwargs = {"max_tokens": 512, "thinking": False, "reasoning_effort": "low"}
+    http_body = await _capture_request(http_model, **kwargs)
+    sdk_body = await _capture_request(sdk_model, **kwargs)
+    assert http_body == sdk_body
+    assert sdk_body["max_tokens"] == 512
+    assert sdk_body["thinking"] == {"type": "disabled"}
+    assert sdk_body["reasoning_effort"] == "low"
+
+
+async def test_request_body_instance_default_thinking_equivalent() -> None:
+    """实例级默认的 max_tokens / thinking / reasoning_effort 同样两适配器同构."""
+    kwargs = {
+        "api_key": API_KEY,
+        "base_url": BASE_URL,
+        "model": "deepseek-flash",
+        "max_tokens": 256,
+        "thinking": True,
+        "reasoning_effort": "high",
+    }
+    http_model = HttpXChatModel(**kwargs)
+    sdk_model = OpenAIChatModel(**kwargs)
+    try:
+        http_body = await _capture_request(http_model)
+        sdk_body = await _capture_request(sdk_model)
+    finally:
+        await http_model.aclose()
+        await sdk_model.aclose()
+    assert http_body == sdk_body
+    assert sdk_body["max_tokens"] == 256
+    assert sdk_body["thinking"] == {"type": "enabled"}
+    assert sdk_body["reasoning_effort"] == "high"
+
+
 async def test_request_body_defaults_equivalent(model_pair: ModelPair) -> None:
     """无 tools / 采样参数 -> 都只发 model + messages + stream.
 

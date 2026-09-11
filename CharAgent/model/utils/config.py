@@ -8,11 +8,11 @@
 from __future__ import annotations
 
 DEFAULT_BASE_URL = "https://api.deepseek.com"
-DEFAULT_MODEL = "deepseek-v4-flash"
+DEFAULT_MODEL = "deepseek-flash"
 
 
 def strip_provider_prefix(model: str) -> str:
-    """剥离 LangChain 风格 provider:model 前缀 (如 deepseek:deepseek-v4-flash).
+    """剥离 LangChain 风格 provider:model 前缀 (如 deepseek:deepseek-flash).
 
     根 .env.example 的 DEEPSEEK_MODEL_NAME 为 LangChain demo 共享, 裸调端点只接受裸名.
     """

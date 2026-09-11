@@ -10,3 +10,4 @@
 - [ ] Postgres DDL 生成（alembic），首次迁移在空库可执行
 - [ ] 实体字段与状态机枚举一致（Run/ToolCall status 全部取值）
 - [ ] 迁移体系预留 P1 demo 表与 P2 event 表追加路径（#12）
+- [ ] 会话消息与 agent transcript 分层落库：`GET /threads/{id}/messages` 只应返回一问一答（user 提问 + `LoopResult.content`）；agent 内部 transcript（含 role=system 的续写指令、role=tool 的工具回填）归 Checkpoint / 观测，不可直接喂前端。注意 CONTINUE 场景 `content` ≠ `messages[-1].content`（前者是截断续写的跨段拼合结果）

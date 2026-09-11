@@ -104,7 +104,14 @@ class AgentLoop:
             放弃 (防止小窗口下无限续写烧 token), 默认 2.
         truncation: length 截断处理策略, 默认 CONTINUE (续写).
         temperature / top_p / seed: 采样参数透传每次 generate (#68),
-            None 表示不传 (服务端默认).
+            None 表示不传 (上游默认). **思考模式下 temperature 不生效**,
+            top_p 下限 0.95, seed 仅保证 content 可复现 (reasoning 不可复现).
+        max_tokens: 单次输出上限透传; 思维链与正文共享该配额, 设得过小会
+            频繁触发 length 截断 (即上面的截断处理路径). None 表示不传
+            (走上游默认, 长输出可能被截断).
+        thinking: 思考模式开关透传, None 走上游默认 (开启, effort=high);
+            关闭可省 token 但推理类任务质量下降.
+        reasoning_effort: 思考强度透传 (low/high/max), None 走上游默认 (high).
     """
 
     def __init__(
@@ -118,6 +125,9 @@ class AgentLoop:
         temperature: float | None = None,
         top_p: float | None = None,
         seed: int | None = None,
+        max_tokens: int | None = None,
+        thinking: bool | None = None,
+        reasoning_effort: str | None = None,
     ) -> None:
         if guard is None:
             guard = LoopGuard()
@@ -130,6 +140,9 @@ class AgentLoop:
         self._temperature = temperature
         self._top_p = top_p
         self._seed = seed
+        self._max_tokens = max_tokens
+        self._thinking = thinking
+        self._reasoning_effort = reasoning_effort
         self._tool_map: dict[str, Tool] = {}
         for item in tools or []:
             if item.name in self._tool_map:
@@ -245,6 +258,9 @@ class AgentLoop:
                 temperature=self._temperature,
                 top_p=self._top_p,
                 seed=self._seed,
+                max_tokens=self._max_tokens,
+                thinking=self._thinking,
+                reasoning_effort=self._reasoning_effort,
             )
             turn_count += 1
             total_tokens += (turn_tokens := _count_tokens(response.usage))

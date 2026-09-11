@@ -6,6 +6,7 @@
 |----|------|----------|------|
 | 68 | 横切点（贯穿所有层、不单独属于某一层的基础技术点） | • 工具描述优化：工具描述要写给「没见过系统的初级工程师」看——明确参数含义、副作用、失败模式、使用时机，模型才能正确选择何时调用（落地 tool.py，P0） | P0-P1 |
 | | | | • 温度/采样控制 + 可复现性：temperature / top_p 可配置；seed 固定后同输入得到同输出，便于复现问题（落地 model 层，P0） | |
+| | | | • 思考模式的采样约束（实测 2026-09-11 `deepseek-flash`）：`temperature` 不生效（设置不报错但被忽略）；`top_p` 下限 0.95（更小值被静默抬升）；`seed` 仅保证 content 可复现，reasoning 每次不同。另需透传 `max_tokens`（思维链与正文共享配额）与 `thinking` / `reasoning_effort`（默认开启且 effort=high，是成本大头） | |
 | | | | • 限流/背压：上游 QPS 限制；队列积压时拒绝或降级，保护服务不被拖垮（落地 server 接入层，与 #20 交叉，P1） | |
 | 69 | Prompt Engineering | • system prompt 设计：角色、约束、能力边界、输出格式 | P0-P1 |
 | | | | • few-shot / CoT（Chain-of-Thought，思维链）/ ReAct 模板设计 | |

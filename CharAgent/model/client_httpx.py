@@ -55,6 +55,9 @@ class HttpXChatModel:
         temperature: float | None = None,
         top_p: float | None = None,
         seed: int | None = None,
+        max_tokens: int | None = None,
+        thinking: bool | None = None,
+        reasoning_effort: str | None = None,
     ) -> None:
         """构造 httpx 裸调适配器 (请求实例化后按需发出, 复用底层连接池).
 
@@ -64,9 +67,14 @@ class HttpXChatModel:
                 统一拼接 /chat/completions.
             model: OpenAI 兼容模型名 (裸名, 无 provider 前缀).
             timeout: 单次请求超时秒数, 默认 60 (P1-3 分层超时的 model 层).
-            temperature: 默认采样温度, 调用级可覆盖 (#68).
-            top_p: 默认核采样参数, 调用级可覆盖 (#68).
-            seed: 默认随机种子, 固定后同输入同输出 (#61 / #68).
+            temperature: 默认采样温度, 调用级可覆盖 (#68);
+                **思考模式下不生效** (上游忽略, 不报错).
+            top_p: 默认核采样参数, 调用级可覆盖 (#68);
+                **思考模式下下限 0.95**, 非思考模式恒为 1.0.
+            seed: 默认随机种子 (#61 / #68); 思考模式下仅 content 可复现.
+            max_tokens: 默认单次输出上限 (思维链与正文共享配额).
+            thinking: 默认思考模式开关 (True/False), None 走上游默认 (开启).
+            reasoning_effort: 默认思考强度 (low/high/max), None 走上游默认 (high).
 
         Raises:
             ModelConfigError: api_key 为空时.
@@ -81,6 +89,9 @@ class HttpXChatModel:
         self._temperature = temperature
         self._top_p = top_p
         self._seed = seed
+        self._max_tokens = max_tokens
+        self._thinking = thinking
+        self._reasoning_effort = reasoning_effort
         self._client = httpx.AsyncClient(timeout=timeout)
 
     @property
@@ -96,6 +107,9 @@ class HttpXChatModel:
         temperature: float | None,
         top_p: float | None,
         seed: int | None,
+        max_tokens: int | None,
+        thinking: bool | None,
+        reasoning_effort: str | None,
     ) -> dict[str, Any]:
         """组装请求体: 调用级参数优先于实例默认, 均为 None 时不携带 (走服务端默认)."""
         payload: dict[str, Any] = {
@@ -109,10 +123,18 @@ class HttpXChatModel:
             ("temperature", temperature, self._temperature),
             ("top_p", top_p, self._top_p),
             ("seed", seed, self._seed),
+            ("max_tokens", max_tokens, self._max_tokens),
+            ("reasoning_effort", reasoning_effort, self._reasoning_effort),
         ):
             resolved = call_value if call_value is not None else instance_default
             if resolved is not None:
                 payload[key] = resolved
+        resolved_thinking = thinking if thinking is not None else self._thinking
+        if resolved_thinking is not None:
+            # 上游在 body 顶层识别 thinking 对象; bool 归一为 enabled/disabled
+            payload["thinking"] = {
+                "type": "enabled" if resolved_thinking else "disabled"
+            }
         if stream:
             # 请求尾部追加 usage chunk, 流式累积结果才有 token 计量
             # (#11 reasoning token 计入成本)
@@ -156,6 +178,9 @@ class HttpXChatModel:
         temperature: float | None = None,
         top_p: float | None = None,
         seed: int | None = None,
+        max_tokens: int | None = None,
+        thinking: bool | None = None,
+        reasoning_effort: str | None = None,
         stream: bool = False,
     ) -> ModelResponse:
         """
@@ -169,6 +194,9 @@ class HttpXChatModel:
             temperature=temperature,
             top_p=top_p,
             seed=seed,
+            max_tokens=max_tokens,
+            thinking=thinking,
+            reasoning_effort=reasoning_effort,
         )
         if not stream:
             response = await self._post(payload, stream=False)

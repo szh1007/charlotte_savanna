@@ -47,9 +47,9 @@ class TruncationStrategy(StrEnum):
 class TurnRecord:
     """一次 Turn 的记录: 每轮结束时消息历史的完整快照 (供 checkpoint 落盘).
 
-    response 保留本轮模型响应全文 —— 包括不入历史的 reasoning (#11) 与被
-    CONDENSE 策略丢弃的截断内容; messages 是 wire 视角的浅拷贝快照
-    (消息 dict 追加后不再变更, 浅拷贝即安全).
+    response 保留本轮模型响应全文 —— 包括 reasoning (#11) 与被 CONDENSE
+    策略丢弃的截断内容; messages 是 wire 视角的浅拷贝快照 (消息 dict
+    追加后不再变更, 浅拷贝即安全).
     """
 
     turn: int  # 轮次, 从 1 起

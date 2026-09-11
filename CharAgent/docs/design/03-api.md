@@ -45,7 +45,7 @@ event: approval_required          # HITL 挂起（#25）
 data: {"type":"approval_required","run_id":"...","approval_id":"appr_1",
       "operation":"refund","amount":"128.00","context":"...","tool_call_id":"call_3"}
 
-event: reasoning                   # 推理模型思维链增量（#11，不入历史）
+event: reasoning                   # 推理模型思维链增量（#11，前端折叠展示）
 data: {"type":"reasoning","run_id":"...","delta":"正在核对订单..."}
 
 event: final
@@ -59,7 +59,7 @@ data: {"type":"error","run_id":"...","error":{"code":"LLM_DOWN","message":"..."}
 要点：
 - 每事件带 `seq`（事件序号），客户端记录 `after_event_id` 断点续拉
 - `tool_result` 的 error 必须**可操作**（#2：说清字段格式期望，不甩 422）
-- `reasoning` 增量推送展示但不存历史、不计入后续上下文（#11）
+- `reasoning` 增量供前端**折叠展示**（Thinking 区），与正文 content 分属两条通道（#11）。注意与 wire 历史区分：官方文档要求带 `tools` 的请求回传并拼接进模型侧上下文（本机实测 2026-09-11 未强制），这与「是否展示给用户」无关 —— 两条通道各自独立
 - `approval_required` 挂起后事件流保持连接，审批通过续推后续事件
 
 ## 3. 关键流程时序
