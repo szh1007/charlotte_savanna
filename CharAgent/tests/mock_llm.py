@@ -15,6 +15,11 @@ ScriptedModel 实现 CharAgent.model.protocol.ChatModel 协议 (Seam 1,
 脚本元素: ModelResponse 或 async (messages) -> ModelResponse 的可调用
 (后者用于注入轮间延时等场景); 脚本耗尽后仍被调用会显式抛错, 提示测试
 脚本长度与模型实际调用次数不匹配, 而非静默返回错误结果.
+
+大白话版: 这是「假大脑」—— 提前写好它每轮该回什么, 测试就不用真调 API,
+跑得快、结果稳定. 两个响应工厂 (text_response / tool_call_response) 都可带
+可选的 reasoning 与 usage, 好造出真实形态 (比如「边交代边调工具 + 带思维链」
+的工具轮), issue 05 的事件测试就靠它造各种剧本.
 """
 
 from __future__ import annotations
@@ -56,17 +61,20 @@ def tool_call_response(
     content: str | None = None,
     finish_reason: FinishReason = FinishReason.TOOL_CALLS,
     usage: Usage | None = None,
+    reasoning: str | None = None,
 ) -> ModelResponse:
     """带 tool_calls 的响应工厂 (模型要调工具, 默认 finish=tool_calls).
 
     content 可同时给出 (非 None) —— 真实端点上模型常「边叙述边调工具」
     (官方思考模式样例的输出即 content="Let me check..." + tool_calls 并存),
-    该形态下叙述进 wire 历史但不进最终答案。
+    该形态下叙述进 wire 历史但不进最终答案; reasoning 同为可选 (思考模式下
+    工具轮同样带思维链, #11).
     """
     return ModelResponse(
         content=content,
         tool_calls=list(calls),
         finish_reason=finish_reason,
+        reasoning=reasoning,
         usage=usage,
         model="deepseek-flash",
     )

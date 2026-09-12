@@ -1,6 +1,6 @@
 # 08-P0-7 — 五实体数据模型 + alembic 初始化
 
-**What to build:** 五核心实体（Thread / Run / Message / ToolCall / Checkpoint）数据模型定义，P0 一次定死（含 schema 版本号向前兼容），Postgres 表 + alembic 首次迁移初始化。字段与协议定型一致：Run 状态机（created/running/waiting_tool/waiting_user/retrying/failed/finished/cancelled）、Message.reasoning 存而不回填历史、ToolCall.status 含 needs_approval（HITL）、Checkpoint.parent_id 分支来源。demo 表（tickets/escalations/approvals/audit_logs）与幂等表预留为 P1 迁移。
+**What to build:** 五核心实体（Thread / Run / Message / ToolCall / Checkpoint）数据模型定义，P0 一次定死（含 schema 版本号向前兼容），Postgres 表 + alembic 首次迁移初始化。字段与协议定型一致：Run 状态机（created/running/waiting_tool/waiting_user/retrying/failed/finished/cancelled）、Message.reasoning 独立成列（供重连重建，前端折叠展示；注意它**同时**回填 wire 历史，见 issue 04 §1 修正后的 #11 契约）、ToolCall.status 含 needs_approval（HITL）、Checkpoint.parent_id 分支来源。demo 表（tickets/escalations/approvals/audit_logs）与幂等表预留为 P1 迁移。
 
 **Blocked by:** 04
 

@@ -23,44 +23,117 @@
 
 ## 2. SSE 事件协议
 
-SSE 事件名（`event:` 字段）即 StreamEvent 类型，`data:` 为 JSON：
+> 框架层实现：`CharAgent/stream/`（事件类型与状态机）+ `CharAgent/hooks/`（扩展点）；
+> 事件由 `AgentLoop` 经 `event_sink` 产出（issue 05 交付，测试见 `tests/test_loop_events.py`）。
+
+SSE 事件名（`event:` 字段）即 StreamEvent 类型，`data:` 为 JSON（框架层不含 `run_id`，
+由 server 转发时注入；`seq` 即 `after_event_id` 的取值，也可映射为 SSE 的 `id:` 字段）：
 
 ```text
-event: thinking
-data: {"type":"thinking","run_id":"...","message":"正在理解您的售后问题..."}
+event: thinking                    # 非终止轮（工具轮）的助手正文（过程叙述）
+data: {"type":"thinking","seq":1,"run_id":"...","turn":1,"message":"让我先查一下订单"}
 
-event: tool_call
-data: {"type":"tool_call","run_id":"...","tool_call_id":"call_1","tool_name":"query_order",
-      "arguments":{...},"status":"started"}
+event: tool_call                   # arguments 为原始 JSON 字符串（框架不预解析 #10）
+data: {"type":"tool_call","seq":2,"run_id":"...","turn":1,"tool_call_id":"call_1",
+      "tool_name":"query_order","arguments":"{\"order_no\":\"20260701123456\"}",
+      "status":"started"}
+
+event: tool_result                 # 成功带 summary（超长截断 + 省略号），失败带可操作 error
+data: {"type":"tool_result","seq":3,"run_id":"...","turn":1,"tool_call_id":"call_1",
+      "tool_name":"query_order","status":"ok","summary":"订单 20260701xxx 已发货",
+      "duration_ms":120}
+
+event: tool_call                   # 第二轮（并行语义：同一轮多条 tool_call）
+data: {"type":"tool_call","seq":4,"run_id":"...","turn":2,"tool_call_id":"call_2",
+      "tool_name":"query_order","arguments":"{\"order_no\":\"12345\"}","status":"started"}
 
 event: tool_result
-data: {"type":"tool_result","run_id":"...","tool_call_id":"call_1","tool_name":"query_order",
-      "status":"ok","summary":"订单 20260701xxx 已发货","duration_ms":120}
+data: {"type":"tool_result","seq":5,"run_id":"...","turn":2,"tool_call_id":"call_2",
+      "tool_name":"query_order","status":"error",
+      "error":"order_no 应为 14 位数字, 实际 5 位: '12345'","duration_ms":3}
 
-event: tool_result
-data: {"type":"tool_result","run_id":"...","tool_call_id":"call_2","status":"error",
-      "error":"参数错误：order_no 格式应为 14 位数字，例如 20260701123456"}
-
-event: approval_required          # HITL 挂起（#25）
+event: approval_required          # HITL 挂起（#25，P1-7 追加；不在 P0 状态机内）
 data: {"type":"approval_required","run_id":"...","approval_id":"appr_1",
       "operation":"refund","amount":"128.00","context":"...","tool_call_id":"call_3"}
 
-event: reasoning                   # 推理模型思维链增量（#11，前端折叠展示）
-data: {"type":"reasoning","run_id":"...","delta":"正在核对订单..."}
+event: reasoning                   # 思维链（#11）；前端折叠展示，不混入正文
+data: {"type":"reasoning","seq":6,"run_id":"...","turn":3,"delta":"正在核对订单..."}
 
-event: final
-data: {"type":"final","run_id":"...","content":"您的退款申请已受理，将在 1-3 个工作日原路退回。",
-      "citations":[{"doc_id":"...","source":"退换货政策.pdf"}],"tokens":{...},"cost":0.012}
+event: final                       # 正常结束的终局事件（content 为权威值）
+data: {"type":"final","seq":7,"run_id":"...","content":"您的退款申请已受理，将在 1-3 个工作日原路退回。",
+      "finish_reason":"stop","outcome":"finished","tokens":1234,"elapsed_ms":3210.5}
 
-event: error
-data: {"type":"error","run_id":"...","error":{"code":"LLM_DOWN","message":"..."}}
+event: error                       # 异常结束的终局事件
+data: {"type":"error","seq":7,"run_id":"...","error":{"code":"max_turns","message":"已达最大轮数限制, 未能产出最终答复"}}
 ```
 
-要点：
-- 每事件带 `seq`（事件序号），客户端记录 `after_event_id` 断点续拉
-- `tool_result` 的 error 必须**可操作**（#2：说清字段格式期望，不甩 422）
-- `reasoning` 增量供前端**折叠展示**（Thinking 区），与正文 content 分属两条通道（#11）。注意与 wire 历史区分：官方文档要求带 `tools` 的请求回传并拼接进模型侧上下文（本机实测 2026-09-11 未强制），这与「是否展示给用户」无关 —— 两条通道各自独立
-- `approval_required` 挂起后事件流保持连接，审批通过续推后续事件
+### 2.1 事件状态机（框架层强校验，违反即报错）
+
+`EventBus` 在事件产出的瞬间校验四条不变量（违反抛 `EventSequenceError`，不让乱序流
+进入前端）：
+
+1. `seq` 每 run 从 1 起单调递增
+2. `tool_result` 必须匹配一条未闭合的 `tool_call`（按 `tool_call_id` 配对）；同一 id 在
+   **闭合前**不得重复开启 —— 只约束未闭合期间：真实上游的 `tool_call_id` 逐响应重置
+   （如 `call_0` 每轮重来），跨轮复用同一 id 属正常现象
+3. 仍有未闭合 `tool_call` 时不得发终局事件（工具结果必须回填完）
+4. 终局事件之后不得再发任何事件（含第二个终局）
+
+主序列：`[thinking] → (tool_call⁺ → tool_result⁺) → [thinking] → ... → final | error`。
+`reasoning` 是**旁路通道**（任意非终局位置可发，不改变主序列），与 wire 历史的配对约束
+（#10：`tool` 消息紧随带 `tool_calls` 的 `assistant`）是同一条规则在两条通道上的体现。
+
+### 2.2 终局事件的选择规则（定案）
+
+**判据是「run 是怎么结束的」，不是「有没有正文」。**
+
+| 结束情形 | 终局事件 | `error.code` |
+|---------|---------|-------------|
+| 模型正常作答（`stop`；含极少数「正常结束但没吐正文」，此时 `content` 为 `null`） | `final` | — |
+| `max_turns` / `token_budget` / `time_limit` / `truncation_limit`（guard 刹车，没有可用答复） | `error` | 取 `LoopOutcome` 值 |
+| 上游中断（资源不足 / 被中断，半截不可用） | `error` | `server_interrupted` |
+| 输出被安全策略拦截（`content_filter`） | `error` | `content_filter` |
+
+- 定案理由：刹车时 `LoopResult.content` 为 `None`，发 `final` 等于「终局答复却没有答复」，
+  前端语义坏掉；**降级话术（模板回复 / 转人工）是产品文案，归 P1-8 server 层**，框架只给
+  事实性说明
+- `content_filter` 按 **`finish_reason` 归类**（loop 语义上 `outcome` 仍是 `FINISHED`）：
+  即便模型已吐出部分文本，被安全策略拦下的内容也不该当可展示答复推给前端（拦截语义归
+  P1-6 输出护栏）
+- 框架层 `error.code` 说明「run 为什么停」；§4 的 API 级错误码说明「服务打算怎么降级」，
+  由 server 在熔断 / 超时 / 限流 / 降级处产出（P1），两者不冲突
+- 取消（kill switch）：`CancelledError` 在 loop 内直接传播（不吞），`error(cancelled)`
+  收尾由 P1-2 server 层产出
+- 框架层异常（模型调用失败等）直接抛出、**不发终局事件** —— 事件流中断即如实反映失败，
+  由 server 按 §4 发 error 给前端
+
+### 2.3 delta 的从属地位与 final 的权威性（#10）
+
+- `delta` / 过程事件只作**渐进预览**，`final.content` 是**权威值**：前端收到 `final`
+  即用它覆盖渲染缓冲
+- 这条规则是为截断场景立的：CONTINUE 续写的各段、CONDENSE 丢弃的截断前缀，都可能在缓冲里
+  留下已作废内容，只累加会显示错内容
+- P0 现状：`ChatModel.generate` 返回完整响应，尚无 token 级 content delta 通道，故
+  `reasoning` 每次响应产出**一条完整 delta**（前端按增量累加语义处理即可）；token 级切分
+  待 P1 给模型协议加 delta 回调后接入，届时本规则自动生效
+- `final.content` 与 `LoopResult.content` 恒等（含 CONTINUE 跨轮拼合后的结果）
+- 截断轮的正文**不发 `thinking`**：它是答案素材而非过程叙述 —— CONTINUE 段会拼进 `final`
+  （发了会重复展示），CONDENSE 段已被丢弃（发了等于把作废内容推给用户）
+
+### 2.4 其他要点
+
+- `tool_result` 的 error 必须**可操作**（#2：说清字段格式期望，不甩 422）；`summary` 只带
+  截断摘要（超长时保留 200 字符并追加省略号），工具返回全文在 wire 历史与 `GET messages` 里
+- `reasoning` 增量供前端**折叠展示**（Thinking 区），与正文 content 分属两条通道（#11）。
+  注意与 wire 历史区分：官方文档要求带 `tools` 的请求回传 `reasoning_content` 并拼接进
+  模型侧上下文（本机实测 2026-09-11 未强制），这与「是否展示给用户」无关 —— 两码事
+- `thinking` 承载**工具轮**的助手正文（过程叙述，会被 loop 从最终答案里剔除）；终止轮正文
+  才是 `final`。无叙述的工具轮不发 `thinking`（不产空事件）
+- `tool_call.arguments` 原样透出 JSON 字符串（框架不预解析，#10 保真；畸形 JSON 正是自纠错
+  路径的信号）
+- `approval_required` 挂起后事件流保持连接，审批通过续推后续事件（P1-7 追加该事件类型）
+- 后续追加字段：`final.citations`（P1-9 RAG 引用溯源）与 `final.cost`（P2 cost 插件）——
+  P0 的 `final` 只含 `content` / `finish_reason` / `outcome` / `tokens` / `elapsed_ms`
 
 ## 3. 关键流程时序
 
@@ -121,6 +194,10 @@ client                     server
 | `RATE_LIMITED` | 限流（#22） | 排队或 429 + 重试提示 |
 | `CANCELLED` | 用户取消 | 无（正常收尾） |
 | `BUDGET_EXCEEDED` | 预算硬上限（#34，P2） | 拒绝 + 提示 |
+
+> 本表是 **API 级**错误码（面向用户的服务降级决策，由 server 层产出）。框架层 `error` 事件
+> （§2.2）用的是「结束原因」码（`LoopOutcome` 值 + `content_filter`），说明 run 为什么停；
+> server 收到后可据此再按本表补一条面向用户的降级回执（如 `MAX_TURNS` → 模板回复 + 转人工建议）。
 
 ## 5. 前端页面（单 Vue 项目双路由）
 

@@ -110,7 +110,7 @@ idempotency_keys:   request_id PK, run_id FK, status, created_at, expires_at   -
 | Collection | `support_knowledge`（database: charlotte，本机 Milvus） |
 | 向量 | `text-embedding-3-large`，dim = 1536 |
 | Index | HNSW（M=16, efConstruction=200），metric = COSINE |
-| 标量字段 | `doc_id`（父子索引：父块喂模型）、`chunk_id`、`tenant_id`、`user_id`、`source`（文档名/URL）、`category`（退换货/物流/发票…）、`created_at` |
+| 标量字段 | `doc_id`（父子索引：父块喂模型）、`chunk_id`、`tenant_id`、`user_id`、`source`（文档名/URL）、`category`（退换货/物流/发票...）、`created_at` |
 | 过滤 | 检索强制 `filter="tenant_id == 'xxx'"`（#32），category 可组合过滤 |
 | 摄取 | pypdf 解析 PDF → 清洗（去重/格式归一化）→ 元数据提取 → chunk（size≈500, overlap≈50）→ 向量化写入；增量更新走 upsert |
 | 检索 | 粗召回（top_k=20）→ rerank（P2，SPI 预留）→ 取 top-5 喂模型，答案带引用溯源（#29 citation，返回 doc_id + chunk 文本） |

@@ -70,7 +70,7 @@ SDK 适配器把 `thinking` / `reasoning_effort` 经 **`extra_body`** 合并（�
 
 官方提供 `prefix: True` + `base_url=/beta` 的对话前缀续写。不引入的理由：① `base_url` 是 client 级配置，为一条边缘路径把全框架押上 beta 测试通道不划算；② 前缀续写要求末条消息为 `assistant`，与「`tool` 消息必须紧跟带 `tool_calls` 的 `assistant`」结构冲突；③ 与思考模式的交互官方未定义（定价页称 FIM 补全仅非思考模式可用）；④ 该特性本意是**输出格式引导**（强制代码块 / JSON 开头），不是截断续写。
 
-**实测依据**：`max_tokens=100` 强造两次截断，两处接缝均为跨消息完整句（「…蜿蜒如」+「巨龙…」），最终 401 字**零重复** —— prompt 式续写已够用。详见 `docs/difficulties/01-core-loop.md` #10。
+**实测依据**：`max_tokens=100` 强造两次截断，两处接缝均为跨消息完整句（「...蜿蜒如」+「巨龙...」），最终 401 字**零重复** —— prompt 式续写已够用。详见 `docs/difficulties/01-core-loop.md` #10。
 
 ### 5. 集成测试门控改造
 

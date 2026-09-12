@@ -17,6 +17,12 @@
 | 4 | 流式事件状态机 | • 把 agent 运行过程抽象成四类事件：thinking（思考中）/ tool_call（发起工具调用）/ tool_result（工具返回）/ final（最终答案） | P0 |
 | | | | • runtime 边跑边产出事件，逐事件推给前端，用户能实时看到进度，而不是等全部跑完才一次性返回 | |
 | | | | • 事件流通过 SSE 协议传输（单向推送，见选型 0005） | |
+| | | | • 事件类型定为**六类**（P0-4 实现）：`thinking` / `tool_call` / `tool_result` / `reasoning` / `final` / `error` —— 四类主事件之外，`reasoning` 是**旁路通道**（任意非终局位置可发，不参与主序列也不改变状态），`error` 承担异常结束（没有答复就不该有终局答复事件） | |
+| | | | • 事件流是**状态机**而非日志：四条不变量在产出瞬间强校验 —— ① `seq` 每 run 从 1 单调递增（即前端 `after_event_id`）② `tool_result` 必须匹配未闭合的 `tool_call`（按 id 配对，同 id 不得开两次）③ 工具结果未回填完不得发终局事件 ④ 终局后不得再发任何事件；违反抛 `EventSequenceError`，不让乱序流进前端（这与 #10 的「`tool` 消息必须紧随带 `tool_calls` 的 `assistant`」是同一条规则在两条通道上的体现） | |
+| | | | • 终局事件**恰好一个**（loop 单一出口产出）：正常作答 → `final`（content 权威值）；guard 刹车（max_turns / token 预算 / wall-clock / 截断超限，此时 `LoopResult.content=None`）、上游中断、输出被拦截 → `error`（code 取 `LoopOutcome` 值 + 事实性说明）。**降级话术（模板回复 / 转人工）归 P1-8 server 层，框架不编造用户文案** | |
+| | | | • `delta` 只作渐进预览、`final.content` 为权威值（前端收到即覆盖缓冲）：截断场景下（CONTINUE 跨轮拼合、CONDENSE 丢弃前缀）只累加会显示已作废内容 | |
+| | | | • 文本边界：**工具轮**的助手正文归 `thinking`（它会被 loop 的拼合链剔除，属过程叙述），终止轮正文才是 `final`；无叙述的工具轮不发 `thinking`（不产空事件）。**截断轮是例外**：它的正文是答案素材（CONTINUE 段会拼进 `final`、CONDENSE 段被丢弃）—— 发 `thinking` 要么与 `final` 重复展示、要么把已作废内容推给用户，故一律不发 | |
+| | | | • hook 注册表与事件总线是**两条不同通道**：`event_sink` 是事件出口（传输必须可靠，异常向上传播），`HookPoint.ON_EVENT` 是扩展点（插件异常被隔离留痕）；同一份事件喂两条通道，P2 观测无需自建出口（ADR-0007） | |
 | 5 | checkpoint 断点续跑 | • 每个 Turn 结束后，把会话状态（消息列表、当前进度）序列化成快照持久化 | P0 |
 | | | | • 用 `thread_id` 分区，每个会话的状态独立存储，互不干扰 | |
 | | | | • 恢复时从最近的 checkpoint 继续，关键是记录「执行到哪一步了」，从而不重复执行已完成的动作 | |

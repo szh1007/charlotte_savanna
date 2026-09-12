@@ -11,7 +11,7 @@
 | P0-1 | `ChatModel` 协议 + httpx 裸调 / openai SDK 双适配器（DeepSeek `deepseek-flash`，含 reasoning_content 兼容分支） | `model.py` | #11, #68, ADR-0001/0003 |
 | P0-2 | `@tool` 装饰器 + JSON schema 生成（参数设计、描述规范） | `tool.py` | #10, #70, #68 |
 | P0-3 | 手写 agent loop：并行工具（gather + return_exceptions）、错误自纠错（可操作错误回填）、循环防护（max_turns / token 预算 / wall-clock / kill switch）、finish_reason 处理（length 截断） | `loop.py` | #1, #2, #3, #10, #65 |
-| P0-4 | 流式事件状态机（四类事件 + reasoning 增量），事件总线 + hook 注册表骨架（空实现） | `stream.py` + `hooks.py` | #4, #11, ADR-0007 |
+| P0-4 | 流式事件状态机（六类事件：四类主事件 + reasoning 旁路 + error 终局），事件总线 + hook 注册表骨架（空实现） | `stream/` + `hooks/` | #4, #11, ADR-0007 |
 | P0-5 | 重试 + 指数退避 + jitter + 幂等键（只对瞬态错误重试，4xx 放弃） | `retry.py` | #13 |
 | P0-6 | Checkpoint：序列化协议（JSON + 自定义序列化器 + schema 版本号）、InMemory / Redis / Postgres 三实现、time-travel 分支 | `checkpoint/` | #5, ADR-0002 |
 | P0-7 | 五实体数据模型（thread/run/message/tool_call/checkpoint）定义 + Postgres 表 + alembic 初始化 | `models.py` + `alembic/` | #5, #12(实体部分) |

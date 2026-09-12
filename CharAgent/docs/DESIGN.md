@@ -40,7 +40,7 @@ while not done:
 | 工具层 | @tool 装饰器 + JSON schema 生成 + 沙箱 + 工具设计 | #10, #24, #70 |
 | 循环层 | 并行工具 + 错误自纠错 + 循环防护 | #1-3 |
 | 状态层 | checkpoint 快照 + thread 分区 + 数据模型 | #5, #12, 选型 0002 |
-| 流式层 | 四类事件 + SSE | #4, 选型 0005 |
+| 流式层 | 六类事件 + SSE | #4, 选型 0005 |
 | 可靠层 | 重试 / 熔断 / 超时 / 幂等 / 降级 | #13-19 |
 | 队列层 | 并发排队 + 长任务异步化 | #20, 选型 0006 |
 | 安全层 | 注入防护 / 沙箱 / HITL / 脱敏 / 审计 / 输出护栏 | #23-30 |
@@ -172,7 +172,7 @@ CharAgent/
 ├── model/                      # P0  ChatModel 协议 + httpx/openai 双实现 + reasoning 兼容
 ├── tool/                       # P0  @tool 装饰器 + JSON schema 生成
 ├── loop/                       # P0  手写 agent loop（并行/纠错/循环防护）
-├── stream/                     # P0  流式事件总线（thinking/tool_call/tool_result/final + reasoning）
+├── stream/                     # P0  流式事件总线（thinking/tool_call/tool_result/reasoning/final/error + 状态机）
 ├── hooks/                      # P0  hook 注册表骨架（空注册零成本，ADR-0007）
 ├── retry/                      # P0  重试 + 退避 + 幂等键
 ├── checkpoint/                 # P0  base / memory / redis / postgres + 序列化协议

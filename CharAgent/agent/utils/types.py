@@ -6,12 +6,14 @@
 - LoopOutcome: Loop 结束原因全集 (guard 触发点 + loop 分支放弃点)
 - TruncationStrategy: length 截断的两种处理路径 (#10)
 - TurnRecord: 每轮结束时的消息历史完整快照 (供 checkpoint 落盘)
+- LoopState: AgentLoop 一次 run 的内存工作数据 (run 与其分支方法之间传递,
+  内部零件; 注意与词表的 RunState = 运行状态机不同, 见类 docstring)
 - LoopResult: run 的完整结果 (历史 + 结束原因 + 每轮快照)
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 
 from CharAgent.model.utils.types import (
@@ -56,6 +58,49 @@ class TruncationStrategy(StrEnum):
 
     CONTINUE = "continue"  # 保留截断前缀, 提示模型接着中断处续写
     CONDENSE = "condense"  # 丢弃截断内容, 提示模型精简重答
+
+
+@dataclass(slots=True)
+class LoopState:
+    """AgentLoop 一次 run 的内存工作数据 (内部零件, 不经门面导出).
+
+    名字为什么不叫 RunState: 词表 (docs/CONTEXT.md) 的 RunState 已被 P1-2 的
+    「运行状态机」(created / running / waiting_tool / ... / cancelled, 持久化
+    在 run 记录里, 有合法迁移规则) 占用. 两者完全不同 —— 本类只是**内存里的
+    可变数据袋** (没有任何迁移规则), run 结束时随 TurnRecord 快照被捕获;
+    RunStatus 那种「状态 + 合法迁移 + 非法迁移拒绝」才是真正的状态机.
+
+    为什么有这么一个类型: run 的 while 循环按功能拆成若干方法后 (可读性重构),
+    这些方法都要读写同一批数据 (历史 / 轮次 / 累计用量 / 结束原因 ...). 逐个
+    当参数传来传去会变成一长串 in/out 且容易漏改; 打包成一个对象后, 每个分支
+    方法只收 (state, response), 读改了哪些字段在方法体里一眼可见.
+
+    attributes:
+        history: 完整 wire 消息历史 (逐轮 append; run 结束时即
+            LoopResult.messages, 可直接续接下一轮对话).
+        turns: 每轮结束时的历史快照 (TurnRecord), 顺序为执行序.
+        content_parts: CONTINUE 截断续写已输出的正文前缀 (跨轮累积, 终止时
+            与尾段拼合为最终答复).
+        content: 最终答复正文; None 表示无正文 (纯工具收尾 / 刹车 / 截断放弃 /
+            上游中断等).
+        outcome: 结束原因; 初值 FINISHED, guard 触发点与各分支放弃点改写它.
+        finish_reason: 最后一次模型响应的终止原因 (供 LoopResult 上报).
+        turn_count: 已完成的模型决策次数 (= len(turns)).
+        truncation_count: 已发生的 length 截断处理次数.
+        total_tokens: 全 run 累计 usage (无 usage 的调用计 0).
+        done: 循环是否结束 (分支方法置 True 表示这次 run 到此为止).
+    """
+
+    history: list[ModelMessage]
+    turns: list[TurnRecord] = field(default_factory=list)
+    content_parts: list[str] = field(default_factory=list)
+    content: str | None = None
+    outcome: LoopOutcome = LoopOutcome.FINISHED
+    finish_reason: FinishReason | None = None
+    turn_count: int = 0
+    truncation_count: int = 0
+    total_tokens: int = 0
+    done: bool = False
 
 
 @dataclass(slots=True)

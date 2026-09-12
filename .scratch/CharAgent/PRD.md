@@ -103,7 +103,7 @@
 
 - **ChatModel 协议**（薄）：`generate(messages, tools) -> ModelResponse`；P0 仅 DeepSeek `deepseek-v4-flash`（OpenAI 兼容），双适配器：httpx 裸调 + openai SDK，行为一致性由同一组测试约束（ADR-0001/0003）
 - **ModelResponse**：文本或 ToolCall 列表；**FinishReason**：stop / tool_calls / length（触发截断处理）/ content_filter
-- **Reasoning**：`reasoning_content` 流式增量推送、计入成本与窗口但**不回填历史**（#11）
+- **Reasoning**：`reasoning_content` 流式增量推送作为独立事件（前端折叠展示），计入成本与窗口；**回填 wire 历史**（带 `tools` 时按官方文档回传以保留交错思考）并与 content 分属两条通道（#11）
 - **Tool 协议**：@tool 装饰器 + JSON schema 自动生成；工具失败错误须**可操作**（#2）；工具粒度一个工具一件事（#70）
 - **CheckpointSaver 协议**：InMemory（测试）/ Redis（KV 快照 + TTL，弱一致）/ Postgres（强一致 + 历史 + time-travel），配置切换（ADR-0002）
 - **序列化协议**：JSON 主格式 + 自定义 encoder/decoder（datetime/嵌套 dict）+ schema_version 向前兼容迁移（#5）
@@ -138,7 +138,7 @@ Thread（thread_id/tenant_id/user_id/title/status/时间戳）→ Run（run_id/t
 
 - REST 端点：POST /threads、GET /threads/{id}/messages、POST /threads/{id}/runs（长任务 HTTP 立即返回）、GET runs/events（SSE，after_event_id 续拉）、POST runs/{id}/cancel、GET /approvals、POST approvals/{id}/approve|reject、POST escalate、POST reply、GET /tickets、GET /healthz
 - 幂等：所有 POST 接受 request_id（#13/#17），重复返回已有结果
-- SSE 事件：thinking / tool_call / tool_result（error 可操作）/ approval_required / reasoning（增量不入历史）/ final（含 citations/tokens/cost）/ error（code + message）；每事件带 seq
+- SSE 事件：thinking（工具轮正文）/ tool_call / tool_result（error 可操作）/ reasoning（独立通道，与 wire 历史两码事）/ final（含 tokens；`citations` 属 P1-9、`cost` 属 P2）/ error（code + message，异常结束的唯一终局）；每事件带 seq，一条流有且仅有一个终局事件 —— 实现与契约定稿见 `CharAgent/docs/design/03-api.md` §2
 - 错误码：LLM_DOWN / LLM_TIMEOUT / RAG_DOWN / TOOL_ERROR / RATE_LIMITED / CANCELLED / BUDGET_EXCEEDED（P2），各配降级路径（#19）
 - 前端：单 Vue 项目双路由（/chat + /admin），EventSource 消费，事件渐进渲染
 
@@ -156,7 +156,7 @@ Thread（thread_id/tenant_id/user_id/title/status/时间戳）→ Run（run_id/t
 
 ### 4.8 扩展点（ADR-0007，P2 不回溯）
 
-- 事件总线：StreamEvent 四类事件即 P0 流式通道，P2 订阅同一事件流
+- 事件总线：StreamEvent 六类事件（thinking / tool_call / tool_result / reasoning / final / error）即 P0 流式通道，P2 订阅同一事件流
 - hook 注册表（P0 骨架落地，空注册零成本）：before_turn / after_turn / on_model_call / on_tool_executed / on_event
 - SPI：ChatModel / CheckpointSaver / EmbeddingProvider / ModelRouter / SemanticCache 可替换
 - 挂载：配置 `PLUGINS={...}` + 惰性 import；依赖方向 P2 → 核心单向，核心零 import P2

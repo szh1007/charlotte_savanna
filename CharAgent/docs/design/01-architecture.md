@@ -107,27 +107,32 @@ while not done:
 
 防护：`LoopGuard`（max_turns / token 预算 / wall-clock）+ kill switch（`asyncio.Task.cancel` 即时打断）。每 Turn 结束 checkpoint 落盘。
 
+异常结束（guard 刹车 / 上游中断 / 输出被拦截）由同一个终局出口改发 `error`（不发 `final`），
+最终事件的选择规则见 [03-api.md §2.2](03-api.md)。
+
 ## 4. 扩展点设计（ADR-0007）
 
 三类轻量扩展机制，核心零 import P2：
 
 ### 4.1 事件总线
 
-`StreamEvent` 四类事件（P0）：`thinking` / `tool_call` / `tool_result` / `final`；`reasoning` 流式增量单独一类（#11）。P2 模块（observability / cost）订阅同一事件流。
+`StreamEvent` 事件（P0）：`thinking` / `tool_call` / `tool_result` / `reasoning` / `final` / `error`；前五类之外 `error` 用于异常结束（`approval_required` 由 P1-7 追加）。事件带 `seq` 序号，由 `EventBus` 做状态机校验（配对 / 终局唯一），经 `event_sink` 推给 server，P2 模块（observability / cost）订阅同一事件流。
 
-事件 schema 定义见 [03-api.md §2](03-api.md)。
+事件 schema 与状态机不变量见 [03-api.md §2](03-api.md)；实现落点 `CharAgent/stream/`。
 
 ### 4.2 hook 点
 
-| hook | 触发时机 | P2 消费者 |
-|------|---------|----------|
-| `before_turn` | 每 Turn 模型调用前 | memory（注入记忆）、上下文工程 |
-| `after_turn` | 每 Turn 结束后 | memory（写入决策）、cost |
-| `on_model_call` | 模型请求发出前/响应后 | cost（token 计量）、observability |
-| `on_tool_executed` | 工具执行完成 | observability（工具成功率）、audit |
-| `on_event` | 每个 StreamEvent 产生 | observability（trace 采集） |
+| hook | 触发时机 | 载荷 | P2 消费者 |
+|------|---------|------|----------|
+| `before_turn` | 每 Turn 模型调用前 | turn, messages（活引用）, tools | memory（注入记忆）、上下文工程 |
+| `after_turn` | 每 Turn 记录快照后 | turn, response, messages, tokens, elapsed_ms | memory（写入决策）、cost |
+| `on_model_call` | 模型请求发出前 / 响应返回后 | phase, turn, messages, tools, response / usage / elapsed_ms（仅 after） | cost（token 计量）、observability |
+| `on_tool_executed` | 每条工具执行完成 | turn, call, execution | observability（工具成功率）、audit |
+| `on_event` | 每个 StreamEvent 分发后 | event | observability（trace 采集） |
 
-注册表骨架 P0 落地（`CharAgent/hooks.py`，空注册零成本）。
+注册表骨架 P0 落地（`CharAgent/hooks/`，实现见 `registry.py`）：空注册零开销（无回调调用、
+无 await 挂起点）；插件抛 `Exception` 被隔离并记入 `registry.failures`（不拖垮核心），
+`CancelledError` 直接传播（插件不得挡住 kill switch，#3）。
 
 ### 4.3 SPI（可替换接口）
 

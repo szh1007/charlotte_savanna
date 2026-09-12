@@ -69,7 +69,7 @@ _Avoid_: 结束标记, 停止原因
 _Avoid_: 思考过程, CoT, 思维链
 
 **StreamEvent**:
-流式输出的最小事件单元，含 thinking / tool_call / tool_result / final 四类，reasoning 流式增量为独立事件。
+流式输出的最小事件单元，含 thinking / tool_call / tool_result / reasoning / final / error 六类，带 seq 序号供断点续拉。一条事件流有且仅有一个终局事件（正常结束 final / 异常结束 error），`final.content` 是权威值（前端收到即覆盖缓冲）。
 _Avoid_: chunk, 事件
 
 **ExtensionPoint**:
@@ -77,7 +77,7 @@ _Avoid_: chunk, 事件
 _Avoid_: 插件接口
 
 **Hook**:
-生命周期回调（before_turn / after_turn / on_model_call / on_tool_executed / on_event），注册表骨架 P0 落地，P2 只填实现。
+生命周期回调（before_turn / after_turn / on_model_call / on_tool_executed / on_event），注册表骨架 P0 落地，空注册零开销、插件异常被隔离留痕；P2 只填实现。
 _Avoid_: 回调, 钩子
 
 **Plugin**:
@@ -135,8 +135,12 @@ _Avoid_: 降级开关
 _Avoid_: 超时限制
 
 **RunState**:
-运行状态机（created/running/waiting_tool/waiting_user/failed/finished/cancelled），由执行层推进而非模型建议。
+运行状态机（created/running/waiting_tool/waiting_user/failed/finished/cancelled），由执行层推进而非模型建议。有合法迁移规则、非法迁移拒绝，状态持久化在 run 记录（P1-2）。
 _Avoid_: 运行状态
+
+**LoopState**:
+AgentLoop 一次 run 的**内存工作数据**（历史 / 轮次快照 / 累计 token / 结束原因等），在各分支方法之间传递，run 结束时随 TurnRecord 快照被捕获。注意与 RunState 的区别：LoopState 是数据袋，没有迁移规则，也不是持久化实体。
+_Avoid_: 运行状态（易与 RunState 混淆）
 
 **IdempotencyKey**:
 幂等键，真实动作（下单/退款/发通知）防止重复执行。
