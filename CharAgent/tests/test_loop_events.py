@@ -35,6 +35,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from doubles import FakeClock
 from mock_llm import ScriptedModel, make_tool_call, text_response, tool_call_response
 
 from CharAgent.agent import AgentLoop, LoopGuard, LoopOutcome, TruncationStrategy
@@ -101,16 +102,6 @@ class _Collector:
             for e in self.events
             if e.type in (EventType.FINAL, EventType.ERROR)
         ]
-
-
-class _FakeClock:
-    """固定时钟 (LoopGuard.time_source 注入缝, 同 test_loop_guard)."""
-
-    def __init__(self) -> None:
-        self.now = 0.0
-
-    def __call__(self) -> float:
-        return self.now
 
 
 # ---------------------------------------------------------------------------
@@ -340,7 +331,7 @@ async def test_token_budget_brake_emits_error() -> None:
 
 async def test_time_limit_brake_emits_error() -> None:
     """wall-clock 刹车: error(code=time_limit) (固定时钟, 零抖动)."""
-    clock = _FakeClock()
+    clock = FakeClock()
 
     async def slow_step(messages: list[dict[str, Any]]) -> ModelResponse:
         """脚本元素: 把时钟推过预算, 返回工具轮让 loop 走到 guard 判定点."""

@@ -19,7 +19,11 @@
 | GET | `/api/v1/tickets?status=...` | 工单列表/详情 | #19 |
 | GET | `/healthz` | 健康检查（依赖探活：PG/Redis/Milvus/MySQL） | #64 |
 
-幂等：所有 POST 接受 `request_id`（幂等键，#13/#17）——重复请求返回已有结果。
+幂等：所有 POST 接受 `request_id`（幂等键，#13/#17）——重复请求返回已有结果。键的框架层校验
+已落地（P0，`retry/idempotency.py`）：长度 1~255、字符集 `[A-Za-z0-9._:-]`、首字符为字母或
+数字 —— 非法键由 server 直接 400（该值会变成下游存储 key 与日志字段，通配 / 空白 / 控制字符
+必须挡在入口）。重复提交的判定由 `IdempotencyStore` 承担：`CLAIMED` 首次执行、`IN_PROGRESS`
+有在途、`COMPLETED` 直接返回既有结果。
 
 ## 2. SSE 事件协议
 
@@ -198,6 +202,11 @@ client                     server
 > 本表是 **API 级**错误码（面向用户的服务降级决策，由 server 层产出）。框架层 `error` 事件
 > （§2.2）用的是「结束原因」码（`LoopOutcome` 值 + `content_filter`），说明 run 为什么停；
 > server 收到后可据此再按本表补一条面向用户的降级回执（如 `MAX_TURNS` → 模板回复 + 转人工建议）。
+
+> 框架层重试（`retry/` 的 `RetryingChatModel`）发生在**模型调用层**：本表的 `LLM_DOWN` /
+> `LLM_TIMEOUT` 是**重试耗尽后**的结果，不是第一次失败就上报。被重试丢弃的已计费尝试
+> （异常路径拿不到 usage；上游中断那条路径拿得到）由 `on_retry` 的 `RetryAttempt` 摊开，
+> 供 P1-11 token 计量 —— P0 不把它并入 `LoopGuard` 的 token 预算（避免给假账），预算裁决属 P1-11。
 
 ## 5. 前端页面（单 Vue 项目双路由）
 

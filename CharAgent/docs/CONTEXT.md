@@ -123,8 +123,16 @@ _Avoid_: 转交, 委托
 ### 可靠性
 
 **RetryPolicy**:
-重试策略，只对瞬态错误（429/5xx/超时）做指数退避 + jitter 重试，不重试 4xx；注意重试会重复计费 token，需缓存响应或挂钩预算。
+重试策略，只对瞬态错误（429/5xx/超时）做指数退避 + jitter 重试，不重试 4xx；注意重试会重复计费 token，需缓存响应或挂钩预算。落地（P0）：退避为 `min(initial_delay * multiplier^(n-1), max_delay)` 再乘 `(1 - jitter * u)`（jitter=0 纯指数、1 即 full jitter，等待永不越过基准）；三个上限 max_attempts / max_elapsed_seconds / max_delay；三条注入缝 sleep / time_source / random_source（测试零等待且完全确定，#61）。重试在**模型调用层**完成（`RetryingChatModel` 包装 ChatModel），loop 零改动。
 _Avoid_: 重试
+
+**RetryAttempt**:
+一次**失败尝试**的记录（`on_retry` 的载荷）：第几次 / 等待秒数 / 已耗时 / 原因 / 原始异常（异常路径）或原样返回值（响应不合格路径 —— 模型场景可读其 usage，那次已经计费）。最后一次成功不产生记录；`on_retry` 收回调**序列**（可挂多个，按序列顺序串行调用；某个回调抛异常即中止其后的回调并向上抛，不做隔离），是 P1-11 token 计量与 P2 观测的挂载点。
+_Avoid_: 重试记录（易与 RunState 的 retrying 状态混淆）
+
+**RetryingChatModel**:
+ChatModel 协议的重试包装（SPI 组合，ADR-0001）：逐参数透传底层模型，瞬态异常按 RetryPolicy 退避重试，耗尽才把失败交给上层。响应路径只重试「上游中断」（insufficient_system_resource）；aborted 语义含糊（可能是用户侧中断）不重试，原样交回 loop 上报。重试对 loop 透明：异常耗尽时 loop 不吞也不发终局事件，响应耗尽时 loop 照旧判 SERVER_INTERRUPTED。
+_Avoid_: 重试模型
 
 **CircuitBreaker**:
 熔断器，供应商连续失败时进入半开/全开/关闭状态，自动 failover 到备份模型。
@@ -143,8 +151,12 @@ AgentLoop 一次 run 的**内存工作数据**（历史 / 轮次快照 / 累计 
 _Avoid_: 运行状态（易与 RunState 混淆）
 
 **IdempotencyKey**:
-幂等键，真实动作（下单/退款/发通知）防止重复执行。
+幂等键，真实动作（下单/退款/发通知）防止重复执行。落地（P0）：生成（uuid4 hex）与校验（长度 1~255、字符集 `[A-Za-z0-9._:-]`、首字符为字母数字）—— 客户端传入的键先过校验再进存储（它会变成 Redis key / PG 主键 / 日志字段，通配与控制字符挡在入口）。登记簿由 `IdempotencyStore` 承担：claim（CLAIMED 首次可执行 / IN_PROGRESS 有在途 / COMPLETED 带既有结果）、complete、release（失败放行合法重试，否则键永久卡在在途）。P0 为进程内实现，无 TTL 与持久化，Redis/PG 版属 P1-4。
 _Avoid_: 去重键
+
+**IdempotencyStore**:
+幂等记录存储（幂等键的登记簿），三个动作构成一次鉴权往返：claim（动作执行**前**认领，返回 CLAIMED / IN_PROGRESS / COMPLETED 带既有结果）、complete（成功后登记结果）、release（失败后放行合法重试——不释放会让该键永久卡在「在途」）。P0 为进程内实现（单事件循环内原子，跨进程不适用，无 TTL / 无持久化），Redis SETNX + TTL 续租 + Saga 补偿属 P1-4。
+_Avoid_: 幂等表, 去重表
 
 **Saga**:
 分布式补偿事务，正向执行 + 失败逆序补偿，保证真实副作用可回滚。

@@ -38,6 +38,7 @@ flowchart TB
         Stream["StreamEvent 事件总线"]
         Hook["hook 注册表 (P0 骨架)"]
         Checkpoint["CheckpointSaver<br/>InMemory / Redis / Postgres"]
+        Retry["retry/: 重试 + 退避 + 幂等键"]
         Guard["guard.py: 输入输出护栏 + 脱敏 + 审计"]
         RL["ratelimit.py 限流"]
         Lock["lock.py 分布式锁"]
@@ -56,7 +57,8 @@ flowchart TB
     Admin --> API
     API --> TQ
     TQ --> Loop
-    Loop --> Model
+    Loop --> Retry
+    Retry --> Model
     Loop --> Tool
     Loop --> Stream
     Loop --> Hook
@@ -109,6 +111,15 @@ while not done:
 
 异常结束（guard 刹车 / 上游中断 / 输出被拦截）由同一个终局出口改发 `error`（不发 `final`），
 最终事件的选择规则见 [03-api.md §2.2](03-api.md)。
+
+**重试不在 loop 里**（difficulties #13）：瞬态失败（429 / 5xx / 连接失败 / 超时）的重试在
+**模型调用层**完成 —— `RetryingChatModel`（`retry/` 包）以组合方式包装 ChatModel
+（ADR-0001 的 SPI 用法），按 `RetryPolicy` 指数退避 + jitter 重试，耗尽才把失败交出去。
+故 loop 零改动：异常耗尽时它照旧上抛且不发终局事件（由 server 按 §4 降级），响应耗尽
+（上游中断）时照旧判 `SERVER_INTERRUPTED`。同一层还提供幂等键与进程内登记簿
+（`IdempotencyKey` / `IdempotencyStore`，#17 的 P0 形态）—— 重试要安全，真实动作必须
+幂等，两者是一件事的两面。重试烧掉的 token 由 `on_retry` 回调（`RetryAttempt`）暴露，
+预算裁决归 P1-11（P0 只把账目摊开，不给假账）。
 
 ## 4. 扩展点设计（ADR-0007）
 

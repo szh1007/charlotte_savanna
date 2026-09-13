@@ -19,6 +19,7 @@ import time
 from collections.abc import Awaitable, Callable
 
 import pytest
+from doubles import FakeClock
 from mock_llm import (
     ScriptedModel,
     make_tool_call,
@@ -31,20 +32,6 @@ from CharAgent.model.utils.types import FinishReason, ModelMessage, ModelRespons
 from CharAgent.tool import Tool, tool
 
 USER_MSG = {"role": "user", "content": "反复查询直到完成"}
-
-
-class _FakeClock:
-    """固定时钟: 值由测试手动推进, 经 LoopGuard.time_source 注入缝使用.
-
-    wall-clock 测试由此完全确定化 (真实时间 + 短预算只剩 10ms 余量,
-    慢 CI 上有抖动风险; #61 注入随机/时间源的原则).
-    """
-
-    def __init__(self) -> None:
-        self.now = 0.0
-
-    def __call__(self) -> float:
-        return self.now
 
 
 def _echo(
@@ -134,7 +121,7 @@ def test_check_after_turn_unlimited_when_none() -> None:
 
 def test_time_limit_boundary_with_injected_clock() -> None:
     """wall-clock 边界: 恰好等于预算即触发 (固定时钟, 零抖动)."""
-    clock = _FakeClock()
+    clock = FakeClock()
     guard = LoopGuard(max_duration_seconds=5.0, time_source=clock)
     guard.start()
 
@@ -167,7 +154,7 @@ async def test_guard_timer_resets_between_runs() -> None:
 
     若 start() 未重新调用, 第二次 run 会带着第一次的耗时直接撞上时长预算。
     """
-    clock = _FakeClock()
+    clock = FakeClock()
     guard = LoopGuard(max_duration_seconds=0.05, time_source=clock)
 
     async def slow_step(messages: list[ModelMessage]) -> ModelResponse:
@@ -302,7 +289,7 @@ async def test_token_budget_usage_absent_counts_zero() -> None:
 
 async def test_wall_clock_stops_loop() -> None:
     """模型响应耗时超过时长预算 → TIME_LIMIT (固定时钟注入, 零抖动)."""
-    clock = _FakeClock()
+    clock = FakeClock()
 
     async def slow_step(messages: list[ModelMessage]) -> ModelResponse:
         """脚本元素: 把时钟推到 0.06s (模拟单轮模型响应耗时 > 0.05s 预算)."""

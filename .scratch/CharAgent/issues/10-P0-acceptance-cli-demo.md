@@ -7,6 +7,7 @@
 **Status:** ready-for-agent
 
 - [ ] CLI 入口：带工具问答端到端跑通（真实 API）
+- [ ] **接上重试包装**（issue 06 的接线点）：构造 loop 时用 `RetryingChatModel` 包一层裸适配器 —— `AgentLoop(model=RetryingChatModel(chat_model_from_env(), policy=RetryPolicy(...)), tools=..., event_sink=...)`。issue 06 交付的 `retry/` 设计为组合在 **ChatModel 协议层**（`ChatModel` 是 Protocol，不要求继承），故 loop 与 `model/` 零改动、类型注解照写 `ChatModel`；**在接这一行之前，`retry/` 没有任何生产调用点**（只有测试在用）
 - [ ] 终端事件流展示（四类事件 + reasoning）
 - [ ] checkpoint 中断续跑演示：中断 → 恢复不重复已完成动作（#5）
 - [ ] checkpoint 存储配置切换可演示（InMemory/Redis/Postgres，ADR-0002）

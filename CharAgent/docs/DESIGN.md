@@ -174,7 +174,7 @@ CharAgent/
 ├── loop/                       # P0  手写 agent loop（并行/纠错/循环防护）
 ├── stream/                     # P0  流式事件总线（thinking/tool_call/tool_result/reasoning/final/error + 状态机）
 ├── hooks/                      # P0  hook 注册表骨架（空注册零成本，ADR-0007）
-├── retry/                      # P0  重试 + 退避 + 幂等键
+├── retry/                      # P0  policy/executor/chat_model/idempotency（重试 + 退避 + 幂等键）
 ├── checkpoint/                 # P0  base / memory / redis / postgres + 序列化协议
 ├── guard/                      # P1  输入/输出护栏 + 脱敏 + HITL + 审计
 ├── ratelimit/                  # P1  限流算法（固定/滑动窗口 + 令牌桶/漏桶）
