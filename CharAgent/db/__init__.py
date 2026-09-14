@@ -1,0 +1,165 @@
+"""db 包: 五实体的数据模型 + 表定义 + 仓储 (issue 08 / difficulties #12).
+
+目录叫 `db/` 而不是 `models/`: 与 `CharAgent/model/` (LLM 模型层) 名字太近, 两个
+都叫 model 会分不清谁是谁. 这里的东西全是数据库相关的, `db` 一眼到位.
+
+一句话理解: 这是**数据库这一层的全部家当** —— 表长什么样、实体是什么、状态能
+怎么变、数据怎么读写. 上层 (P1 的 server) 只跟它打交道, 不写 SQL.
+
+它解决什么问题: agent 跑一次会产生很多**要留下来的东西** —— 谁开的会话、这次
+运行跑成什么样、用户问了什么、模型答了什么、调了哪些工具. P0 的 checkpoint 只
+解决「接着跑」, 不解决「查得到、看得到」. 本包补的就是后者.
+
+八个部分的分工 (行为在上, 静态零件在下):
+
+| 文件 | 管什么 |
+|------|--------|
+| `schema.py` | 表定义唯一来源 (迁移与快照存储都从这里取) |
+| `entities.py` | 五个实体 + 四个状态枚举 |
+| `state.py` | 运行状态机的规则 (合法迁移表 + 结束原因映射) |
+| `conversation.py` | 会话消息分层 (哪几条给前端看; 答复取 `LoopResult.content`) |
+| `database.py` | 连库与事务 (`PgDatabase`: 同步引擎 + `asyncio.to_thread`) |
+| `config.py` | 连接配置 (环境变量 → 连接串) |
+| `errors.py` | 三类错误 (配置错 / 状态迁移非法 / 库出错) |
+| `repositories/` | 四个取数口 (会话 / 运行 / 消息 / 工具调用) |
+
+怎么用 (典型的一段: 跑完一次运行, 把结果落库)::
+
+    db = PgDatabase()                       # 从环境变量读连接串
+    threads = ThreadsRepository(db)
+    runs = RunsRepository(db)
+    messages = MessagesRepository(db)
+
+    thread = await threads.add(tenant_id="t-1", user_id="u-1")
+    run = await runs.add(thread_id=thread.thread_id, request_id="req-1")
+
+    # ... 跑 agent loop, 拿到 result ...
+
+    await runs.try_transition(
+        run.run_id, RunStatus.RUNNING, run_status_for_outcome(result.outcome)
+    )
+    for turn in conversation_turns(result.messages, result.content, since=prior_len):
+        await messages.add_turn(
+            thread_id=thread.thread_id, turn=turn, run_id=run.run_id
+        )
+
+    # 前端要的会话历史: 只有一问一答, 没有内部件
+    history = await messages.list_conversation(thread.thread_id)
+
+**快照 (checkpoint) 的读写不在这里**: 那个有断点续跑 / 翻历史 / time-travel 的
+一整套语义, 归 `checkpoint/postgres.py` 的 `PostgresCheckpointSaver`. 本包只提供
+那张表的定义 (`CheckpointRow` 与 `schema.checkpoints`), 让迁移体系与 ORM 有一套
+完整口径 —— 不另造一个功能重叠的入口.
+"""
+
+from __future__ import annotations
+
+from CharAgent.db.config import (
+    ENV_DSN,
+    ENV_ECHO,
+    echo_enabled,
+    sqlalchemy_url,
+)
+from CharAgent.db.conversation import (
+    TranscriptLine,
+    TurnPair,
+    assistant_answer,
+    conversation_turns,
+    count_visible,
+    visible_transcript,
+)
+from CharAgent.db.database import PgDatabase
+from CharAgent.db.entities import (
+    CheckpointRow,
+    Message,
+    MessageRole,
+    Run,
+    RunStatus,
+    Thread,
+    ThreadStatus,
+    ToolCall,
+    ToolCallStatus,
+)
+from CharAgent.db.errors import (
+    DataConfigError,
+    DataStoreError,
+    DbError,
+    InvalidTransitionError,
+)
+from CharAgent.db.repositories import (
+    Database,
+    MessagesRepository,
+    PgRepository,
+    RunsRepository,
+    ThreadsRepository,
+    ToolCallsRepository,
+    build_tool_call,
+)
+from CharAgent.db.repositories.utils.mapping import model_to_dict
+from CharAgent.db.schema import (
+    ALL_TABLES,
+    TABLE_NAMES,
+    checkpoints,
+    messages,
+    metadata,
+    runs,
+    threads,
+    tool_calls,
+)
+from CharAgent.db.state import (
+    ALLOWED_TRANSITIONS,
+    RUN_STATUS_FOR_OUTCOME,
+    TERMINAL_RUN_STATUSES,
+    can_transition,
+    ensure_transition,
+    run_status_for_outcome,
+)
+
+__all__ = [
+    "ALLOWED_TRANSITIONS",
+    "ALL_TABLES",
+    "ENV_DSN",
+    "ENV_ECHO",
+    "RUN_STATUS_FOR_OUTCOME",
+    "TABLE_NAMES",
+    "TERMINAL_RUN_STATUSES",
+    "CheckpointRow",
+    "DataConfigError",
+    "DataStoreError",
+    "Database",
+    "DbError",
+    "InvalidTransitionError",
+    "Message",
+    "MessageRole",
+    "MessagesRepository",
+    "PgDatabase",
+    "PgRepository",
+    "Run",
+    "RunStatus",
+    "RunsRepository",
+    "Thread",
+    "ThreadStatus",
+    "ThreadsRepository",
+    "ToolCall",
+    "ToolCallStatus",
+    "ToolCallsRepository",
+    "TranscriptLine",
+    "TurnPair",
+    "assistant_answer",
+    "build_tool_call",
+    "can_transition",
+    "checkpoints",
+    "conversation_turns",
+    "count_visible",
+    "echo_enabled",
+    "ensure_transition",
+    "messages",
+    "metadata",
+    "model_to_dict",
+    "run_status_for_outcome",
+    "runs",
+    "sqlalchemy_url",
+    "threads",
+    "tool_calls",
+    "visible_transcript",
+]

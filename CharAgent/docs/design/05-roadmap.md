@@ -13,11 +13,12 @@
 | P0-3 | 手写 agent loop：并行工具（gather + return_exceptions）、错误自纠错（可操作错误回填）、循环防护（max_turns / token 预算 / wall-clock / kill switch）、finish_reason 处理（length 截断） | `loop.py` | #1, #2, #3, #10, #65 |
 | P0-4 | 流式事件状态机（六类事件：四类主事件 + reasoning 旁路 + error 终局），事件总线 + hook 注册表骨架（空实现） | `stream/` + `hooks/` | #4, #11, ADR-0007 |
 | P0-5 | 重试 + 指数退避 + jitter + 幂等键（只对瞬态错误重试，4xx 放弃；重试在模型调用层包装 ChatModel，loop 零改动） | `retry/`（policy / executor / chat_model / idempotency） | #13 |
-| P0-6 | Checkpoint：序列化协议（JSON + 自定义序列化器 + schema 版本号）、InMemory / Redis / Postgres 三实现、time-travel 分支 | `checkpoint/`（base / memory / redis / postgres / serialization / config + utils） | #5, ADR-0002 |
-| P0-7 | 五实体数据模型（thread/run/message/tool_call/checkpoint）定义 + Postgres 表 + alembic 初始化 | `models.py` + `alembic/` | #5, #12(实体部分) |
+| P0-6 | Checkpoint：序列化协议（JSON + 自定义序列化器 + schema 版本号）、InMemory / Redis / Postgres 三实现、time-travel 分支 ✅ | `checkpoint/`（base / memory / redis / postgres / serialization / config + utils） | #5, ADR-0002 |
+| P0-7 | 五实体数据模型（thread/run/message/tool_call/checkpoint）定义 + Postgres 表 + alembic 初始化 ✅（顺带把 P0-6 的裸 psycopg 实现统一到 SQLAlchemy，表定义收敛到 `db/schema.py` 一处） | `db/`（schema/entities/state/conversation/database/config/errors + repositories/）+ `alembic/` | #5, #12(实体部分) |
 | P0-8 | 分层测试 + MockLLM（固定/脚本化/录制回放）+ 轨迹断言 + 快照测试 | `tests/` | #61, #62, #63 |
 
-验收：CLI `python -m CharAgent.cli` 跑通带工具问答；checkpoint 中断续跑演示；`pytest tests/` 全绿。
+验收（P0 整体验收线，归 issue 10）：CLI `python -m CharAgent.cli` 跑通带工具问答；checkpoint 中断续跑演示；`pytest tests/` 全绿。
+> 现状（2026-09-14，P0-1~P0-7 交付后）：单测与集成测试两项已达成；**CLI 入口尚未交付**。
 
 ## P1：可靠性加固 + 安全 + RAG + 客服 demo
 
@@ -49,7 +50,7 @@
 | # | 任务 | 落点 | 难点 |
 |---|------|------|------|
 | P2-1 | 上下文工程：窗口管理、动态组装、工具结果截断、lost-in-the-middle、prompt 缓存；意图识别 + 澄清 | plugins/context_engineering | #8, #9 |
-| P2-2 | 数据模型补全：event 表（事件溯源）、TTL 清理 | models + alembic 迁移 | #12 |
+| P2-2 | 数据模型补全：event 表（事件溯源）、TTL 清理 | db + alembic 迁移 | #12 |
 | P2-3 | 记忆系统：四层记忆、多租户隔离、写入/检索/遗忘机制 | plugins/memory | #31, #32, #33 |
 | P2-4 | 成本：成本追踪（task 归因 + 预算硬上限 + 告警）、模型分级路由、语义缓存（防穿透/击穿/雪崩）、Batch API | plugins/cost | #34, #36, #37 |
 | P2-5 | 可观测补全：Langfuse trace（compose 自托管）、指标告警（Grafana）、版本化（prompt/model/tool）、Loki 日志聚合 | plugins/observability | #39, #40, #41 |

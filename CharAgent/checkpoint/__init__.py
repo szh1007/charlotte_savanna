@@ -20,7 +20,13 @@
 - serialization.py CheckpointCodec: JSON 编码 (datetime 之类打「行李牌」) + 版本迁移
 - config.py        checkpoint_saver_from_env / build_saver: 配置切后端
 - utils/           types (数据形状) / errors (异常族) / migrations (版本翻译)
-                   / pending (找出还欠结果的工具调用) / fields (取值校验) / ddl (建表)
+                   / pending (找出还欠结果的工具调用) / fields (取值校验)
+
+与 db 包的关系 (单向依赖: 本包 -> db, db 不知道本包存在):
+- 表定义取自 `db/schema.py` (那张 charagent_checkpoints 表, 全项目只写一份)
+- 连接与事务复用 `db/database.py` 的 PgDatabase (同一个连接池与事务语义)
+- 但**不共用仓储**: 本包实现的是 CheckpointSaver 协议 (断点续跑 / 翻历史 /
+  time-travel 一整套语义), 与 db 的四个仓储不是一类东西, 故不放进 repositories/
 
 怎么用 (最小例子)::
 

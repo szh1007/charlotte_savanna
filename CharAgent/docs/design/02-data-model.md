@@ -14,7 +14,7 @@
 | user_id | str | 会话属主 |
 | title | str | 会话标题（首条用户消息生成） |
 | status | enum | active / closed / escalated |
-| created_at / updated_at | datetime | 索引：tenant_id + updated_at |
+| created_at / updated_at | datetime | |
 
 ### Run（一次执行）
 
@@ -29,7 +29,7 @@
 | total_tokens / total_cost | int / decimal | 本 run 累计（#34 成本归因按 task） |
 | turn_count | int | 已执行 Turn 数 |
 | error | jsonb | 失败原因（结构化，供审计与降级判断） |
-| created_at / updated_at / finished_at | datetime | 索引：thread_id + created_at |
+| created_at / updated_at / finished_at | datetime | |
 
 ### Message（消息）
 
@@ -43,20 +43,26 @@
 | reasoning | text | assistant 的 reasoning_content，**存储**（供前端折叠展示与审计；与 `hidden` 字段无关，这是内容不是可见性开关）。注意与 wire 历史区分：官方文档要求带 `tools` 的请求回传该字段（称缺失即 400；本机实测 2026-09-11 未触发 400，框架仍按文档执行以保留交错思考） |
 | tool_call_ids | jsonb | 该 assistant 消息关联的 tool_call 列表（保持并行语义 #1） |
 | hidden | bool | 内部消息（系统注入、压缩摘要）不对前端展示 |
-| created_at | datetime | 索引：thread_id + created_at |
+| created_at | datetime | |
 
 ### ToolCall（工具调用）
 
+**主键是三列复合**：`(run_id, message_id, tool_call_id)` —— 上游每轮都从 `call_0` 重新编号，
+同一个 run 里会出现好几条同名调用。单列主键第二次就撞；只加 `run_id` 也只解决「跨 run」，
+同一个 run 的多轮之间仍会撞。真正唯一的身份是「**哪条 assistant 消息**发起的这一次调用」。
+
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| tool_call_id | str | 模型返回的 tool_call.id |
-| run_id | str (FK) | |
+| run_id | str (FK) | 主键之一：归属哪次执行 |
+| message_id | str (FK) | 主键之一：**哪条 assistant 消息发起的**（不可空；消息没了它也跟着删） |
+| tool_call_id | str | 主键之一：模型返回的 tool_call.id |
 | tool_name | str | 调用的工具 |
-| arguments | jsonb | 模型填的参数（原始 JSON） |
+| arguments | text | 模型填的参数，**原样 JSON 字符串**（不预解析 —— 畸形 JSON 正是自纠错路径的信号 #2） |
 | status | enum | pending / running / succeeded / failed / cancelled / needs_approval（HITL #25） |
 | result | jsonb | 执行结果（成功）或可操作错误信息（#2：明确字段格式问题而非甩 422） |
 | duration_ms | int | 耗时 |
 | approved_by / approved_at | str / datetime | HITL 审批信息（#25） |
+| created_at / updated_at | datetime | 发起时刻 / 状态最后变化时刻 |
 
 ### Checkpoint（快照）
 
@@ -70,18 +76,47 @@
 | state | jsonb | **进度**：消息列表 + 计数器 + 挂起点（恢复才用；序列化协议见 §3） |
 | metadata | jsonb | **观察值**：来源（loop/fork/suspension）+ 本轮 token 与耗时 + 工具 + 结束原因（给人看，回放调试用；v3 起） |
 | parent_id | str (FK, nullable) | 分支来源（time-travel 回溯 #5：恢复历史时刻 → 新分支） |
-| created_at | datetime | 索引：thread_id + run_id + turn_number |
+| created_at | datetime | |
+
+### 索引一览（6 条，与 `db/schema.py` 逐条对应）
+
+索引只有这些 —— 每一条都对应一种真实查法，不是「先建着以后可能用得上」：
+
+| 索引 | 表 | 列 | 服务哪种查法 |
+|------|----|----|-------------|
+| `ix_charagent_threads_tenant_updated` | threads | tenant_id + updated_at | 管理端列某租户的会话（最近活动在前） |
+| `ix_charagent_threads_user_updated` | threads | user_id + updated_at | 用户端列自己的会话 |
+| `ix_charagent_runs_thread_created` | runs | thread_id + created_at | 一个会话的历次执行 |
+| `ix_charagent_messages_thread_created` | messages | thread_id + created_at | 翻会话历史（可见与全量两种读法共用） |
+| `ix_charagent_tool_calls_run_created` | tool_calls | run_id + created_at | 「这次运行调了哪些工具」（轨迹断言 #62 / 审计） |
+| `ix_charagent_checkpoints_thread_created` | checkpoints | thread_id + created_at + checkpoint_id | 翻快照历史 / 取最新一帧（第三条列保证同毫秒的两帧也有确定顺序） |
+
+> 主键索引由数据库自动建，不在此列。加索引要有对应的查法 —— `db/schema.py` 里每条
+> 索引旁都写了它服务什么；`tests/test_db_schema.py::test_expected_indexes_exist`
+> 会盯着这张表别漏。
 
 ## 2. Postgres DDL 概览（alembic 管理）
 
 ```sql
--- 核心表：threads / runs / messages / tool_calls / checkpoints
--- （字段见上表；全部带 tenant_id 或经 thread 关联，查询强制过滤 #32）
--- checkpoints 表的建表语句已在 P0-6 落地：CharAgent/checkpoint/utils/ddl.py
---   （parent_id 自引用外键 + ON DELETE SET NULL：删一帧不连带删掉挂在它下面的分支）
--- 表名定为 charagent_checkpoints（带前缀）：本项目各子项目共用同一个 PG 库，而
+-- 核心五表（全部带 charagent_ 前缀，理由见下）：
+--   charagent_threads      (thread_id PK, tenant_id, user_id, title, status, 时间戳)
+--   charagent_runs         (run_id PK, thread_id FK, status 状态机, request_id 幂等键, …)
+--   charagent_messages     (message_id PK, thread_id FK, run_id FK nullable, role, content,
+--                           reasoning, tool_call_ids, hidden)
+--   charagent_tool_calls   (run_id + message_id + tool_call_id 三列复合 PK, …)
+--   charagent_checkpoints  (checkpoint_id PK, parent_id 自引用 FK ON DELETE SET NULL)
+-- 字段见 §1 各实体表；全部带 tenant_id 或经 thread 关联，查询强制过滤 (#32)
+--
+-- 表定义的**唯一来源**在 P0-7 落地为 CharAgent/db/schema.py（SQLAlchemy 的 Table）：
+-- 迁移（alembic/）与快照存储（checkpoint/postgres.py）都从那一份取，改字段只有一处要动。
+-- 在此之前是 checkpoint/utils/ddl.py 的手写 SQL —— issue 08 把它并入了 schema.py。
+--
+-- 表名为什么一律带前缀：本项目各子项目共用同一个 PG 库，而
 --   langgraph-checkpoint-postgres 也建一张叫 checkpoints 的表 —— 同名会让后者的
 --   setup() 静默跳过建表、INSERT 时报「列不存在」，报错与真因（撞名）毫无关系
+--   （2026-09-13 实测）。threads / runs / messages 同样是极常见的表名，故一并加前缀。
+--
+-- 身份列一律 VARCHAR(128) 而非 TEXT（早前那张 checkpoints 表用的是 TEXT，行为一致但不统一）
 
 -- demo 业务表（P1）
 tickets:            ticket_id, thread_id FK, user_id, category, status(open/auto_resolved/escalated/closed),
@@ -102,7 +137,9 @@ idempotency_keys:   request_id PK, run_id FK, status, created_at, expires_at   -
 
 > 实现落点 `CharAgent/checkpoint/`（issue 07）：协议 `serialization.py`，三实现
 > `memory.py` / `redis.py` / `postgres.py`，配置切换 `config.py`，静态零件 `utils/`（含 `history.py`：把一串快照渲染成可读表格的历史视图）。
-> 建表语句 `utils/ddl.py` 是**唯一定义处**（本包首次写入幂等建表，issue 08 的 alembic 迁移复用同一份）。
+> **表定义的唯一定义处是 `db/schema.py`**（P0-7 起）：快照存储首次写入时用它幂等建表
+> （`PgDatabase.create_tables`），alembic 迁移也在 P0-7 起从同一份定义出发 —— 此前那两处
+> 各自持有一份手写 SQL（`checkpoint/utils/ddl.py`），issue 08 统一到了 SQLAlchemy 的 Table。
 
 | 项 | 决策 | 实现现状（P0-6） |
 |----|------|-----------------|
@@ -111,7 +148,7 @@ idempotency_keys:   request_id PK, run_id FK, status, created_at, expires_at   -
 | 进度 / 观察值分层 | 快照分两块（v3 起）：**进度**恢复才用（消息历史 + 计数器 + 挂起点），**观察值**给人看（来源 / 本轮用量 / 工具 / 结束原因） | `CheckpointState` 与 `CheckpointMetadata` 两个数据类；存储上也是两处（Redis 记录里的两个字段、Postgres 的两个 JSON 列）；迁移函数收的是「主体」（`state` + `metadata`）—— 真实迁移常要在两者之间搬字段（v2→v3 就是搬的） |
 | schema_version | 每份快照带版本号；升级时写迁移函数（旧版本 → 新版本），保证旧会话可读回（#5 向前兼容） | 当前 `SCHEMA_VERSION = 3`（v1 = state 为裸消息列表；v2 = 结构化字典；v3 = 观察值从 state 搬进 metadata）；`utils/migrations.py` 的 `MIGRATIONS` 逐级升级、缺函数即报错；版本**比当前新则拒读**（硬猜会把字段读错位） |
 | Redis 存储 | Stream 流式全历史（默认）：`charagent:ckpt:{thread_id}` 一条流水账，`XADD` 追加 + `XRANGE` 翻历史 + `MAXLEN` 裁剪 + `TTL` 过期；可选 `mode="latest"` 只留最新一帧（弱一致，快） | 配置 `CHECKPOINT_REDIS_MODE` / `CHECKPOINT_REDIS_MAX_FRAMES` / `CHECKPOINT_KEY_PREFIX`；latest 模式下 `load(id)` / `list_history` 明确报 `CheckpointCapabilityError`；按编号取帧要一并给 thread_id（帧按会话分区；latest 的键名带 `latest` 与流键区分开） |
-| Postgres 存储 | `charagent_checkpoints` 表逐条（强一致、历史、time-travel：恢复旧 checkpoint 产生新分支 parent_id） | 身份字段成列 + `state` / `metadata` 两个 JSONB 列（表结构与「为什么带前缀」见 §2）；一帧一行、`ORDER BY created_at, checkpoint_id`；**同步驱动 + `asyncio.to_thread`** —— psycopg 的异步连接在 Windows 默认事件循环（Proactor）上不可用 |
+| Postgres 存储 | `charagent_checkpoints` 表逐条（强一致、历史、time-travel：恢复旧 checkpoint 产生新分支 parent_id） | 身份字段成列 + `state` / `metadata` 两个 JSONB 列（表结构与「为什么带前缀」见 §2）；一帧一行、`ORDER BY created_at, checkpoint_id`；**同步驱动 + `asyncio.to_thread`** —— psycopg 的异步连接在 Windows 默认事件循环（Proactor）上不可用；**实现走 SQLAlchemy**（P0-7 统一），与仓储共用 `db/database.py` 的连接层 |
 | 快照时机 | 每 Turn 结束后（含挂起点 #25：挂起也落快照，审批后从该点恢复而非重跑） | `AgentLoop(saver=..., thread_id=...)` 在每轮 `_record_turn` 末尾落一帧（**先落盘再触发 after_turn hook**；落盘失败向上抛），同时写下来源（正常一轮 `loop` / 从快照续跑的第一帧 `fork` / 补做挂起调用的那帧 `suspension`）；挂起点机制已备（`Suspension` + `pending_tool_calls`，`resume` 会补做欠下的调用再继续），**触发**归 P1-7 |
 
 存储介质带来的能力差异（`saver.capabilities` 可查，ADR-0002 的对比面）：

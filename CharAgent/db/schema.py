@@ -1,0 +1,458 @@
+"""五张表的 DDL 定义 (**唯一定义处**): 表长什么样只在这一个文件里说.
+
+一句话理解: 这个文件是**数据库的户型图**. 五张表 (会话 / 运行 / 消息 / 工具
+调用 / 快照) 各有哪些列、哪列是主键、谁引用谁、建哪些索引, 全部写在这里.
+别处 (仓储 / 快照存储 / alembic 迁移 / 测试) 都从这里取, 不许自己再抄一份 ——
+抄两份的结果一定是「改了一份忘了另一份」, 然后代码与库悄悄对不上.
+
+对齐 02-data-model.md §1 的实体字段表 —— 那个表是**业务视角**(这一列是干什么
+用的), 本文件是**存储视角**(这一列在库里是什么类型、能不能为空). 两边应当是
+一一对应的, 有出入就是文档或代码有一处过时了.
+
+**表名为什么一律带 `charagent_` 前缀** (而不是就叫 threads / runs / messages):
+本项目各子项目共用同一个 Postgres 库 (根 .env 的 PGSQL_*). `threads` / `runs` /
+`messages` 是极常见的表名, 别的子项目随时可能占掉; 而 `checkpoints` 已经真撞过
+一次 —— `langgraph-checkpoint-postgres` 也建一张同名表, 它的
+`CREATE TABLE IF NOT EXISTS checkpoints` 会因为「表已存在」被静默跳过, 随后
+INSERT 报「列不存在」, 报错信息跟真正的原因 (表名撞了) 毫无关系, 极难排查
+(2026-09-13 实测). 自己的表带自己的前缀, 这类撞名从源头消失.
+
+**时间列为什么一律 TIMESTAMPTZ** (而不是无时区的 TIMESTAMP): 这些表的排序键
+全是时间 (快照的「取最新一帧」、消息的「按时间翻历史」), 而无时区的时间戳
+读回来是「哪儿的几点」都不知道的裸数字 —— 换台机器、跨个时区, 排序就可能悄悄
+错位. 带时区存, 读回来永远是绝对时刻.
+
+**JSONB 列装什么**: 形状会随版本变、或者本来就不规则的数据 (工具参数 / 工具
+结果 / 失败原因 / 快照的进度与观察值). 用 JSONB 而不是拆成一堆列, 是为了
+「加个字段不必改表」; 而身份与查询条件 (编号 / 状态 / 时间) 一律各自成列,
+因为它们要建索引、要按条件查.
+"""
+
+from __future__ import annotations
+
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    MetaData,
+    Numeric,
+    String,
+    Table,
+    Text,
+    UniqueConstraint,
+    func,
+)
+from sqlalchemy.dialects.postgresql import JSONB
+
+# 约束的命名规则: 数据库自动起的名字是随机串, 迁移脚本里想改一个约束就得先去
+# 库里查它叫什么. 定死规则后, 名字可以算出来 (如 uq_charagent_runs_request_id),
+# 迁移脚本与排查都能直接引用.
+#
+# 规则映射 (SQLAlchemy 的约定键 → 生成的名字):
+#   ix  -> ix_<表>_<列>      索引
+#   uq  -> uq_<表>_<列>      唯一约束
+#   ck  -> ck_<表>_<列>      CHECK 约束
+#   fk  -> fk_<表>_<列>_<被引用的表>
+#   pk  -> pk_<表>           主键
+# "%(column_0_N_name)s" 这种占位符只取**参与该约束的那些列**的拼接名, 于是复合
+# 索引会生成 `ix_charagent_tool_calls_run_id_tool_call_id` 这样的可读名字.
+NAMING_CONVENTION = {
+    "ix": "ix_%(table_name)s_%(column_0_N_name)s",
+    "uq": "uq_%(table_name)s_%(column_0_N_name)s",
+    "ck": "ck_%(table_name)s_%(column_0_N_name)s",
+    "fk": "fk_%(table_name)s_%(column_0_N_name)s_%(referred_table_name)s",
+    "pk": "pk_%(table_name)s",
+}
+
+# 全库共用的元数据容器: 五张表都挂在它下面. alembic 的 autogenerate 拿它当
+# 「代码侧应该长什么样」的基准, alembic/env.py 的 target_metadata 就是它.
+metadata = MetaData(naming_convention=NAMING_CONVENTION)
+
+# 枚举取值的长度上限: 状态名最长的是 insufficient_system_resource 那类, 但下面
+# 这些枚举里最长的是 "needs_approval" (14) —— 留一倍余量, 既不会写不下, 也不会
+# 因为某个状态改名就要改表结构.
+_ENUM_LEN = 32
+
+# --- 五张表 -------------------------------------------------------------------
+
+threads = Table(
+    "charagent_threads",
+    metadata,
+    Column("thread_id", String(128), primary_key=True, comment="会话编号 (uuid4 hex)"),
+    Column(
+        "tenant_id",
+        String(128),
+        nullable=False,
+        comment="租户编号 —— 多租户隔离的过滤键 (#32), P1 起所有查询强制带上",
+    ),
+    Column(
+        "user_id",
+        String(128),
+        nullable=False,
+        comment="会话属主 —— 决定「谁能看到这段对话」",
+    ),
+    Column(
+        "title",
+        String(255),
+        nullable=False,
+        server_default="",
+        comment="会话标题 (由首条用户消息生成, 前端列表用)",
+    ),
+    Column(
+        "status",
+        String(_ENUM_LEN),
+        nullable=False,
+        server_default="active",
+        comment="会话状态 (ThreadStatus: active / closed / escalated)",
+    ),
+    Column(
+        "created_at",
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        comment="创建时刻",
+    ),
+    Column(
+        "updated_at",
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        comment="最后活动时刻 —— 会话列表按它排序 (新的在前)",
+    ),
+    # 会话列表的两种查法: 「这个租户的会话」(管理端) / 「这个用户的会话」(用户端).
+    # 两者都要按最后活动时间倒序, 所以索引里带上 updated_at.
+    Index("ix_charagent_threads_tenant_updated", "tenant_id", "updated_at"),
+    Index("ix_charagent_threads_user_updated", "user_id", "updated_at"),
+    # 表级注释 (会变成库里的 COMMENT ON TABLE)
+    comment="会话: 一段对话的容器, 也是数据隔离的单位 (所有东西都挂在它下面)",
+)
+
+runs = Table(
+    "charagent_runs",
+    metadata,
+    Column("run_id", String(128), primary_key=True, comment="本次执行的编号"),
+    Column(
+        "thread_id",
+        String(128),
+        ForeignKey("charagent_threads.thread_id", ondelete="CASCADE"),
+        nullable=False,
+        comment="所属会话; 会话删掉, 它的历次执行一并删掉 (CASCADE)",
+    ),
+    Column(
+        "status",
+        String(_ENUM_LEN),
+        nullable=False,
+        server_default="created",
+        comment="运行状态机 (RunStatus): created / running / waiting_tool / "
+        "waiting_user / retrying / failed / finished / cancelled",
+    ),
+    Column(
+        "request_id",
+        String(255),
+        nullable=True,
+        comment="幂等键 (#17): 同一个 request_id 重复提交直接返回已有 run, 不重跑",
+    ),
+    Column(
+        "model",
+        String(128),
+        nullable=True,
+        comment="本次 run 用的模型名 —— 版本化 (#40) 的基础",
+    ),
+    Column(
+        "prompt_version",
+        String(64),
+        nullable=True,
+        comment="本次 run 用的 prompt 版本 (#40)",
+    ),
+    Column(
+        "total_tokens",
+        BigInteger,
+        nullable=False,
+        server_default="0",
+        comment="本 run 累计 token (#34 成本归因按 task)",
+    ),
+    Column(
+        "total_cost",
+        Numeric(14, 6),
+        nullable=False,
+        server_default="0",
+        comment="本 run 累计花费 (金额用 NUMERIC 不用浮点: 浮点算钱会丢分)",
+    ),
+    Column(
+        "turn_count",
+        Integer,
+        nullable=False,
+        server_default="0",
+        comment="已执行的 Turn 数 (断点续跑时是累计值, 不从头数)",
+    ),
+    Column(
+        "error",
+        JSONB,
+        nullable=True,
+        comment="失败原因 (结构化: code + message), 供审计与降级判断",
+    ),
+    Column(
+        "created_at",
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        comment="创建时刻",
+    ),
+    Column(
+        "updated_at",
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        comment="最后更新时刻",
+    ),
+    Column(
+        "finished_at",
+        DateTime(timezone=True),
+        nullable=True,
+        comment="结束时刻; NULL 表示还在跑 (或没跑到终点就丢了)",
+    ),
+    # 同一个 request_id 只能有一次执行 —— 这是幂等的兜底: 应用层先查后插有并发
+    # 窗口, 唯一约束才是真正不会漏的那道闸.
+    UniqueConstraint("request_id", name="uq_charagent_runs_request_id"),
+    Index("ix_charagent_runs_thread_created", "thread_id", "created_at"),
+    # 表级注释 (会变成库里的 COMMENT ON TABLE)
+    comment="一次执行: 用户点一次「发送」到 agent 答完, 有自己的状态机与账目",
+)
+
+messages = Table(
+    "charagent_messages",
+    metadata,
+    Column("message_id", String(128), primary_key=True, comment="消息编号"),
+    Column(
+        "thread_id",
+        String(128),
+        ForeignKey("charagent_threads.thread_id", ondelete="CASCADE"),
+        nullable=False,
+        comment="所属会话",
+    ),
+    Column(
+        "run_id",
+        String(128),
+        ForeignKey("charagent_runs.run_id", ondelete="SET NULL"),
+        nullable=True,
+        comment="归属哪次执行; NULL = 不是 agent 跑出来的 (比如人工客服接管后的回复)",
+    ),
+    Column(
+        "role",
+        String(_ENUM_LEN),
+        nullable=False,
+        comment="发言者 (MessageRole): user / assistant / tool / system",
+    ),
+    Column(
+        "content",
+        Text,
+        nullable=True,
+        comment="文本内容 —— assistant 的最终答复就在这里",
+    ),
+    Column(
+        "reasoning",
+        Text,
+        nullable=True,
+        comment="assistant 的思维链 (reasoning_content): 存下来供前端折叠展示与审计. "
+        "注意这与 wire 历史的回填是两码事 —— 前者是「给人看」, 后者是「喂模型」",
+    ),
+    Column(
+        "tool_call_ids",
+        JSONB,
+        nullable=False,
+        server_default="[]",
+        comment="这条 assistant 消息发起了哪些工具调用 (列表, 保持并行语义 #1)",
+    ),
+    Column(
+        "hidden",
+        Boolean,
+        nullable=False,
+        server_default="false",
+        comment="内部消息: true = 不展示给前端 (续写指令 / 压缩摘要 / 工具回填 / "
+        "带工具调用的中间轮). 会话历史接口只取 false 的那些 (见 conversation.py)",
+    ),
+    Column(
+        "created_at",
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        comment="产生的时刻 (会话历史按它排序)",
+    ),
+    Index("ix_charagent_messages_thread_created", "thread_id", "created_at"),
+    # 表级注释 (会变成库里的 COMMENT ON TABLE)
+    comment="消息: 一问一答里的那一条 (hidden=False 的才给前端看)",
+)
+
+tool_calls = Table(
+    "charagent_tool_calls",
+    metadata,
+    Column(
+        "run_id",
+        String(128),
+        ForeignKey("charagent_runs.run_id", ondelete="CASCADE"),
+        primary_key=True,
+        comment="归属哪次执行 (复合主键的三分之一)",
+    ),
+    Column(
+        "message_id",
+        String(128),
+        ForeignKey("charagent_messages.message_id", ondelete="CASCADE"),
+        primary_key=True,
+        comment="是哪条 assistant 消息发起的 (复合主键的三分之一, 且**不能为空**)",
+    ),
+    Column(
+        "tool_call_id",
+        String(128),
+        primary_key=True,
+        comment="模型给的调用编号 (复合主键的三分之一). **为什么主键要三列**: "
+        "真实上游每轮都从 call_0 重新编号 —— 同一个 run 里会出现好几条「call_0」, "
+        "单列主键第二次就撞; 而加上 run_id 只解决了「跨 run」, 同一个 run 的多轮"
+        "之间仍会撞. 真正唯一的身份是「哪条 assistant 消息发起的这一次调用」, "
+        "所以 (run_id, message_id, tool_call_id) 三列才是完整的键",
+    ),
+    Column("tool_name", String(128), nullable=False, comment="调用的工具名"),
+    Column(
+        "arguments",
+        Text,
+        nullable=False,
+        server_default="",
+        comment="模型填的参数, **原样 JSON 字符串** (不预解析): 畸形 JSON 正是 "
+        "自纠错路径的信号 (#2), 解析了反而丢证据. 想查字段用 arguments::jsonb",
+    ),
+    Column(
+        "status",
+        String(_ENUM_LEN),
+        nullable=False,
+        server_default="pending",
+        comment="执行状态 (ToolCallStatus): pending / running / succeeded / failed "
+        "/ cancelled / needs_approval (HITL 挂起等人工批准 #25)",
+    ),
+    Column(
+        "result",
+        JSONB,
+        nullable=True,
+        comment="执行结果 (成功) 或可操作错误信息 (#2: 说清字段格式问题, 不甩 422)",
+    ),
+    Column(
+        "duration_ms",
+        Integer,
+        nullable=True,
+        comment="耗时毫秒; NULL = 没跑到计时那一步",
+    ),
+    Column(
+        "approved_by",
+        String(128),
+        nullable=True,
+        comment="HITL 审批人 (#25); NULL = 无需审批或还没批",
+    ),
+    Column(
+        "approved_at",
+        DateTime(timezone=True),
+        nullable=True,
+        comment="HITL 审批时刻 (#25)",
+    ),
+    Column(
+        "created_at",
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        comment="发起时刻",
+    ),
+    Column(
+        "updated_at",
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        comment="状态最后变化时刻 —— 追问「这条调用卡了多久」看它",
+    ),
+    Index("ix_charagent_tool_calls_run_created", "run_id", "created_at"),
+    # 表级注释 (会变成库里的 COMMENT ON TABLE)
+    comment="工具调用: 模型「我要去查一下」的那一下 —— 参数 / 状态 / 结果 / 审批",
+)
+
+checkpoints = Table(
+    "charagent_checkpoints",
+    metadata,
+    Column("checkpoint_id", String(128), primary_key=True, comment="快照编号"),
+    Column(
+        "thread_id",
+        String(128),
+        nullable=False,
+        comment="所属会话 (分区键: 一个会话的所有快照排成一条线)",
+    ),
+    Column("run_id", String(128), nullable=False, comment="是哪一次运行存下的"),
+    Column(
+        "turn_number",
+        Integer,
+        nullable=False,
+        comment="存下它时已经跑完几轮 (「执行到哪一步」#5)",
+    ),
+    Column(
+        "schema_version",
+        Integer,
+        nullable=False,
+        comment="快照内容的格式版本号 (#5 向前兼容): 老快照读回来要按它升级",
+    ),
+    Column(
+        "state",
+        JSONB,
+        nullable=False,
+        comment="进度: 消息历史 + 计数器 + 挂起点 (恢复才用, 序列化协议见 "
+        "checkpoint/serialization.py)",
+    ),
+    Column(
+        "metadata",
+        JSONB,
+        nullable=False,
+        server_default="{}",
+        comment="观察值: 来源 + 本轮 token 与耗时 + 工具 + 结束原因 (给人看, "
+        "回放调试用; v3 起从 state 里分出来)",
+    ),
+    Column(
+        "parent_id",
+        String(128),
+        ForeignKey("charagent_checkpoints.checkpoint_id", ondelete="SET NULL"),
+        nullable=True,
+        comment="上一帧的编号 —— 从头排到尾是一条链; 从老快照恢复则在那里岔出"
+        "新分支 (time-travel #5). NULL = 这条线的头一份",
+    ),
+    Column(
+        "created_at",
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        comment="存下的时刻 (带时区; 排序与回溯都看它)",
+    ),
+    # 「按会话翻历史 / 取最新一帧」是仅有的两种查法, 一条复合索引就够.
+    # created_at + checkpoint_id 一起排, 保证同一毫秒存下的两帧顺序也确定.
+    Index(
+        "ix_charagent_checkpoints_thread_created",
+        "thread_id",
+        "created_at",
+        "checkpoint_id",
+    ),
+    # 表级注释 (会变成库里的 COMMENT ON TABLE). 位置与 Column / Index 无关, 但
+    # **关键字参数只能排在所有位置参数之后** —— 插在中间是语法错误.
+    comment="会话快照: 一帧一行, 全历史都在 (agent/loop.py 每 Turn 末尾落一帧)",
+)
+
+# 五张表按依赖顺序排好, 建表时直接按这个顺序跑 (被引用的先建, 否则外键指向
+# 一个还不存在的表). SQLAlchemy 的 metadata.sorted_tables 也能算出来, 这里显式
+# 列一份是为了让「谁依赖谁」在文件里一眼可见.
+ALL_TABLES: tuple[Table, ...] = (threads, runs, messages, tool_calls, checkpoints)
+
+# 表名清单 (测试与运维脚本按名字找表用; 顺序与 ALL_TABLES 一致)
+TABLE_NAMES: tuple[str, ...] = tuple(table.name for table in ALL_TABLES)
+
+# 表名常量: 给「只要名字、不要表对象」的地方用 (测试里裸 SQL 查表、conftest 清理
+# 数据), 从 Table 对象上取而不是再抄一遍字面量.
+#
+# 只给 checkpoints 添这个常量, 是因为**只有它在代码里被这么用**: 其余四张表的
+# 名字出现在用例里时是**故意写字面量**的 —— test_db_schema.py 用硬编码的完整
+# 表名清单当契约断言, 若改成引用本文件常量, 常量本身写错就没人发现了.
+# 其余四张表若要按名字取, 用 `metadata.tables` 或 `table.name`, 不必在这里加常量.
+CHECKPOINTS_TABLE_NAME = checkpoints.name

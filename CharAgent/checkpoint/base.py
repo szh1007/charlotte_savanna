@@ -40,6 +40,16 @@ class CheckpointSaver(Protocol):
     方法全是 async: 存快照发生在 agent loop 跑的过程中, 而 Redis / Postgres 都是
     网络 IO —— 用同步调用会把整个事件循环卡住 (difficulties #65 的「阻塞 IO
     陷阱」), 所以协议从一开始就是异步的.
+
+    **协议只声明各实现都有的那几个方法**. 某个实现可以另加自己的 —— 那些是
+    **该实现专有**的, 按协议编程的调用方不该依赖它们 (换个后端就 AttributeError).
+    现有的这类方法 (两个都在 Postgres 上):
+
+    - `ensure_schema()`: 把表建出来 (幂等). 内存版没有表, Redis 版没有 schema ——
+      只有要建表的实现才有这一步. Postgres 的每次存取会自己顺手调一次, 所以只有
+      **测试想先把表备好**时才需要显式调 (本仓 `tests/conftest.py` 就是这么用的).
+    - `delete_thread(thread_id)`: 按会话整段删掉 (返回删了几行). 内存版删不删无所谓,
+      Redis 版靠键过期. 它要求**表已存在**.
     """
 
     @property

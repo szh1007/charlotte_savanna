@@ -89,7 +89,7 @@ while not done:
 
 | 阶段 | 范围 | 难点 | 产出物 | 验收标准 |
 |------|------|------|--------|----------|
-| **P0** | 核心 loop + 可靠性 + 测试 | #1-5、#10-11、#13、#61-63、#65 | model/ + tool/ + loop/ + stream/ + hooks/ + retry/ + checkpoint/ + alembic/ + tests/ | 带工具的 agent loop 跑通；checkpoint 可断点续跑；mock LLM 单测通过 |
+| **P0** | 核心 loop + 可靠性 + 数据层 + 测试 | #1-5、#10-12、#13、#61-63、#65 | model/ + tool/ + agent/ + stream/ + hooks/ + retry/ + checkpoint/ + db/ + alembic/ + tests/ | 带工具的 agent loop 跑通；checkpoint 可断点续跑；五实体落 Postgres；mock 单测通过 |
 | **P1** | 可靠性加固 + 安全 + RAG + demo | #6-7、#14-27、#29-30、#35、#38、#45-47 | server（SSE 接口）+ 客服 demo + 安全/降级/队列/RAG 模块 | 客服 demo 端到端跑通（提问→检索→回复→转人工）；SSE 流式输出；高危操作需审批 |
 | **P2** | 记忆/成本/可观测/多 agent/能力扩展/评估/工程化 | #8-9、#12、#28、#31-34、#36-37、#39-44、#48-60、#64、#66-67 | 记忆/成本/可观测/多 agent/MCP/Skills/Eval/数据模型/部署/工程底座模块 | 完整生产级能力：多租户隔离、成本追踪、指标告警、多 agent 协作、评估回归、无状态水平扩展 |
 
@@ -171,11 +171,17 @@ CharAgent/
 │   └── difficulties/           # 70 个编号难点详细清单（14 个分类文件）
 ├── model/                      # P0  ChatModel 协议 + httpx/openai 双实现 + reasoning 兼容
 ├── tool/                       # P0  @tool 装饰器 + JSON schema 生成
-├── loop/                       # P0  手写 agent loop（并行/纠错/循环防护）
+├── agent/                      # P0  手写 agent loop（并行/纠错/循环防护）
 ├── stream/                     # P0  流式事件总线（thinking/tool_call/tool_result/reasoning/final/error + 状态机）
 ├── hooks/                      # P0  hook 注册表骨架（空注册零成本，ADR-0007）
 ├── retry/                      # P0  policy/executor/chat_model/idempotency（重试 + 退避 + 幂等键）
-├── checkpoint/                 # P0  base / memory / redis / postgres / serialization / config + utils
+├── checkpoint/                 # P0  快照: base / memory / redis / postgres / serialization / config + utils
+│                               #     （Postgres 实现走 SQLAlchemy，与 db/ 共用连接层与表定义）
+├── db/                         # P0  数据层 (不叫 models/ —— 与 model/ 太近, 见该包 README)
+│                               #     schema(表定义唯一来源) / entities(五实体) / state(状态机)
+│                               #     / conversation(消息分层) / database(连接与事务) / config / errors
+│                               #     + repositories/(threads / runs / messages / tool_calls)
+├── alembic/                    # P0  迁移: alembic.ini + env.py + versions/（只追加，不改写历史）
 ├── guard/                      # P1  输入/输出护栏 + 脱敏 + HITL + 审计
 ├── ratelimit/                  # P1  限流算法（固定/滑动窗口 + 令牌桶/漏桶）
 ├── lock/                       # P1  分布式锁
@@ -201,7 +207,7 @@ CharAgent/
 
 | 阶段 | 运行入口 | 说明 |
 |------|---------|------|
-| P0 | `python -m CharAgent.cli` | CLI 跑通 loop（不依赖 server），checkpoint 断点续跑 + 单测 |
+| P0 | `python -m CharAgent.cli`（**尚未交付**） | CLI 跑通 loop（不依赖 server），checkpoint 断点续跑 + 单测。入口本身是 P0 的**验收线**，见 `.scratch/CharAgent/issues/10-P0-acceptance-cli-demo.md` —— 在此之前，跑通链路的入口是 `pytest tests/`（默认全替身）与 `pytest -m integration`（真实端点） |
 | P1 | `python -m server.main` + 前端 `npm run dev` | FastAPI + SSE，客服 demo 端到端 |
 | P2 | 各插件按需启用 | 评估集跑分、trace 面板、记忆/多 agent 演示 |
 

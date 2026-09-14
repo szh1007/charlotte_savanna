@@ -9,7 +9,7 @@
 
 | 层 | 职责 | 阶段 |
 |----|------|------|
-| 框架层 `CharAgent/` | 业务无关的 agent runtime（model / tool / loop / stream / checkpoint / guard / ratelimit / lock / rag） | P0-P2 |
+| 框架层 `CharAgent/` | 业务无关的 agent runtime（model / tool / agent / stream / checkpoint / guard / ratelimit / lock / rag） | P0-P2 |
 | 服务层 `server/` | FastAPI + SSE + TaskQueue，承载 RAG 检索与客服业务工具注册 | P1 |
 | Demo 层 `demo/` | 电商售后客服：Ticket / Escalation / HITL 审批，业务工具集 | P1 |
 | 前端 | Vue 3 + EventSource：`/chat` 用户端 + `/admin` 审批/接管台 | P1 |
@@ -38,6 +38,7 @@ flowchart TB
         Stream["StreamEvent 事件总线"]
         Hook["hook 注册表 (P0 骨架)"]
         Checkpoint["CheckpointSaver<br/>InMemory / Redis / Postgres"]
+        Models["db/: 五实体表定义 + 仓储<br/>(thread / run / message / tool_call / checkpoint)"]
         Retry["retry/: 重试 + 退避 + 幂等键"]
         Guard["guard.py: 输入输出护栏 + 脱敏 + 审计"]
         RL["ratelimit.py 限流"]
@@ -64,6 +65,8 @@ flowchart TB
     Loop --> Hook
     Loop --> Checkpoint
     Loop --> Guard
+    API --> Models
+    Models --> PG
     Loop --> RL
     Checkpoint --> PG
     Checkpoint --> REDIS
@@ -185,6 +188,7 @@ while not done:
 | P2 形态 | 轻量扩展点（事件总线 + hook + SPI），配置注册 | 0007 |
 | 向量库 | 直接上 Milvus（本机 Docker），embedding 用 CloseAI `text-embedding-3-large` | 访谈决策（2026-08-18） |
 | 模型 | 单模型 deepseek-flash（推理模型，reasoning_content 真实存在） | 0003 补充 |
+| 数据访问层 | 五实体表定义 + ORM 实体 + 仓储统一走 SQLAlchemy，表定义唯一定义处 `db/schema.py`；**同步引擎 + `asyncio.to_thread`**（async 驱动在 Windows 默认事件循环上不可用） | issue 08（P0-7） |
 | demo 存储 | Ticket 等 demo 表落 Postgres（alembic），订单只读 MySQL（只读账号，演示 #24） | 0004 补充 |
 
 ## 6. P1 部署拓扑

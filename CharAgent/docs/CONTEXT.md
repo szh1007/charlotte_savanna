@@ -57,7 +57,7 @@ _Avoid_: 快照元数据（易与记录身份字段混淆）, 日志
 _Avoid_: 来源类型, 事件类型（那是 `StreamEvent`）
 
 **CheckpointSaver**:
-Checkpoint 的存储接口抽象（async 协议），隔离存储介质；能做什么用 `capabilities` 声明（是否留历史 / 是否会过期），做不到的操作明确报 `CheckpointCapabilityError`，而不是返回空结果让调用方误判「没存过」。三实现（ADR-0002 + 2026-09-13 更新）：InMemory（测试与对照标尺，进出深拷贝）、Redis（默认 `mode="history"`：一个会话一条 Stream，`XADD` 追加 / `XRANGE` 翻历史 / `MAXLEN` 裁剪 / `EXPIRE` 过期；`mode="latest"` 只留最新一帧，对齐官方 ShallowRedisSaver，翻历史会明确报能力错）、Postgres（一帧一行 + `state` / `metadata` 两个 JSONB 列，全历史；同步驱动 + `asyncio.to_thread` —— psycopg 异步连接在 Windows 默认事件循环上不可用）。配置切换：`CHECKPOINT_BACKEND` 选后端、`CHECKPOINT_REDIS_MODE` 选 Redis 模式（见 `checkpoint/config.py`）。按编号取帧：Redis 要一并给 `thread_id`（帧按会话分区），有全局编号索引的实现忽略该参数。
+Checkpoint 的存储接口抽象（async 协议），隔离存储介质；能做什么用 `capabilities` 声明（是否留历史 / 是否会过期），做不到的操作明确报 `CheckpointCapabilityError`，而不是返回空结果让调用方误判「没存过」。三实现（ADR-0002 + 2026-09-13 更新）：InMemory（测试与对照标尺，进出深拷贝）、Redis（默认 `mode="history"`：一个会话一条 Stream，`XADD` 追加 / `XRANGE` 翻历史 / `MAXLEN` 裁剪 / `EXPIRE` 过期；`mode="latest"` 只留最新一帧，对齐官方 ShallowRedisSaver，翻历史会明确报能力错）、Postgres（一帧一行 + `state` / `metadata` 两个 JSONB 列，全历史；同步驱动 + `asyncio.to_thread` —— psycopg 异步连接在 Windows 默认事件循环上不可用；**实现走 SQLAlchemy**，与 `db/` 共用连接层 `PgDatabase` 与表定义 `db/schema.py`，见 issue 08 的统一改造）。配置切换：`CHECKPOINT_BACKEND` 选后端、`CHECKPOINT_REDIS_MODE` 选 Redis 模式（见 `checkpoint/config.py`）。按编号取帧：Redis 要一并给 `thread_id`（帧按会话分区），有全局编号索引的实现忽略该参数。
 _Avoid_: 存储层, 存储适配器
 
 **Suspension**:
@@ -163,7 +163,7 @@ _Avoid_: 降级开关
 _Avoid_: 超时限制
 
 **RunState**:
-运行状态机（created/running/waiting_tool/waiting_user/failed/finished/cancelled），由执行层推进而非模型建议。有合法迁移规则、非法迁移拒绝，状态持久化在 run 记录（P1-2）。
+运行状态机（created/running/waiting_tool/waiting_user/**retrying**/failed/finished/cancelled，共 8 态），由执行层推进而非模型建议。有合法迁移规则、非法迁移拒绝，状态持久化在 run 记录。落地（P0-7）：枚举定义在 `db/entities.py`，**合法迁移表 + 终态集合 + 结束原因映射**在 `db/state.py`；落库的迁移走 `RunsRepository.try_transition`（带条件的 UPDATE 做乐观锁，见 `db/repositories/runs.py`）。终态（finished/failed/cancelled）**不可逆** —— 想重跑就新建一个 run。`retrying` 是**过程状态**而非结束原因，所以它不在「LoopOutcome → 状态」的映射表里。
 _Avoid_: 运行状态
 
 **LoopState**:

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import pytest
+from conftest import conninfo
 from psycopg.conninfo import conninfo_to_dict
 
 from CharAgent.checkpoint.config import (
@@ -164,11 +165,16 @@ def test_redis_ttl_must_be_integer():
 
 
 def test_postgres_backend_builds_dsn_from_shared_env():
-    """没配专用 DSN 时, 用根 .env 共用的 PGSQL_* 拼一个 (字段逐个对上)."""
+    """没配专用 DSN 时, 用根 .env 共用的 PGSQL_* 拼一个 (字段逐个对上).
+
+    取连接串的位置随实现变过: 快照存储统一到 SQLAlchemy 之后, 连接信息挂在
+    `PgDatabase.url` 上 (SQLAlchemy 的 URL 对象). `conninfo_to_dict` 认它
+    (URL 实现了 psycopg 要的那套 getter, 且密码会解码回明文而不是 `***`).
+    """
     saver = build_saver("postgres", PGSQL_ENV)
     assert isinstance(saver, PostgresCheckpointSaver)
 
-    fields = conninfo_to_dict(saver._dsn or "")
+    fields = conninfo_to_dict(conninfo(saver._database.url))
     assert fields["host"] == "127.0.0.1"
     assert fields["port"] == "5432"
     assert fields["user"] == "charlotte"
@@ -176,7 +182,11 @@ def test_postgres_backend_builds_dsn_from_shared_env():
 
 
 def test_postgres_dsn_prefers_dedicated_value():
-    """配了 CHECKPOINT_POSTGRES_DSN 就用它 (可以指到另一个库)."""
+    """配了 CHECKPOINT_POSTGRES_DSN 就用它 (可以指到另一个库).
+
+    返回值是 SQLAlchemy 的 URL 对象 (2026-09-14 起), 所以先渲染成文本再逐字段
+    核对 —— 直接断言对象相等会把「驱动名」也算进去, 反而验不出真正关心的东西.
+    """
     dsn = postgres_dsn(
         {
             "CHECKPOINT_POSTGRES_DSN": "postgresql://u:p@db.example:5432/other",
@@ -184,7 +194,9 @@ def test_postgres_dsn_prefers_dedicated_value():
         }
     )
 
-    assert conninfo_to_dict(dsn)["dbname"] == "other"
+    fields = conninfo_to_dict(conninfo(dsn))
+    assert fields["dbname"] == "other"
+    assert fields["host"] == "db.example"
 
 
 def test_postgres_dsn_reports_missing_variables():

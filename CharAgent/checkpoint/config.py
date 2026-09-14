@@ -21,7 +21,7 @@ PGSQL_PASSWORD / PGSQL_HOST / PGSQL_PORT / PGSQL_NAME) 是本项目各子项目�
 数据库配置, 快照就存在同一个库里, 没必要再抄一遍; 想单独指到别的库时用
 CHECKPOINT_POSTGRES_DSN 覆盖.
 
-拼连接串用 psycopg 自己的 make_conninfo (而不是手写 f-string): 密码里万一有
+拼连接串用 SQLAlchemy 的 `URL.create` (而不是手写 f-string): 密码里万一有
 `@` `:` `/` 这类字符, 手拼会把连接串拼坏 —— 交给库去转义.
 """
 
@@ -30,7 +30,8 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 
-from psycopg.conninfo import make_conninfo
+from sqlalchemy import URL
+from sqlalchemy.engine import make_url
 
 from CharAgent.checkpoint.base import CheckpointSaver
 from CharAgent.checkpoint.memory import InMemoryCheckpointSaver
@@ -126,34 +127,50 @@ def _read_optional_int(source: Mapping[str, str], key: str) -> int | None:
         raise CheckpointConfigError(f"{key} 应当是整数, 实际: {raw!r}") from None
 
 
-def postgres_dsn(env: Mapping[str, str] | None = None) -> str:
+def postgres_dsn(env: Mapping[str, str] | None = None) -> URL:
     """拼 Postgres 连接串: 先用专用变量, 否则用共用的 PGSQL_* 拼.
 
     公开的理由: 除了造 saver, 还有些场合需要**连接串本身** —— 手工连库排查、
     跑 alembic 迁移、测试里直接查表对账. 与其让各处重复抄一遍拼法, 不如共用
     这一处 (顺便统一了转义规则, 见模块 docstring).
 
+    **返回 SQLAlchemy 的 URL 对象而不是一串文本** (2026-09-14 改): 快照存储与
+    数据模型现在统一走 SQLAlchemy, 而它认的是 URL (文本形式里没写驱动名, 它会
+    退回自己的默认驱动). 需要人读的连接串时用 `str(url)` —— 它会把密码渲染成
+    三个星号, 正好适合往日志里打.
+
+    **psycopg 收不了这个对象** (实现所限, 2026-09-14 实测两种形式都报
+    `AttributeError: 'URL' object has no attribute 'encode'`): 它只认字符串或
+    自己的 `Conninfo`. 要给 psycopg 用的地方 (如测试里裸连库对账) 自己转一下 ——
+    见 `tests/conftest.py` 的 `conninfo()`: 先 `render_as_string(hide_password=
+    False)` 拿回明文密码, 再把驱动名 `+psycopg` 去掉 (`postgresql+psycopg://`
+    这个写法 psycopg 也不认识).
+
+    返回值用 `URL.create` 拼 (而不是手写字符串): 密码里的 `@` `:` `/` 这类字符
+    会被正确转义, 不会把连接串拼坏.
+
     Args:
         env: 环境变量表 (默认读 os.environ).
 
     Raises:
-        CheckpointConfigError: 两种来源都不完整 (报错时列出缺哪些变量).
+        CheckpointConfigError: 专用变量与共用变量都拿不到 (报错时列出缺哪些).
     """
     source = os.environ if env is None else env
     explicit = (source.get(ENV_POSTGRES_DSN) or "").strip()
     if explicit:
-        return explicit
-    values = {key: (source.get(key) or "").strip() for key in _PGSQL_KEYS}
+        return make_url(explicit)
+    values = {key: (source.get(key) or "").strip().strip('"') for key in _PGSQL_KEYS}
     missing = [key for key, value in values.items() if not value]
     if missing:
         raise CheckpointConfigError(
             f"没拿到 Postgres 连接信息: 请设 {ENV_POSTGRES_DSN}, 或补齐 "
             f"{', '.join(missing)} (与根 .env 的 PGSQL_* 同名)"
         )
-    return make_conninfo(
-        user=values["PGSQL_USERNAME"],
+    return URL.create(
+        "postgresql+psycopg",
+        username=values["PGSQL_USERNAME"],
         password=values["PGSQL_PASSWORD"],
         host=values["PGSQL_HOST"],
-        port=values["PGSQL_PORT"],
-        dbname=values["PGSQL_NAME"],
+        port=int(values["PGSQL_PORT"]),
+        database=values["PGSQL_NAME"],
     )

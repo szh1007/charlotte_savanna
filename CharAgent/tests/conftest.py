@@ -27,8 +27,8 @@ from helpers import API_KEY, BASE_URL
 
 from CharAgent.checkpoint.config import postgres_dsn
 from CharAgent.checkpoint.postgres import PostgresCheckpointSaver
-from CharAgent.checkpoint.utils.ddl import CHECKPOINTS_TABLE
 from CharAgent.checkpoint.utils.errors import CheckpointConfigError
+from CharAgent.db.schema import CHECKPOINTS_TABLE_NAME as CHECKPOINTS_TABLE
 from CharAgent.model import HttpXChatModel
 
 
@@ -49,8 +49,8 @@ def _load_root_dotenv() -> None:
     load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=False)
 
 
-def postgres_test_dsn() -> str:
-    """本机 Postgres 连接串; 拿不到配置就跳过用例.
+def postgres_test_dsn():
+    """本机 Postgres 连接串 (SQLAlchemy 的 URL 对象); 拿不到配置就跳过用例.
 
     给「按需连 PG」的用例用 (比如双实现对比: 内存与 Redis 那两组参数不需要 PG,
     只有 PG 那组才该受影响).
@@ -63,15 +63,52 @@ def postgres_test_dsn() -> str:
 
 
 @pytest.fixture(scope="session")
-def pg_dsn() -> str:
+def pg_dsn():
     """本机 Postgres 连接串 (优先 CHECKPOINT_POSTGRES_DSN, 否则由 PGSQL_* 拼)."""
     return postgres_test_dsn()
 
 
-def _delete_thread_frames(pg_dsn: str, thread_id: str) -> None:
+def conninfo(dsn) -> str:
+    """把连接串转成 psycopg 认的文本形式.
+
+    为什么不能直接把 `postgres_dsn()` 的结果交给 psycopg: 它返回的是 SQLAlchemy
+    的 URL 对象, 而 psycopg 只认字符串或它自己的 `Conninfo` —— 两种形式的 URL
+    都报 `AttributeError: 'URL' object has no attribute 'encode'` (2026-09-14
+    实测). 于是这里转两处:
+
+    - `render_as_string(hide_password=False)`: 默认渲染会把密码换成三个星号,
+      而 psycopg 要真密码
+    - 去掉驱动名 `+psycopg`: 那是 SQLAlchemy 用来挑驱动的写法, psycopg 不认识
+      (报 `missing "=" after "postgresql+psycopg://..."`)
+
+    这个帮助函数只在测试里用 (裸连库对账). 生产代码不碰 psycopg —— 快照存储与
+    仓储都走 SQLAlchemy.
+    """
+    if isinstance(dsn, str):
+        return dsn
+    return dsn.render_as_string(hide_password=False).replace(
+        "postgresql+psycopg://", "postgresql://", 1
+    )
+
+
+def sqlalchemy_test_url(env=None):
+    """同一条连接, 换成 SQLAlchemy 认的 URL 形式 (带 +psycopg 驱动名).
+
+    与 `conninfo` 是同一份配置的两种渲染: psycopg 要 `postgresql://...` 文本,
+    SQLAlchemy 要带驱动名的 URL. 两边都从 `postgres_test_dsn()` 出发, 于是
+    「测的是同一个库」这件事不靠人记.
+
+    顺带把根 .env 读进来 (与 `postgres_test_dsn` 一样按需加载) —— 单独调
+    `db.config.sqlalchemy_url()` 不会自己读 .env, 拿到的是「一个变量都没有」.
+    """
+    dsn = postgres_test_dsn()
+    return dsn.set(drivername="postgresql+psycopg")
+
+
+def _delete_thread_frames(pg_dsn, thread_id: str) -> None:
     """删掉某个会话的全部快照 (同步执行, 由调用方放进线程)."""
     try:
-        with psycopg.connect(pg_dsn, autocommit=True) as conn:
+        with psycopg.connect(conninfo(pg_dsn), autocommit=True) as conn:
             conn.execute(
                 f"DELETE FROM {CHECKPOINTS_TABLE} WHERE thread_id = %s", (thread_id,)
             )
@@ -101,7 +138,7 @@ async def pg_thread_id() -> AsyncIterator[str]:
 
 
 @pytest_asyncio.fixture
-async def pg_saver(pg_dsn: str) -> AsyncIterator[PostgresCheckpointSaver]:
+async def pg_saver(pg_dsn) -> AsyncIterator[PostgresCheckpointSaver]:
     """接了本机 Postgres 的 saver (顺带把表建好: 建表是幂等的)."""
     saver = PostgresCheckpointSaver(dsn=pg_dsn)
     await saver.ensure_schema()
