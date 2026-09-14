@@ -85,10 +85,16 @@ class LoopState:
             上游中断等).
         outcome: 结束原因; 初值 FINISHED, guard 触发点与各分支放弃点改写它.
         finish_reason: 最后一次模型响应的终止原因 (供 LoopResult 上报).
-        turn_count: 已完成的模型决策次数 (= len(turns)).
+        turn_count: 已完成的模型决策次数 (全新 run 时 = len(turns); 断点续跑时
+            含续跑前已完成的轮数, 于是轮数从 2、3 接着数, 不会从 1 重来).
         truncation_count: 已发生的 length 截断处理次数.
-        total_tokens: 全 run 累计 usage (无 usage 的调用计 0).
+        total_tokens: 全 run 累计 usage (无 usage 的调用计 0; 续跑时接着累计).
         done: 循环是否结束 (分支方法置 True 表示这次 run 到此为止).
+        run_id: 本次运行的编号 (配了 checkpoint saver 才有; 续跑时默认沿用快照里
+            的 run_id —— 表示「还是同一次运行接着跑」).
+        last_checkpoint_id: 最近落盘那一帧快照的编号. 下一帧的 parent_id 指向它,
+            于是同一会话的快照串成一条链; 从老快照恢复时链就从那里岔出去, 形成
+            新分支 (#5 time-travel).
     """
 
     history: list[ModelMessage]
@@ -101,6 +107,8 @@ class LoopState:
     truncation_count: int = 0
     total_tokens: int = 0
     done: bool = False
+    run_id: str | None = None
+    last_checkpoint_id: str | None = None
 
 
 @dataclass(slots=True)
@@ -132,8 +140,11 @@ class LoopResult:
             分段原文仍可在 messages 与 turns 中查到 (保真不丢).
         finish_reason: 最后一次模型响应的终止原因 (tool_calls/length 等).
         outcome: 结束原因, 见 LoopOutcome.
-        turns: 每轮快照 (TurnRecord), 顺序为执行序.
-        turn_count: 模型决策次数 (恒等于 len(turns), 便捷字段免去取长度).
+        turns: **本次 run** 的逐轮快照 (TurnRecord), 顺序为执行序. 断点续跑时
+            不含上一段 run 的轮次 —— 那些轮的明细在上一段的返回值与快照里.
+        turn_count: 模型决策次数. 全新 run 恒等于 len(turns); 续跑时是**累计值**
+            (含续跑前已完成的轮数), 那时它 >= len(turns) —— 预算判定要的正是这个
+            累计口径 (轮数上限不因断点重启).
         truncation_count: 发生的 length 截断处理次数.
         total_tokens: 全 run 累计 usage (无 usage 的调用计 0).
         elapsed_ms: 墙钟总耗时.

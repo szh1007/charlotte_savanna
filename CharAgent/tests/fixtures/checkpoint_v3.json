@@ -1,0 +1,79 @@
+{
+  "schema_version": 3,
+  "checkpoint_id": "ck-v3-0002",
+  "thread_id": "thread-v3",
+  "run_id": "run-v3",
+  "turn_number": 2,
+  "parent_id": "ck-v3-0001",
+  "created_at": {
+    "__charagent_type__": "datetime",
+    "value": "2026-09-13T10:00:00+00:00"
+  },
+  "state": {
+    "messages": [
+      {
+        "role": "user",
+        "content": "订单 20260701123456 没收到, 我要退款"
+      },
+      {
+        "role": "assistant",
+        "content": "我先查一下这笔订单",
+        "tool_calls": [
+          {
+            "id": "call_0",
+            "type": "function",
+            "function": {
+              "name": "query_order",
+              "arguments": "{\"order_no\": \"20260701123456\"}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_0",
+        "content": "订单已发货"
+      },
+      {
+        "role": "assistant",
+        "content": "这笔订单要退款, 需要人工批准",
+        "tool_calls": [
+          {
+            "id": "call_0",
+            "type": "function",
+            "function": {
+              "name": "refund_order",
+              "arguments": "{\"order_no\": \"20260701123456\", \"amount\": \"128.00\"}"
+            }
+          }
+        ]
+      }
+    ],
+    "turn_count": 2,
+    "total_tokens": 321,
+    "truncation_count": 0,
+    "content_parts": [],
+    "suspension": {
+      "reason": "needs_approval",
+      "pending": [
+        {
+          "id": "call_0",
+          "name": "refund_order",
+          "arguments": "{\"order_no\": \"20260701123456\", \"amount\": \"128.00\"}"
+        }
+      ],
+      "approval_id": "appr-1"
+    }
+  },
+  "metadata": {
+    "source": "loop",
+    "turn_tokens": 193,
+    "turn_elapsed_ms": 204.5,
+    "tool_names": [
+      "refund_order"
+    ],
+    "content": null,
+    "finish_reason": "tool_calls",
+    "outcome": null
+  }
+}

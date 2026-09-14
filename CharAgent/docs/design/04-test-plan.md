@@ -61,7 +61,12 @@
 ## 6. 测试运行
 
 ```bash
-pytest tests/                          # 单元 + E2E（全 mock，CI 默认；集成被 addopts 排除）
+pytest tests/                          # 单元 + E2E（全替身，默认；integration / pg / redis 被 addopts 排除）
 pytest -m integration                  # 真实 API（本地，需 .env 密钥；会消耗额度）
-pytest tests/test_checkpoint_postgres.py --pg  # Postgres 实现（需本机 PG 运行）
+pytest -m pg                           # checkpoint 的 Postgres 实现（需本机 PG 运行）
+pytest -m redis                        # checkpoint 的 Redis 实现（需本机 Redis 运行）
 ```
+
+三个 marker 与用例的对应关系：checkpoint 的默认用例走内存版或 `FakeRedisClient`
+（`tests/doubles.py`，时钟可注入 —— TTL 到期用「快进时钟」验，不真等），标 `pg` /
+`redis` 的用例才连真服务（连不上时按 conftest 的提示跳过并说明原因）。

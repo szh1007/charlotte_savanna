@@ -71,6 +71,24 @@
    一个终局事件 (正常 final / 异常 error); 契约见 03-api.md §2
 3. hook (HookRegistry): 五个生命周期触发点 (ADR-0007 扩展点), 空注册零开销
 
+存档线 (issue 07 接上后, 依然是「只加不改」):
+- 配了 saver + thread_id 时, 每 Turn 结束把进度落成一帧快照 (历史 + 计数器),
+  存在哪儿由 checkpoint/ 的实现决定 (内存 / Redis 流式历史 / Postgres, ADR-0002).
+  没配就一个字节都不落, 行为与 issue 04/05 完全一样
+- 每帧还记下「观察值」(来源 / 本轮 token 与耗时 / 调了哪些工具): 与「进度」分开
+  存, 回放调试时能看出哪一步最贵、哪一帧是从老快照分叉出来的
+  (checkpoint/utils/history.py 有现成的表格视图)
+- 续跑走 resume(快照): 把快照里的历史与计数器当起点接着跑 —— 已经做完的事都在
+  历史里, 所以不会重做 (#5). 计数器一起接续, 于是「整个 run 最多几轮 / 多少
+  token」的预算跨断点仍然算数
+- 快照停在「工具调用还没有结果」的半路时 (人工审批挂起点 #25), resume 先补做
+  那几条调用再继续, **不重复问模型一次** —— 「从挂起点恢复而非重跑」
+- 从**老**快照恢复 = time-travel: 新落的帧把 parent_id 指向那帧老快照, 历史就
+  此岔出一条新分支 (#5)
+- 落盘失败**向上抛** (与 event_sink 同一条规矩): 存不下快照是严重问题, 悄悄吞掉
+  会变成「以为存上了」的事故. 注意与 hook 的「插件异常被隔离留痕」相反 —— hook
+  是可选的旁挂插件, 快照是核心可靠性
+
 大白话版 (issue 05 给主循环加的两根线):
 - 直播线 (event_sink): 主循环每干一件事就「喊一嗓子」—— 我要去查什么、查
   回来什么、最后答什么. 这些话经 EventBus 编号后推给前端, 用户就能边跑边
@@ -85,6 +103,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterable, Sequence
+from uuid import uuid4
 
 from CharAgent.agent.guard import LoopGuard
 from CharAgent.agent.utils.errors import LoopConfigError
@@ -107,6 +126,15 @@ from CharAgent.agent.utils.types import (
     LoopState,
     TruncationStrategy,
     TurnRecord,
+)
+from CharAgent.checkpoint.base import CheckpointSaver
+from CharAgent.checkpoint.utils.pending import pending_tool_calls
+from CharAgent.checkpoint.utils.types import (
+    Checkpoint,
+    CheckpointMetadata,
+    CheckpointSource,
+    CheckpointState,
+    check_identifier,
 )
 from CharAgent.hooks.registry import HookRegistry
 from CharAgent.hooks.utils.types import HookPoint, ModelCallPhase
@@ -159,6 +187,11 @@ class AgentLoop:
         hooks: hook 注册表 (ADR-0007 扩展点, issue 05), 五个触发点与载荷见
             HookRegistry docstring; 空注册零开销. None 表示无扩展点 (内部用
             空注册表, 触发点不必逐处判空).
+        saver: 快照存储 (issue 07, checkpoint/ 的三实现之一). 给了它, 每 Turn
+            结束就把进度落一帧; None 表示不落盘 (行为与 issue 04/05 完全一致).
+            必须与 thread_id 一起给 —— 只给一半属于配置写错, 构造期就报错.
+        thread_id: 这段对话的标识 (快照按它分区). 同一会话的多次 run 给同一个
+            thread_id, 快照才串成一条链、resume 才取得到 (见 resume).
     """
 
     def __init__(
@@ -177,11 +210,24 @@ class AgentLoop:
         reasoning_effort: str | None = None,
         event_sink: EventSink | None = None,
         hooks: HookRegistry | None = None,
+        saver: CheckpointSaver | None = None,
+        thread_id: str | None = None,
     ) -> None:
         if guard is None:
             guard = LoopGuard()
         if max_truncations < 1:
             raise LoopConfigError(f"max_truncations 必须 >= 1, 实际: {max_truncations}")
+        if (saver is None) != (thread_id is None):
+            raise LoopConfigError(
+                "saver 与 thread_id 必须成对给 (存到哪儿 + 属于哪段对话), "
+                f"实际: saver={'已给' if saver is not None else 'None'}, "
+                f"thread_id={thread_id!r}"
+            )
+        if thread_id is not None:
+            # thread_id 会变成存储里的键名, 在这里先查一遍:
+            # 装配期报错好过第一帧落盘时才炸 (那时已经在处理用户请求了)
+            check_identifier("thread_id", thread_id)
+
         self._model = model
         self._guard = guard
         self._max_truncations = max_truncations
@@ -193,6 +239,8 @@ class AgentLoop:
         self._thinking = thinking
         self._reasoning_effort = reasoning_effort
         self._event_sink = event_sink
+        self._saver = saver
+        self._thread_id = thread_id
 
         # 未传注册表时用空实例 (对齐 guard=None -> LoopGuard() 的惯例):
         # 后续触发点不必逐处判空, 空注册的 fire 立即返回
@@ -260,7 +308,12 @@ class AgentLoop:
     # 主循环
     # ------------------------------------------------------------------
 
-    async def run(self, messages: Sequence[ModelMessage]) -> LoopResult:
+    async def run(
+        self,
+        messages: Sequence[ModelMessage],
+        *,
+        run_id: str | None = None,
+    ) -> LoopResult:
         """执行一次 agent run: while 循环直到自然结束或 guard 触发.
 
         本方法只做**编排** (按功能拆分后的结构, 便于逐段审查):
@@ -272,14 +325,17 @@ class AgentLoop:
                     self._handle_truncation          length 截断 (续写 / 精简 / 放弃)
                     self._handle_server_interrupted  上游中断 (半截不当答复)
                     self._handle_completion          自然终止 (拼合正文)
-              → self._record_turn     每轮历史快照 (供 checkpoint) + after_turn hook
+              → self._record_turn     每轮快照 (TurnRecord) + 落 checkpoint + after_turn
               → emit_terminal         单一终局出口 (final / error)
 
         可变状态收在 LoopState (agent/utils/types.py), 逐 run 独立.
+        与 resume() 的区别只在起点: 这里是全新的历史, 那边是一帧快照.
 
         Args:
             messages: 初始消息历史 (wire dict, 通常为 [user] 或上次 run 的
                 返回值续接); 内部拷贝, 调用方列表不被修改.
+            run_id: 本次运行的编号 (存快照时写进每帧记录). None 表示生成一个
+                (uuid4 hex) —— 同一个 loop 反复 run 时每次都是新编号.
 
         Returns:
             LoopResult: 完整消息历史 + 结束原因 + 每轮快照.
@@ -288,11 +344,72 @@ class AgentLoop:
             ModelError: 模型调用失败 (重试/降级属 P0-5 retry / P1-8, 本层
                 不包装不吞). 此时**不发终局事件** —— 事件流中断即如实反映
                 失败, 错误码与降级由调用方按 03-api.md §4 发给前端.
+            CheckpointError: 快照落盘失败 (配了 saver 时). 同样不吞: 存不下存档
+                是可靠性故障, 必须让调用方看见 (与 event_sink 同一条规矩).
             asyncio.CancelledError: 外部 kill switch (task.cancel) 即时打断
                 —— 本模块捕获后不做吞没处理, 直接传播 (difficulties #3);
                 取消收尾的 error(cancelled) 事件由 P1-2 server 层产出.
         """
-        state = LoopState(history=list(messages))
+        return await self._run(messages, resume=None, run_id=run_id)
+
+    async def resume(
+        self, checkpoint: Checkpoint, *, run_id: str | None = None
+    ) -> LoopResult:
+        """从一帧快照接着跑 (断点续跑 / time-travel 的入口, issue 07 / #5).
+
+        这是「换一个起点」的 run: 把快照里的历史当输入、计数器接着数, 于是已经
+        做完的事一件都不会重做 (工具结果都躺在历史里). 从**老**快照恢复时, 新落
+        的几帧会把 parent_id 指向那帧老快照 —— 历史从此岔出一条新分支 (time-travel).
+
+        两处与 run() 不同, 写在这里免得踩坑:
+        - **只补做挂起点欠下的调用**: 快照停在「工具还没有结果」的半路 (人工审批
+          挂起, #25) 时, 先执行那几条调用再继续, 不重复问模型一次
+        - **事件序号从 1 重来**: 事件总线与 run 同生命周期 (每次 resume 都是一次
+          新的执行), 续拉要看的是这一次的 seq
+
+        Args:
+            checkpoint: 起点快照 (通常来自 saver.load_latest / saver.load).
+            run_id: 本次运行的编号; None 表示沿用快照里的那个 —— 「还是同一次
+                运行接着跑」(想另起一次运行就显式传新编号).
+
+        Returns:
+            LoopResult: 本次执行的结果 —— turns 只含本次的轮次, turn_count 是
+            含续跑前轮数的累计值 (预算判定要的正是累计口径).
+
+        Raises:
+            LoopConfigError: 本 loop 没配 saver / thread_id, 或这帧快照属于别的
+                会话 (拿错存档会把两段对话搅在一起, 必须拦下).
+        """
+        if self._saver is None or self._thread_id is None:
+            raise LoopConfigError(
+                "resume 需要构造 AgentLoop 时给了 saver 与 thread_id —— "
+                "没地方存档就读不出快照"
+            )
+
+        if checkpoint.thread_id != self._thread_id:
+            raise LoopConfigError(
+                f"这帧快照属于会话 {checkpoint.thread_id!r}, 而本 loop 的会话是 "
+                f"{self._thread_id!r}: 恢复别的会话的存档会把两段对话搅在一起"
+            )
+
+        return await self._run(
+            checkpoint.state.messages,
+            resume=checkpoint,
+            run_id=run_id or checkpoint.run_id,
+        )
+
+    async def _run(
+        self,
+        messages: Sequence[ModelMessage],
+        *,
+        resume: Checkpoint | None,
+        run_id: str | None,
+    ) -> LoopResult:
+        """run 与 resume 的共同实现 (差别只在起点, 以及是否补做挂起的工具调用)."""
+        state = LoopState(history=list(messages), run_id=run_id or uuid4().hex)
+        if resume is not None:
+            self._seed_from_checkpoint(state, resume)
+
         guard = self._guard
         guard.start()
         # 事件总线与 run 同生命周期: seq 从 1 起, 状态机状态逐 run 独立
@@ -300,6 +417,20 @@ class AgentLoop:
         tool_specs: list[ToolSpec] = [
             t.to_spec() for t in self._tool_map.values()
         ] or None
+
+        # 「这一帧怎么来的」: 从快照续跑的第一帧标 FORK, 其余按普通一轮记
+        source = CheckpointSource.FORK if resume is not None else CheckpointSource.LOOP
+        if resume is not None:
+            # 挂起点恢复 (#25 打底): 快照停在「工具还没结果」的半路时, 先把欠的
+            # 调用补做完再继续 —— 那一轮模型早就决策过了, 不必再问它一次
+            pending = pending_tool_calls(state.history)
+            if pending:
+                await self._record_turn(
+                    state,
+                    await self._complete_pending_turn(state, bus, pending),
+                    source=CheckpointSource.SUSPENSION,
+                )
+                source = CheckpointSource.LOOP
 
         while not state.done:
             # 软限制判定: 能走到这里说明上一轮仍需继续 (工具调用/截断);
@@ -327,7 +458,9 @@ class AgentLoop:
                 self._handle_completion(state, response)
 
             # 3. 每 Turn 结束: 历史快照 (供 checkpoint 落盘) + after_turn hook
-            await self._record_turn(state, response)
+            await self._record_turn(state, response, source=source)
+            # 第一帧之后一律按普通轮记 (FORK 只标「从快照长出来的那一帧」)
+            source = CheckpointSource.LOOP
 
         result = LoopResult(
             messages=state.history,
@@ -509,29 +642,197 @@ class AgentLoop:
         state.content = "".join([*state.content_parts, response.content or ""]) or None
         state.done = True
 
-    async def _record_turn(self, state: LoopState, response: ModelResponse) -> None:
-        """每 Turn 收尾: 记录完整消息历史快照 (供 checkpoint 落盘) + after_turn hook.
+    async def _record_turn(
+        self,
+        state: LoopState,
+        response: ModelResponse,
+        *,
+        source: CheckpointSource = CheckpointSource.LOOP,
+    ) -> None:
+        """每 Turn 收尾: 记录本轮快照 + 落 checkpoint + after_turn hook.
 
         每 Turn 结束记录完整消息历史快照; 浅拷贝安全: 后续轮只 append 新消息,
         不改动已有消息 dict. tokens 与 token 预算同一口径 (count_tokens 纯函数,
         无 usage 的响应计 0).
+
+        顺序说明 (为什么先落盘、后触发 hook): 存档是可靠性基线 —— 插件晚一步收到
+        通知没关系, 快照晚一步存就可能永远丢了; 落盘失败向上抛 (不吞), 而 hook
+        里的插件异常由注册表隔离留痕 (两条通道的可靠性要求本来就不同, ADR-0007).
         """
-        turn_elapsed_ms = self._guard.elapsed_ms
+        cumulative_ms = self._guard.elapsed_ms
+        # 本轮耗时 = 这次累计 - 上次累计: TurnRecord 存累计值 (供整体观察),
+        # 观察值里的 turn_elapsed_ms 存增量 —— 「哪一步最慢」才比得出来
+        previous_ms = state.turns[-1].elapsed_ms if state.turns else 0.0
         tokens = count_tokens(response.usage)
+
         state.turns.append(
             TurnRecord(
                 turn=state.turn_count,
                 response=response,
                 messages=list(state.history),
                 tokens=tokens,
-                elapsed_ms=turn_elapsed_ms,
+                elapsed_ms=cumulative_ms,
             )
         )
+
+        if self._saver is not None and self._thread_id is not None:
+            await self._save_checkpoint(
+                state,
+                self._thread_id,
+                metadata=self._turn_metadata(
+                    state, response, source, tokens, cumulative_ms - previous_ms
+                ),
+            )
+
         await self._hooks.fire(
             HookPoint.AFTER_TURN,
             turn=state.turn_count,
             response=response,
             messages=state.history,
             tokens=tokens,
-            elapsed_ms=turn_elapsed_ms,
+            elapsed_ms=cumulative_ms,
         )
+
+    @staticmethod
+    def _turn_metadata(
+        state: LoopState,
+        response: ModelResponse,
+        source: CheckpointSource,
+        turn_tokens: int,
+        turn_elapsed_ms: float,
+    ) -> CheckpointMetadata:
+        """把这一轮的「观察值」装出来 (给回放调试看; 恢复不靠它).
+
+        字段见 CheckpointMetadata 的 docstring. 两个条件取值的说明:
+        - content / outcome 只在 run 真结束的那一帧写: 跑一半时它们还不成立
+        - tool_names 取本轮响应的 tool_calls (并行调多个时按模型给的顺序记)
+        """
+        return CheckpointMetadata(
+            source=source,
+            turn_tokens=turn_tokens,
+            turn_elapsed_ms=turn_elapsed_ms,
+            tool_names=[call.name for call in response.tool_calls],
+            content=state.content if state.done else None,
+            finish_reason=(
+                None if state.finish_reason is None else state.finish_reason.value
+            ),
+            outcome=state.outcome.value if state.done else None,
+        )
+
+    # ------------------------------------------------------------------
+    # checkpoint 落盘与恢复 (issue 07; 没配 saver 时下面这些一步都不走)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _seed_from_checkpoint(state: LoopState, checkpoint: Checkpoint) -> None:
+        """把快照里的进度灌进本次 run 的工作数据 (计数器接续 + 分支起点).
+
+        只接「接着跑要用的」: 历史已经作为输入传进来了 (resume 用
+        checkpoint.state.messages 调 _run), 这里补的是计数器与分支链.
+        刻意**不**恢复的两种值:
+        - done: 从一帧「已结束」的快照恢复, 意思是「基于那一刻的历史再问一次」
+          (续写 / 追问), 不是「什么都不做」—— 想跳过就别调 resume
+        - content: 那是上一段 run 的答复, 属观察值; 本次 run 的 LoopResult.content
+          只说本次答了什么
+        """
+        state.turn_count = checkpoint.state.turn_count
+        state.total_tokens = checkpoint.state.total_tokens
+        state.truncation_count = checkpoint.state.truncation_count
+        state.content_parts = list(checkpoint.state.content_parts)
+        # 新落的帧接着这帧长: 从老快照恢复时, 新帧就挂在老快照下面 (新分支)
+        state.last_checkpoint_id = checkpoint.checkpoint_id
+
+    async def _complete_pending_turn(
+        self, state: LoopState, bus: EventBus, pending: list[ModelToolCall]
+    ) -> ModelResponse:
+        """补做完挂起时欠下的工具调用 (恢复专用), 返回还原出的那轮响应.
+
+        场景: 快照停在「模型已经要调这几个工具、但结果还没回填」—— 人工审批的
+        挂起点 (#25) 正是这种形状. 恢复时不必再问模型一次 (它那一轮早就决定过
+        了), 直接把欠的调用执行掉、结果回填, 这一轮才算完; 然后循环继续往下走.
+
+        为什么能还原出 ModelResponse: wire 历史里那条 assistant 消息就是模型当初
+        说的话 (正文与 tool_calls 原样存在里面), 这里只是把它变回对象交给
+        TurnRecord —— 不是编造新响应. 那一轮的 token 在挂起前那次 run 里已经记过
+        账, 所以本轮计 0 (不重复计费).
+
+        补做**不受 guard 影响**: 那是上一轮已经决定、只差一份结果的工作 (预算判定
+        排在它之后) —— 欠的活先干完, 该不该继续问模型才轮到刹车说话.
+        """
+        turn = state.turn_count + 1
+        for call in pending:
+            # 事件与工具轮同序: 先全部声明「要调什么」, 再执行 (并行语义 #1)
+            await bus.emit(EventType.TOOL_CALL, **tool_call_data(call, turn=turn))
+
+        executions = await self._execute_parallel(pending)
+        for call, execution in zip(pending, executions, strict=True):
+            state.history.append(tool_wire(call.id, execution))
+            await bus.emit(
+                EventType.TOOL_RESULT,
+                **tool_result_data(call, execution, turn=turn),
+            )
+            await self._hooks.fire(
+                HookPoint.ON_TOOL_EXECUTED,
+                turn=turn,
+                call=call,
+                execution=execution,
+            )
+
+        state.turn_count = turn
+        return self._response_for_pending(state, pending)
+
+    @staticmethod
+    def _response_for_pending(
+        state: LoopState, pending: Sequence[ModelToolCall]
+    ) -> ModelResponse:
+        """从历史里找回「当初那条 assistant 消息」, 还原成 ModelResponse.
+
+        正文取那条消息里的 content (原样, 不补不加); 找不到 (历史是手拼的、形状
+        不标准) 时按已知事实兜底: 这一轮只调了工具, 正文为空、结束原因是
+        tool_calls.
+        """
+        content: str | None = None
+        for message in reversed(state.history):
+            if message.get("role") == "assistant" and message.get("tool_calls"):
+                raw = message.get("content")
+                content = raw if isinstance(raw, str) else None
+                break
+        return ModelResponse(
+            content=content,
+            tool_calls=list(pending),
+            finish_reason=FinishReason.TOOL_CALLS,
+        )
+
+    async def _save_checkpoint(
+        self,
+        state: LoopState,
+        thread_id: str,
+        *,
+        metadata: CheckpointMetadata,
+    ) -> None:
+        """把当前进度与观察值落成一帧快照 (只有配了 saver 才会走到这里).
+
+        存两块东西 (v3 起分开):
+        - 进度 (CheckpointState): 接着跑需要什么 —— 完整历史 + 计数器 + 正文片段
+        - 观察值 (CheckpointMetadata): 这一步发生了什么 —— 来源 / 本轮 token 与
+          耗时 / 调了哪些工具 / 答了什么 / 为什么停, 给回放调试看
+
+        存成功后把编号记进 state.last_checkpoint_id: 下一帧的 parent_id 指向它,
+        同一会话的快照就串成一条链 (从老快照恢复时链从那里岔开, #5 time-travel).
+        """
+        checkpoint = Checkpoint.create(
+            thread_id=thread_id,
+            run_id=state.run_id,
+            turn_number=state.turn_count,
+            state=CheckpointState(
+                messages=list(state.history),
+                turn_count=state.turn_count,
+                total_tokens=state.total_tokens,
+                truncation_count=state.truncation_count,
+                content_parts=list(state.content_parts),
+            ),
+            metadata=metadata,
+            parent_id=state.last_checkpoint_id,
+        )
+        await self._saver.save(checkpoint)
+        state.last_checkpoint_id = checkpoint.checkpoint_id

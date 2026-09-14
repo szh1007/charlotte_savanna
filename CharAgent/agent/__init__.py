@@ -4,7 +4,8 @@
 - difficulties #1/#2/#3/#10/#62, design/01-architecture.md §3 主循环伪代码
 - #3: 软限制 (max_turns / token 预算 / wall-clock) 轮后判定 vs kill switch
   (asyncio.Task.cancel) 即时打断, 语义对比是面试考点
-- 每 Turn 结束产出完整消息历史快照, 供 P0-6 checkpoint 落盘 (issue 07)
+- 每 Turn 结束产出完整消息历史快照; 配了 checkpoint saver 时同时落一帧快照
+  (issue 07 已接线: AgentLoop(saver=..., thread_id=...), 断点续跑走 resume())
 
 结构总览 (顶层 = 行为模块, 门面导出; 对齐 model/tool 包惯例):
 - loop.py         AgentLoop 行为主体: while 循环 (模型决策 → 并行工具 →

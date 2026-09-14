@@ -112,6 +112,17 @@ while not done:
 异常结束（guard 刹车 / 上游中断 / 输出被拦截）由同一个终局出口改发 `error`（不发 `final`），
 最终事件的选择规则见 [03-api.md §2.2](03-api.md)。
 
+**存档在 loop 里，进度不在 loop 对象里**（difficulties #5 / ADR-0002）：`AgentLoop`
+配了 `saver` + `thread_id` 时，每 Turn 结束（`_record_turn`）把进度落成一帧快照
+（完整历史 + 计数器 + 正文片段，存哪儿由 `checkpoint/` 的三实现决定）；没配则一个字节
+都不落，行为与 issue 04/05 完全一致。续跑走 `await loop.resume(checkpoint)`：以快照里的
+历史为起点、计数器接着数（轮数 / token 预算跨断点仍然算数），已经做完的事都在历史里，
+所以不会重做；从**老**快照恢复时新帧的 `parent_id` 指向它，历史就此岔出一条新分支
+（time-travel，要求存储留得住历史：内存 / Postgres 天然支持，Redis 的 `mode="history"`（默认，Stream 流水账）也支持，只有 `mode="latest"` 会明确报能力错）。翻历史拿到的帧还带着「观察值」（来源 / 本轮 token 与耗时 / 工具），`checkpoint/utils/history.py` 的 `format_history` 能把一串帧渲染成可读表格（哪一步最贵、哪一帧是从老快照分叉出来的，一眼可见）。快照停在
+「工具还没有结果」的半路（HITL 挂起点）时，`resume` 先补做欠下的调用再继续 —— 不重复问模型
+一次（#25「恢复而非重跑」的机制 P0 就位；审批流程与触发归 P1-7）。落盘失败**向上抛**
+（与 `event_sink` 同一条规矩），不吞。
+
 **重试不在 loop 里**（difficulties #13）：瞬态失败（429 / 5xx / 连接失败 / 超时）的重试在
 **模型调用层**完成 —— `RetryingChatModel`（`retry/` 包）以组合方式包装 ChatModel
 （ADR-0001 的 SPI 用法），按 `RetryPolicy` 指数退避 + jitter 重试，耗尽才把失败交出去。
@@ -150,7 +161,7 @@ while not done:
 | 接口 | P0/P1 实现 | P2 新增实现 |
 |------|-----------|------------|
 | `ChatModel` | DeepSeek httpx 裸调 / openai SDK（ADR-0003） | — |
-| `CheckpointSaver` | InMemory / Redis / Postgres（ADR-0002） | — |
+| `CheckpointSaver` | InMemory / Redis / Postgres（ADR-0002；P0-6 落地，能力差异经 `capabilities` 声明） | — |
 | `EmbeddingProvider` | CloseAI `text-embedding-3-large` | 本地 BGE |
 | `ModelRouter` | 默认直连（单模型 `deepseek-flash`） | 分级路由（#36） |
 | `SemanticCache` | 无（P1 不启用） | 语义缓存（#36） |

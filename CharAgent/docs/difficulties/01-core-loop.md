@@ -30,6 +30,7 @@
 | | | | • 序列化选型：pickle（有安全风险、版本绑定）/ JSON（安全但类型丢失）/ msgpack（二进制紧凑） | |
 | | | | • 对象不可序列化：messages 里的 tool 对象、自定义 dataclass 塞不进 JSON 时，要注册自定义序列化器 | |
 | | | | • 向前兼容：checkpoint 格式升级后旧会话数据能读回（schema 版本号 + 迁移） | |
+| | | | • 实现（P0-6，`CharAgent/checkpoint/`）：每 Turn 结束 `AgentLoop(saver=..., thread_id=...)` 落一帧（完整历史 + 计数器 + 正文片段）；续跑 `await loop.resume(快照)` —— 以快照为起点、计数器接着数（轮数 / token 预算跨断点仍算数），已完成 Turn 的工具**不重跑**；快照停在「工具还没有结果」时先补做欠下的调用再继续（不重问模型一次，#25 的机制）。三实现的能力差异用 `saver.capabilities` 声明：内存有历史；Redis `mode="history"`（默认，Stream 流式流水账 + MAXLEN 裁剪 + TTL）有历史、`mode="latest"`（对齐 langgraph 的 ShallowRedisSaver）只留最新一帧（`load` / `history` 明确报能力错）；Postgres 一帧一行有全历史。每帧还记「观察值」（来源 loop/fork/suspension、本轮 token 与耗时、调了哪些工具），与「进度」（state）分成两块存 —— 回放调试靠它（`checkpoint/utils/history.py` 有现成的表格视图）。序列化 = JSON + 标签机制（`{"__charagent_type__": "datetime", ...}`，其余类型 `register_type` 注册）+ `schema_version` 逐级迁移（v1 裸消息列表 → v2 结构化 state；版本比当前新则拒读）。Postgres 用**同步驱动 + `asyncio.to_thread`**：psycopg 异步连接在 Windows 默认事件循环上不可用。 | |
 | 6 | 强制结构化输出 | • 用 `response_format` + `json_schema` 强制模型返回符合 schema 的 JSON，而不是自由文本，便于下游程序直接消费 | P1 |
 | | | | • 模型偶尔会返回不合法 JSON，需要校验；校验失败则带着校验错误信息重试 | |
 | | | | • 结构化输出 vs function calling 是两种拿到结构化数据的路径，要能说清各自适用场景（前者约束最终输出格式，后者约束工具参数） | |

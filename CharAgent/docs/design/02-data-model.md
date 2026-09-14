@@ -1,7 +1,7 @@
 # 02 数据模型
 
 > 核心实体（thread / run / message / tool_call / checkpoint）**P0 一次定死**（含 schema 版本号，向前兼容 #5）；event 表（事件溯源）P2 追加，见 §5。
-> 存储分布：checkpoint 历史 + demo 业务表 → Postgres（alembic 管理）；checkpoint 快照 → Redis KV；订单 → MySQL 只读；向量 → Milvus。
+> 存储分布：checkpoint 历史 + demo 业务表 → Postgres（alembic 管理）；checkpoint 快照 → Redis（默认一条 Stream 记全历史，也可配成只留最新一帧）；订单 → MySQL 只读；向量 → Milvus。
 
 ## 1. 核心实体定义（P0 定死）
 
@@ -67,7 +67,8 @@
 | run_id | str (FK) | |
 | turn_number | int | 第几个 Turn 的快照（「执行到哪一步」#5） |
 | schema_version | int | **序列化 schema 版本号（#5 向前兼容）** |
-| state | jsonb | 消息列表 + 上下文状态（序列化协议见 §3） |
+| state | jsonb | **进度**：消息列表 + 计数器 + 挂起点（恢复才用；序列化协议见 §3） |
+| metadata | jsonb | **观察值**：来源（loop/fork/suspension）+ 本轮 token 与耗时 + 工具 + 结束原因（给人看，回放调试用；v3 起） |
 | parent_id | str (FK, nullable) | 分支来源（time-travel 回溯 #5：恢复历史时刻 → 新分支） |
 | created_at | datetime | 索引：thread_id + run_id + turn_number |
 
@@ -76,6 +77,11 @@
 ```sql
 -- 核心表：threads / runs / messages / tool_calls / checkpoints
 -- （字段见上表；全部带 tenant_id 或经 thread 关联，查询强制过滤 #32）
+-- checkpoints 表的建表语句已在 P0-6 落地：CharAgent/checkpoint/utils/ddl.py
+--   （parent_id 自引用外键 + ON DELETE SET NULL：删一帧不连带删掉挂在它下面的分支）
+-- 表名定为 charagent_checkpoints（带前缀）：本项目各子项目共用同一个 PG 库，而
+--   langgraph-checkpoint-postgres 也建一张叫 checkpoints 的表 —— 同名会让后者的
+--   setup() 静默跳过建表、INSERT 时报「列不存在」，报错与真因（撞名）毫无关系
 
 -- demo 业务表（P1）
 tickets:            ticket_id, thread_id FK, user_id, category, status(open/auto_resolved/escalated/closed),
@@ -94,14 +100,28 @@ idempotency_keys:   request_id PK, run_id FK, status, created_at, expires_at   -
 
 ## 3. Checkpoint 序列化协议
 
-| 项 | 决策 |
-|----|------|
-| 主格式 | **JSON**（安全、跨语言；#5 明确 pickle 有安全风险） |
-| 自定义序列化器 | message 中的工具结果含 datetime / 嵌套 dict，注册自定义 encoder / decoder（#5「对象不可序列化」） |
-| schema_version | 每份快照带版本号；升级时写迁移函数（旧版本 → 新版本），保证旧会话可读回（#5 向前兼容） |
-| Redis 存储 | `ha:ckpt:{thread_id}` → JSON 整存 + TTL（弱一致，快） |
-| Postgres 存储 | checkpoints 表逐条（强一致、历史、time-travel：恢复旧 checkpoint 产生新分支 parent_id） |
-| 快照时机 | 每 Turn 结束后（含挂起点 #25：挂起也落快照，审批后从该点恢复而非重跑） |
+> 实现落点 `CharAgent/checkpoint/`（issue 07）：协议 `serialization.py`，三实现
+> `memory.py` / `redis.py` / `postgres.py`，配置切换 `config.py`，静态零件 `utils/`（含 `history.py`：把一串快照渲染成可读表格的历史视图）。
+> 建表语句 `utils/ddl.py` 是**唯一定义处**（本包首次写入幂等建表，issue 08 的 alembic 迁移复用同一份）。
+
+| 项 | 决策 | 实现现状（P0-6） |
+|----|------|-----------------|
+| 主格式 | **JSON**（安全、跨语言；#5 明确 pickle 有安全风险） | `CheckpointCodec`：`ensure_ascii=False`、`allow_nan=False`（NaN 不是合法 JSON，宁可报错）；存存储用紧凑一行，给人读用 `indent=2` |
+| 自定义序列化器 | message 中的工具结果含 datetime / 嵌套 dict，注册自定义 encoder / decoder（#5「对象不可序列化」） | 标签机制 `{"__charagent_type__": "datetime", "value": "..."}`（恰好两个键才算标签，业务数据同名不受影响）；出厂只带 datetime，其余 `codec.register_type(...)` 注册；装不进又没注册的类型报错并**给出注册示例** |
+| 进度 / 观察值分层 | 快照分两块（v3 起）：**进度**恢复才用（消息历史 + 计数器 + 挂起点），**观察值**给人看（来源 / 本轮用量 / 工具 / 结束原因） | `CheckpointState` 与 `CheckpointMetadata` 两个数据类；存储上也是两处（Redis 记录里的两个字段、Postgres 的两个 JSON 列）；迁移函数收的是「主体」（`state` + `metadata`）—— 真实迁移常要在两者之间搬字段（v2→v3 就是搬的） |
+| schema_version | 每份快照带版本号；升级时写迁移函数（旧版本 → 新版本），保证旧会话可读回（#5 向前兼容） | 当前 `SCHEMA_VERSION = 3`（v1 = state 为裸消息列表；v2 = 结构化字典；v3 = 观察值从 state 搬进 metadata）；`utils/migrations.py` 的 `MIGRATIONS` 逐级升级、缺函数即报错；版本**比当前新则拒读**（硬猜会把字段读错位） |
+| Redis 存储 | Stream 流式全历史（默认）：`charagent:ckpt:{thread_id}` 一条流水账，`XADD` 追加 + `XRANGE` 翻历史 + `MAXLEN` 裁剪 + `TTL` 过期；可选 `mode="latest"` 只留最新一帧（弱一致，快） | 配置 `CHECKPOINT_REDIS_MODE` / `CHECKPOINT_REDIS_MAX_FRAMES` / `CHECKPOINT_KEY_PREFIX`；latest 模式下 `load(id)` / `list_history` 明确报 `CheckpointCapabilityError`；按编号取帧要一并给 thread_id（帧按会话分区；latest 的键名带 `latest` 与流键区分开） |
+| Postgres 存储 | `charagent_checkpoints` 表逐条（强一致、历史、time-travel：恢复旧 checkpoint 产生新分支 parent_id） | 身份字段成列 + `state` / `metadata` 两个 JSONB 列（表结构与「为什么带前缀」见 §2）；一帧一行、`ORDER BY created_at, checkpoint_id`；**同步驱动 + `asyncio.to_thread`** —— psycopg 的异步连接在 Windows 默认事件循环（Proactor）上不可用 |
+| 快照时机 | 每 Turn 结束后（含挂起点 #25：挂起也落快照，审批后从该点恢复而非重跑） | `AgentLoop(saver=..., thread_id=...)` 在每轮 `_record_turn` 末尾落一帧（**先落盘再触发 after_turn hook**；落盘失败向上抛），同时写下来源（正常一轮 `loop` / 从快照续跑的第一帧 `fork` / 补做挂起调用的那帧 `suspension`）；挂起点机制已备（`Suspension` + `pending_tool_calls`，`resume` 会补做欠下的调用再继续），**触发**归 P1-7 |
+
+存储介质带来的能力差异（`saver.capabilities` 可查，ADR-0002 的对比面）：
+
+| 实现 | 历史 | 会过期 | 备注 |
+|------|------|--------|------|
+| InMemory | 有 | 不会 | 测试 / 单机；进出都深拷贝；排序与 Postgres 对齐（按时刻，非插入顺序） |
+| Redis（history，默认） | 有 | 可配 TTL | 快、可裁剪（`MAXLEN`）；按会话分区存放（按编号取帧要带会话号） |
+| Redis（latest） | 无 | 可配 TTL | 只要断点续跑的会话缓存（对应 langgraph 的 ShallowRedisSaver） |
+| Postgres | 有 | 不会 | 强一致；能按任意字段查（身份字段都是列） |
 
 ## 4. Milvus Collection 设计（P1）
 

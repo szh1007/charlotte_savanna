@@ -88,10 +88,11 @@ async def _assert_multi_turn_tool_path(make_model: ChatModelFactory) -> None:
     finally:
         await model.aclose()
 
-    # 用例有效性前置: turn 1 必须真的产生 reasoning, 否则本用例无法暴露缺陷
-    assert result.turns[0].response.reasoning, (
-        "turn 1 未产生 reasoning_content, 本用例失去防线意义"
-    )
+    # 用例有效性前置: turn 1 必须真的产生 reasoning, 否则本用例无法暴露缺陷.
+    # 上游偶尔不吐思维链 (2026-09-13 实测连跑三次: 过 / 挂 / 过), 这时本用例测不出
+    # 想测的东西 —— 跳过并说明原因, 而不是红着 (红会被误读成「框架坏了」)
+    if not result.turns[0].response.reasoning:
+        pytest.skip("本次上游未产出思维链, 用例失去防线意义")
     # 前置成立后, 走到第二轮即证明 turn 2 请求被端点接受 (缺字段此处已 400)
     assert result.turn_count >= 2, "未发生第二轮决策, 工具路径未被走到"
     assert result.outcome is LoopOutcome.FINISHED
@@ -120,7 +121,10 @@ async def test_max_tokens_forces_length_truncation() -> None:
         model=model,
         thinking=False,  # 思维链与正文共享输出配额, 本用例只验证 max_tokens 生效
         max_tokens=128,
-        max_truncations=3,
+        # 预算要够写完: max_tokens=128 约合 100 汉字/片, 500 字长文需 5~6 片,
+        # 原来配 3 会在写完之前耗尽预算 (outcome=TRUNCATION_LIMIT, content 为空),
+        # 于是用例时红时绿 (2026-09-13 实测). 这里放宽到 10, 只保留「有界」这一点
+        max_truncations=10,
     )
     try:
         result = await loop.run(
@@ -132,5 +136,5 @@ async def test_max_tokens_forces_length_truncation() -> None:
     # 首轮被真实截断 (max_tokens=128 远小于长文所需)
     assert result.turns[0].response.finish_reason is FinishReason.LENGTH
     assert result.truncation_count >= 1
-    # 截断后走 CONTINUE 续写, 最终拼合出正文
+    # 截断后走 CONTINUE 续写, 最终拼合出正文 (预算耗尽即拿不到正文, 上一行注释)
     assert result.content

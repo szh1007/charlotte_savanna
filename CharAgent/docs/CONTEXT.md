@@ -41,15 +41,35 @@ _Avoid_: 轮次, 步骤
 _Avoid_: session, 会话
 
 **Checkpoint**:
-某时刻会话状态的快照，支持断点续跑和时间回溯。
+某时刻会话状态的快照，支持断点续跑和时间回溯。落地（P0-6）：一条记录 = 身份（checkpoint_id / thread_id / run_id / turn_number / schema_version / parent_id / created_at）+ 进度（`CheckpointState`）+ 观察值（`CheckpointMetadata`）。`AgentLoop` 每 Turn 结束落一帧（先落盘再触发 after_turn hook；同编号重复保存是空操作，于是「存到一半重试」不会存出两份）。`parent_id` 指向前一帧：从头排到尾是一条链，从老快照恢复则在那里岔出新分支。
 _Avoid_: 存档, 快照
 
+**CheckpointState**:
+一帧快照里装的**进度**（接着跑所需的全部信息）：完整 wire 消息历史 + 计数器（turn_count / total_tokens / truncation_count）+ 续写正文片段（content_parts）+ 挂起点（suspension）。**不存**逐轮 TurnRecord 与模型原始响应 —— 那是 Trace（P2）的事，快照只存「接着跑需要什么」。v3 起 `content` / `finish_reason` / `outcome` 搬去了 `CheckpointMetadata`（它们本来就是观察值，跟「进度」混在一起是错的分层）。
+_Avoid_: 快照数据, 会话状态（易与 RunState 混淆）
+
+**CheckpointMetadata**:
+一帧快照的**观察值**（恢复不需要它，给人看）：`source`（这一帧怎么产生的：`loop` 正常一轮 / `fork` 从快照续跑的第一帧 / `suspension` 补做挂起调用那帧）、`turn_tokens` / `turn_elapsed_ms`（本轮增量，回答「哪一步最贵」）、`tool_names`（本轮调了哪些工具）、`content` / `finish_reason` / `outcome`（当时答成什么样、为什么停）。与进度分两块存（Redis 记录里两个字段、Postgres 两个 JSON 列），于是「恢复要用的」与「给人看的」能分开查。
+_Avoid_: 快照元数据（易与记录身份字段混淆）, 日志
+
+**CheckpointSource**:
+一帧快照的来源标记（`loop` / `fork` / `suspension`），回放调试时一眼看出「这一步是正常跑出来的、还是从老快照分叉出来的、还是补做挂起调用补出来的」。存字符串取值而非枚举对象（跨版本稳定契约）。判断真正的分叉点看历史里谁的 `parent_id` 指向同一帧，不靠这个标记 —— 它只说「这一帧怎么来的」。
+_Avoid_: 来源类型, 事件类型（那是 `StreamEvent`）
+
 **CheckpointSaver**:
-Checkpoint 的存储接口抽象，隔离存储介质（内存/Redis/Postgres）。
-_Avoid_: 存储层
+Checkpoint 的存储接口抽象（async 协议），隔离存储介质；能做什么用 `capabilities` 声明（是否留历史 / 是否会过期），做不到的操作明确报 `CheckpointCapabilityError`，而不是返回空结果让调用方误判「没存过」。三实现（ADR-0002 + 2026-09-13 更新）：InMemory（测试与对照标尺，进出深拷贝）、Redis（默认 `mode="history"`：一个会话一条 Stream，`XADD` 追加 / `XRANGE` 翻历史 / `MAXLEN` 裁剪 / `EXPIRE` 过期；`mode="latest"` 只留最新一帧，对齐官方 ShallowRedisSaver，翻历史会明确报能力错）、Postgres（一帧一行 + `state` / `metadata` 两个 JSONB 列，全历史；同步驱动 + `asyncio.to_thread` —— psycopg 异步连接在 Windows 默认事件循环上不可用）。配置切换：`CHECKPOINT_BACKEND` 选后端、`CHECKPOINT_REDIS_MODE` 选 Redis 模式（见 `checkpoint/config.py`）。按编号取帧：Redis 要一并给 `thread_id`（帧按会话分区），有全局编号索引的实现忽略该参数。
+_Avoid_: 存储层, 存储适配器
+
+**Suspension**:
+挂起点：运行停在「等人批准」时落下的信息（reason + 还欠结果的工具调用 pending + approval_id）。机制 P0 已备 —— 快照能存能读、`pending_tool_calls(历史)` 能找出还欠哪几条调用、`resume` 会先补做它们再继续；**触发**（哪些工具需要审批）归 P1-7 HITL。
+_Avoid_: 挂起记录, 中断点
+
+**TimeTravel**:
+时间回溯：取一帧**老**快照当起点续跑，新落的帧把 `parent_id` 指向它 —— 历史从此岔出一条新分支（原来那条线原样保留）。与普通断点续跑共用同一个入口 `loop.resume(checkpoint)`，区别只在挑哪一帧；前提是存储留得住历史：内存与 Postgres 天然满足，Redis 需 `mode="history"`（默认），`mode="latest"` 会明确报能力错。
+_Avoid_: 回滚, 回溯执行
 
 **Serialization**:
-Checkpoint 的序列化协议（pickle / JSON / msgpack），需处理不可序列化对象与向前兼容（schema 版本号 + 迁移）。
+Checkpoint 的序列化协议（pickle / JSON / msgpack），需处理不可序列化对象与向前兼容（schema 版本号 + 迁移）。落地（P0-6）：**JSON 主格式**（pickle 有安全风险且绑 Python 版本）；装不进 JSON 的类型打「行李牌」`{"__charagent_type__": "datetime", "value": "..."}`（恰好两键才算标签），出厂只带 datetime，其余 `codec.register_type(...)` 注册；`SCHEMA_VERSION` 当前为 3（v1 的 state 是裸消息列表，v2 是结构化字典，v3 把观察值搬进 metadata），读老快照时逐级迁移（迁移函数收的是「主体」`{state, metadata}`，因为真实迁移常要在两者间搬字段），遇到比当前新的版本直接拒读。
 _Avoid_: 序列化格式, 持久化格式
 
 **ChatModel**:
