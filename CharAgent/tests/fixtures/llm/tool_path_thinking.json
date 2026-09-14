@@ -1,0 +1,223 @@
+{
+  "sample_version": 1,
+  "name": "tool_path_thinking",
+  "model": "deepseek-flash",
+  "recorded_at": "2026-09-14T15:01:37+00:00",
+  "note": "同上但开思考模式: reasoning_content 解析与回填的样本",
+  "sampling": {
+    "temperature": 0.0,
+    "seed": 20260914,
+    "thinking": true
+  },
+  "exchanges": [
+    {
+      "request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "我的订单 20260701123456 到哪了? 请先调用工具查询订单状态, 再回答。"
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "query_order",
+              "description": "按订单号查询订单状态与物流信息. 用户询问订单到哪了 / 物流进度时使用.",
+              "parameters": {
+                "properties": {
+                  "order_no": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "order_no"
+                ],
+                "type": "object",
+                "additionalProperties": false
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "refund",
+              "description": "为指定订单提交退款申请. 用户明确要求退款时使用.",
+              "parameters": {
+                "properties": {
+                  "order_no": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "order_no"
+                ],
+                "type": "object",
+                "additionalProperties": false
+              }
+            }
+          }
+        ],
+        "temperature": 0.0,
+        "top_p": null,
+        "seed": 20260914,
+        "max_tokens": null,
+        "thinking": true,
+        "reasoning_effort": null,
+        "stream": false
+      },
+      "response": {
+        "id": "9d5fe92e-a785-4c24-aaaa-61d856efe728",
+        "object": "chat.completion",
+        "created": 1789398096,
+        "model": "deepseek-flash",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "",
+              "reasoning_content": "The user wants me to query the order status. Let me call the tool.",
+              "tool_calls": [
+                {
+                  "index": 0,
+                  "id": "call_00_GrhEFVdiOwJzZLYH3B5Q2336",
+                  "type": "function",
+                  "function": {
+                    "name": "query_order",
+                    "arguments": "{\"order_no\": \"20260701123456\"}"
+                  }
+                }
+              ]
+            },
+            "logprobs": null,
+            "finish_reason": "tool_calls"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 400,
+          "completion_tokens": 59,
+          "total_tokens": 459,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 16
+          },
+          "prompt_cache_hit_tokens": 0,
+          "prompt_cache_miss_tokens": 400
+        },
+        "system_fingerprint": "aeb56401ca74e127821c4f9126dcb669"
+      }
+    },
+    {
+      "request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "我的订单 20260701123456 到哪了? 请先调用工具查询订单状态, 再回答。"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "reasoning_content": "The user wants me to query the order status. Let me call the tool.",
+            "tool_calls": [
+              {
+                "id": "call_00_GrhEFVdiOwJzZLYH3B5Q2336",
+                "type": "function",
+                "function": {
+                  "name": "query_order",
+                  "arguments": "{\"order_no\": \"20260701123456\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_GrhEFVdiOwJzZLYH3B5Q2336",
+            "content": "订单 20260701123456 已发货, 承运商顺丰, 运单号 SF1234567890。"
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "query_order",
+              "description": "按订单号查询订单状态与物流信息. 用户询问订单到哪了 / 物流进度时使用.",
+              "parameters": {
+                "properties": {
+                  "order_no": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "order_no"
+                ],
+                "type": "object",
+                "additionalProperties": false
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "refund",
+              "description": "为指定订单提交退款申请. 用户明确要求退款时使用.",
+              "parameters": {
+                "properties": {
+                  "order_no": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "order_no"
+                ],
+                "type": "object",
+                "additionalProperties": false
+              }
+            }
+          }
+        ],
+        "temperature": 0.0,
+        "top_p": null,
+        "seed": 20260914,
+        "max_tokens": null,
+        "thinking": true,
+        "reasoning_effort": null,
+        "stream": false
+      },
+      "response": {
+        "id": "46d9b83e-5595-4191-943d-4a2eb5df8590",
+        "object": "chat.completion",
+        "created": 1789398097,
+        "model": "deepseek-flash",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "您的订单 **20260701123456** 已经发货了 🚚\n\n- **承运商**：顺丰\n- **运单号**：SF1234567890\n\n您可以用这个运单号在顺丰官网或小程序上查看具体的物流轨迹。需要我帮您做其他事情吗？",
+              "reasoning_content": ""
+            },
+            "logprobs": null,
+            "finish_reason": "stop"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 497,
+          "completion_tokens": 67,
+          "total_tokens": 564,
+          "prompt_tokens_details": {
+            "cached_tokens": 256
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "prompt_cache_hit_tokens": 256,
+          "prompt_cache_miss_tokens": 241
+        },
+        "system_fingerprint": "aeb56401ca74e127821c4f9126dcb669"
+      }
+    }
+  ]
+}

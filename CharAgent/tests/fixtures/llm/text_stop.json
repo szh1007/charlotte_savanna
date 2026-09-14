@@ -1,0 +1,60 @@
+{
+  "sample_version": 1,
+  "name": "text_stop",
+  "model": "deepseek-flash",
+  "recorded_at": "2026-09-14T15:01:30+00:00",
+  "note": "单轮纯文本回答, 不开放工具: 回放模式的最小样本",
+  "sampling": {
+    "temperature": 0.0,
+    "seed": 20260914,
+    "thinking": false
+  },
+  "exchanges": [
+    {
+      "request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "用一句话说明什么是 idempotency key (幂等键)。"
+          }
+        ],
+        "tools": null,
+        "temperature": 0.0,
+        "top_p": null,
+        "seed": 20260914,
+        "max_tokens": null,
+        "thinking": false,
+        "reasoning_effort": null,
+        "stream": false
+      },
+      "response": {
+        "id": "ef738582-5ae1-455e-8bfc-334d7580d1fa",
+        "object": "chat.completion",
+        "created": 1789398091,
+        "model": "deepseek-flash",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "幂等键是客户端为每次请求生成的一个唯一标识符，让服务端在收到重复请求时能识别并返回相同结果，从而保证同一操作执行多次与执行一次的效果一致。"
+            },
+            "logprobs": null,
+            "finish_reason": "stop"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 18,
+          "completion_tokens": 41,
+          "total_tokens": 59,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          },
+          "prompt_cache_hit_tokens": 0,
+          "prompt_cache_miss_tokens": 18
+        },
+        "system_fingerprint": "aeb56401ca74e127821c4f9126dcb669"
+      }
+    }
+  ]
+}

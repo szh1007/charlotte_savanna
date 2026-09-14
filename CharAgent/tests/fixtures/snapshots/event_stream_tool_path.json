@@ -1,0 +1,36 @@
+[
+  {
+    "type": "thinking",
+    "seq": 1,
+    "message": "I'll check your order status for you.",
+    "turn": 1
+  },
+  {
+    "type": "tool_call",
+    "seq": 2,
+    "tool_call_id": "call_00_xoZE9XWiEYF8m957sG0k1103",
+    "tool_name": "query_order",
+    "arguments": "{\"order_no\": \"20260701123456\"}",
+    "status": "started",
+    "turn": 1
+  },
+  {
+    "type": "tool_result",
+    "seq": 3,
+    "tool_call_id": "call_00_xoZE9XWiEYF8m957sG0k1103",
+    "tool_name": "query_order",
+    "status": "ok",
+    "duration_ms": "<ms>",
+    "turn": 1,
+    "summary": "订单 20260701123456 已发货, 承运商顺丰, 运单号 SF1234567890。"
+  },
+  {
+    "type": "final",
+    "seq": 4,
+    "content": "您的订单 **20260701123456** 状态如下：\n\n- **状态**：已发货\n- **承运商**：顺丰\n- **运单号**：SF1234567890\n\n您可以用这个运单号在顺丰官网或小程序上查看实时物流轨迹。如需我帮您做其他操作（比如退款），请告诉我。",
+    "finish_reason": "stop",
+    "outcome": "finished",
+    "tokens": 965,
+    "elapsed_ms": "<ms>"
+  }
+]

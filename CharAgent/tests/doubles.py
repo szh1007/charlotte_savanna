@@ -1,27 +1,39 @@
-"""CharAgent 测试共享替身 (doubles): 时钟 / 睡眠 / 随机源 / 假 Redis (#61).
+"""CharAgent 测试共享替身 (doubles): 时钟 / 睡眠 / 随机源 / 假 Redis / 事件收集.
+
+替身清单 (五个): FakeClock / RecordingSleep / FixedRandom 服务 #61 的确定性
+(时间与随机性可注入) · FakeRedisClient 服务 checkpoint 的 Redis 实现 ·
+EventCollector 服务事件流断言与快照 (#4/#63).
 
 与 `tests/helpers.py` 的分工: helpers 放 wire 样本与常量 (「真实响应长什么样」),
 本文件放**测试替身** —— 注入被测代码的缝, 让时间与随机性在测试里完全确定
 (#61 注入随机 / 时间源), 不真等服务, 也不真等待一秒.
 
-四个替身 (前三个是「可调用对象」, 直接当参数注入, 无需 mock 框架):
+三个「可调用对象」替身 (直接当参数注入, 无需 mock 框架):
 - `FakeClock`:   手动推进的固定时钟 (LoopGuard.time_source /
                  RetryPolicy.time_source / 假 Redis 的过期判定)
 - `RecordingSleep`: 记录式睡眠 (RetryPolicy.sleep): 记下每次等待时长并推进
                  固定时钟 —— 于是「等待多久」与「过了多久」用同一份状态
 - `FixedRandom`: 固定随机源 (RetryPolicy.random_source): 依序吐预设值
 
-第四个是「当参数注入的假对象」(不是可调用对象):
+两个「当参数注入的假对象」:
 - `FakeRedisClient`: Redis 客户端的假身 (checkpoint 的 Redis 实现注入它).
   为什么手写而不引 fakeredis: 本包只用 SET/GET/EXPIRE (latest 模式) 与
   XADD/XRANGE/XREVRANGE/EXPIRE (history 模式的流), 手写替身零依赖且时钟完全
   可控 (TTL 到期不必真等); 与真 Redis 的差异见该类 docstring, 真实行为由标记
   `redis` 的用例 (需本机 Redis) 在本地补验.
+- `EventCollector`: 事件收集 sink (AgentLoop.event_sink 注入它, issue 09);
+  事件序列快照与载荷断言的取数口. 它也是可调用的 (__call__ 即 sink 协议),
+  只是注入方式与前三者不同 —— 前三者注入策略对象, 它注入事件出口.
+
+既有测试文件里各自的私有收集器 (如 test_loop_events.py 的 `_Collector`) 保持
+原样不动 —— 新用例统一用 `EventCollector`, 老文件不为改名而改.
 """
 
 from __future__ import annotations
 
 from typing import Any
+
+from CharAgent.stream.utils.types import EventType, StreamEvent
 
 
 class FakeClock:
@@ -235,3 +247,30 @@ class FakeRedisClient:
         if found is None or not isinstance(found[0], list):
             return []
         return found[0]
+
+
+class EventCollector:
+    """事件收集 sink: 把 EventBus 推出来的事件按顺序攒起来 (issue 09 / #4).
+
+    注入方式与 CLI / SSE 完全一样 (`AgentLoop(event_sink=collector)`) —— 同步
+    回调, 事件的顺序与编号就是事件流本来的顺序, 不做任何加工.
+
+    attributes:
+        events: 收到的事件 (按 seq 顺序).
+    """
+
+    def __init__(self) -> None:
+        self.events: list[StreamEvent] = []
+
+    def __call__(self, event: StreamEvent) -> None:
+        """EventSink 协议实现 (同步): 收下事件, 不阻塞 run."""
+        self.events.append(event)
+
+    @property
+    def terminal_types(self) -> list[str]:
+        """终局事件类型列表 (应为恰好一个: final 或 error)."""
+        return [
+            event.type.value
+            for event in self.events
+            if event.type in (EventType.FINAL, EventType.ERROR)
+        ]

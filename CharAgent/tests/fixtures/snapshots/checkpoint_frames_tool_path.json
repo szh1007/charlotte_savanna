@@ -1,0 +1,108 @@
+[
+  {
+    "schema_version": 3,
+    "checkpoint_id": "<id>",
+    "thread_id": "snapshot-thread",
+    "run_id": "run-snapshot",
+    "turn_number": 1,
+    "parent_id": null,
+    "created_at": "<ts>",
+    "state": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "我的订单 20260701123456 到哪了? 请先调用工具查询订单状态, 再回答。"
+        },
+        {
+          "role": "assistant",
+          "content": "I'll check your order status for you.",
+          "tool_calls": [
+            {
+              "id": "call_00_xoZE9XWiEYF8m957sG0k1103",
+              "type": "function",
+              "function": {
+                "name": "query_order",
+                "arguments": "{\"order_no\": \"20260701123456\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "call_00_xoZE9XWiEYF8m957sG0k1103",
+          "content": "订单 20260701123456 已发货, 承运商顺丰, 运单号 SF1234567890。"
+        }
+      ],
+      "turn_count": 1,
+      "total_tokens": 426,
+      "truncation_count": 0,
+      "content_parts": [],
+      "suspension": null
+    },
+    "metadata": {
+      "source": "loop",
+      "turn_tokens": 426,
+      "turn_elapsed_ms": "<ms>",
+      "tool_names": [
+        "query_order"
+      ],
+      "content": null,
+      "finish_reason": "tool_calls",
+      "outcome": null
+    }
+  },
+  {
+    "schema_version": 3,
+    "checkpoint_id": "<id>",
+    "thread_id": "snapshot-thread",
+    "run_id": "run-snapshot",
+    "turn_number": 2,
+    "parent_id": "<id>",
+    "created_at": "<ts>",
+    "state": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "我的订单 20260701123456 到哪了? 请先调用工具查询订单状态, 再回答。"
+        },
+        {
+          "role": "assistant",
+          "content": "I'll check your order status for you.",
+          "tool_calls": [
+            {
+              "id": "call_00_xoZE9XWiEYF8m957sG0k1103",
+              "type": "function",
+              "function": {
+                "name": "query_order",
+                "arguments": "{\"order_no\": \"20260701123456\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "call_00_xoZE9XWiEYF8m957sG0k1103",
+          "content": "订单 20260701123456 已发货, 承运商顺丰, 运单号 SF1234567890。"
+        },
+        {
+          "role": "assistant",
+          "content": "您的订单 **20260701123456** 状态如下：\n\n- **状态**：已发货\n- **承运商**：顺丰\n- **运单号**：SF1234567890\n\n您可以用这个运单号在顺丰官网或小程序上查看实时物流轨迹。如需我帮您做其他操作（比如退款），请告诉我。"
+        }
+      ],
+      "turn_count": 2,
+      "total_tokens": 965,
+      "truncation_count": 0,
+      "content_parts": [],
+      "suspension": null
+    },
+    "metadata": {
+      "source": "loop",
+      "turn_tokens": 539,
+      "turn_elapsed_ms": "<ms>",
+      "tool_names": [],
+      "content": "您的订单 **20260701123456** 状态如下：\n\n- **状态**：已发货\n- **承运商**：顺丰\n- **运单号**：SF1234567890\n\n您可以用这个运单号在顺丰官网或小程序上查看实时物流轨迹。如需我帮您做其他操作（比如退款），请告诉我。",
+      "finish_reason": "stop",
+      "outcome": "finished"
+    }
+  }
+]
