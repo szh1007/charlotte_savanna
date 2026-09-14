@@ -14,21 +14,32 @@
 
 ## Comments
 
-**2026-09-14 实施完成**。落点 `CharAgent/models/`（新包）+ `CharAgent/alembic/`（新目录），并**顺带把 P0-6 的 checkpoint Postgres 实现从裸 psycopg 统一到 SQLAlchemy**（用户在本 issue 期间追加的要求：两套数据访问并存有管理成本、容易误导）。
+> **阅读指引**：本 issue 是**边做边记**的，所以下面各节的「当时状态」与「当前状态」
+> 不同 —— §1~§5 是首版交付的记录（当时包名还叫 `models/`），§6 之后的 A~F 是随后几轮
+> 核对/审计的修正。**要了解当前状态，看 §6.F6 的全量复核**；§1~§5 里的路径已订正为
+> 现名，数字指标保留原值（那是当时的证据，不该改）。
+>
+> 最终提交：`ff90df4 feat(CharAgent): issue-08 add five-entity data model and alembic init`
+> （46 文件，+6537 / -331）。
+
+**2026-09-14 实施完成**。落点 `CharAgent/db/`（新包，当时叫 `models/`，见 §6.E 的改名）+ `CharAgent/alembic/`（新目录），并**顺带把 P0-6 的 checkpoint Postgres 实现从裸 psycopg 统一到 SQLAlchemy**（用户在本 issue 期间追加的要求：两套数据访问并存有管理成本、容易误导）。
 
 ### 1. 交付清单
 
 | 文件 | 职责 |
 |------|------|
-| `models/schema.py` | **表定义唯一来源**（五张 `Table`）—— 迁移、快照存储、仓储都从这里取 |
-| `models/models.py` | 五实体（`Thread` / `Run` / `Message` / `ToolCall` / `CheckpointRow`）+ 四个状态枚举 |
-| `models/state.py` | 合法迁移表 + 终态集合 + `LoopOutcome → RunStatus` 映射（纯规则，不碰数据库） |
-| `models/conversation.py` | 会话消息分层 + 最终答复的取值口径（issue 第 5 条验收的核心） |
-| `models/database.py` | `PgDatabase`：同步引擎 + `asyncio.to_thread` 的门面（一次 `connect()` = 一次事务） |
-| `models/config.py` / `errors.py` | 连接配置 / 三类错误 |
-| `models/repositories/` | 四个取数口 + `utils/mapping.py`（打包拆包） |
+| `db/schema.py` | **表定义唯一来源**（五张 `Table`）—— 迁移、快照存储、仓储都从这里取 |
+| `db/entities.py` | 五实体（`Thread` / `Run` / `Message` / `ToolCall` / `CheckpointRow`）+ 四个状态枚举 |
+| `db/state.py` | 合法迁移表 + 终态集合 + `LoopOutcome → RunStatus` 映射（纯规则，不碰数据库） |
+| `db/conversation.py` | 会话消息分层 + 最终答复的取值口径（issue 第 5 条验收的核心） |
+| `db/database.py` | `PgDatabase`：同步引擎 + `asyncio.to_thread` 的门面（一次 `connect()` = 一次事务） |
+| `db/config.py` / `errors.py` | 连接配置 / 三类错误 |
+| `db/repositories/` | 四个取数口 + `utils/mapping.py`（打包拆包） |
 | `alembic/` | `alembic.ini` + `env.py` + `versions/0001_charagent_core.py`（五表首次迁移） |
-| `models/README.md` | 维护手册（含 P1/P2 追加路径 —— 验收第 4 条） |
+| `db/README.md` | 维护手册（含 P1/P2 追加路径 —— 验收第 4 条） |
+| **删除** `checkpoint/utils/ddl.py` | 表定义并入 `db/schema.py`，一份定义供快照存储建表与 alembic 迁移共用 |
+
+提交：`ff90df4`（46 文件，+6537 / -331）。其中 29 个新增（`db/` 16 个模块 + `alembic/` 4 个 + 测试 8 个 + README）、17 个修改（`checkpoint/` 5 · `docs/` 6 · checkpoint 测试 3 · `pytest.ini` · `conftest.py` · 本 issue）、1 个删除。
 
 ### 2. 三个决策与理由
 
@@ -36,13 +47,13 @@
 ORM 形态下的两处现实约束（都是实测逼出来的，不是偏好）：
 
 - **仓储与快照存储走「同步引擎 + `asyncio.to_thread`」**：psycopg 的异步连接在 Windows 默认的 `ProactorEventLoop` 上直接报错（`InterfaceError: Psycopg cannot use the 'ProactorEventLoop'`），SQLAlchemy 的 `create_async_engine` 底层就是它，同样跑不起来（2026-09-14 实测）。换事件循环等于给使用方加前置条件 —— 改走同步驱动 + 线程池，对外仍是 async 接口。Django 的 `sync_to_async` 走的是同一条路。
-- **`checkpoint/` 与 `models/` 共用连接层**：`PgDatabase` 顺带取代了 P0-6 那条「一条连接 + 一把 asyncio 锁排队」的权宜设计（有了连接池就不需要它）。
+- **`checkpoint/` 与 `db/` 共用连接层**：`PgDatabase` 顺带取代了 P0-6 那条「一条连接 + 一把 asyncio 锁排队」的权宜设计（有了连接池就不需要它）。
 
 **B. 表定义从「手写 SQL + 另有 alembic」收敛为一处。**
-P0-6 的 `checkpoint/utils/ddl.py` 已删除，内容并入 `models/schema.py`。这不是「多了一个对比测试」，而是**少了一份定义**。
+P0-6 的 `checkpoint/utils/ddl.py` 已删除，内容并入 `db/schema.py`。这不是「多了一个对比测试」，而是**少了一份定义**。
 
 **C. 快照表有两份「视图」但只有一份定义。**
-`CheckpointRow`（库里的行）与 `checkpoint.utils.types.Checkpoint`（运行时对象）是两回事，翻译留在 `checkpoint/postgres.py`（那里本来就有 codec）。依赖方向单向：`checkpoint → models`，`models` 不知道 checkpoint 存在 —— 否则两边互相 import 就是死循环。
+`CheckpointRow`（库里的行）与 `checkpoint.utils.types.Checkpoint`（运行时对象）是两回事，翻译留在 `checkpoint/postgres.py`（那里本来就有 codec）。依赖方向单向：`checkpoint → db`，`db` 不知道 checkpoint 存在 —— 否则两边互相 import 就是死循环。
 
 ### 3. 实施中发现并修正的两处真实设计缺陷
 
@@ -55,9 +66,12 @@ issue 原文与 `02-data-model.md` 都写「`tool_call_id` 单列」，P0-6 的 
 
 ### 4. 验收证据
 
+> 下面这组是**首版交付时**的数字（§6.E 改名之前，所以按旧名 `-m pg_models` 写）。
+> 命令现在跑不通 —— marker 已改为 `pg_db`（数字见 §6.F6）。保留原值是因为那是当时的证据。
+
 - **默认全量**（零外部依赖）：`531 passed / 55 deselected`
 - **真库 · checkpoint**：`pytest -m pg` → `19 passed`（既有用例，重构后原样通过）
-- **真库 · models**：`pytest -m pg_models` → `22 passed`（alembic 迁移 6 + 仓储 16）
+- **真库 · db 层**（当时叫 models）：`pytest -m pg_models` → `22 passed`（alembic 迁移 6 + 仓储 16）
 - **真 Redis**：`pytest -m redis` → `3 passed`
 - **真实端点回归**（改动过 checkpoint，按约定必跑）：`pytest -m integration tests/integration/test_loop_real.py` → `3 passed`
 - Ruff check + format：零告警
@@ -65,8 +79,8 @@ issue 原文与 `02-data-model.md` 都写「`tool_call_id` 单列」，P0-6 的 
 
 其中最有说服力的两条：
 
-- `test_models_alembic.py::test_no_difference_between_code_and_migrated_schema` —— 迁移之后让 **alembic 自己**比对「代码定义 vs 库里结构」，零差异；
-- `test_models_conversation.py::test_continuation_answer_uses_loop_result_content_not_last_message` —— 把 CONTINUE 场景的 `messages[-1]["content"]` 与 `LoopResult.content` 写成**不同值**，断言拿到的是拼合后的那个。抄尾段就会在这里红。
+- `test_db_alembic.py::test_no_difference_between_code_and_migrated_schema` —— 迁移之后让 **alembic 自己**比对「代码定义 vs 库里结构」，零差异；
+- `test_db_conversation.py::test_continuation_answer_uses_loop_result_content_not_last_message` —— 把 CONTINUE 场景的 `messages[-1]["content"]` 与 `LoopResult.content` 写成**不同值**，断言拿到的是拼合后的那个。抄尾段就会在这里红。
 
 ### 5. 未采纳（附理由）
 
@@ -97,7 +111,7 @@ CASCADE），而改之前它已经跑过一次。重建后 `--autogenerate` 零�
 | `tool_calls.message_id` 外键 | `SET NULL` | `CASCADE`（它是主键的一部分） |
 | `messages.hidden` 等 3 处列注释 | 旧文案 | 与 `schema.py` 逐字一致 |
 
-**教训**：迁移脚本落地后就不能再改（本 issue 的文档与 `models/README.md` 都把这条
+**教训**：迁移脚本落地后就不能再改（本 issue 的文档与 `db/README.md` 都把这条
 写成规矩，我自己在实施中途破了它）。正确做法是那几处调整**新开一条 `0002`**，
 而不是回头改 `0001`。开发库当时全空，重建零成本；生产环境遇到同样情况就得写一条
 补偿迁移。
@@ -113,7 +127,7 @@ CASCADE），而改之前它已经跑过一次。重建后 `--autogenerate` 零�
   probe 迁移造成的，不是 `op.drop_index` 本身有问题 —— 现已实测走通）
 
 **D. 五张表统一补上表级注释**（改 C 时顺带发现的不一致：只有 checkpoints 有）。
-注释仍是 `models/schema.py` 单点定义，迁移里逐字照抄；新增用例
+注释仍是 `db/schema.py` 单点定义，迁移里逐字照抄；新增用例
 `test_every_table_has_a_comment` 与列注释那条对称，防将来漏写。
 
 修正后复核：库里六张表齐全（五业务 + `charagent_alembic_version`）、版本号
@@ -242,6 +256,6 @@ libpq 关键字形式。已删（与 P0-6「不给没人调的接口」同一条
 ### 7. 遗留（不属本 issue）
 
 - 运行状态机的**推进者**（谁在什么时候把 running 改成 waiting_tool）→ P1-2；本 issue 交付的是规则与安全落库入口（`try_transition` 用带条件的 UPDATE 做乐观锁）。
-- demo 业务表（tickets / escalations / approvals / audit_logs）与幂等表 → P1 迁移（`models/README.md` 写了追加流程）。
+- demo 业务表（tickets / escalations / approvals / audit_logs）与幂等表 → P1 迁移（`db/README.md` 写了追加流程）。
 - `events` 表（事件溯源 #12）→ P2 迁移。
 - 连接池参数调优 / 无状态水平扩展 → P2-10。
