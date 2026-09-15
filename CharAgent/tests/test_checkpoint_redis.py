@@ -352,7 +352,9 @@ async def test_latest_without_ttl_sets_no_expiry():
 
 def _real_redis_url() -> str | None:
     """本机 Redis 连接串 (与实现取的是同一组变量)."""
-    return os.environ.get("CHECKPOINT_REDIS_URL") or os.environ.get("REDIS_URL")
+    return os.environ.get("CHARAGENT_CHECKPOINT_REDIS_URL") or os.environ.get(
+        "REDIS_URL"
+    )
 
 
 class RealRedis:

@@ -43,7 +43,7 @@ def test_defaults_to_memory_backend():
 
 
 def test_reads_backend_from_env():
-    """CHECKPOINT_BACKEND 说用哪个就用哪个 (这里用 redis, 不必真连)."""
+    """CHARAGENT_CHECKPOINT_BACKEND 说用哪个就用哪个 (这里用 redis, 不必真连)."""
     saver = checkpoint_saver_from_env({ENV_BACKEND: "redis"})
 
     assert isinstance(saver, RedisCheckpointSaver)
@@ -91,7 +91,7 @@ def test_redis_backend_falls_back_to_shared_redis_url():
 
 
 def test_redis_backend_prefers_dedicated_url():
-    """配了 CHECKPOINT_REDIS_URL 就用它 (覆盖共用的那个)."""
+    """配了 CHARAGENT_CHECKPOINT_REDIS_URL 就用它 (覆盖共用的那个)."""
     saver = build_saver(
         "redis",
         {
@@ -182,14 +182,14 @@ def test_postgres_backend_builds_dsn_from_shared_env():
 
 
 def test_postgres_dsn_prefers_dedicated_value():
-    """配了 CHECKPOINT_POSTGRES_DSN 就用它 (可以指到另一个库).
+    """配了 CHARAGENT_CHECKPOINT_POSTGRES_DSN 就用它 (可以指到另一个库).
 
     返回值是 SQLAlchemy 的 URL 对象 (2026-09-14 起), 所以先渲染成文本再逐字段
     核对 —— 直接断言对象相等会把「驱动名」也算进去, 反而验不出真正关心的东西.
     """
     dsn = postgres_dsn(
         {
-            "CHECKPOINT_POSTGRES_DSN": "postgresql://u:p@db.example:5432/other",
+            "CHARAGENT_CHECKPOINT_POSTGRES_DSN": "postgresql://u:p@db.example:5432/other",
             **PGSQL_ENV,
         }
     )

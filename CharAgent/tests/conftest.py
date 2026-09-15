@@ -64,7 +64,7 @@ def postgres_test_dsn():
 
 @pytest.fixture(scope="session")
 def pg_dsn():
-    """本机 Postgres 连接串 (优先 CHECKPOINT_POSTGRES_DSN, 否则由 PGSQL_* 拼)."""
+    """本机 Postgres 连接串 (优先专用 DSN, 否则由 PGSQL_* 拼)."""
     return postgres_test_dsn()
 
 

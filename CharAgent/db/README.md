@@ -110,8 +110,8 @@ pytest -m pg_db
 
 | 变量 | 默认 | 说明 |
 |------|------|------|
-| `MODELS_DSN` | 由 `PGSQL_*` 拼 | 专用连接串（想指到别的库时用它覆盖） |
-| `MODELS_ECHO` | 关 | 是否把执行的 SQL 打到日志（排查时开） |
+| `CHARAGENT_DB_DSN` | 由 `PGSQL_*` 拼 | 专用连接串（想指到别的库时用它覆盖） |
+| `CHARAGENT_DB_ECHO` | 关 | 是否把执行的 SQL 打到日志（排查时开） |
 | `PGSQL_USERNAME` / `PGSQL_PASSWORD` / `PGSQL_HOST` / `PGSQL_PORT` / `PGSQL_NAME` | 无 | 共用库配置（与根 `.env` 同名） |
 
 ## 测试

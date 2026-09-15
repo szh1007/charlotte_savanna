@@ -6,10 +6,11 @@
 
 | 层 | 工具 | 内容 | 默认执行 |
 |----|------|------|---------|
-| 单元 | pytest + pytest-asyncio | 单模块逻辑：model 解析、tool schema 生成、loop 分支、序列化协议、限流算法、锁 | ✅ 全 mock |
-| 集成 | pytest + respx | 模块交互：httpx 裸调 vs openai SDK 行为一致（同组测试约束，ADR-0003）；checkpoint 双实现语义对比；SSE 事件流组装 | ✅ 全 mock |
+| 单元 | pytest + pytest-asyncio | 单模块逻辑：model 解析、tool schema 生成、loop 分支、序列化协议、CLI 的命令解析 / 事件渲染 / 参数解析、限流算法、锁（后两项待 P1） | ✅ 全 mock |
+| 集成 | pytest + respx | 模块交互：httpx 裸调 vs openai SDK 行为一致（同组测试约束，ADR-0003）；checkpoint 多实现语义对比；SSE 事件流组装 | ✅ 全 mock |
 | 真实集成 | pytest（`-m integration`） | 打真实 DeepSeek：httpx 裸调协议字段正确性（tool_calls 结构 / usage / finish_reason / reasoning_content）、流式 delta 累积、思考模式下 reasoning_content 与正文分离；agent loop 多轮工具路径与强制截断 | 🔶 marker 默认排除 |
-| E2E | pytest + httpx | 完整链路：REST → TaskQueue → loop → 工具 → SSE 事件序列断言 | ✅ mock LLM + 打桩外部服务 |
+| E2E（P0 已有） | pytest | **CLI 端到端**：`main()` → 会话 → loop → 工具 → 事件流 → 退出码；含「Ctrl-C 打断 → `/resume` → 已完成的工具不重跑」整条验收路径（`tests/test_client_app.py`） | ✅ mock LLM（真实 API 演示手动跑） |
+| E2E（P1 规划） | pytest + httpx | 完整链路：REST → TaskQueue → loop → 工具 → SSE 事件序列断言 | P1-1 落地后接本节基建 |
 | 前端 | Vitest（可选） | EventSource 事件渲染 | P1 后期 |
 
 ## 2. Mock 库设计（#61）
@@ -98,7 +99,7 @@ P1 这三项落地时直接接本节基建（同一 `ChatModel` seam）：脚本
 
 | 阶段 | 验收项（对应 DESIGN.md「分阶段计划」） |
 |------|------|
-| P0 | 带工具的 agent loop 跑通；checkpoint 可断点续跑；mock LLM 单测通过；轨迹断言 + 快照测试就位 |
+| P0 | 带工具的 agent loop 跑通；checkpoint 可断点续跑；mock LLM 单测通过；轨迹断言 + 快照测试就位；CLI 端到端可用（`main()` 的 E2E 层 + 真实端点手动演示，见 §1 / §6） |
 | P1 | 客服 demo 端到端跑通（提问→检索→回复→转人工）；SSE 流式输出；高危操作需审批（HITL 全流程：挂起→审批→恢复）；降级路径验证 |
 | P2 | 多租户隔离（检索强制过滤测试）；成本追踪；指标告警；多 agent 协作；评估回归；无状态水平扩展 |
 
@@ -113,6 +114,15 @@ pytest -m pg_db                        # 数据层：仓储 + alembic 迁移（�
 
 python tests/record_llm_samples.py     # 重录 LLM 样本（真实端点，消耗额度；产出随仓库提交）
 UPDATE_SNAPSHOTS=1 pytest tests/test_snapshots.py   # 有意改形状后覆盖快照
+```
+
+CLI 的演示与冒烟（在**仓库根**跑，会消耗额度）：
+
+```bash
+python -m CharAgent.client -q "现在几点?"                    # 带工具问答, 退出码 0/1/130
+python -m CharAgent.client --no-thinking --backend postgres --thread-id demo -q "..."
+python -m CharAgent.client --backend postgres --thread-id demo --history   # 跨进程看存档
+python -m CharAgent.client --backend postgres --thread-id demo --resume    # 跨进程续跑
 ```
 
 **四个 marker** 与用例的对应关系：

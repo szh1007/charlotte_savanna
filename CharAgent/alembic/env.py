@@ -6,7 +6,7 @@
 干三件事:
 
 1. **连接串从环境变量来** (不写进 alembic.ini): 根 .env 的 PGSQL_*, 或
-   MODELS_DSN 覆盖. 迁移是运维动作, 连接串该跟运行时同一套来源, 而不是在配置
+   CHARAGENT_DB_DSN 覆盖. 迁移是运维动作, 连接串该跟运行时同一套来源, 而不是在配置
    文件里再抄一份密码.
 2. **告诉 alembic「代码侧该长什么样」** (`target_metadata`): autogenerate 靠它
    与库里的实际结构做 diff. 这里指的就是 `db/schema.py` 那份表定义 ——

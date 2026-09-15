@@ -8,18 +8,27 @@
 
 | 环境变量 | 默认 | 说明 |
 |----------|------|------|
-| CHECKPOINT_BACKEND | memory | memory / redis / postgres |
-| CHECKPOINT_KEY_PREFIX | charagent | Redis 键前缀 (键名 `{前缀}:ckpt:{会话}`) |
-| CHECKPOINT_TTL_SECONDS | 不过期 | Redis 快照存活秒数 |
-| CHECKPOINT_REDIS_MODE | history | Redis 模式: history (全历史) / latest (只留最新) |
-| CHECKPOINT_REDIS_MAX_FRAMES | 不裁剪 | history 模式最多留几帧 (裁掉最老的) |
-| CHECKPOINT_REDIS_URL | REDIS_URL 或本机 6379 | Redis 连接串 |
-| CHECKPOINT_POSTGRES_DSN | 由 PGSQL_* 拼 | Postgres 连接串 |
+| CHARAGENT_CHECKPOINT_BACKEND | memory | memory / redis / postgres |
+| CHARAGENT_CHECKPOINT_KEY_PREFIX | charagent | Redis 键前缀 |
+| CHARAGENT_CHECKPOINT_TTL_SECONDS | 不过期 | Redis 快照存活秒数 |
+| CHARAGENT_CHECKPOINT_REDIS_MODE | history | Redis 模式: history / latest |
+| CHARAGENT_CHECKPOINT_REDIS_MAX_FRAMES | 不裁剪 | history 模式最多留几帧 (裁掉最老的) |
+| CHARAGENT_CHECKPOINT_REDIS_URL | REDIS_URL 或本机 6379 | Redis 连接串 |
+| CHARAGENT_CHECKPOINT_POSTGRES_DSN | 由 PGSQL_* 拼 | Postgres 连接串 |
+
+两个取值的展开 (表格里为行宽只写了短名): KEY_PREFIX 决定 Redis 键名
+`{前缀}:ckpt:{会话}`; REDIS_MODE 的 history = 全历史 (默认) / latest = 只留最新一帧
+(能力差异见 `checkpoint/base.py` 的表格).
+
+**变量名一律带 `CHARAGENT_` 前缀** (2026-09-15 改): 本项目各子项目共用同一个根
+`.env`, 不带前缀的通名看不出归属, 也容易撞车 —— 与 `CHARPLOT_*` / `RK_*` /
+`MENU_*` 同一套命名法. 下面 `PGSQL_*` / `REDIS_URL` 是**共用的**连接变量, 故意不带
+前缀 (它们本来就属于整个项目, 不属于某一个子项目).
 
 为什么 Postgres 可以用 PGSQL_* 兜底: 根 .env 里那几个变量 (PGSQL_USERNAME /
 PGSQL_PASSWORD / PGSQL_HOST / PGSQL_PORT / PGSQL_NAME) 是本项目各子项目共用的
 数据库配置, 快照就存在同一个库里, 没必要再抄一遍; 想单独指到别的库时用
-CHECKPOINT_POSTGRES_DSN 覆盖.
+CHARAGENT_CHECKPOINT_POSTGRES_DSN 覆盖.
 
 拼连接串用 SQLAlchemy 的 `URL.create` (而不是手写 f-string): 密码里万一有
 `@` `:` `/` 这类字符, 手拼会把连接串拼坏 —— 交给库去转义.
@@ -49,15 +58,15 @@ BACKEND_REDIS = "redis"
 BACKEND_POSTGRES = "postgres"
 BACKEND_NAMES = (BACKEND_MEMORY, BACKEND_REDIS, BACKEND_POSTGRES)
 
-ENV_BACKEND = "CHECKPOINT_BACKEND"
-ENV_KEY_PREFIX = "CHECKPOINT_KEY_PREFIX"
-ENV_TTL_SECONDS = "CHECKPOINT_TTL_SECONDS"
-ENV_REDIS_MODE = "CHECKPOINT_REDIS_MODE"
-ENV_REDIS_MAX_FRAMES = "CHECKPOINT_REDIS_MAX_FRAMES"
-ENV_REDIS_URL = "CHECKPOINT_REDIS_URL"
-ENV_POSTGRES_DSN = "CHECKPOINT_POSTGRES_DSN"
+ENV_BACKEND = "CHARAGENT_CHECKPOINT_BACKEND"
+ENV_KEY_PREFIX = "CHARAGENT_CHECKPOINT_KEY_PREFIX"
+ENV_TTL_SECONDS = "CHARAGENT_CHECKPOINT_TTL_SECONDS"
+ENV_REDIS_MODE = "CHARAGENT_CHECKPOINT_REDIS_MODE"
+ENV_REDIS_MAX_FRAMES = "CHARAGENT_CHECKPOINT_REDIS_MAX_FRAMES"
+ENV_REDIS_URL = "CHARAGENT_CHECKPOINT_REDIS_URL"
+ENV_POSTGRES_DSN = "CHARAGENT_CHECKPOINT_POSTGRES_DSN"
 
-# Postgres 连接信息: 优先专用的 CHECKPOINT_POSTGRES_DSN, 其次用这几个拼
+# Postgres 连接信息: 优先专用的 CHARAGENT_CHECKPOINT_POSTGRES_DSN, 其次用这几个拼
 _PGSQL_KEYS = (
     "PGSQL_USERNAME",
     "PGSQL_PASSWORD",
@@ -70,7 +79,7 @@ _PGSQL_KEYS = (
 def checkpoint_saver_from_env(
     env: Mapping[str, str] | None = None,
 ) -> CheckpointSaver:
-    """按环境变量挑一个存储实现 (选谁看 CHECKPOINT_BACKEND, 默认内存版).
+    """按环境变量挑一个存储实现 (选谁看 CHARAGENT_CHECKPOINT_BACKEND, 默认内存版).
 
     Args:
         env: 环境变量表 (默认读 os.environ; 测试传一个字典就不必改真环境).

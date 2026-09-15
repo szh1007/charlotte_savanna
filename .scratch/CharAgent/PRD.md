@@ -13,7 +13,7 @@
 
 学习者（本项目的 owner）想**从零手写 agent loop**，把每一层暴露出来：模型调用、工具执行、结果回填、状态持久化、断点续跑、流式事件、重试/熔断/超时/幂等兜底、安全防护（注入/沙箱/HITL/脱敏/审计），并以一个**电商售后客服 demo** 自证框架可用。项目要覆盖 70 个编号难点（14 类），分 P0/P1/P2 三阶段实施，兼具学习价值与面试考点价值。
 
-当前状态：**设计阶段已完成**（全部文档齐备），代码零实现，P0 尚未开工。
+当前状态（2026-09-16 更新）：**P0 已交付并验收** —— 八个框架包 + CLI（`client/`）全部落地，`python -m CharAgent.client` 跑通带工具问答 / Ctrl-C 中断续跑（说一句「继续」或 `/resume`）/ 快照后端三选一，`pytest tests/` 730 passed；P1 尚未开工。P0 未闭环、按归属推给 P1/P2 的条目见 `.scratch/CharAgent/issue10-P0-to-P1_P2.md`。
 
 ## 2. Solution
 
@@ -29,7 +29,7 @@
 
 ### 学习者（框架使用方）
 
-1. 作为学习者，我想用 CLI（`python -m CharAgent.cli`）直接跑通一个带工具的问答，以便不依赖 server 就能验证 agent loop 行为。
+1. 作为学习者，我想用 CLI（`python -m CharAgent.client`）直接跑通一个带工具的问答，以便不依赖 server 就能验证 agent loop 行为。
 2. 作为学习者，我想查看手写 agent loop 的完整实现（while 循环：模型决策→并行工具执行→tool_result 消息回填→事件产出），以便理解 LangGraph/DeepAgents 黑盒之下发生了什么。
 3. 作为学习者，我想通过 httpx 裸调实现看清 `/chat/completions` 协议细节（tool_calls 结构 / usage / finish_reason / reasoning_content / SSE 流式），以便理解 SDK 帮我藏了什么。
 4. 作为学习者，我想对比 httpx 裸调与 openai SDK 两个适配器对同一输入产生等价结果，以便评估「自研 vs SDK」的取舍。
@@ -93,7 +93,7 @@
 
 | 层 | 位置 | 职责 | 阶段 |
 |----|------|------|------|
-| 框架层 | `CharAgent/` | 业务无关 runtime：model / tool / loop / stream / hooks / retry / checkpoint / guard / ratelimit / lock / rag / logging | P0-P2 |
+| 框架层 | `CharAgent/` | 业务无关 runtime：model / tool / agent(loop) / stream / hooks / retry / checkpoint / db + client（命令行入口） / guard / ratelimit / lock / rag / logging | P0-P2 |
 | 服务层 | `server/` | FastAPI + REST + SSE + TaskQueue，RAG 检索与业务工具注册 | P1 |
 | Demo 层 | `demo/` | 电商售后客服：业务工具集 + Ticket/Escalation/Approval | P1 |
 | 前端 | `ui/`（Vue 3 + EventSource） | `/chat` 用户端 + `/admin` 审批/接管台 | P1 |
@@ -222,7 +222,7 @@ E2E 的 SSE 事件序列断言是核心验收 seam：`thinking → tool_call →
 
 - **前置服务**（本机已具备）：Postgres（本机）、Redis（Docker）、Milvus（Docker）、MySQL（minimall 库，只读账号）；`.env` 按 `.env.example` 配置
 - **依赖**：已登记 requirements.txt（新增 alembic / pytest / pytest-asyncio / respx）；Python 3.13 + 根 .venv 复用
-- **启动入口**：P0 `python -m CharAgent.cli`；P1 `python -m server.main` + `npm run dev`
+- **启动入口**：P0 `python -m CharAgent.client`；P1 `python -m server.main` + `npm run dev`
 - **测试运行**：`pytest tests/`（默认全 mock）；`RUN_INTEGRATION=1 pytest tests/integration/`；checkpoint Postgres 测试需本机 PG
 - **文档体系**：CharAgent/docs/DESIGN.md（总览+难点索引）/ CharAgent/docs/CONTEXT.md（术语表）/ CharAgent/docs/design/（01 架构、02 数据模型、03 API 协议、04 测试计划、05 路线图）/ CharAgent/docs/adr/（0001-0007）/ CharAgent/docs/difficulties/（14 类 70 编号）
 - **实施起点**：P0-1（model.py ChatModel 协议 + 双适配器 + reasoning 兼容分支）→ P0-2（tool.py）并行，依赖顺序见 CharAgent/docs/design/05-roadmap.md §依赖顺序要点

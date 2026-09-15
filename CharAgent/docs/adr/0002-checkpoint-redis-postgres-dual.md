@@ -16,7 +16,7 @@
 - `mode="history"`（默认）：一个会话一条 Stream（`XADD` 追加 / `XRANGE` 翻历史 / `MAXLEN` 裁剪 / `EXPIRE` 过期）
 - `mode="latest"`：只留最新一帧（对应官方 langgraph-checkpoint-redis 的 ShallowRedisSaver；
   短会话只需要续跑时的快而省选项，能力差异仍由 `capabilities` 显式声明）
-- 配置：`CHECKPOINT_REDIS_MODE` / `CHECKPOINT_REDIS_MAX_FRAMES`
+- 配置：`CHARAGENT_CHECKPOINT_REDIS_MODE` / `CHARAGENT_CHECKPOINT_REDIS_MAX_FRAMES`
 
 于是两种介质如今的差异不在「有没有历史」，而在**一致性、查询能力、保留策略与过期语义**：
 Redis 快、可裁剪可过期、按会话分区（按编号取帧要带会话号）；Postgres 强一致、可建索引查询、留有全部历史。

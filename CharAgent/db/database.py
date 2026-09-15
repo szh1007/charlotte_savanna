@@ -57,7 +57,7 @@ class PgDatabase:
             从环境变量读 (见 config.py).
         engine: 注入一个现成的引擎 (复用别人的连接池); 给了它就**不看 url**,
             且 `dispose()` 不会关它 (谁建的谁关).
-        echo: 是否把 SQL 打到日志; None 表示读 MODELS_ECHO.
+        echo: 是否把 SQL 打到日志; None 表示读 CHARAGENT_DB_ECHO.
 
     注意**构造期不校验、不连库**: 连接串配错了也不会在这里报错, 而是等你第一次
     `engine()` / `connect()` 时才抛 `DataConfigError`(配置缺) 或 `DataStoreError`

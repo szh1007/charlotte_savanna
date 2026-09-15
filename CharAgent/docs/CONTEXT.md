@@ -57,7 +57,7 @@ _Avoid_: 快照元数据（易与记录身份字段混淆）, 日志
 _Avoid_: 来源类型, 事件类型（那是 `StreamEvent`）
 
 **CheckpointSaver**:
-Checkpoint 的存储接口抽象（async 协议），隔离存储介质；能做什么用 `capabilities` 声明（是否留历史 / 是否会过期），做不到的操作明确报 `CheckpointCapabilityError`，而不是返回空结果让调用方误判「没存过」。三实现（ADR-0002 + 2026-09-13 更新）：InMemory（测试与对照标尺，进出深拷贝）、Redis（默认 `mode="history"`：一个会话一条 Stream，`XADD` 追加 / `XRANGE` 翻历史 / `MAXLEN` 裁剪 / `EXPIRE` 过期；`mode="latest"` 只留最新一帧，对齐官方 ShallowRedisSaver，翻历史会明确报能力错）、Postgres（一帧一行 + `state` / `metadata` 两个 JSONB 列，全历史；同步驱动 + `asyncio.to_thread` —— psycopg 异步连接在 Windows 默认事件循环上不可用；**实现走 SQLAlchemy**，与 `db/` 共用连接层 `PgDatabase` 与表定义 `db/schema.py`，见 issue 08 的统一改造）。配置切换：`CHECKPOINT_BACKEND` 选后端、`CHECKPOINT_REDIS_MODE` 选 Redis 模式（见 `checkpoint/config.py`）。按编号取帧：Redis 要一并给 `thread_id`（帧按会话分区），有全局编号索引的实现忽略该参数。
+Checkpoint 的存储接口抽象（async 协议），隔离存储介质；能做什么用 `capabilities` 声明（是否留历史 / 是否会过期），做不到的操作明确报 `CheckpointCapabilityError`，而不是返回空结果让调用方误判「没存过」。三实现（ADR-0002 + 2026-09-13 更新）：InMemory（测试与对照标尺，进出深拷贝）、Redis（默认 `mode="history"`：一个会话一条 Stream，`XADD` 追加 / `XRANGE` 翻历史 / `MAXLEN` 裁剪 / `EXPIRE` 过期；`mode="latest"` 只留最新一帧，对齐官方 ShallowRedisSaver，翻历史会明确报能力错）、Postgres（一帧一行 + `state` / `metadata` 两个 JSONB 列，全历史；同步驱动 + `asyncio.to_thread` —— psycopg 异步连接在 Windows 默认事件循环上不可用；**实现走 SQLAlchemy**，与 `db/` 共用连接层 `PgDatabase` 与表定义 `db/schema.py`，见 issue 08 的统一改造）。配置切换：`CHARAGENT_CHECKPOINT_BACKEND` 选后端、`CHARAGENT_CHECKPOINT_REDIS_MODE` 选 Redis 模式（见 `checkpoint/config.py`）。按编号取帧：Redis 要一并给 `thread_id`（帧按会话分区），有全局编号索引的实现忽略该参数。
 _Avoid_: 存储层, 存储适配器
 
 **Suspension**:
@@ -185,6 +185,10 @@ _Avoid_: 补偿事务
 **Cancellation**:
 流式中断/取消，用户停止或断连时优雅终止并释放资源，已执行副作用走补偿。
 _Avoid_: 中断
+
+**KillSwitch**:
+循环的即时打断机制 —— 外部 `asyncio.Task.cancel`，`AgentLoop` 不吞 `CancelledError`、直接传播（difficulties #3）。落地两处：CLI 里由 Ctrl-C 触发（`client/app.py` 的 `_KillSwitch`：取消任务 → 等它收尾 → 再报中断），P1 由 `POST runs/{id}/cancel` 触发。与 `Cancellation` 的分工：KillSwitch 说的是**怎么打断**（机制，框架层），Cancellation 说的是**取消这件事的对外契约**（用户可见的状态与资源释放，服务层）。
+_Avoid_: 取消(易与 Cancellation 混), 停止
 
 **Degradation**:
 业务降级兜底，模型挂 / RAG 失败 / 超时等场景回退到模板、FAQ、转人工。

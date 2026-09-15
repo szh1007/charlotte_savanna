@@ -4,7 +4,7 @@
 
 **Blocked by:** 04
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [x] 五实体模型定义完成，字段与协议定型一致（#5/#12 实体部分）
 - [x] Postgres DDL 生成（alembic），首次迁移在空库可执行
@@ -234,7 +234,7 @@ libpq 关键字形式。已删（与 P0-6「不给没人调的接口」同一条
 | `test_set_status_bypasses_the_state_machine_on_purpose` | 把 `set_status` 与 `try_transition` 的分工**写死在断言里**：前者不做校验是**有意的**，很容易被当成「另一个改状态的方法」拿去用 |
 | `test_empty_batches_are_noops` | `add_messages([])` 早返回 |
 
-**③ 文档承诺了不存在的 `python -m CharAgent.cli`。** 那是 issue 10 的交付物，本 issue
+**③ 文档承诺了不存在的 `python -m CharAgent.client`。** 那是 issue 10 的交付物，本 issue
 没做。不改文档去「补一个 CLI」（那是 issue 10 的范围），而是**标注现状**：
 `DESIGN.md` 的运行入口表与 `05-roadmap.md` 的验收行都写明「尚未交付，见 issue 10」，
 并指出在此之前跑通链路的入口是 `pytest tests/` 与 `pytest -m integration`。
@@ -259,3 +259,19 @@ libpq 关键字形式。已删（与 P0-6「不给没人调的接口」同一条
 - demo 业务表（tickets / escalations / approvals / audit_logs）与幂等表 → P1 迁移（`db/README.md` 写了追加流程）。
 - `events` 表（事件溯源 #12）→ P2 迁移。
 - 连接池参数调优 / 无状态水平扩展 → P2-10。
+
+### 8. 交付后更正（2026-09-15，issue 10）
+
+**A. `MODELS_DSN` / `MODELS_ECHO` 的环境变量名改了**（用户要求，推翻 §6.E 那条「保留不改」）。
+改为 `CHARAGENT_DB_DSN` / `CHARAGENT_DB_ECHO`：① 全部 CharAgent 自有变量统一带
+`CHARAGENT_` 前缀（与 `CHARPLOT_*` / `RK_*` 同一套命名法，共用根 `.env` 不撞车）；
+② 词干从 `MODELS_` 改为 `DB_` —— 与 §6.E 把 `models/` 包改名 `db/` 的理由同源
+（`CHARAGENT_MODELS_DSN` 会让人以为它属于 `model/`，那是 LLM 模型层，跟数据库无关）。
+
+§6.E 当时的主要顾虑「改名会让每个人已有的 `.env` 失效」**经核实并不成立**：
+真 `.env` 里这两个变量一项都没有配，改名零迁移成本。**代码里的常量名不变**
+（`db/config.py` 的 `ENV_DSN` / `ENV_ECHO`），所以只是常量值变了 —— 逻辑与用例
+（走常量比对的那几处）都不用动。
+
+**B. `Status:` 字段从 `ready-for-agent` 更正为 `done`**（bullet 全 `[x]`、Comments 写「实施完成」，
+状态字段当时漏改）。

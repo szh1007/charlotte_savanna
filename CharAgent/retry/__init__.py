@@ -45,7 +45,12 @@ from CharAgent.retry.utils.errors import (
     RetryConfigError,
     RetryError,
 )
-from CharAgent.retry.utils.types import ClaimResult, ClaimStatus, RetryAttempt
+from CharAgent.retry.utils.types import (
+    ClaimResult,
+    ClaimStatus,
+    RetryAttempt,
+    RetryCallback,
+)
 
 __all__ = [
     "ClaimResult",
@@ -55,6 +60,7 @@ __all__ = [
     "IdempotencyStore",
     "InMemoryIdempotencyStore",
     "RetryAttempt",
+    "RetryCallback",
     "RetryConfigError",
     "RetryError",
     "RetryPolicy",

@@ -50,13 +50,16 @@
 一整套语义, 归 `checkpoint/postgres.py` 的 `PostgresCheckpointSaver`. 本包只提供
 那张表的定义 (`CheckpointRow` 与 `schema.checkpoints`), 让迁移体系与 ORM 有一套
 完整口径 —— 不另造一个功能重叠的入口.
+
+门面里**没有** `config.py` 的两个环境变量名常量 (`CHARAGENT_DB_DSN` /
+`CHARAGENT_DB_ECHO`): 它们是配置模块的内部零件 (需要的人 `from
+CharAgent.db.config import ...` 即可取), 上浮到门面只会变成两个看不出归属的
+通名 —— 与 `checkpoint` 门面 (同样不导出它的 7 个 `ENV_*`) 保持一致口径.
 """
 
 from __future__ import annotations
 
 from CharAgent.db.config import (
-    ENV_DSN,
-    ENV_ECHO,
     echo_enabled,
     sqlalchemy_url,
 )
@@ -118,8 +121,6 @@ from CharAgent.db.state import (
 __all__ = [
     "ALLOWED_TRANSITIONS",
     "ALL_TABLES",
-    "ENV_DSN",
-    "ENV_ECHO",
     "RUN_STATUS_FOR_OUTCOME",
     "TABLE_NAMES",
     "TERMINAL_RUN_STATUSES",

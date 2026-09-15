@@ -7,8 +7,8 @@
 
 | 环境变量 | 默认 | 说明 |
 |----------|------|------|
-| MODELS_DSN | 由 PGSQL_* 拼 | 专用连接串 (想指到别的库时用它覆盖) |
-| MODELS_ECHO | 关 | 是否把执行的 SQL 打到日志 (排查时开, 平时关) |
+| CHARAGENT_DB_DSN | 由 PGSQL_* 拼 | 专用连接串 (想指到别的库时用它覆盖) |
+| CHARAGENT_DB_ECHO | 关 | 是否把执行的 SQL 打到日志 (排查时开, 平时关) |
 | `PGSQL_USERNAME` / `PGSQL_PASSWORD` / `PGSQL_HOST` / `PGSQL_PORT` /
   `PGSQL_NAME` | 无 | 共用库配置 (与根 `.env` 同名) |
 
@@ -29,8 +29,8 @@ from sqlalchemy.engine import make_url
 
 from CharAgent.db.errors import DataConfigError
 
-ENV_DSN = "MODELS_DSN"
-ENV_ECHO = "MODELS_ECHO"
+ENV_DSN = "CHARAGENT_DB_DSN"
+ENV_ECHO = "CHARAGENT_DB_ECHO"
 
 # 共用库的几个变量 (与根 .env 同名; 只在这里列一次, 拼 URL 与报错都用它)
 _PGSQL_KEYS = (
@@ -69,9 +69,9 @@ def sqlalchemy_url(env: Mapping[str, str] | None = None) -> URL:
     字符也转义好 (`@` `:` 直接写进 URL 会把它拼坏).
 
     三种来源各走各的路:
-    1. `MODELS_DSN` 已带驱动名 (`postgresql+psycopg://...`) → 原样用
-    2. `MODELS_DSN` 是普通 URL (`postgresql://...`) → 补上驱动名
-    3. 没有 `MODELS_DSN` → 从 `PGSQL_*` 逐项拼 URL (走 `URL.create`)
+    1. `CHARAGENT_DB_DSN` 已带驱动名 (`postgresql+psycopg://...`) → 原样用
+    2. `CHARAGENT_DB_DSN` 是普通 URL (`postgresql://...`) → 补上驱动名
+    3. 没有 `CHARAGENT_DB_DSN` → 从 `PGSQL_*` 逐项拼 URL (走 `URL.create`)
 
     Args:
         env: 环境变量表 (默认读 os.environ).
@@ -83,7 +83,7 @@ def sqlalchemy_url(env: Mapping[str, str] | None = None) -> URL:
             都收, 但**返回类型统一**才对得住「一个函数一个契约.
 
     Raises:
-        DataConfigError: `MODELS_DSN` 给了个认不出的写法.
+        DataConfigError: `CHARAGENT_DB_DSN` 给了个认不出的写法.
     """
     source = os.environ if env is None else env
     explicit = (source.get(ENV_DSN) or "").strip()
@@ -118,7 +118,7 @@ def sqlalchemy_url(env: Mapping[str, str] | None = None) -> URL:
 
 
 def echo_enabled(env: Mapping[str, str] | None = None) -> bool:
-    """是否把 SQL 打到日志 (MODELS_ECHO).
+    """是否把 SQL 打到日志 (CHARAGENT_DB_ECHO).
 
     认 1/true/yes/on (不分大小写); 其余值一律按「关」处理 —— 这个开关只影响
     日志噪音, 不值得为「写了个看不懂的值」报错.

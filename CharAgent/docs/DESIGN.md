@@ -89,7 +89,7 @@ while not done:
 
 | 阶段 | 范围 | 难点 | 产出物 | 验收标准 |
 |------|------|------|--------|----------|
-| **P0** | 核心 loop + 可靠性 + 数据层 + 测试 | #1-5、#10-12、#13、#61-63、#65 | model/ + tool/ + agent/ + stream/ + hooks/ + retry/ + checkpoint/ + db/ + alembic/ + tests/ | 带工具的 agent loop 跑通；checkpoint 可断点续跑；五实体落 Postgres；mock 单测通过 |
+| **P0** | 核心 loop + 可靠性 + 数据层 + 测试 + CLI | #1-5、#10-12、#13、#61-63、#65 | model/ + tool/ + agent/ + stream/ + hooks/ + retry/ + checkpoint/ + db/ + alembic/ + client/ + tests/ | 带工具的 agent loop 跑通；checkpoint 可断点续跑；五实体落 Postgres；mock 单测通过；`python -m CharAgent.client` 可用（验收线） |
 | **P1** | 可靠性加固 + 安全 + RAG + demo | #6-7、#14-27、#29-30、#35、#38、#45-47 | server（SSE 接口）+ 客服 demo + 安全/降级/队列/RAG 模块 | 客服 demo 端到端跑通（提问→检索→回复→转人工）；SSE 流式输出；高危操作需审批 |
 | **P2** | 记忆/成本/可观测/多 agent/能力扩展/评估/工程化 | #8-9、#12、#28、#31-34、#36-37、#39-44、#48-60、#64、#66-67 | 记忆/成本/可观测/多 agent/MCP/Skills/Eval/数据模型/部署/工程底座模块 | 完整生产级能力：多租户隔离、成本追踪、指标告警、多 agent 协作、评估回归、无状态水平扩展 |
 
@@ -196,6 +196,8 @@ CharAgent/
 │   ├── skills/                 # P2  Agent Skills
 │   ├── eval/                   # P2  评估 + 调试 + 数据飞轮
 │   └── context_engineering/    # P2  上下文工程 + 意图澄清
+├── client/                        # P0  命令行入口: app(参数+装配+REPL) / session(会话) / render(终端)
+│                               #     / utils(commands 交互命令 + types 启动选项)
 ├── server/                     # P1  FastAPI 服务（SSE 接口 + 任务队列）
 ├── demo/                       # P1  智能客服 demo（Ticket / Escalation）
 └── tests/                      # P0  单元 / 集成 / E2E 测试
@@ -207,9 +209,20 @@ CharAgent/
 
 | 阶段 | 运行入口 | 说明 |
 |------|---------|------|
-| P0 | `python -m CharAgent.cli`（**尚未交付**） | CLI 跑通 loop（不依赖 server），checkpoint 断点续跑 + 单测。入口本身是 P0 的**验收线**，见 `.scratch/CharAgent/issues/10-P0-acceptance-cli-demo.md` —— 在此之前，跑通链路的入口是 `pytest tests/`（默认全替身）与 `pytest -m integration`（真实端点） |
+| P0 | `python -m CharAgent.client`（**已交付**，issue 10） | CLI 跑通 loop（不依赖 server）：带工具问答 + 六类事件实时打印 + Ctrl-C 打断后 `/resume` 续跑 + 快照后端三选一。它同时是 P0 的**验收线**（`.scratch/CharAgent/issues/10-P0-acceptance-cli-demo.md`）。测试入口照旧 `pytest tests/`（默认全替身）与 `pytest -m integration`（真实端点） |
 | P1 | `python -m server.main` + 前端 `npm run dev` | FastAPI + SSE，客服 demo 端到端 |
 | P2 | 各插件按需启用 | 评估集跑分、trace 面板、记忆/多 agent 演示 |
+
+CLI 常用姿势（均在**仓库根**运行，即 `charlotte_savanna/`）：
+
+```bash
+python -m CharAgent.client                       # 交互模式（默认内存快照）
+python -m CharAgent.client -q "现在几点?"         # 问一句就退出
+python -m CharAgent.client --backend postgres    # 换快照后端（redis / postgres 需本机服务）
+python -m CharAgent.client --history             # 看本会话的快照历史表
+python -m CharAgent.client --resume              # 从最新一帧快照接着跑
+python -m CharAgent.client --help                # 全部选项 + 三步演示脚本
+```
 
 ## 已知能力边界（DeepSeek 对接）
 

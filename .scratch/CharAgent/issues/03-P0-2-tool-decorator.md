@@ -4,7 +4,7 @@
 
 **Blocked by:** None — can start immediately
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [x] @tool 装饰器完成：函数 → Tool（name/description/parameters JSON schema）
 - [x] schema 生成正确性测试：复杂参数类型（嵌套 dict/list/enum/可选参数）映射准确（#70）

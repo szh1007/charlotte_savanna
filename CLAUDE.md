@@ -21,6 +21,7 @@
 | `project/rag_knowledge/` | 子项目 | 工业级 RAG 知识库问答（LangGraph 双图 + Milvus + 评估体系） |
 | `project/rag_text2sql/` | 子项目 | RAG Text2SQL 数据查询智能体（LangGraph + Qdrant/ES + MySQL 双库 + Vue） |
 | `app/charplot/` + `project/charplot/` | 子项目 | AI 闯关学习网站（双后端：Django 账号/闯关规则 + FastAPI AI 能力 + Vue 前端, LangGraph/DeepAgents/LangChain 三件套） |
+| `CharAgent/` | 子项目 | 从零手写的 agent runtime 框架（P0 已交付：模型/工具/loop/事件/重试/checkpoint/数据层 + CLI 演示），无 Django/无 server |
 | `demo/` | 自学教程 | 非业务代码，见 §1.1 |
 
 ---
@@ -160,6 +161,19 @@ charlotte_savanna/
 │   │   ├── tests/               #   FastAPI 侧测试（9 文件, Redis /15 隔离 + Fake LLM）
 │   │   ├── .env / .env.example  #   CHARPLOT_* 独立环境变量（不提交 / 模板）
 │   │   └── README.md            #   子项目文档
+├── CharAgent/                   # 从零手写的 agent runtime 框架（P0 已交付, 独立于 Django/FastAPI）
+│   ├── model/                   #   薄 ChatModel 协议 + httpx 裸调 / openai SDK 双适配器
+│   ├── tool/                    #   @tool 装饰器 + JSON schema 生成（pydantic / manual 双引擎）
+│   ├── agent/                   #   手写 agent loop（并行工具 / 错误自纠错 / 循环防护 / 截断处理）
+│   ├── stream/                  #   流式事件总线（六类事件 + seq + 四条状态机不变量）
+│   ├── hooks/                   #   hook 注册表骨架（五个触发点, 空注册零开销）
+│   ├── retry/                   #   重试退避 + jitter + 幂等键（包在 ChatModel 协议层）
+│   ├── checkpoint/              #   快照: 序列化协议 + 内存/Redis/Postgres 三实现 + 断点续跑
+│   ├── db/                      #   五实体 + 表定义（唯一来源）+ 仓储（与 alembic 共用）
+│   ├── alembic/                 #   迁移（只追加；版本表 charagent_alembic_version）
+│   ├── client/                  #   命令行入口 python -m CharAgent.client（P0 验收线）
+│   ├── docs/                    #   DESIGN / CONTEXT(词表) / design/(01~05) / adr/(0001~0007) / difficulties/(70 难点)
+│   └── tests/                   #   分层测试（默认全替身 730 例 + integration/pg/redis/pg_db 四个 marker）
 ├── templates/                   # 全局模板目录
 │   ├── minimall/                #   商城页面模板（base + partials）
 │   ├── charplot/                #   report_share.html（/r/{slug} 公开分享页）
@@ -380,7 +394,24 @@ charlotte_savanna/
 
 > 业务链路已闭环（Issue 01~14, 2026-09-08 三侧契约核对零断链）。已实现：旅程创建 → 图谱落库 → 技能树 → 渐进出题（间隔复习混入）→ 闯关答题 → 复盘分享 → Dashboard + LLM 状态总结 + 知识库管理。启动与已知边界见 `project/charplot/README.md`。
 
-### 5.8 Demo 目录（仅供学习参考，不计入业务/子项目）
+### 5.8 子项目 — CharAgent agent runtime 框架（`CharAgent/`）
+
+| 组件 | 状态 | 说明 |
+|------|------|------|
+| 模型层（`model/`） | ✅ | 薄 ChatModel 协议 + httpx 裸调 / openai SDK 双适配器 + reasoning 兼容分支 |
+| 工具层（`tool/`） | ✅ | @tool 装饰器 + JSON schema 双引擎（pydantic / manual）+ 可操作错误语义 |
+| 主循环（`agent/`） | ✅ | 手写 agent loop：并行工具 / 错误自纠错 / 循环防护三软限制 + kill switch / length 截断两策略 |
+| 事件与扩展点（`stream/` + `hooks/`） | ✅ | 六类事件 + seq + 四条状态机不变量；五个 hook 触发点（空注册零开销） |
+| 重试（`retry/`） | ✅ | 指数退避 + jitter + 三上限；`RetryingChatModel` 组合在协议层（loop 零改动） |
+| 快照（`checkpoint/`） | ✅ | JSON + 行李牌 + schema 版本迁移；内存 / Redis(流式历史) / Postgres 三实现；断点续跑 + time-travel |
+| 数据层（`db/` + `alembic/`） | ✅ | 五实体 + 状态机规则 + 仓储；表定义唯一来源；全部表名带 `charagent_` 前缀（与共用 PG 库里的其他子项目隔离） |
+| CLI（`client/`） | ✅ | `python -m CharAgent.client`：带工具问答 + 六类事件实时打印 + Ctrl-C 打断后续跑（说「继续」或 `/resume`）+ 快照后端三选一（P0 验收线） |
+| 测试（`tests/`） | ✅ | 默认全替身 730 例；四个 marker：integration / pg / redis / pg_db |
+| P1 / P2 | ⬜ 未开工 | 服务层（FastAPI + SSE + TaskQueue）、安全护栏 / HITL / RAG / 客服 demo / 前端；8 个可插拔插件 |
+
+> P0 已验收（2026-09-15）：真实端点跑通带工具问答（含并行双工具）、Ctrl-C 中断续跑（`tool_call` 全程仅一次）、`--backend` 三后端切换。**启动**：`cd` 到仓库根后 `python -m CharAgent.client`（详见 §6.3）。设计与难点文档见 `CharAgent/docs/`（DESIGN / CONTEXT 词表 / design/01~05 / adr/0001~0007 / difficulties 70 个编号难点）。P0 未闭环、按归属推给 P1/P2 的条目见 `.scratch/CharAgent/issue10-P0-to-P1_P2.md`。
+
+### 5.9 Demo 目录（仅供学习参考，不计入业务/子项目）
 
 | 目录 | 状态 | 说明 |
 |------|------|------|
@@ -391,11 +422,11 @@ charlotte_savanna/
 | `demo/FastAPI/` | ✅ 完成 | FastAPI 基础教程（3 个 demo） |
 | `demo/SUMMARY.md` | ✅ 完成 | LangChain/LangGraph/DeepAgents 知识点学习总结 |
 
-### 5.9 基础设施
+### 5.10 基础设施
 
 | 项目 | 状态 | 说明 |
 |------|------|------|
-| .env 管理 | ✅ | `.env.example` 提供模板（Django/OpenAI/DeepSeek/Tavily/LangSmith/MySQL/PG/Redis/Milvus/CHARPLOT_*） |
+| .env 管理 | ✅ | `.env.example` 提供模板（Django/OpenAI/DeepSeek/Tavily/LangSmith/MySQL/PG/Redis/Milvus/CHARPLOT_*/CHARAGENT_*） |
 | 数据库/缓存 | ✅ | MySQL + Redis（django-redis），配置环境变量化 |
 | 代码质量 | ✅ | Ruff + pre-commit 已接入 |
 | 依赖管理 | ✅ | `requirements.txt` 已生成（267 个包） |
@@ -445,6 +476,8 @@ charlotte_savanna/
 - **rag_text2sql 前端**：`sh/rag_text2sql_frontend.sh`（或 `cd project/rag_text2sql/frontend && npm run dev`, 127.0.0.1:8201）
 - **charplot 后端**：`sh/charplot_backend.sh`（或 `python -m project.charplot.api.server`, 127.0.0.1:8004, AI 能力端; Django 侧随主项目 8000 启动, 前置 MySQL/Redis/Milvus + modelscope 本地模型）
 - **charplot 前端**：`sh/charplot_frontend.sh`（或 `cd project/charplot/frontend && npm run dev`, 127.0.0.1:9004）
+- **CharAgent CLI**：在**仓库根**跑 `python -m CharAgent.client`（交互模式；`-q "问一句"` 一次性、`--backend redis|postgres` 换快照后端、`--history` 看存档、`--help` 看全部选项与三步演示脚本；无 sh 脚本 —— 它不常驻，不是服务）。**打断后续跑有两条路**：Ctrl-C 后已完成的工作会收回对话历史，直接说一句「继续」就接着跑（CLI 不做意图识别，判断交给模型）；`--resume` / `/resume` 走快照恢复（计数器接续、挂起点补做，框架级保证）
+- **CharAgent 测试**：`cd CharAgent && pytest`（默认全替身；`-m integration` 打真实端点、`-m pg` / `-m redis` / `-m pg_db` 连真服务）
 - **进程状态**：`sh/_status_.sh`（查看各项目运行进程: PID/端口/内存/启动命令）
 - **LangGraph CLI**：`langgraph dev`（`langgraph.json` 配置了 graph 入口，指向 `demo/LangGraph_v1.2`）
 - **LangChain 脚本**：在对应 `demo/` 子目录下 `python <script>.py`（脚本内部 `load_dotenv()`）
@@ -499,4 +532,4 @@ cd project/charplot/frontend && npm install
 
 ---
 
-> **最后更新**：2026-09-08 | **维护者**：Claude Code (charlotte)
+> **最后更新**：2026-09-16 | **维护者**：Claude Code (charlotte)

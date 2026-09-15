@@ -38,7 +38,7 @@
     result = await loop.resume(checkpoint)
 
 两种「换存储」的姿势 (都只改一行, loop 不动):
-- 环境变量: CHECKPOINT_BACKEND=postgres (配 checkpoint_saver_from_env 用)
+- 环境变量: CHARAGENT_CHECKPOINT_BACKEND=postgres (配 checkpoint_saver_from_env 用)
 - 直接构造: PostgresCheckpointSaver(dsn=...)
 """
 
@@ -46,6 +46,7 @@ from __future__ import annotations
 
 from CharAgent.checkpoint.base import CheckpointSaver
 from CharAgent.checkpoint.config import (
+    BACKEND_NAMES,
     build_saver,
     checkpoint_saver_from_env,
     postgres_dsn,
@@ -77,6 +78,7 @@ from CharAgent.checkpoint.utils.types import (
 )
 
 __all__ = [
+    "BACKEND_NAMES",
     "DEFAULT_CODEC",
     "SCHEMA_VERSION",
     "Checkpoint",

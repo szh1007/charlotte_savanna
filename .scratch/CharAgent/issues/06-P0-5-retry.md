@@ -88,7 +88,7 @@
 loop = AgentLoop(model=RetryingChatModel(chat_model_from_env(), policy=RetryPolicy(...)), ...)
 ```
 
-该行属 issue 10（CLI 入口，`Blocked by: 04, 05, 07, 09`；`python -m CharAgent.cli` 尚不存在），已作为待办写进 [10-P0-acceptance-cli-demo.md](10-P0-acceptance-cli-demo.md)。复核结论：维持方案 A（loop 不加 `retry_policy=` 参数、不默认开启重试）—— 理由：默认开启会让每轮 `elapsed_ms` 含重试睡眠（可能提前触发 `TIME_LIMIT`），且与 loop 现有契约注释「模型调用失败直接抛出、本层不包装不吞」冲突；P1 server 要按 run/租户调策略时，入口一行也比 loop 参数更灵活。接线后的行为已由 `CharAgent/tests/test_retry_chat_model.py` 的两个 loop 组合用例覆盖（429 后仍以 final 收尾 / 耗尽则上抛且不发终局事件）。
+该行属 issue 10（CLI 入口，`Blocked by: 04, 05, 07, 09`；`python -m CharAgent.client` 尚不存在），已作为待办写进 [10-P0-acceptance-cli-demo.md](10-P0-acceptance-cli-demo.md)。复核结论：维持方案 A（loop 不加 `retry_policy=` 参数、不默认开启重试）—— 理由：默认开启会让每轮 `elapsed_ms` 含重试睡眠（可能提前触发 `TIME_LIMIT`），且与 loop 现有契约注释「模型调用失败直接抛出、本层不包装不吞」冲突；P1 server 要按 run/租户调策略时，入口一行也比 loop 参数更灵活。接线后的行为已由 `CharAgent/tests/test_retry_chat_model.py` 的两个 loop 组合用例覆盖（429 后仍以 final 收尾 / 耗尽则上抛且不发终局事件）。
 
 ### 10. 交付后 API 精化（2026-09-13）：on_retry 收序列
 

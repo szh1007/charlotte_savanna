@@ -34,6 +34,7 @@
 | `project/rag_knowledge/` | 子项目 | 工业级 RAG 知识库问答（LangGraph 双图 + Milvus + 评估体系） |
 | `project/rag_text2sql/` | 子项目 | RAG Text2SQL 查询智能体（LangGraph + Qdrant/ES + MySQL 双库 + Vue） |
 | `app/charplot/` + `project/charplot/` | 子项目 | AI 闯关学习网站（双后端: Django 账号/闯关规则 + FastAPI AI 能力 + Vue, 三件套实践） |
+| `CharAgent/` | 子项目 | 从零手写的 agent runtime 框架（P0 已交付: 模型/工具/loop/事件/重试/checkpoint/数据层 + CLI 演示, 不依赖 Django 与 server） |
 | `demo/` | 自学教程 | Python / LangChain / LangGraph / DeepAgents / FastAPI 教程 |
 
 ---
@@ -78,6 +79,7 @@ charlotte_savanna/
 │   ├── rag_knowledge/       # 工业级 RAG 知识库问答（LangGraph + Milvus + 评估体系）
 │   ├── rag_text2sql/        # RAG Text2SQL 查询智能体（LangGraph + Qdrant/ES + MySQL 双库）
 │   └── charplot/            # CharPlot AI 能力端（FastAPI + LangGraph/DeepAgents/LangChain + Vue）
+├── CharAgent/               # 从零手写的 agent runtime 框架（model/tool/agent/stream/hooks/retry/checkpoint/db + client）
 ├── templates/
 │   ├── minimall/            # 商城页面模板（base + partials）
 │   ├── charplot/            # report_share.html（/r/{slug} 公开分享页）
@@ -166,6 +168,20 @@ charlotte_savanna/
 - **后台分析**：掌握度矩阵 / 活动统计 / 易错清单（事实聚合）+ LLM 文字版状态总结 + 题目反馈标记
 - 详见 [`project/charplot/README.md`](project/charplot/README.md)
 
+### CharAgent — 从零手写的 agent runtime 框架（子项目）
+
+把主流 Agent 框架（LangChain / LangGraph / DeepAgents）封装起来的「模型 ↔ 工具」循环、状态管理、流式推送全部摊开手写一遍：模型接入、工具注册、并行执行、错误自纠错、循环防护、断点续跑、重试退避，全部可读、可测、可演示。**不依赖 Django / FastAPI**，纯 Python 库 + 一个命令行入口。
+
+- **模型层**：薄 `ChatModel` 协议（`generate(messages, tools) -> ModelResponse`）+ httpx 裸调与 openai SDK 双适配器（行为一致性由同一组契约测试约束，看清「SDK 帮我藏了什么」）
+- **工具层**：`@tool` 装饰器自动生成 JSON schema（pydantic 与手写 typing 双引擎对照）；工具失败给**可操作错误**（「order_no 应为 14 位数字」而非 422），模型据此自纠错
+- **主循环**：手写 while 循环 —— 模型决策 → 并行执行工具 → 结果回填 → 再决策；三种软限制刹车（轮数 / token / 时长）+ kill switch 即时打断；length 截断走续写或精简
+- **流式事件**：六类事件（thinking / tool_call / tool_result / reasoning / final / error）+ 序号 + 四条顺序不变量；hook 注册表五个触发点（空注册零开销）
+- **重试**：指数退避 + jitter，只重试瞬态错误（429 / 5xx / 超时），组合在协议层——loop 零改动
+- **断点续跑**：每轮落一帧快照，内存 / Redis（流式历史）/ Postgres（全历史）三实现配置切换；恢复时已完成的工具**不会重跑**，从老快照恢复还能岔出新分支
+- **数据层**：五实体（Thread / Run / Message / ToolCall / Checkpoint）+ 状态机规则 + 仓储，alembic 统一迁移
+- **CLI 演示**：`python -m CharAgent.client` 带工具问答端到端，事件流实时打在终端；Ctrl-C 打断后**已完成的工作会收回对话历史**，直接说一句「继续」就接着跑（`/resume` 则走快照恢复：计数器接续），快照后端三选一（P0 验收线）
+- 设计与难点文档见 [`CharAgent/docs/`](CharAgent/docs/)（DESIGN / 术语表 CONTEXT / design 01~05 / 7 个 ADR / 70 个编号难点）
+
 ### demo — 自学教程（非业务）
 
 Python 基础、LangChain 1.3、LangGraph 1.2、DeepAgents 0.7、FastAPI 的渐进式教程，仅作学习参考。另有 [`SUMMARY.md`](demo/SUMMARY.md)（知识点学习总结）。
@@ -204,6 +220,7 @@ cp .env.example .env               # 填入真实 API Key
 | rag_knowledge | `sh/rag_knowledge.sh`（8100, 无独立前端） | 内建页面 |
 | rag_text2sql | `sh/rag_text2sql_backend.sh` | `sh/rag_text2sql_frontend.sh` |
 | charplot | Django 主项目 `python manage.py runserver`（8000）+ `sh/charplot_backend.sh`（AI 端 8004） | `sh/charplot_frontend.sh`（9004） |
+| CharAgent | 仓库根 `python -m CharAgent.client`（命令行演示, 非常驻服务, 无脚本） | 无（终端界面） |
 
 所有子项目后端/前端脚本均在 `sh/` 目录；前端脚本首次运行自动执行 `npm install`（deep_search / menu 对应 `ui/` 目录，其余为 `frontend/`）。Django 主项目依赖 MySQL + Redis；charplot 额外依赖 Milvus + modelscope 本地模型。
 
@@ -215,9 +232,9 @@ cp .env.example .env               # 填入真实 API Key
 
 - **LLM（Chat）**：`DEEPSEEK_*`（含 `DEEPSEEK_MODEL_NAME`）
 - **LLM（Embedding）**：`CLOSEAI_*`
-- **数据库**：`MYSQL_*`（Django + demo）、`PGSQL_*`（PostgreSQL demo）
+- **数据库**：`MYSQL_*`（Django + demo）、`PGSQL_*`（PostgreSQL demo；CharAgent 的快照与数据层缺专用配置时回退用它们）
 - **缓存 / 向量**：`REDIS_URL`、`MILVUS_*`（`MILVUS_URL` / `MILVUS_DATABASE_NAME` / `MILVUS_COLLECTION_NAME`）
-- **子项目专用**：`MENU_*`（menu）、`DS_*`（deep_search）、`RK_*`（rag_knowledge）、`CHARPLOT_*`（charplot, 含 `CHARPLOT_MODELSCOPE_ROOT` 本地模型根与两端同值的 `CHARPLOT_INTERNAL_TOKEN`）；video_downloader 独立 `.env`（`MEMBER_KEY` / `BILI_COOKIE` / `LLM_*` / `ASR_*`）；rag_text2sql 不依赖 `.env`（配置在子项目 `conf/*.yaml`，本地私有不提交）
+- **子项目专用**：`MENU_*`（menu）、`DS_*`（deep_search）、`RK_*`（rag_knowledge）、`CHARPLOT_*`（charplot, 含 `CHARPLOT_MODELSCOPE_ROOT` 本地模型根与两端同值的 `CHARPLOT_INTERNAL_TOKEN`）、`CHARAGENT_*`（CharAgent：快照后端 `CHARAGENT_CHECKPOINT_*` + 数据层连接 `CHARAGENT_DB_*`）；video_downloader 独立 `.env`（`MEMBER_KEY` / `BILI_COOKIE` / `LLM_*` / `ASR_*`）；rag_text2sql 不依赖 `.env`（配置在子项目 `conf/*.yaml`，本地私有不提交）
 - **Django**：`DJANGO_*`
 - **外部服务**：`TAVILY_API_KEY`、`LANGSMITH_*`
 
