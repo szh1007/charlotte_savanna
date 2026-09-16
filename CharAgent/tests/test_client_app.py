@@ -8,6 +8,9 @@
 - 交互模式: 问一句 -> 答一句 -> /quit 退出; 四条命令各走各的; 不认识 /resume 的
   拼错时提示命令表而不把它发给模型; 多写的参数被点出来
 - 启动配置错 (缺 Key / 后端名不认识): 一行人话 + 退出码 1, 不出 traceback
+- **重试真的会在这条路上发生**: 只换掉 `chat_model_from_env` (最外层的生产工厂),
+  让模型先抛两次瞬态错 —— `build_model` / `RetryPolicy` / `on_retry` 全真跑,
+  断言跑完答上了 + `[retry]` 打了两行; 反面 `--no-retry` 一次就失败
 - _KillSwitch: SIGINT 到达时取消正在跑的任务并等它收尾 (kill switch, #3),
   之后事件循环仍可用 —— 这正是「打断后还能 /resume」的前提
 
@@ -32,7 +35,7 @@ from CharAgent.checkpoint import InMemoryCheckpointSaver
 from CharAgent.client import app
 from CharAgent.client.app import _KillSwitch, build_saver_for, main, parse_argv
 from CharAgent.client.utils.types import DEFAULT_THREAD_ID, CliOptions
-from CharAgent.model import HttpXChatModel, ModelConfigError
+from CharAgent.model import HttpXChatModel, ModelConfigError, ModelConnectionError
 from CharAgent.model.utils.types import FinishReason, ModelMessage, ModelResponse
 from CharAgent.retry import RetryingChatModel
 
@@ -507,6 +510,78 @@ def test_build_model_wraps_the_adapter_with_retry_by_default(
     assert isinstance(wrapped._model, HttpXChatModel), "包装里套的不是裸适配器"
     assert isinstance(bare, HttpXChatModel), "--no-retry 应当直接给裸适配器"
     assert not isinstance(bare, RetryingChatModel)
+
+
+class _FlakyModel:
+    """前 n 次抛瞬态错误, 之后原样转发给里面的替身 (模拟 429 / 5xx / 连接失败).
+
+    用 `ModelConnectionError` 而不是随便一个异常: 重试的判据是异常族自带的
+    `retryable` 标记, 抛错了类型就变成「永久错误不重试」, 用例会以错误的理由红.
+    """
+
+    def __init__(self, inner: Any, *, fail_times: int) -> None:
+        self._inner = inner
+        self._fail_times = fail_times
+        self.calls = 0
+
+    async def generate(self, *args: Any, **kwargs: Any) -> Any:
+        """前几次抛瞬态错, 之后放行 (记下被调用了几次)."""
+        self.calls += 1
+        if self.calls <= self._fail_times:
+            raise ModelConnectionError(f"模拟第 {self.calls} 次连接失败")
+        return await self._inner.generate(*args, **kwargs)
+
+    async def aclose(self) -> None:
+        """转发关闭 (谁建谁关)."""
+        await self._inner.aclose()
+
+
+def test_a_transient_failure_is_retried_during_a_real_run(
+    capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ticket 验收第 2 条的**端到端**证据: 重试真的在一次 CLI 运行里发生过.
+
+    为什么要单独一条: CLI 的端到端用例都注入 `model=` (ChatModel 薄协议那处缝),
+    而 `main()` 是 `model if model is not None else build_model(...)` —— **注入时
+    根本不走 `build_model`**, 于是重试包装在别的用例里一次都没被执行过.
+
+    已有一半覆盖救不了它: `test_build_model_wraps_...` 只断言对象形状,
+    `test_retry_chat_model.py` 测的是 `RetryingChatModel` 自己 (含 loop 组合),
+    都不经过 CLI 这一层装配.
+
+    做法: 只换最外层的生产工厂 `chat_model_from_env` —— 比注入 `model=` 更贴近
+    真实路径, `build_model` / `RetryPolicy` / `on_retry` 全都真跑.
+    """
+    flaky = _FlakyModel(MockLLM.fixed(text_response("重试之后答上了")), fail_times=2)
+    monkeypatch.setattr(app, "chat_model_from_env", lambda model=None: flaky)
+
+    code = main(["-q", "你好", "--backend", "memory"])
+    out = capsys.readouterr().out
+
+    assert code == 0, "重试之后本该正常答完"
+    assert flaky.calls == 3, "首次 + 两次重试 = 3 次调用"
+    assert out.count("[retry]") == 2, "两次重试各该打一行提示 (不打印用户只会觉得慢)"
+    assert "重试之后答上了" in out
+
+
+def test_no_retry_lets_the_transient_failure_fail_the_run(
+    capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--no-retry` 的反面: 同一个瞬态错误不再重试, 这一轮直接失败 (退出码 1).
+
+    两条合起来才说明白「重试是**这个开关**在管」—— 只测正面的话, 一个无条件
+    重试的实现也能过.
+    """
+    flaky = _FlakyModel(MockLLM.fixed(text_response("不该到这里")), fail_times=2)
+    monkeypatch.setattr(app, "chat_model_from_env", lambda model=None: flaky)
+
+    code = main(["-q", "你好", "--backend", "memory", "--no-retry"])
+    out = capsys.readouterr().out
+
+    assert code == 1
+    assert flaky.calls == 1, "关了重试就该只调一次"
+    assert "[retry]" not in out
+    assert "[失败] ModelConnectionError" in out
 
 
 def test_build_saver_for_falls_back_to_the_environment(

@@ -327,3 +327,31 @@ prompt 配置化，与 §4.7 那条一起）。
 
 **历史记录的处理**：本文档与 issue 06 / 08、`PRD.md`、`issue10-P0-to-P1_P2.md` 里的旧路径**已按新名
 订正**（读者照着找得到文件），改名这件事本身记在本节，不散落在各处的历史叙述里。
+
+#### I. 补上「重试在 CLI 里真的发生过」的端到端证据（用户复核，2026-09-16）
+
+**用户的疑问**：终端跑 `python -m CharAgent.client` 到底有没有带重试？
+
+**答复：带了** —— `__main__.py` 调 `main()` 不传参 → `model=None` → `model if model is not None
+else build_model(...)` → `build_model` 默认返回 `RetryingChatModel`（`--no-retry` 才关）。
+手工探针实测：让模型前 2 次抛 `ModelConnectionError`，跑完 **3 次调用 / 2 行 `[retry]`（退避
+0.4s → 0.7s）/ 退出码 0**；`--no-retry` 时 **1 次调用 / 退出码 1**。
+
+**但验收确实缺了一环**（用户追问逼出来的）：CLI 的端到端用例**全都注入 `model=`**，而
+`main()` 在注入时**根本不走 `build_model`** —— 于是重试包装在那些用例里一次都没被执行。
+原有的两半覆盖救不了它：
+
+| 已有 | 覆盖到哪 |
+|------|---------|
+| `test_build_model_wraps_the_adapter_with_retry_by_default` | 只断言**对象形状**（直接调 `build_model`） |
+| `test_retry_chat_model.py` 12 例 | `RetryingChatModel` 自己 + loop 组合，不经过 CLI 装配 |
+
+**补了 2 例**（`test_client_app.py`）：只换最外层的 `chat_model_from_env`（比注入 `model=`
+更贴近真实路径，`build_model` / `RetryPolicy` / `on_retry` 全真跑）—— 正面「前 2 次失败仍答完
++ `[retry]` 两行」，反面「`--no-retry` 一次就失败」。
+
+**变异验证（关键）**：把 `main()` 改成 `... else chat_model_from_env(...)`（绕过 `build_model`）
+—— `test_build_model_wraps_...` **照过**（它直接调 `build_model`，不知道 `main()` 已经不用它了），
+只有新用例红（`assert 1 == 0`）。**这就是原有覆盖漏掉的那一格：形状对 ≠ 装配用上了。**
+
+全量 **732 passed**（+2）。
