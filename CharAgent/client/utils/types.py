@@ -17,13 +17,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-# 默认会话编号: 固定值才能跨进程接着跑 (Ctrl-C 退出后重开 --resume 的常用场景);
-# 想开一段新会话用 --thread-id 换一个 (标识符规则由 checkpoint 的 check_identifier 管)
+# 默认会话编号: 固定值才能跨进程接着跑 (Ctrl-C 退出后重开 --resume 的常用场景;
+# 前提是后端为 redis / postgres —— 默认的 memory 版进程退出即丢, 谈不上跨进程);
+# 想开一段新会话用 --thread-id 换一个 (标识符规则由 checkpoint 的 check_identifier 管).
 #
-# 值里的 "cli" 不是包名残留, 是**存档主键**: 包已改名 client, 但这个字符串改了
-# 会让此前用默认编号存下的快照再也找不到 (load_latest 按 thread_id 分区取).
-# 要改得连着迁移旧档, 不是改个字符串的事 —— 所以刻意留原样.
-DEFAULT_THREAD_ID = "cli-main"
+# 它是**存档主键**, 与包名没有绑定关系 (只是恰好同名). 改主键的代价只有一条:
+# 旧主键下的档默认取不到了 —— 2026-09-18 前默认值是 "cli-main", 要取那之前存下的
+# 档加 `--thread-id cli-main`. 不存在「数据丢了」或「要迁移旧档」这回事.
+DEFAULT_THREAD_ID = "client-main"
 
 
 @dataclass(frozen=True, slots=True)

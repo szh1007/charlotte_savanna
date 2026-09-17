@@ -1,10 +1,12 @@
 # issue10 — P0 → P1/P2 交接清单
 
-> **这是什么**：issue 10（P0 验收线）实施期间，对 issue 01~09 做了一次「当时说要做的，现在到底做了没有」的全量复核。本文档收两类东西：
+> **这是什么**：issue 10（P0 验收线）实施期间，对 issue 01~09 做了一次「当时说要做的，现在到底做了没有」的全量复核。本文档收三类东西：
 > 1. **P0 范围内但当时漏做、已在本轮闭环的**（§1，备案用 —— 证明「遗留」不是被无声吞掉）；
-> 2. **P0 阶段做不到、需要 P1/P2 支持的**（§2~§4，逐条写明为什么不在 P0、归哪个 issue、落地时要接哪根线）。
+> 2. **P0 阶段做不到、需要 P1/P2 支持的**（§2~§4，逐条写明为什么不在 P0、归哪个 issue、落地时要接哪根线）；
+> 3. **P0 已建好规则、但零真实调用方 / 零真实产生者的路径**（§5，P1 接线时补端到端验证）。
 >
 > **编制**：2026-09-15 | **触发**：issue 10 ticket 第 3 条「之前遗漏的所有属于 P0 的问题都需要闭环」+ 第 4 条「issue10 阶段没法完成的，记录在此」。
+> **修订**：2026-09-18 补 §5（预埋路径待验证清单）—— 用户在复核 `conversation_turns` 与 `_complete_pending_turn` 时发现两条「有规则没调用方 / 有路径没产生者」的路径，当时只被当作「已备好的接口」列出，未记为待验证项。
 > **复核方式**：逐条读 issue 01~09 的 Comments / 遗留 / 未采纳章节，去代码里核实（不是读文档下结论）；全仓 `TODO` / `FIXME` / `HACK` / `NotImplementedError` 命中数为 **0**，无真占位。
 
 ---
@@ -20,9 +22,9 @@ P0 的验收三件套（带工具的 agent loop 跑通 / checkpoint 断点续跑
 | # | 遗漏项 | 出处（谁何时记的） | 本轮怎么闭环 |
 |---|--------|-------------------|-------------|
 | 1 | `python -m CharAgent.client` 不存在 | issue 10 本体；`DESIGN.md` 运行入口表与 `05-roadmap.md` 验收行都标着「尚未交付」 | 新建 `CharAgent/client/`（app / session / render + utils），交付 CLI 全部五条验收 |
-| 2 | 根门面只导出 model + tool，缺 6 个包 | issue 05 §9 · 06 §9 · 07 §8 · 08 §5 **四处**都写「同批处理」 | `CharAgent/__init__.py` 汇聚八包共 137 个名字；加 `tests/test_root_facade.py` 防漂移（子包 `__all__` 有而根门面没有 → 红） |
+| 2 | 根门面只导出 model + tool，缺 6 个包 | issue 05 §9 · 06 §9 · 07 §8 · 08 §5 **四处**都写「同批处理」 | `CharAgent/__init__.py` 汇聚九包共 140 个名字；加 `tests/test_root_facade.py` 防漂移（子包 `__all__` 有而根门面没有 → 红） |
 | 3 | `retry/` 生产调用点为零 | issue 06 §9「接线状态（2026-09-12 复核）」 | `client/app.py::build_model` 里 `RetryingChatModel(chat_model_from_env(), policy=RetryPolicy(), on_retry=[...])` —— 正是 issue 06 指名的那一行；`--no-retry` 保留对照路径 |
-| 4 | `AgentLoop` 生产调用点为零（只在测试与 docstring 里出现） | issue 06 §9 复核结论 | `client/session.py::ChatSession` 构造 loop —— 八包第一次被生产代码装配起来 |
+| 4 | `AgentLoop` 生产调用点为零（只在测试与 docstring 里出现） | issue 06 §9 复核结论 | `client/session.py::ChatSession` 构造 loop —— 九包第一次被生产代码装配起来 |
 | 5 | `.env.example` 零 `CHECKPOINT_*` / `MODELS_*` | issue 10 审计（2026-09-15） | 模板补全 9 个变量 + 注释说明三后端差别；加 `tests/test_env_template.py` 用配置模块里的常量名比对模板（防再漂）。**2026-09-15 用户要求**：这 9 个变量全部加 `CHARAGENT_` 前缀（与其他子项目的 `CHARPLOT_*` / `RK_*` / `MENU_*` 同一套命名法），其中 `MODELS_DSN` / `MODELS_ECHO` 词干一并改为 `DB_`（与 issue 08 把 `models/` 包改名 `db/` 对齐，避免与 `model/`（LLM 层）混淆） |
 | 6 | `checkpoint/utils/history.py` 的 `format_history` 零生产调用点（issue 07 自己立过「不给没人调的接口」的规矩） | issue 07 §10 交付了视图但没人用 | CLI 的 `/history` 与 `--history` 用它渲染存档表 |
 | 7 | `DESIGN.md` 目录结构表无 `client/` 行 | issue 10 审计 | 补 `client/` 行 + P0 产出物清单 + 快速开始加 CLI 命令块 |
@@ -32,7 +34,7 @@ P0 的验收三件套（带工具的 agent loop 跑通 / checkpoint 断点续跑
 | 11 | `PRD.md` 的「当前状态」写「代码零实现，P0 尚未开工」 | PRD §1 | 更新为 P0 已交付并验收；框架层清单补 `client/` |
 | 12 | 打断之后说「继续」不会接着跑，进度悄悄丢 | 用户复核（2026-09-15）：「能不能通过输入『继续』『刚才不小心中断任务了，继续刚才的任务』继续没完成的任务」 | 原本这句走 `_ask`，而那条提问在打断时已撤回 —— 模型只看到光秃秃一个「继续」，于是另起炉灶（用户以为在续跑，进度其实丢了）。最终做法**不是**加意图识别，而是**把上下文备齐**：失败路径上去快照把已完成的工作收回会话历史（`ChatSession._reclaim_progress`），于是「继续」就是一条普通提问，模型自己接得上。边界见 §4.7 |
 
-**未闭环但已有明确归属的**（不算漏，只是没到）：见 §2~§4。
+**未闭环但已有明确归属的**（不算漏，只是没到）：见 §2~§5。
 
 ---
 
@@ -184,7 +186,7 @@ P0 的验收三件套（带工具的 agent loop 跑通 / checkpoint 断点续跑
 
 ### 4.3 CLI 不做多会话管理
 
-`--thread-id` 换会话，默认固定 `cli-main`。不做「会话列表 / 切换 / 删除」—— 那是 P1 server + 前端的事（`db.repositories.threads.list_threads` 已备 `user_id` 过滤）。CLI 的定位是**框架验收演示**，不是终端版聊天产品。
+`--thread-id` 换会话，默认固定 `client-main`（2026-09-18 前是 `cli-main`）。不做「会话列表 / 切换 / 删除」—— 那是 P1 server + 前端的事（`db.repositories.threads.list_threads` 已备 `user_id` 过滤）。CLI 的定位是**框架验收演示**，不是终端版聊天产品。
 
 ### 4.4 CLI 的退出码只有三档
 
@@ -229,7 +231,22 @@ P0 不处理这个窗口，因为演示工具是微秒级纯函数（`get_curren
 
 ---
 
-## 5. 本轮已知的环境性事项
+## 5. 预埋路径待验证清单（P1 接线时补端到端）
+
+**这是什么**：P0 有几条路径属于「**规则 / 机制先定死，调用方后到**」—— 单元用例全绿，但**零真实调用方**或**零真实产生者**。用例能证明「按设计工作」，证明不了「设计跟真实调用方式对得上」；后者只有接线时拿真实数据走一遍才会暴露。逐条列清，P1 开工时对照着走。
+
+| # | 路径 | 现状（2026-09-18 核实） | 谁来接 | 接线时第一次面对的问题 | 该补的端到端用例 |
+|---|------|----------------------|--------|----------------------|----------------|
+| 1 | `db.conversation.conversation_turns` 的 `since` 参数 | **零调用方**：`CharAgent/` 下的出现全是门面导出（`db/__init__.py` 的 import 与 `__all__`）与 docstring 示例，唯一的执行方是测试。注意口径 —— `db` **包**本身有真实调用方（`checkpoint/postgres.py` 用 `PgDatabase`），零调用方的只是 `MessagesRepository` / `conversation_turns` 这一条链 | P1-1（`GET /threads/{id}/messages`） | 「跑之前历史有多长」这个 `prior_len` 从哪来、算得准不准。传对 → 只收新增那段；传 0 → 老消息会被重写一遍，且切片里若有多个 `user`，前面几问会落库成「没答出来」（`answer=None`，见 `TurnPair` 的边界说明） | 跑两轮 → 查库 → 断言会话里**恰好两条问答、无重复行** |
+| 2 | `agent.loop._complete_pending_turn` / `_response_for_pending`（挂起点补做） | **零产生者**：`state.suspension` 在生产代码里**零赋值点**（`checkpoint/serialization.py` 与 `checkpoint/utils/history.py` 只在读它）；`CheckpointSource.SUSPENSION` 唯一的写入点是 resume 分支给自己补做完的那一帧打的标签；测试里的挂起帧是 `test_checkpoint_resume.py::save_suspended_checkpoint` **手拼**出来的 | P1-7（HITL 人工审批） | 审批前**在哪一行落帧**、谁写 `state.suspension`、写什么。落帧点决定补做范围 —— 落早了会把已执行的工具当成欠账重跑；落晚了则该轮的 `tool_call` 与结果都没进过快照（与 §4.8 是同一个窗口） | 真造一次挂起（审批前落帧 + 真走 `resume`）→ 断言工具**只执行一次**、`turn_count` 接续、新帧 `parent_id` 指向挂起帧 |
+
+**两条的共同形状**：有规则、没调用方；有路径、没产生者。**都不是 bug** —— P0 把规则先钉死，正是为了 P1 接线时不用回头改 P0（§2 各表的「P0 已备好的接口」列就是这个承诺）。代价是验证只能做到单元层：用例能钉住「实现与设计一致」，钉不住「设计与真实调用方式一致」。
+
+**与 §4.8 的汇合点**：§4.8 讲「打断落在工具执行期间，那一轮整个丢弃」，与第 2 条是**同一个落点**。P1 接 HITL 时，`resume` 补做挂起调用之前必须先查幂等表（§4.8 末段给了三个改动点：`tool/executor.py` 记录键 → 快照挂起点带上它 → `resume` 补做前先查），否则审批通过后的补做会把副作用工具跑第二遍。
+
+---
+
+## 6. 本轮已知的环境性事项
 
 | 项 | 状态 | 说明 |
 |----|------|------|

@@ -181,6 +181,8 @@ CharAgent/
 │                               #     schema(表定义唯一来源) / entities(五实体) / state(状态机)
 │                               #     / conversation(消息分层) / database(连接与事务) / config / errors
 │                               #     + repositories/(threads / runs / messages / tool_calls)
+├── prompt/                     # P0+ 提示词集中存放: templates/*.prompt + load_prompt() 按名加载
+│                               #     （P0 验收后补, 2026-09-18; 框架机制文本如截断指令刻意留原处）
 ├── alembic/                    # P0  迁移: alembic.ini + env.py + versions/（只追加，不改写历史）
 ├── guard/                      # P1  输入/输出护栏 + 脱敏 + HITL + 审计
 ├── ratelimit/                  # P1  限流算法（固定/滑动窗口 + 令牌桶/漏桶）

@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -112,7 +112,7 @@ class PgDatabase:
         return self._engine
 
     @asynccontextmanager
-    async def connect(self) -> AsyncIterator[Session]:
+    async def connect(self) -> AsyncGenerator[Session]:
         """开一次事务 (正常退出提交, 抛异常回滚), 交出 SQLAlchemy 的 Session.
 
         Yields:
@@ -172,6 +172,11 @@ class PgDatabase:
         `create_all` 自带 `checkfirst` (先查存在性再建), 于是重复调用安全;
         它还会按外键依赖排好建表顺序, 不用手工维护.
 
+        一个前提: **这一批表共用同一个 metadata** —— 建表顺序与外键解析都由
+        `metadata` 完成, 所以本方法取第一张表所属的那个容器来干活. 混着传两个
+        metadata 的表: 有外键关联时直接报 `NoReferencedTableError` (点名找不到
+        的那张表), 不会静默建错; 无外键则各建各的, 无害.
+
         与 alembic 的分工: 这个方法只保证**表在**, 让本包能独立跑起来 (测试、
         本机演示); 线上环境的表结构演进归 `alembic/` 的迁移脚本管. 两边用的是
         同一份表定义 (schema.py) —— 迁移的 autogenerate 以它为基准, 而**已发布
@@ -192,11 +197,13 @@ class PgDatabase:
         picked = list(tables)
         if not picked:
             return
-        metadata = picked[0].metadata
+        # 从表自己身上问出它属于哪个 metadata: 连接层因此不必 import schema
+        # (不反向依赖表定义层), 拿别的 metadata 的表进来也能用
+        tables_shared_metadata = picked[0].metadata
 
         def run() -> None:
             with self.engine().begin() as connection:
-                metadata.create_all(connection, tables=picked)
+                tables_shared_metadata.create_all(connection, tables=picked)
 
         try:
             await asyncio.to_thread(run)

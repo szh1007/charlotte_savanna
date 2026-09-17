@@ -1,11 +1,12 @@
-"""CharAgent: 从零手写 AI Agent 运行时框架 (P0 八个包, 公共 API 汇聚导出).
+"""CharAgent: 从零手写 AI Agent 运行时框架 (九个包, 公共 API 汇聚导出).
 
 一句话理解: 本文件是**框架的门脸** —— 想用这个框架的人只 import 一次
 `CharAgent`, 就能拿到全部对外公共 API, 不必记住「哪个东西在哪个子包里」.
 各子包自己也各有一份门面 (`CharAgent.checkpoint.__all__` 等), 本文件是它们的
 合集, 不新造 API.
 
-汇聚的八个 P0 包 (职责与依赖方向见 docs/DESIGN.md 的目录结构表):
+汇聚的九个包 (P0 的八个 + 后来补的 `prompt`; 职责与依赖方向见
+docs/DESIGN.md 的目录结构表):
 
 | 包 | 一句话 |
 |----|--------|
@@ -17,6 +18,7 @@
 | `retry` | 重试退避 + 幂等键 (包在 ChatModel 协议层, loop 零改动) |
 | `checkpoint` | 快照序列化协议 + 内存 / Redis / Postgres 三实现 + 断点续跑 |
 | `db` | 五实体数据模型 + 表定义 + alembic 迁移 + 仓储 |
+| `prompt` | 提示词集中存放与按名加载 (`templates/*.prompt` + `load_prompt`) |
 
 两条刻意的排除 (不是漏了):
 
@@ -159,6 +161,15 @@ from CharAgent.model import (
     openai_chat_model_from_env,
 )
 
+# --- prompt: 提示词集中存放与按名加载 (difficulties #69) -------------------
+from CharAgent.prompt import (
+    PromptError,
+    PromptNotFoundError,
+    PromptVariableError,
+    load_prompt,
+    resolve_model_name,
+)
+
 # --- retry: 重试退避 + 幂等键 (issue 06) -----------------------------------
 from CharAgent.retry import (
     ClaimResult,
@@ -276,6 +287,9 @@ __all__ = [
     "PgDatabase",
     "PgRepository",
     "PostgresCheckpointSaver",
+    "PromptError",
+    "PromptNotFoundError",
+    "PromptVariableError",
     "RedisCheckpointSaver",
     "RetryAttempt",
     "RetryCallback",
@@ -324,6 +338,7 @@ __all__ = [
     "execute_tool",
     "format_history",
     "is_retryable",
+    "load_prompt",
     "messages",
     "metadata",
     "migrate_body",
@@ -331,6 +346,7 @@ __all__ = [
     "openai_chat_model_from_env",
     "pending_tool_calls",
     "postgres_dsn",
+    "resolve_model_name",
     "retry_async",
     "run_status_for_outcome",
     "runs",

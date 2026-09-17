@@ -1,6 +1,6 @@
 """ChatSession: 一次 CLI 会话 —— 把框架零件装配成一台能问答的机器 (issue 10).
 
-一句话理解: 本文件是「接线」的那一页. 前面八个包各自造好了零件 (模型适配器、
+一句话理解: 本文件是「接线」的那一页. 前面九个包各自造好了零件 (模型适配器、
 重试包装、工具集、agent loop、快照存储), 但零件之间谁跟谁连、按什么参数连,
 一直没有一个**生产调用点** —— 之前只有测试在组装它们 (issue 06 §9 记的就是
 这件事). ChatSession 就是那个调用点: 一次装配, 之后只问不管.
@@ -45,6 +45,7 @@ from CharAgent.checkpoint import (
 from CharAgent.client.utils.types import DEFAULT_THREAD_ID
 from CharAgent.model.protocol import ChatModel
 from CharAgent.model.utils.types import ModelMessage
+from CharAgent.prompt import load_prompt, resolve_model_name
 from CharAgent.stream.utils.types import EventSink
 from CharAgent.tool import Tool
 from CharAgent.tool.tools_demo import (
@@ -69,25 +70,6 @@ DEMO_TOOLS: tuple[Tool, ...] = (
     query_order_status,
 )
 
-# 会话开头的身份说明 (system 消息, 演示用).
-#
-# 为什么需要: 模型对自己是什么模型**没有内省能力** —— 看不到自己的权重、版本、
-# 部署信息. 问它「你的底层模型是什么」, 它做的事和回答别的问题一样: 从训练语料里
-# 续写一句最像的话. 而语料里塞满了 ChatGPT / Claude 的对话文本 (被大量转载),
-# 于是它经常脱口而出「我是 Claude」—— 与真实后端无关, 不是串台.
-#
-# 给一条 system 说明是最直接的修法 (Claude Code 这类产品都这么做: 身份写在
-# system prompt 里, 模型照着念). 不写的话会话历史第一条就是用户的提问, 模型手里
-# 一点依据都没有, 答案只能靠语料里的印象随机漂.
-#
-# 定位: **演示用的最小身份说明**, 只交代「你是谁 + 跑在什么模型上」, 不掺人设与
-# 业务规则 —— 那些属 P1 的 prompt 配置化, 到那时这条会被配置项取代.
-IDENTITY_PROMPT = (
-    "你是 CharAgent 的命令行演示助手 (CharAgent 是一个从零手写的 agent runtime "
-    "框架). 你底层使用 DeepSeek 提供的模型. 被问到身份或底层模型时照实说明, "
-    "不要自称其他厂商的模型."
-)
-
 
 class ChatSession:
     """一次 CLI 会话: 一个 loop + 一个存储 + 一段不断变长的对话历史 (issue 10).
@@ -103,6 +85,9 @@ class ChatSession:
             没有它本类的一半方法无从谈起, 所以不给默认值.
         tools: 开放给模型的工具集, None 表示不开放工具 (纯聊天).
         thread_id: 会话编号 (快照按它分区); 同一个编号才能跨进程接着跑.
+        model_name: 实际生效的模型名 (写进身份说明). None 表示按
+            `--model` → `.env` 的 DEEPSEEK_MODEL_NAME → 默认值 的次序解析
+            (见 resolve_model_name).
         event_sink: 事件出口 (CLI 传 EventPrinter; 测试传收集器). None 表示
             不接出口 —— 事件仍会触发 hooks, 只是没人接收.
         guard: 循环软限制; None 表示 LoopGuard() 默认 (max_turns=10).
@@ -123,6 +108,7 @@ class ChatSession:
         saver: CheckpointSaver,
         tools: Sequence[Tool] | None = None,
         thread_id: str = DEFAULT_THREAD_ID,
+        model_name: str | None = None,
         event_sink: EventSink | None = None,
         guard: LoopGuard | None = None,
         max_tokens: int | None = None,
@@ -131,6 +117,8 @@ class ChatSession:
         self._model = model
         self._saver = saver
         self._thread_id = thread_id
+        # 身份说明里要写它, 所以装配时就定下来 (值必须跟实际跑的模型一致)
+        self._model_name = resolve_model_name(model_name)
         self._loop = AgentLoop(
             model,
             tools,
@@ -146,10 +134,10 @@ class ChatSession:
         # 已完成的工作 (见 _reclaim_progress) —— 两条路都让「上一轮做过什么」
         # 留在历史里, 模型下一轮就看得到.
         #
-        # 开头固定一条身份说明 (system): 模型不会「查自己是什么模型」, 不告诉它
-        # 就只能靠语料印象瞎猜 —— 原因见 IDENTITY_PROMPT 的注释.
+        # 会话历史的第一条恒为身份说明 (system)
+        system_prompt = load_prompt("system", model_name=self._model_name)
         self._history: list[ModelMessage] = [
-            {"role": "system", "content": IDENTITY_PROMPT}
+            {"role": "system", "content": system_prompt}
         ]
 
     # ------------------------------------------------------------------
@@ -160,6 +148,14 @@ class ChatSession:
     def thread_id(self) -> str:
         """本会话的编号 (快照按它分区)."""
         return self._thread_id
+
+    @property
+    def model_name(self) -> str:
+        """实际生效的模型名 (身份说明里写的就是它).
+
+        启动横幅与身份说明都从这一个值取 —— 两处各读一次 env 迟早会不一致.
+        """
+        return self._model_name
 
     @property
     def tool_names(self) -> tuple[str, ...]:
@@ -193,7 +189,7 @@ class ChatSession:
     def history(self) -> list[dict]:
         """当前对话历史 (wire 消息的浅拷贝: 调用方拿去展示可以, 改它不影响会话).
 
-        第一条恒为身份说明 (system, 见 IDENTITY_PROMPT); 之后是「用户问 + 模型答」
+        第一条恒为身份说明 (system, 来自 `system.prompt`); 之后是「用户问 + 模型答」
         加上中间的 tool 消息 —— 原样是发给模型的形状, 拿去做任何展示前先想清楚
         要不要滤掉 system 与 tool.
 

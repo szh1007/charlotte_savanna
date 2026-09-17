@@ -21,7 +21,7 @@ import pytest
 
 import CharAgent
 
-# 汇聚进根门面的框架包 (八层; client 刻意不在内, 见根门面 docstring)
+# 汇聚进根门面的框架包 (九层; client 刻意不在内, 见根门面 docstring)
 FRAMEWORK_PACKAGES = (
     "model",
     "tool",
@@ -31,6 +31,7 @@ FRAMEWORK_PACKAGES = (
     "retry",
     "checkpoint",
     "db",
+    "prompt",
 )
 
 # 同名遮蔽: 装饰器 `tool` 只能在 CharAgent.tool 里取 (见模块 docstring)
@@ -70,7 +71,7 @@ def test_root_all_has_no_duplicates_and_no_ghosts() -> None:
 
 
 def test_package_facades_do_not_collide_with_each_other() -> None:
-    """八层之间不许有同名 API —— 根门面是它们的合集, 重名会让先导入的胜出."""
+    """九层之间不许有同名 API —— 根门面是它们的合集, 重名会让先导入的胜出."""
     seen: dict[str, str] = {}
     collisions: list[str] = []
     for package in FRAMEWORK_PACKAGES:

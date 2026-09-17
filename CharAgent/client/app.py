@@ -89,7 +89,7 @@ _STARTUP_ERRORS: tuple[type[Exception], ...] = (
 )
 
 # 交互模式的提示符与欢迎语 (PROMPT 单独拎出来: 测试要按它比对)
-PROMPT = "你 > "
+PROMPT = "client > "
 
 _EPILOG = """\
 演示脚本 (P0 验收线要的三件事):
@@ -442,8 +442,8 @@ class _Repl:
             if self._dispatch(text):
                 break
         self._writer(
-            f"再见. 会话 {self._session.thread_id} 的存档已留在 "
-            f"{self._session.saver_name} 里, --resume 可以接着跑"
+            f"\n再见. 会话 {self._session.thread_id} 的存档已留在 "
+            f"{self._session.saver_name} 里, --resume 可以接着跑\n",
         )
         return 0
 
@@ -526,13 +526,15 @@ class _Repl:
         ]
         return "\n".join(
             [
+                "",
                 "CharAgent CLI (P0 验收演示)",
-                f"  模型: {self._options.model_name or '按 .env'} · "
+                f"  模型: {self._session.model_name} · "
                 f"工具: {len(self._session.tool_names)} 个 · "
                 f"轮数上限: {self._options.max_turns}",
                 f"  会话: {self._session.thread_id} · "
                 f"快照: {self._session.saver_name} ({', '.join(traits)})",
-                "  输入 /help 看命令; Ctrl-C 打断后说一句「继续」就能接着跑",
+                "  输入 /help 查看指令集; Ctrl-C 打断 RUN 后说一句「继续」即可续跑",
+                "",
             ]
         )
 
@@ -548,9 +550,6 @@ def _interactive_help() -> str:
             "  /help     显示这份帮助",
             "  /quit     退出 (/exit 与 /q 也行 —— 命令都要带前导斜杠)",
             "",
-            "想看「不重复已完成动作」: 问一个要调工具的问题, 等屏幕打出 tool_result",
-            "(工具已执行完) 再按 Ctrl-C, 然后说一句「继续」—— 已完成的工作已收回"
-            "对话历史, 那个工具不会重跑.",
         ]
     )
 
@@ -605,6 +604,7 @@ def main(
             saver=build_saver_for(options),
             tools=DEMO_TOOLS,
             thread_id=options.thread_id,
+            model_name=options.model_name,
             event_sink=printer,
             guard=LoopGuard(max_turns=options.max_turns),
             max_tokens=options.max_tokens,

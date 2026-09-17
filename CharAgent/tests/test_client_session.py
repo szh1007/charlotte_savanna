@@ -27,8 +27,9 @@ from doubles import FakeRedisClient
 from mock_llm import MockLLM, make_tool_call, text_response, tool_call_response
 
 from CharAgent.checkpoint import InMemoryCheckpointSaver, RedisCheckpointSaver
-from CharAgent.client.session import DEMO_TOOLS, IDENTITY_PROMPT, ChatSession
+from CharAgent.client.session import DEMO_TOOLS, ChatSession
 from CharAgent.model.utils.types import ModelMessage, ModelResponse
+from CharAgent.prompt import load_prompt
 from CharAgent.tool import Tool, tool
 
 # 工具调用记录 (数「工具到底跑了几次」—— 续跑用例的关键证据)
@@ -52,8 +53,8 @@ ECHO_TOOL: Tool = echo  # @tool 装饰器把函数换成了 Tool 对象
 def dialogue(messages: list[ModelMessage]) -> list[ModelMessage]:
     """摘掉开头的身份说明, 只看真正的对话部分.
 
-    会话历史的第一条恒为 `session.IDENTITY_PROMPT` (system 消息), 它由
-    test_history_starts_with_the_identity_prompt 单独盯着; 别的用例关心的是
+    会话历史的第一条恒为身份说明 (system 消息, 正文来自 `system.prompt`),
+    它由 test_history_starts_with_the_identity_prompt 单独盯着; 别的用例关心的是
     「用户问 / 模型答 / 工具结果」长什么样, 带着那一条读起来全是噪音.
     """
     return [message for message in messages if message.get("role") != "system"]
@@ -64,6 +65,7 @@ def make_session(
     *,
     saver: Any | None = None,
     thread_id: str = "client-test",
+    model_name: str | None = None,
     tools: list[Tool] | None = None,
 ) -> ChatSession:
     """造一个会话 (存储不指定时给内存版; 工具不指定时给回显工具)."""
@@ -72,6 +74,7 @@ def make_session(
         saver=saver if saver is not None else InMemoryCheckpointSaver(),
         tools=[ECHO_TOOL] if tools is None else tools,
         thread_id=thread_id,
+        model_name=model_name,
     )
 
 
@@ -101,8 +104,11 @@ def test_history_starts_with_the_identity_prompt() -> None:
     """
     session = make_session(MockLLM.fixed(text_response("好的")))
 
-    assert session.history[0] == {"role": "system", "content": IDENTITY_PROMPT}
-    assert IDENTITY_PROMPT.strip(), "身份说明不能是空的"
+    assert session.history[0] == {
+        "role": "system",
+        "content": load_prompt("system", model_name=session.model_name),
+    }
+    assert load_prompt("system", model_name="any-model").strip(), "身份说明不能是空的"
 
 
 async def test_the_model_receives_the_identity_prompt() -> None:
@@ -114,8 +120,20 @@ async def test_the_model_receives_the_identity_prompt() -> None:
 
     assert model.calls[0]["messages"][0] == {
         "role": "system",
-        "content": IDENTITY_PROMPT,
+        "content": load_prompt("system", model_name=session.model_name),
     }
+
+
+def test_identity_prompt_carries_the_configured_model_name() -> None:
+    """身份说明里写的是**实际生效**的模型名 (--model 优先于 .env).
+
+    钉住「prompt 说的 = 实际跑的」: 两处若各读一次配置, 迟早各说各话 —— 而这段
+    prompt 唯一的职责就是照实说明身份.
+    """
+    session = make_session(MockLLM.fixed(text_response("好的")), model_name="cli-model")
+
+    assert session.model_name == "cli-model"
+    assert "cli-model" in session.history[0]["content"]
 
 
 async def test_second_ask_carries_the_first_answer_to_the_model() -> None:

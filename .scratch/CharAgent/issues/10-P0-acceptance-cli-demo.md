@@ -79,7 +79,7 @@ ticket 第 3 条要求「之前遗漏的所有属于 P0 的问题都需要闭环
 | 6 | `PRD.md` 「当前状态」写「代码零实现，P0 尚未开工」 | 本轮审计 |
 
 **加了两条防漂移用例**（比再写一遍待办管用）：
-- `tests/test_root_facade.py` —— 子包 `__all__` 里的每个名字，根门面必须有且是同一对象；八层之间不许同名。
+- `tests/test_root_facade.py` —— 子包 `__all__` 里的每个名字，根门面必须有且是同一对象；九层之间不许同名。
 - `tests/test_env_template.py` —— 拿 `checkpoint.config` / `db` 里声明的常量名去比对 `.env.example`，模板漏写就红。
 
 ### 6. 落盘中实测到的一个真 bug（已修）
@@ -288,16 +288,17 @@ Ctrl-C」挂到事件循环上）—— 打断位置因此是确定的，不靠 
 的」，而语料里 ChatGPT/Claude 的对话被大量转载，于是脱口而出。同一问题两次提问
 （一次答 Claude、一次答 DeepSeek）即证明它在生成而非读取。
 
-**修法**：`client/session.py` 加模块常量 `IDENTITY_PROMPT`，`ChatSession._history` 起始就
-带这条 system 消息。这行**不是**权宜之计——Claude Code 这类产品都这么做（身份写在
+**修法**：`ChatSession._history` 起始就带这条 system 消息，正文来自提示词文件
+（`CharAgent/prompt/templates/system.prompt`，经 `load_prompt("system", ...)` 渲染）。这行**不是**权宜之计——Claude Code 这类产品都这么做（身份写在
 system prompt 里，模型照着念）；不写的话会话历史第一条就是用户提问，模型手里毫无依据。
 
 **实测**：连问三次「你的底层模型是什么」，三次都答「CharAgent 演示助手 + DeepSeek 提供的
 模型」，且能说清「框架 + 模型」的分工。
 
-**已知局限**：`IDENTITY_PROMPT` 里写死了 DeepSeek。用 `--model` 换后端时这句话会失真
-—— 要做得更准，应把模型名从 `CliOptions` 传进 `ChatSession` 再拼进提示词（属 P1 的
-prompt 配置化，与 §4.7 那条一起）。
+**已知局限**（**2026-09-18 已解决**）：原先是提示词里写死 DeepSeek，用 `--model` 换
+后端时这句话会失真。现在模型名由 `CliOptions` 传进 `ChatSession`（`resolve_model_name`
+按 `--model` → `.env` → 默认值 解析），提示词本身也搬到了
+`CharAgent/prompt/templates/system.prompt` 按名加载 —— 说的与实际跑的一致。
 
 **测试**：`test_history_starts_with_the_identity_prompt` + `test_the_model_receives_the_identity_prompt`
 （后者钉「真的发给了模型，不只是躺在会话历史里」）；另有一批断言按新形状调整（会话历史
@@ -313,11 +314,11 @@ prompt 配置化，与 §4.7 那条一起）。
 `CLAUDE.md` / `README.md` / `CharAgent/docs/*` / `.scratch/CharAgent/*` 里的路径引用。
 **逻辑零改动** —— 全是名字。
 
-**刻意保留的三处 `cli`**（不是残留，改错会出问题）：
+**刻意保留的 `cli`**（不是残留，改错会出问题）：
 
 | 位置 | 为什么留 |
 |------|---------|
-| `client/utils/types.py` 的 `DEFAULT_THREAD_ID = "cli-main"` | 它是**存档主键**，不是包名。改了会让此前用默认编号存下的快照再也找不到（`load_latest` 按 thread_id 分区取）；要改得连着迁移旧档。已在代码里写明 |
+| `client/utils/types.py` 的 `DEFAULT_THREAD_ID` | 它是**存档主键**，与包名没有绑定关系 —— 当时为了不改主键而留 `"cli-main"`。2026-09-18 复核后改成 `"client-main"`：改主键的唯一代价是**旧主键下的档默认取不到**（`load_latest` 按 thread_id 分区取，加 `--thread-id cli-main` 仍可访问），**不存在「数据丢了」或「要连着迁移」**，默认的 memory 后端本就不留档。原措辞把代价说重了 |
 | 文档里的大写 **CLI**（「CLI 入口」「CLI 演示」）与 `CliOptions` | 那是**产品概念**（命令行界面），不是包名 —— 包叫 `client` 不代表这个工具不是 CLI。`CliOptions` = 「命令行选项」，同理 |
 | ticket 文件名 `10-P0-acceptance-cli-demo.md` | 是**永久链接**（issue 06 / DESIGN.md / PRD 都指向它），改名会断链 |
 
@@ -354,4 +355,4 @@ else build_model(...)` → `build_model` 默认返回 `RetryingChatModel`（`--n
 —— `test_build_model_wraps_...` **照过**（它直接调 `build_model`，不知道 `main()` 已经不用它了），
 只有新用例红（`assert 1 == 0`）。**这就是原有覆盖漏掉的那一格：形状对 ≠ 装配用上了。**
 
-全量 **732 passed**（+2）。
+全量 **732 passed**（+2）—— 2026-09-18 复核为 **741 passed**。

@@ -21,7 +21,7 @@
 | `project/rag_knowledge/` | 子项目 | 工业级 RAG 知识库问答（LangGraph 双图 + Milvus + 评估体系） |
 | `project/rag_text2sql/` | 子项目 | RAG Text2SQL 数据查询智能体（LangGraph + Qdrant/ES + MySQL 双库 + Vue） |
 | `app/charplot/` + `project/charplot/` | 子项目 | AI 闯关学习网站（双后端：Django 账号/闯关规则 + FastAPI AI 能力 + Vue 前端, LangGraph/DeepAgents/LangChain 三件套） |
-| `CharAgent/` | 子项目 | 从零手写的 agent runtime 框架（P0 已交付：模型/工具/loop/事件/重试/checkpoint/数据层 + CLI 演示），无 Django/无 server |
+| `CharAgent/` | 子项目 | 从零手写的 agent runtime 框架（P0 已交付：模型/工具/loop/事件/重试/checkpoint/数据层/提示词 + CLI 演示），无 Django/无 server |
 | `demo/` | 自学教程 | 非业务代码，见 §1.1 |
 
 ---
@@ -170,10 +170,11 @@ charlotte_savanna/
 │   ├── retry/                   #   重试退避 + jitter + 幂等键（包在 ChatModel 协议层）
 │   ├── checkpoint/              #   快照: 序列化协议 + 内存/Redis/Postgres 三实现 + 断点续跑
 │   ├── db/                      #   五实体 + 表定义（唯一来源）+ 仓储（与 alembic 共用）
+│   ├── prompt/                  #   提示词集中存放: templates/*.prompt + load_prompt() 按名加载
 │   ├── alembic/                 #   迁移（只追加；版本表 charagent_alembic_version）
 │   ├── client/                  #   命令行入口 python -m CharAgent.client（P0 验收线）
 │   ├── docs/                    #   DESIGN / CONTEXT(词表) / design/(01~05) / adr/(0001~0007) / difficulties/(70 难点)
-│   └── tests/                   #   分层测试（默认全替身 730 例 + integration/pg/redis/pg_db 四个 marker）
+│   └── tests/                   #   分层测试（默认全替身 741 例 + integration/pg/redis/pg_db 四个 marker）
 ├── templates/                   # 全局模板目录
 │   ├── minimall/                #   商城页面模板（base + partials）
 │   ├── charplot/                #   report_share.html（/r/{slug} 公开分享页）
@@ -405,8 +406,9 @@ charlotte_savanna/
 | 重试（`retry/`） | ✅ | 指数退避 + jitter + 三上限；`RetryingChatModel` 组合在协议层（loop 零改动） |
 | 快照（`checkpoint/`） | ✅ | JSON + 行李牌 + schema 版本迁移；内存 / Redis(流式历史) / Postgres 三实现；断点续跑 + time-travel |
 | 数据层（`db/` + `alembic/`） | ✅ | 五实体 + 状态机规则 + 仓储；表定义唯一来源；全部表名带 `charagent_` 前缀（与共用 PG 库里的其他子项目隔离） |
+| 提示词（`prompt/`） | ✅ | 提示词集中存放：`templates/*.prompt` + `load_prompt()` 按名加载（`string.Template` 占位符，规避字面 JSON 大括号）；框架机制文本（截断指令）刻意留原处 |
 | CLI（`client/`） | ✅ | `python -m CharAgent.client`：带工具问答 + 六类事件实时打印 + Ctrl-C 打断后续跑（说「继续」或 `/resume`）+ 快照后端三选一（P0 验收线） |
-| 测试（`tests/`） | ✅ | 默认全替身 730 例；四个 marker：integration / pg / redis / pg_db |
+| 测试（`tests/`） | ✅ | 默认全替身 741 例；四个 marker：integration / pg / redis / pg_db |
 | P1 / P2 | ⬜ 未开工 | 服务层（FastAPI + SSE + TaskQueue）、安全护栏 / HITL / RAG / 客服 demo / 前端；8 个可插拔插件 |
 
 > P0 已验收（2026-09-15）：真实端点跑通带工具问答（含并行双工具）、Ctrl-C 中断续跑（`tool_call` 全程仅一次）、`--backend` 三后端切换。**启动**：`cd` 到仓库根后 `python -m CharAgent.client`（详见 §6.3）。设计与难点文档见 `CharAgent/docs/`（DESIGN / CONTEXT 词表 / design/01~05 / adr/0001~0007 / difficulties 70 个编号难点）。P0 未闭环、按归属推给 P1/P2 的条目见 `.scratch/CharAgent/issue10-P0-to-P1_P2.md`。
@@ -532,4 +534,4 @@ cd project/charplot/frontend && npm install
 
 ---
 
-> **最后更新**：2026-09-16 | **维护者**：Claude Code (charlotte)
+> **最后更新**：2026-09-18 | **维护者**：Claude Code (charlotte)

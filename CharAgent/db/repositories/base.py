@@ -17,7 +17,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import Protocol
 
@@ -45,7 +45,7 @@ class PgRepository:
         self._db: Database = database if database is not None else PgDatabase()
 
     @asynccontextmanager
-    async def _session(self) -> AsyncIterator[Session]:
+    async def _session(self) -> AsyncGenerator[Session]:
         """开一次事务 (转发给 database, 让子类里少写一层).
 
         用法::

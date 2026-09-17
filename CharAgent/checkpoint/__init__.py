@@ -8,14 +8,14 @@
 设计依据 (CharAgent/docs):
 - difficulties #5: 每 Turn 结束落快照; thread 分区; 恢复要「不重复已完成动作」;
   三种存储语义不同; JSON 主格式 + 自定义编码器 + schema 版本号向前兼容
-- ADR-0002: Redis (KV 快照 + TTL, 快而弱一致) 与 Postgres (强一致 + 历史) 双实现,
-  运行时配置切换; 内存版供测试
-- 02-data-model.md §1/§3: Checkpoint 字段表与存储分布 (快照 -> Redis, 历史 -> PG)
+- ADR-0002: Redis (Stream 全历史 + 可配 TTL, 快而弱一致) 与 Postgres (强一致 + 历史)
+  双实现, 运行时配置切换; 内存版供测试
+- 02-data-model.md §1/§3: Checkpoint 字段表与存储分布 (三后端的存储形态与能力差异)
 
 结构总览 (顶层是行为模块, 静态零件收在 utils/):
 - base.py          CheckpointSaver 协议 (插座形状: 存 / 取最新 / 按编号取 / 翻历史)
 - memory.py        InMemoryCheckpointSaver: 记在草稿纸上, 重启就没 (测试与对照标尺)
-- redis.py         RedisCheckpointSaver: 一个会话一个键 + TTL, 只留最新一帧
+- redis.py         RedisCheckpointSaver: 一个会话一条 Stream (默认全历史) + 可配 TTL
 - postgres.py      PostgresCheckpointSaver: 一帧一行, 全历史, 能回溯
 - serialization.py CheckpointCodec: JSON 编码 (datetime 之类打「行李牌」) + 版本迁移
 - config.py        checkpoint_saver_from_env / build_saver: 配置切后端

@@ -405,14 +405,15 @@ def test_ctrl_c_at_the_prompt_is_a_normal_exit(
 
 
 def test_interactive_help_lists_the_commands(capsys: pytest.CaptureFixture) -> None:
-    """/help 列出四条命令与最常用的续跑指引."""
+    """/help 列出四条命令; 续跑指引由启动横幅给出 (/help 只留命令)."""
     reader = ScriptedReader("/help", "/quit")
 
     main([], model=MockLLM.fixed(text_response("你好")), reader=reader)
     out = capsys.readouterr().out
 
     assert "/resume" in out and "/history" in out and "/quit" in out
-    assert "不重复已完成动作" in out
+    # 2026-09-18: 原先跟在 /help 后面的三段续跑说明挪进了启动横幅, 断言跟着挪
+    assert "打断 RUN 后说一句「继续」即可续跑" in out
 
 
 def test_interactive_reports_a_misspelled_command_without_asking_the_model(
