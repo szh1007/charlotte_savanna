@@ -1,8 +1,11 @@
 # 03 · 业务侧：9 个只读工具 + 命令行入口
 
 **Status:** ready-for-agent
+
 **Type:** task
+
 **Blocked by:** 01, 02
+
 **上游:** `../PRD.md` §4.2 / §4.4 / §4.8 / §4.9（L1a）
 
 ## 做什么

@@ -1,8 +1,11 @@
 # 02 · 商城侧：9 个只读接口
 
 **Status:** ready-for-agent
+
 **Type:** task
+
 **Blocked by:** 无
+
 **上游:** `../PRD.md` §4.3 / §4.10
 
 ## 做什么
