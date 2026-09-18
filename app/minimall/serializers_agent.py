@@ -7,7 +7,7 @@
 - 状态类字段同时给 code 与中文 label —— 助手直接说人话, 不做码值翻译;
 - 金额一律渲染为 2 位小数字符串, 避免 float 精度与类型混用.
 
-改这里的字段等于改 agent 契约, 消费方是 CharApp/ecom_cs/.
+改这里的字段等于改 agent 契约, 消费方是 CharApp/minimall/.
 """
 
 from decimal import Decimal

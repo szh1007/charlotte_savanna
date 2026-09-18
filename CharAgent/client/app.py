@@ -20,13 +20,24 @@
 
 进程结构 (为什么不是「一次 asyncio.run 跑到底」):
 - REPL 是同步的 (要用 `input()`), 而会话是异步的 —— 于是本模块持有一个**常驻
-  事件循环**, 每次「跑一件事」用 `_KillSwitch.run` 把协程丢进去跑完.
+  事件循环**, 每次「跑一件事」用 `KillSwitch.run` 把协程丢进去跑完.
   常驻的理由不只是省事: httpx 的连接池绑定创建它的那个事件循环, 每次
   `asyncio.run` 换一个新循环会让第二次请求踩到「连接属于别的循环」的坑.
-- `_KillSwitch` 是「Ctrl-C 即时打断」的落脚点: 收到 KeyboardInterrupt 就取消
+- `KillSwitch` 是「Ctrl-C 即时打断」的落脚点: 收到 KeyboardInterrupt 就取消
   正在跑的任务、等它收尾 (该落盘的快照落完), 再把中断抛给上层报给用户 ——
   这正是 difficulties #3 说的 kill switch (`asyncio.Task.cancel`), 只不过
   触发它的是终端信号而不是 HTTP 接口.
+
+这一页里有一部分是**给别的入口用的**, 2026-09-19 才从私有改成公开:
+`KillSwitch`(打断)、`InteractiveRepl`(交互循环, 四个钩子见它的 docstring)、
+`report_result` / `report_interrupt`(结果与打断怎么报)、`load_root_env` /
+`use_utf8_stdio`(进程启动那两件杂活).
+
+改的起因值得记一笔 (它是本仓「扩展点要先被真实调用方撞一次」这条主张的实例):
+一个业务侧的命令行入口要复用这一页, 而它们全是私有名 —— 于是那个入口只能把这一页
+抄一份; 抄完立刻开始漂 (丢了一句快照帧数提示). 撞出来的结论不是「要不要复用」,
+而是**「可复用的位置错了」**: 交互逻辑本来就该是一份, 需要各自的只有**说给用户看
+的那几句话**. 上浮因此落在「措辞可覆盖」这一层, 而不是给业务开一个后门.
 """
 
 from __future__ import annotations
@@ -267,7 +278,7 @@ def build_saver_for(options: CliOptions) -> CheckpointSaver:
 # ---------------------------------------------------------------------------
 
 
-class _KillSwitch:
+class KillSwitch:
     """把「跑一个协程」与「Ctrl-C 即时打断」的规矩收在一处 (difficulties #3).
 
     为什么要它: 交互模式用同步的 `input()` 读输入, 而会话是异步的 —— 需要一个
@@ -310,7 +321,7 @@ class _KillSwitch:
 
 
 def _frame_note(
-    runner: _KillSwitch, session: ChatSession, *, verbose: bool = False
+    runner: KillSwitch, session: ChatSession, *, verbose: bool = False
 ) -> str:
     """存档情况 (几帧快照 / 后端不留历史) —— 附在结果或打断提示后面.
 
@@ -332,8 +343,8 @@ def _frame_note(
     return f"{prefix}{session.saver_name} 里 {count} 帧"
 
 
-def _report_result(
-    runner: _KillSwitch,
+def report_result(
+    runner: KillSwitch,
     session: ChatSession,
     result: LoopResult,
     writer: Callable[[str], Any],
@@ -349,8 +360,8 @@ def _report_result(
     writer(f"[完成] {format_result(result)}{_frame_note(runner, session)}")
 
 
-def _report_interrupt(
-    runner: _KillSwitch, session: ChatSession, writer: Callable[[str], Any]
+def report_interrupt(
+    runner: KillSwitch, session: ChatSession, writer: Callable[[str], Any]
 ) -> None:
     """被打断了: 说清「存到哪儿了」与「怎么接着跑」—— 这是演示的重点.
 
@@ -390,7 +401,7 @@ def _nothing_to_resume(session: ChatSession) -> str:
 # ---------------------------------------------------------------------------
 
 
-class _Repl:
+class InteractiveRepl:
     """交互模式的主循环: 读一行 -> 分派 (命令 / 提问) -> 打印结果.
 
     分派顺序 (与 utils/commands.py 的两个判据配合):
@@ -403,13 +414,26 @@ class _Repl:
     已经收回会话历史 (ChatSession._reclaim_progress), 于是「继续」就是一条普通
     提问, 模型看着历史自己接得上. 判断交回给模型, CLI 只把上下文备齐.
 
+    **业务入口怎么复用这一页** (它原本是私有的, 2026-09-19 上浮): 差异全在「说给
+    谁看」的那几句话上, 所以那几句做成了可覆盖的钩子, 分派与执行逻辑一行不用重写:
+
+    | 钩子 | 默认 (框架演示) | 换掉它的场合 |
+    |------|----------------|------------|
+    | `prompt` (类属性) | `client > ` | 换个提示符, 让人看出现在跟谁说话 |
+    | `banner()` | CharAgent CLI 横幅 | 说清「我是哪个业务的助手、以谁的身份」 |
+    | `help_text()` | 四条命令的说明 | 命令集不同, 或要补业务侧的说法 |
+    | `farewell()` | 「--resume 可以接着跑」 | 入口没有 `--resume` 时别说这句 |
+
     attributes:
-        (无公开属性; 会话状态在 ChatSession 里, 本类只负责「读-分派-打印」)
+        prompt: 交互提示符 (类属性; 子类覆盖即可).
     """
+
+    # 交互提示符 (类属性而不是构造参数: 它是这一页的「长相」, 不是每次运行的数据)
+    prompt: str = PROMPT
 
     def __init__(
         self,
-        runner: _KillSwitch,
+        runner: KillSwitch,
         session: ChatSession,
         options: CliOptions,
         *,
@@ -424,10 +448,10 @@ class _Repl:
 
     def run(self) -> int:
         """循环读输入直到退出; 返回进程退出码 (交互模式恒 0, 除非启动就炸)."""
-        self._writer(self._banner())
+        self._writer(self.banner())
         while True:
             try:
-                line = self._reader(PROMPT)
+                line = self._reader(self.prompt)
             except EOFError:
                 # Ctrl-Z / 管道读完: 与 /quit 同一条退路
                 self._writer("")
@@ -441,80 +465,11 @@ class _Repl:
                 continue
             if self._dispatch(text):
                 break
-        self._writer(
-            f"\n再见. 会话 {self._session.thread_id} 的存档已留在 "
-            f"{self._session.saver_name} 里, --resume 可以接着跑\n",
-        )
+        self._writer(self.farewell())
         return 0
 
-    def _dispatch(self, text: str) -> bool:
-        """处理一行输入; 返回 True 表示该退出循环了."""
-        parsed = parse_command(text)
-        if parsed is not None:
-            command, argument = parsed
-            if argument:
-                # 四条命令都不吃参数: 多写的部分照旧执行, 但要点出来 —— 悄悄
-                # 吞掉会让人以为「/resume 3」是在「恢复第 3 帧」
-                self._writer(f"/{command} 不吃参数, 你多写了 {argument!r} (已忽略)")
-            match command:
-                case Command.QUIT:
-                    return True
-                case Command.HELP:
-                    self._writer(_interactive_help())
-                case Command.HISTORY:
-                    self._show_history()
-                case Command.RESUME:
-                    self._resume()
-            return False
-        if looks_like_command(text):
-            self._writer(f"不认识这条命令: {text} (可用: /help /resume /history /quit)")
-            return False
-        self._ask(text)
-        return False
-
-    # ------------------------------------------------------------------
-    # 三个动作
-    # ------------------------------------------------------------------
-
-    def _ask(self, question: str) -> None:
-        """问一句: 跑 loop 并打印事件流与结论 (被打断则给续跑提示)."""
-        try:
-            result = self._runner.run(self._session.ask(question))
-        except KeyboardInterrupt:
-            _report_interrupt(self._runner, self._session, self._writer)
-            return
-        except (ModelError, CheckpointError) as exc:
-            # 运行期失败不该带走整个会话: 报一句, 交互继续 (重试耗尽才会到这里)
-            self._writer(f"[失败] {type(exc).__name__}: {exc}")
-            return
-        _report_result(self._runner, self._session, result, self._writer)
-
-    def _resume(self) -> None:
-        """`/resume`: 从最新一帧快照恢复 (走框架的恢复路径, 不是普通提问)."""
-        try:
-            result = self._runner.run(self._session.resume())
-        except KeyboardInterrupt:
-            _report_interrupt(self._runner, self._session, self._writer)
-            return
-        except (ModelError, CheckpointError) as exc:
-            self._writer(f"[失败] {type(exc).__name__}: {exc}")
-            return
-        if result is None:
-            self._writer(_nothing_to_resume(self._session))
-            return
-        _report_result(self._runner, self._session, result, self._writer)
-
-    def _show_history(self) -> None:
-        """`/history`: 打印本会话的快照历史表 (回放调试视图)."""
-        try:
-            table = self._runner.run(self._session.history_table())
-        except CheckpointError as exc:
-            self._writer(f"[失败] 读快照历史失败: {exc}")
-            return
-        self._writer(table)
-
-    def _banner(self) -> str:
-        """启动横幅: 把「这次在跟什么说话、存到哪儿」先摆清楚.
+    def banner(self) -> str:
+        """开场白 (可覆盖): 把「这次在跟什么说话、存到哪儿」先摆清楚.
 
         演示最怕说不清现在的状态 —— 尤其是换后端时 (内存 / Redis / Postgres
         跑起来一模一样, 差别全在这三行字里).
@@ -538,20 +493,92 @@ class _Repl:
             ]
         )
 
+    def help_text(self) -> str:
+        """`/help` 的正文 (可覆盖): 命令清单 + 两条最常用的演示指引."""
+        return "\n".join(
+            [
+                "命令:",
+                "  /resume   从最新一帧快照恢复 (计数器接续; 想接着跑也可以直接说"
+                "一句「继续」)",
+                "  /history  打印快照历史表 (轮次 / 来源 / 本轮 token 与耗时 / 工具)",
+                "  /help     显示这份帮助",
+                "  /quit     退出 (/exit 与 /q 也行 —— 命令都要带前导斜杠)",
+                "",
+            ]
+        )
 
-def _interactive_help() -> str:
-    """交互模式的 /help 文本 (命令清单 + 两条最常用的演示指引)."""
-    return "\n".join(
-        [
-            "命令:",
-            "  /resume   从最新一帧快照恢复 (计数器接续; 想接着跑也可以直接说"
-            "一句「继续」)",
-            "  /history  打印快照历史表 (轮次 / 来源 / 本轮 token 与耗时 / 工具)",
-            "  /help     显示这份帮助",
-            "  /quit     退出 (/exit 与 /q 也行 —— 命令都要带前导斜杠)",
-            "",
-        ]
-    )
+    def farewell(self) -> str:
+        """退出时说的一句 (可覆盖): 存档留在哪儿、怎么接着跑."""
+        return (
+            f"\n再见. 会话 {self._session.thread_id} 的存档已留在 "
+            f"{self._session.saver_name} 里, --resume 可以接着跑\n"
+        )
+
+    def _dispatch(self, text: str) -> bool:
+        """处理一行输入; 返回 True 表示该退出循环了."""
+        parsed = parse_command(text)
+        if parsed is not None:
+            command, argument = parsed
+            if argument:
+                # 四条命令都不吃参数: 多写的部分照旧执行, 但要点出来 —— 悄悄
+                # 吞掉会让人以为「/resume 3」是在「恢复第 3 帧」
+                self._writer(f"/{command} 不吃参数, 你多写了 {argument!r} (已忽略)")
+            match command:
+                case Command.QUIT:
+                    return True
+                case Command.HELP:
+                    self._writer(self.help_text())
+                case Command.HISTORY:
+                    self._show_history()
+                case Command.RESUME:
+                    self._resume()
+            return False
+        if looks_like_command(text):
+            self._writer(f"不认识这条命令: {text} (可用: /help /resume /history /quit)")
+            return False
+        self._ask(text)
+        return False
+
+    # ------------------------------------------------------------------
+    # 三个动作
+    # ------------------------------------------------------------------
+
+    def _ask(self, question: str) -> None:
+        """问一句: 跑 loop 并打印事件流与结论 (被打断则给续跑提示)."""
+        try:
+            result = self._runner.run(self._session.ask(question))
+        except KeyboardInterrupt:
+            report_interrupt(self._runner, self._session, self._writer)
+            return
+        except (ModelError, CheckpointError) as exc:
+            # 运行期失败不该带走整个会话: 报一句, 交互继续 (重试耗尽才会到这里)
+            self._writer(f"[失败] {type(exc).__name__}: {exc}")
+            return
+        report_result(self._runner, self._session, result, self._writer)
+
+    def _resume(self) -> None:
+        """`/resume`: 从最新一帧快照恢复 (走框架的恢复路径, 不是普通提问)."""
+        try:
+            result = self._runner.run(self._session.resume())
+        except KeyboardInterrupt:
+            report_interrupt(self._runner, self._session, self._writer)
+            return
+        except (ModelError, CheckpointError) as exc:
+            self._writer(f"[失败] {type(exc).__name__}: {exc}")
+            return
+        if result is None:
+            self._writer(_nothing_to_resume(self._session))
+            return
+        report_result(self._runner, self._session, result, self._writer)
+
+    def _show_history(self) -> None:
+        """`/history`: 打印本会话的快照历史表 (回放调试视图)."""
+        try:
+            table = self._runner.run(self._session.history_table())
+        except CheckpointError as exc:
+            self._writer(f"[失败] 读快照历史失败: {exc}")
+            return
+        self._writer(table)
 
 
 # ---------------------------------------------------------------------------
@@ -588,15 +615,15 @@ def main(
     Raises:
         (不抛: 配置类错误在这里被翻译成一行人话 + 退出码)
     """
-    _load_env()
-    _use_utf8_stdio()
+    load_root_env()
+    use_utf8_stdio()
     options = parse_argv(argv)
     writer: Callable[[str], Any] = print
     printer = EventPrinter(writer=writer, color=options.color)
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    runner = _KillSwitch(loop)
+    runner = KillSwitch(loop)
     session: ChatSession | None = None
     try:
         session = ChatSession(
@@ -632,7 +659,7 @@ def main(
 
 
 def _dispatch(
-    runner: _KillSwitch,
+    runner: KillSwitch,
     session: ChatSession,
     options: CliOptions,
     reader: Callable[[str], str],
@@ -677,7 +704,8 @@ def _dispatch(
             break
 
     if options.interactive:
-        repl_code = _Repl(runner, session, options, reader=reader, writer=writer).run()
+        repl = InteractiveRepl(runner, session, options, reader=reader, writer=writer)
+        repl_code = repl.run()
         # 交互模式本身恒 0 (那是一次会话, 不是一次运行); 但已经排过的步骤若失败或
         # 被打断, 那是**这次进程**的既定事实, 不能被随后的一次聊天盖成 0
         return exit_code or repl_code
@@ -685,7 +713,7 @@ def _dispatch(
 
 
 def _run_once(
-    runner: _KillSwitch,
+    runner: KillSwitch,
     session: ChatSession,
     writer: Callable[[str], Any],
     *,
@@ -706,7 +734,7 @@ def _run_once(
             pending = session.ask(question or "")
         result = runner.run(pending)
     except KeyboardInterrupt:
-        _report_interrupt(runner, session, writer)
+        report_interrupt(runner, session, writer)
         return 130
     except (ModelError, CheckpointError) as exc:
         writer(f"[失败] {type(exc).__name__}: {exc}")
@@ -715,11 +743,11 @@ def _run_once(
     if result is None:  # 只有续跑会拿到 None: 没有可恢复的快照
         writer(_nothing_to_resume(session))
         return 1
-    _report_result(runner, session, result, writer)
+    report_result(runner, session, result, writer)
     return 0 if result.outcome is LoopOutcome.FINISHED else 1
 
 
-def _load_env() -> None:
+def load_root_env() -> None:
     """把仓库根 .env 读进环境变量 (读不到就算了, 真环境变量优先).
 
     为什么这一步必须有: `chat_model_from_env` 与 `checkpoint_saver_from_env` 都
@@ -734,7 +762,7 @@ def _load_env() -> None:
     load_dotenv(_ROOT_ENV, override=False)
 
 
-def _use_utf8_stdio() -> None:
+def use_utf8_stdio() -> None:
     """标准输入与输出都切成 UTF-8 (errors=replace), 两边各有各的坑.
 
     **输出侧**: Windows 控制台默认 GBK, 模型答复里的 emoji 或生僻字会让 `print`
@@ -757,4 +785,16 @@ def _use_utf8_stdio() -> None:
             stream.reconfigure(encoding="utf-8", errors="replace")
 
 
-__all__ = ["build_model", "build_parser", "build_saver_for", "main", "parse_argv"]
+__all__ = [
+    "InteractiveRepl",
+    "KillSwitch",
+    "build_model",
+    "build_parser",
+    "build_saver_for",
+    "load_root_env",
+    "main",
+    "parse_argv",
+    "report_interrupt",
+    "report_result",
+    "use_utf8_stdio",
+]

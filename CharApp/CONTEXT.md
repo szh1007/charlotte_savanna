@@ -1,6 +1,6 @@
 # CharApp — 电商智能客服
 
-基于 `CharAgent` 通用 agent 框架构建的业务应用集合。当前只有一个上下文 `ecom_cs`, 对接 `app/minimall` 的商城数据。
+基于 `CharAgent` 通用 agent 框架构建的业务应用集合。当前只有一个上下文 `minimall` (包 `CharApp/minimall/`), 对接 `app/minimall` 的商城数据。
 
 ## Language
 

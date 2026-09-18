@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Windows Git Bash 终止进程
+# taskkill //F //T //PID xxxx
+
 # 查看项目根目录 (charlotte_savanna) 及其所有子项目下启动的进程
 # 字段: PID / 进程名 / 监听端口 / 内存(MB) / 启动时间 / 启动命令 / 子进程ID
 # 规则: 无端口子进程沿 ParentProcessId 祖先链归并到有端口的主进程, 只展示主进程一行
-# 用法: bash sh/ps_project.sh
+# 用法: bash sh/_status_.sh
 
 CHARLOTTE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Git Bash 的 pwd 返回 MSYS 风格 (/d/...), 转成 Windows 路径用于进程匹配
@@ -17,7 +20,12 @@ export CP_ROOT="$CHARLOTTE_ROOT_WIN"
 TMP_PS="$(mktemp --suffix=.ps1)"
 trap 'rm -f "$TMP_PS"' EXIT
 
-cat >"$TMP_PS" <<'EOF'
+# 开头的 BOM 是**必须的**, 不是顺手加的: Windows PowerShell 5.1 读 .ps1 时没有 BOM
+# 就按系统 ANSI 码页解码, 下面那些中文注释会被解成乱码 —— 而乱码里只要冒出一个
+# 反引号 (PowerShell 的续行符), 紧随其后的那一行就被吞成注释的一部分.
+# 2026-09-19 实撞: 一句中文注释吞掉了紧跟的变量赋值, 那个变量于是永远是空字符串,
+# 表现为整张表 COMMAND 一栏全空、进程记录被拆行后脚本崩在空数组下标上.
+{ printf '\xEF\xBB\xBF'; cat <<'EOF'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $root = $env:CP_ROOT.ToLower().Replace('/', '\')
 Get-CimInstance Win32_Process | Where-Object {
@@ -27,14 +35,18 @@ Get-CimInstance Win32_Process | Where-Object {
 } | ForEach-Object {
     $mem = [math]::Round($_.WorkingSetSize / 1MB, 1)
     $started = $_.CreationDate.ToString('yyyy-MM-dd HH:mm:ss')
-    # 制表符分隔: PID|PPID|NAME|STARTED|MEM|COMMAND (命令行原样保留)
-    "$($_.ProcessId)`t$($_.ParentProcessId)`t$($_.Name)`t$started`t$mem`t$($_.CommandLine)"
+    # 命令行里的换行必须压掉: bash -c 的多行脚本会让 CommandLine 自带换行,
+    # 一条记录被拆成好几行后, 下面按行读时那几行没有制表符, 字段就全错位了
+    $cmd = $_.CommandLine -replace '[\r\n]+', ' '
+    # 制表符分隔: PID|PPID|NAME|STARTED|MEM|COMMAND
+    "$($_.ProcessId)`t$($_.ParentProcessId)`t$($_.Name)`t$started`t$mem`t$cmd"
 }
 EOF
+} >"$TMP_PS"
 
 PROCS="$(powershell -NoProfile -ExecutionPolicy Bypass -File "$TMP_PS")"
 # 排除自身 (powershell 查询进程 / 本脚本)
-PROCS="$(printf '%s\n' "$PROCS" | grep -viE 'powershell|ps_project\.sh' || true)"
+PROCS="$(printf '%s\n' "$PROCS" | grep -viE 'powershell|_status_\.sh' || true)"
 
 # 2. 收集监听端口: PID -> 端口列表 (netstat -ano 解析)
 PORTMAP="$(netstat -ano 2>/dev/null | awk '
@@ -56,7 +68,11 @@ fi
 declare -A PROJ   # pid -> "ppid|name|started|mem|cmd"
 declare -A PORTS  # pid -> 端口列表
 while IFS=$'\t' read -r pid ppid name started mem cmd; do
-    [ -z "$pid" ] && continue
+    # 只认 PID 与 PPID 都是数字的记录. 这是一道兜底: 命令行被拆行 / PowerShell
+    # 输出形状变了的时候, 会掉出字段错位的碎片行, 那种行没有 PPID —— 放进去会让
+    # PROJ 里多出一个空父键, 而关联数组的空下标是硬错误 (bad array subscript),
+    # 整个脚本会当场挂掉 (2026-09-19 实撞).
+    [[ "$pid" =~ ^[0-9]+$ && "$ppid" =~ ^[0-9]+$ ]] || continue
     PROJ["$pid"]="$ppid|$name|$started|$mem|$cmd"
 done <<<"$PROCS"
 while read -r pid ports; do

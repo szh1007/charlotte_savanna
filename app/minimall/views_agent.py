@@ -32,8 +32,10 @@ from .serializers_agent import (
 
 User = get_user_model()
 
+# 页大小白名单 (与买家侧 views_buyer.py / views_html.py 同一份清单): 买家端只认
+# 这 5 个值, agent 端点没有理由更宽 —— 工具层的 schema 已限死, 这里是端点的兜底
+PAGE_SIZE_OPTIONS = (5, 10, 20, 50, 100)
 DEFAULT_PAGE_SIZE = 20
-MAX_PAGE_SIZE = 100
 
 
 def _paginate(queryset, request, serializer_class) -> dict:
@@ -42,7 +44,8 @@ def _paginate(queryset, request, serializer_class) -> dict:
         page_size = int(request.query_params.get("page_size", DEFAULT_PAGE_SIZE))
     except (TypeError, ValueError):
         page_size = DEFAULT_PAGE_SIZE
-    page_size = max(1, min(page_size, MAX_PAGE_SIZE))
+    if page_size not in PAGE_SIZE_OPTIONS:
+        page_size = DEFAULT_PAGE_SIZE
 
     paginator = Paginator(queryset, page_size)
     page = paginator.get_page(request.query_params.get("page", 1))

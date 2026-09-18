@@ -11,7 +11,7 @@
 - **重试真的会在这条路上发生**: 只换掉 `chat_model_from_env` (最外层的生产工厂),
   让模型先抛两次瞬态错 —— `build_model` / `RetryPolicy` / `on_retry` 全真跑,
   断言跑完答上了 + `[retry]` 打了两行; 反面 `--no-retry` 一次就失败
-- _KillSwitch: SIGINT 到达时取消正在跑的任务并等它收尾 (kill switch, #3),
+- KillSwitch: SIGINT 到达时取消正在跑的任务并等它收尾 (kill switch, #3),
   之后事件循环仍可用 —— 这正是「打断后还能 /resume」的前提
 
 装配注入用两处既有缝: 模型走 `main(model=...)` (ChatModel 薄协议, 与全仓测试
@@ -33,7 +33,7 @@ from mock_llm import MockLLM, make_tool_call, text_response, tool_call_response
 
 from CharAgent.checkpoint import InMemoryCheckpointSaver
 from CharAgent.client import app
-from CharAgent.client.app import _KillSwitch, build_saver_for, main, parse_argv
+from CharAgent.client.app import KillSwitch, build_saver_for, main, parse_argv
 from CharAgent.client.utils.types import DEFAULT_THREAD_ID, CliOptions
 from CharAgent.model import HttpXChatModel, ModelConfigError, ModelConnectionError
 from CharAgent.model.utils.types import FinishReason, ModelMessage, ModelResponse
@@ -621,7 +621,7 @@ def test_piped_utf8_chinese_survives_the_encoding_setup() -> None:
     question = "帮我把 3 公里换算成英里"
     script = (
         "import sys, CharAgent.client.app as app; "
-        "app._use_utf8_stdio(); "
+        "app.use_utf8_stdio(); "
         "print(repr(sys.stdin.readline().strip()))"
     )
 
@@ -643,10 +643,10 @@ def test_interrupt_then_resume_does_not_rerun_completed_tools(
 ) -> None:
     """P0 验收第 4 条端到端: 打断 -> /resume 接着跑, 已执行过的工具不重跑.
 
-    这条走的是**真的 `main()`**(真 `_KillSwitch`、真 REPL、真会话、真演示工具集),
+    这条走的是**真的 `main()`**(真 `KillSwitch`、真 REPL、真会话、真演示工具集),
     唯一替身是模型 (ChatModel 薄协议). 打断方式与真按 Ctrl-C 同一条路径: 事件循环
     正跑着时主线程收到 SIGINT, `run_until_complete` 抛 KeyboardInterrupt,
-    `_KillSwitch` 取消任务并等它收尾. 定时器在第一次读输入时挂上 (那时 main 已经
+    `KillSwitch` 取消任务并等它收尾. 定时器在第一次读输入时挂上 (那时 main 已经
     把常驻循环 `set_event_loop` 好了), 于是「第 0.3 秒按下去」正好落在第二轮模型
     调用里 —— 而第一轮的工具早已执行完并落进快照.
 
@@ -710,7 +710,7 @@ class _InterruptOnCall:
     """真模型的包装: 第 n 次调用时挂一个「0.05 秒后 Ctrl-C」—— 让打断落在指定那一轮.
 
     与真按 Ctrl-C 同一条路径: 事件循环正跑着时主线程收到 SIGINT,
-    `run_until_complete` 抛 KeyboardInterrupt, `_KillSwitch` 取消任务并等它收尾.
+    `run_until_complete` 抛 KeyboardInterrupt, `KillSwitch` 取消任务并等它收尾.
     定时器挂在循环上 (而不是先用 sleep 赌时机), 所以打断位置是确定的.
     """
 
@@ -754,7 +754,8 @@ def test_batch_failure_is_not_erased_by_the_following_chat(
 ) -> None:
     """`--resume` 的失败/打断不被随后的交互盖成 0 (退出码优先关系).
 
-    这条盯的是一个真发生过的错: `_dispatch` 原来直接 `return _Repl(...).run()`,
+    这条盯的是一个真发生过的错: `_dispatch` 原来直接 `return InteractiveRepl(...)`
+    `.run()`,
     而交互循环恒返回 0 —— 已经排过的步骤失败过, 进程结论却是「一切正常」.
     这里让 `--resume` 那一轮被打断 (快照先由另一段跑出来), 然后交互里立刻 /quit.
     """
@@ -811,7 +812,7 @@ def test_kill_switch_cancels_the_running_task_and_keeps_the_loop_usable() -> Non
             raise
 
     loop = asyncio.new_event_loop()
-    runner = _KillSwitch(loop)
+    runner = KillSwitch(loop)
     # 0.05 秒后在主线程里发一次 SIGINT (等价于按 Ctrl-C); 顺带把 SIGINT 的处理
     # 器钉成默认那个, 免得测试运行器自己装的处理器让这次「按键」落空
     previous = signal.signal(signal.SIGINT, signal.default_int_handler)
@@ -840,7 +841,7 @@ def _interrupted_after_one_tool_turn(
 
     三条用例共用这段编排 (真 `main()` / 真 SIGINT / 真演示工具集), 差别只在
     打断之后用户说的那句话. 打断方式与真按 Ctrl-C 同一条路径: 事件循环正跑着时
-    主线程收到 SIGINT, `run_until_complete` 抛 KeyboardInterrupt, `_KillSwitch`
+    主线程收到 SIGINT, `run_until_complete` 抛 KeyboardInterrupt, `KillSwitch`
     取消任务并等它收尾 (第一次读输入时挂的定时器, 那时 main 已把常驻循环备好).
 
     打断之后那一步是重点: `ChatSession` 会去快照把已完成的工作收回来, 所以用户

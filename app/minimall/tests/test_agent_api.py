@@ -24,6 +24,7 @@ from app.minimall.models import (
     Profile,
     ShippingAddress,
 )
+from app.minimall.views_agent import DEFAULT_PAGE_SIZE
 
 User = get_user_model()
 
@@ -157,11 +158,26 @@ class AgentProductEndpointTest(TestCase):
         r = self.get("product_list", ordering="price")
         self.assertEqual(r.data["results"][0]["name"], "iPad")
 
-    def test_pagination(self):
-        r = self.get("product_list", page_size=1, page=2)
+    def test_page_size_whitelist(self):
+        """页大小只认白名单里的 5 个值, 其余回退默认.
+
+        这份清单来自买家侧 (views_buyer.py / views_html.py), agent 端点与它一致:
+        工具层的 schema 已经限死, 这里是端点的兜底 —— 直连端点填 37 不该拿到
+        买家侧不可能出现的页大小 (那种不一致在答复里看不出来).
+        """
+        self.assertEqual(self.get("product_list", page_size=5).data["page_size"], 5)
+        self.assertEqual(self.get("product_list", page_size=100).data["page_size"], 100)
+
+        fallback = self.get("product_list", page_size=1)
+        self.assertEqual(fallback.data["page_size"], DEFAULT_PAGE_SIZE)
+        self.assertEqual(fallback.data["count"], 2)
+
+    def test_page_size_non_numeric_falls_back(self):
+        """非数字的页大小同样是回退, 而不是 500."""
+        r = self.get("product_list", page_size="七")
+
+        self.assertEqual(r.data["page_size"], DEFAULT_PAGE_SIZE)
         self.assertEqual(r.data["count"], 2)
-        self.assertEqual(r.data["total_pages"], 2)
-        self.assertEqual(len(r.data["results"]), 1)
 
     def test_product_detail_has_stock(self):
         r = self.get("product_detail", {"slug": "iphone"})

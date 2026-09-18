@@ -13,10 +13,16 @@ agent 带着工具去查去算, 过程实时打在屏幕上, 中途 Ctrl-C 能�
 
 结构总览:
 - app.py      进程入口: 参数解析 + 装配 (模型 / 存储 / 会话) + 常驻事件循环 +
-              交互与一次性两条路 (Ctrl-C 打断也在这里, 见 _KillSwitch)
+              交互与一次性两条路 (Ctrl-C 打断也在这里, 见 KillSwitch)
 - session.py  ChatSession: 一次会话的三个动作 —— 问一句 / 接着跑 / 看存档
 - render.py   终端渲染: 六类事件各画一行, 外加结果摘要与答复正文
 - utils/      支撑子包: types (CliOptions) + commands (交互命令解析)
+
+**别的 CLI 入口也能用这一层** (2026-09-19 从私有改成公开): `KillSwitch` /
+`InteractiveRepl` / `report_result` / `report_interrupt` / `load_root_env` /
+`use_utf8_stdio`. 起因是出现了第二个命令行入口 —— 它当时只能把这一页抄一份, 而抄完
+立刻开始漂. 上浮的口径是「交互逻辑可复用, 但说给用户看的那几句话必须先能被换掉」:
+`InteractiveRepl` 的 `prompt` / `banner` / `help_text` / `farewell` 是四个覆盖点.
 
 三条通道在本包汇聚 (与框架侧的划分一致):
 - 事件流 -> `render.EventPrinter` (走 EventSink 出口, 与 P1 推 SSE 同一条协议)
@@ -38,11 +44,17 @@ from __future__ import annotations
 
 from CharAgent.client.app import (
     PROMPT,
+    InteractiveRepl,
+    KillSwitch,
     build_model,
     build_parser,
     build_saver_for,
+    load_root_env,
     main,
     parse_argv,
+    report_interrupt,
+    report_result,
+    use_utf8_stdio,
 )
 from CharAgent.client.render import (
     EventPrinter,
@@ -62,14 +74,20 @@ __all__ = [
     "CliOptions",
     "Command",
     "EventPrinter",
+    "InteractiveRepl",
+    "KillSwitch",
     "build_model",
     "build_parser",
     "build_saver_for",
     "format_answer",
     "format_outcome",
     "format_result",
+    "load_root_env",
     "looks_like_command",
     "main",
     "parse_argv",
     "parse_command",
+    "report_interrupt",
+    "report_result",
+    "use_utf8_stdio",
 ]
