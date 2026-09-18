@@ -39,20 +39,30 @@ ENV_MODEL_NAME = "DEEPSEEK_MODEL_NAME"
 # 提示词文件目录 (与代码同包, 路径相对本文件定位, 与 cwd 无关).
 #
 # 为什么用 pathlib 相对包路径而不是 importlib.resources: 本仓既有的静态文件定位
-# 法就是这个 (tests/mock_llm.py 的 SAMPLE_DIR, client/app.py 的 _ROOT_ENV), 且
-# pyproject.toml 没有打包配置 (只有 [tool.ruff]), 不存在「数据文件要声明进
-# package-data」的约束 —— 引入 resources 只会多一套没人用的机制.
+# 法就是这个 (tests/mock_llm.py 的 SAMPLE_DIR, client/app.py 的 _ROOT_ENV); 且
+# 这些文件已经声明进 CharAgent/pyproject.toml 的 package-data
+# (`templates/*.prompt`), 装成 wheel 后它们与模块的相对位置不变 —— 相对
+# __file__ 定位在「从仓库根运行」与「pip 装好后运行」两种形态下都成立.
+# 引入 resources 只会多一套没人用的机制.
 TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
 
 # 提示词文件后缀 (与 rag_knowledge / rag_text2sql 的既有约定一致: 调用方只给名字)
 _SUFFIX = ".prompt"
 
 
-def load_prompt(name: str, **values: str) -> str:
+def load_prompt(
+    name: str,
+    *,
+    prompt_dir: str | os.PathLike[str] | None = None,
+    **values: str,
+) -> str:
     """加载提示词并渲染占位符.
 
     Args:
-        name: 提示词名 (不带 `.prompt` 后缀), 对应 `templates/{name}.prompt`.
+        name: 提示词名 (不带 `.prompt` 后缀), 对应 `{prompt_dir}/{name}.prompt`.
+        prompt_dir: 从哪个目录读; None (默认) 表示本包自己的 `templates/` ——
+            现有调用方一个字不用改. 业务提示词放业务自己的目录, 由业务传入
+            (框架的目录里只放框架自己的提示词, 不替业务保管它的立身之本).
         **values: 填给 `${var}` 占位符的值. 文件里没有占位符时可以不传.
 
     Returns:
@@ -61,8 +71,15 @@ def load_prompt(name: str, **values: str) -> str:
     Raises:
         PromptNotFoundError: 文件不存在 (报错带绝对路径, 便于定位找的是哪儿).
         PromptVariableError: 占位符缺值, 或占位符写法不合法.
+
+    Note:
+        `prompt_dir` 是 keyword-only 且写在 `**values` 之前, 所以它**不会**被当成
+        模板变量 —— 反过来, 模板里若真有个叫 `${prompt_dir}` 的占位符会取不到值.
+        这是刻意的取舍: 目录是函数的参数而不是提示词的内容, 两者重名时以参数为准
+        (那种占位符本身也该换个名字).
     """
-    path = TEMPLATE_DIR / f"{name}{_SUFFIX}"
+    base = TEMPLATE_DIR if prompt_dir is None else Path(prompt_dir)
+    path = base / f"{name}{_SUFFIX}"
     if not path.is_file():
         raise PromptNotFoundError(name, path)
 

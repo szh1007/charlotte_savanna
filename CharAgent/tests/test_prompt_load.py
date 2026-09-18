@@ -78,6 +78,49 @@ def test_a_prompt_without_placeholders_needs_no_values(
     assert load_prompt("plain") == "就一句话, 没有占位符.\n"
 
 
+def test_prompt_dir_reads_from_the_directory_the_caller_names(tmp_path: Path) -> None:
+    """业务提示词从**业务自己的目录**读 —— 框架目录里不留业务的东西.
+
+    与上面几条的区别: 那几个用例把框架的 TEMPLATE_DIR 指到临时目录 (为了造边界,
+    且不往真目录写), 这一条**不动** TEMPLATE_DIR, 靠参数指过去 —— 这正是业务要
+    走的那条路.
+    """
+    business = tmp_path / "biz" / "prompts"
+    business.mkdir(parents=True)
+    (business / "cs.prompt").write_text("你是客服.\n", encoding="utf-8")
+
+    assert load_prompt("cs", prompt_dir=business) == "你是客服.\n"
+
+
+def test_prompt_dir_defaults_to_the_frameworks_own_templates() -> None:
+    """不传目录 = 读框架自己的 `templates/` (现有调用方一个字不用改).
+
+    查的是「去找的路径的父目录」而不是「碰巧读到了」—— 后者在 cwd 恰好正确时
+    也会通过.
+    """
+    with pytest.raises(PromptNotFoundError) as caught:
+        load_prompt("definitely-not-here")
+
+    assert caught.value.path.parent == load_module.TEMPLATE_DIR
+
+
+def test_missing_file_in_a_custom_directory_reports_that_directory(
+    tmp_path: Path,
+) -> None:
+    """指了业务目录却找不到文件时, 报错给的是**那个目录**的路径, 不是框架的.
+
+    盯的是一个很容易出的错: 报错沿用框架目录 —— 排查的人会对着框架的
+    templates/ 找一个永远不在那儿的文件.
+    """
+    business = tmp_path / "biz"
+    business.mkdir()
+
+    with pytest.raises(PromptNotFoundError) as caught:
+        load_prompt("cs", prompt_dir=business)
+
+    assert caught.value.path == business / "cs.prompt"
+
+
 def test_malformed_placeholder_is_reported(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

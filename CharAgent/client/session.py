@@ -32,6 +32,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Awaitable, Sequence
 
 from CharAgent.agent import AgentLoop, LoopGuard, LoopResult
@@ -93,6 +94,10 @@ class ChatSession:
         guard: 循环软限制; None 表示 LoopGuard() 默认 (max_turns=10).
         max_tokens: 单次输出上限 (透传 generate); 设小能稳定造出截断.
         thinking: 思考模式开关; None 表示不传 (上游默认开启).
+        prompt_name: 身份说明用哪份提示词; 默认 "system" (框架自己那份), 现有
+            行为一字不变. 业务助手在这里填自己的客服提示词名.
+        prompt_dir: 从哪个目录取那份提示词; None (默认) 表示框架的 `templates/`.
+            业务提示词放业务自己的目录, 于是框架目录里不留业务的东西.
 
     没跑完的那一轮怎么办 (本类最要紧的一条规矩): loop 干活时用的是自己那份**副本**
     历史, 副本随被取消的任务一起没了 —— 但每一轮结束时落过盘的快照还在. 于是失败
@@ -113,6 +118,8 @@ class ChatSession:
         guard: LoopGuard | None = None,
         max_tokens: int | None = None,
         thinking: bool | None = None,
+        prompt_name: str = "system",
+        prompt_dir: str | os.PathLike[str] | None = None,
     ) -> None:
         self._model = model
         self._saver = saver
@@ -134,8 +141,15 @@ class ChatSession:
         # 已完成的工作 (见 _reclaim_progress) —— 两条路都让「上一轮做过什么」
         # 留在历史里, 模型下一轮就看得到.
         #
-        # 会话历史的第一条恒为身份说明 (system)
-        system_prompt = load_prompt("system", model_name=self._model_name)
+        # 会话历史的第一条恒为身份说明 (system). 正文按 prompt_name 从 prompt_dir
+        # 取; 两个参数都不给时 = 框架自己的 system.prompt, 与从前完全一致.
+        # model_name 照传: 框架那份模板里有 ${model_name} 占位符, 业务模板若要
+        # 自己写身份说明也用得上; 模板里没这个占位符时多传的值会被忽略.
+        system_prompt = load_prompt(
+            prompt_name,
+            prompt_dir=prompt_dir,
+            model_name=self._model_name,
+        )
         self._history: list[ModelMessage] = [
             {"role": "system", "content": system_prompt}
         ]

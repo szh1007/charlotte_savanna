@@ -69,13 +69,18 @@ Django session → user_id → X-User-Id → RunContext.payload["user_id"] → �
 
 | # | 改动 | 说明 |
 |---|------|------|
-| 1 | 新增 `tool/provider.py` | `RunContext`（`thread_id` + 不透明 `payload`）+ `ToolProvider` Protocol（`async def provide(ctx) -> list[Tool]`） |
-| 2 | 根门面 + `tests/test_root_facade.py` | 上浮 `RunContext` / `ToolProvider` |
+| 1 | 新增 `agent/provider.py` | `RunContext`（`thread_id` + 不透明 `payload`）+ `ToolProvider` Protocol（`async def provide(ctx) -> Sequence[Tool]`）。**落在 `agent` 包**而不是 `tool` 包：它是运行时装配层，与 `AgentLoop` 同层 —— `tool` 包管「工具是什么」，不管「这次拿哪些」 |
+| 2 | `agent/__init__.py` + 根 `__init__.py` | 上浮 `RunContext` / `ToolProvider`。`tests/test_root_facade.py` 的防漂移用例自动覆盖，**不需要改它** |
 | 3 | `client/session.py` 加 `prompt_name` / `prompt_dir` 参数 | `tools` **已是构造参数，无需改动**；只需把硬编码的 `load_prompt("system", ...)`（`session.py:138`）一处参数化，默认值保持现状使 CLI 行为不变 |
-| 4 | `prompt/load.py` 加 `template_dir` 参数 | 默认框架目录，业务侧可指向自己的 prompt 目录 |
-| 5 | 新增 `pyproject.toml` | 使 `pip install -e CharAgent` 成立，依赖 8 个：`httpx` `openai` `pydantic` `python-dotenv` `sqlalchemy` `psycopg` `redis` `alembic` |
+| 4 | `prompt/load.py` 加 `prompt_dir` 参数 | 默认框架目录，业务侧可指向自己的 prompt 目录（keyword-only，写进 `**values` 之前，不会被当成模板变量） |
+| 5 | 新增 `pyproject.toml` | 使 `pip install` 成立，依赖 8 个：`httpx` `openai` `pydantic` `python-dotenv` `sqlalchemy` `psycopg` `redis` `alembic`。**`namespaces` 必须显式设 false**：默认那档会把 `tests/` `docs/` `alembic/` 等待十个非包目录一起收进 wheel |
 
-**核心设计约束**：`agent/loop.py` **零改动**。`ToolProvider` 在装配层（`ChatSession`）解析成 `list[Tool]` 后传给 `AgentLoop` —— 若加一个业务接入点需要改循环核心，说明接缝设计失败。
+**核心设计约束**：`agent/loop.py` **零改动**（已核实：`git diff --name-only CharAgent/agent/loop.py` 为空）。若加一个业务接入点需要改循环核心，说明接缝设计失败。
+
+**实现时定下的两处**（与上表初稿有出入，以代码为准）：
+
+1. **`ToolProvider` 不由 `ChatSession` 解析**。业务的装配代码自己 `await provider.provide(context)`，再把工具交给 `ChatSession` —— `ChatSession` 至今不知道 `RunContext` 存在。这样框架不必「为了调用而持有业务数据」（payload 里是什么，框架从装配到运行都不经手），也避免了 `__init__` 是同步的而 `provide` 是异步的这一冲突。代价是业务入口多一行 `await`。
+2. `provide` 返回 `Sequence[Tool]` 而非 `list[Tool]` —— `list` / `tuple` 都能交，框架不挑返回的是什么容器。
 
 ### 3.2 minimall 侧（`app/minimall/`）
 

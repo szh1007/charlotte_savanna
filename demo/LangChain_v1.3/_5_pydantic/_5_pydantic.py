@@ -1,5 +1,5 @@
 import os
-from enum import Enum
+from enum import StrEnum
 
 import dotenv
 from langchain.chat_models import init_chat_model
@@ -14,7 +14,7 @@ llm = init_chat_model(
 )
 
 
-class Edu(str, Enum):
+class Edu(StrEnum):
     BACHELOR = "本科"
     MASTER = "硕士"
     PHD = "博士"

@@ -6,10 +6,10 @@
     },
     "files.exclude": {
         ".idea": true,
-        ".langgraph_api": true,
         ".ruff_cache": true,
-        "**/__pycache__": true,
+        ".langgraph_api": true,
         ".playwright-mcp": true,
+        "**/__pycache__": true,
         "**/.pytest_cache": true
     },
     "workbench.editorAssociations": {

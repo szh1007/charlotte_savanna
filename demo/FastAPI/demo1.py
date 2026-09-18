@@ -11,7 +11,7 @@ if __name__ == "__main__":
 """
 
 import time
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import Annotated
 
@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field, field_validator
 app = FastAPI()
 
 
-class Edu(str, Enum):
+class Edu(StrEnum):
     UNIVERSITY = "university"
     GRADUATE = "graduate"
     PHD = "phd"

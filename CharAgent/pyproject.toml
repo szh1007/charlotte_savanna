@@ -1,0 +1,81 @@
+# CharAgent 的包声明: 让「从零手写的 agent 框架」是一个**能被单独安装**的包,
+# 而不只是一堆靠「从仓库根运行」隐式工作的目录.
+#
+# 为什么需要它 (PRD §4.1): 框架与业务在仓库里并列两个顶层目录, 但两个目录之间
+# 的关系此前没有任何文件声明 —— 靠的是「cwd 恰好是仓库根」这个没写下来的前提,
+# 换台机器或换个 cwd, `import CharAgent` 就散架. 声明之后, 这个前提变成
+# `pip install` 能兑现的承诺.
+#
+# 依赖只有八项, 且都是框架真正 import 到的. **没有 LangChain / LangGraph** ——
+# 「零框架依赖」是这个项目立身的那句话, 下面这份清单就是它的证据: 想看是否属实,
+# 把任意一项删掉, 框架立刻有 import 报错.
+#
+# 与根目录 pyproject.toml 的关系: 那份是**整个仓库**的 ruff 配置, 不含 [project]
+# (仓库里还有 Django 应用和六个子项目, 把它们整体声明成一个包不是事实). 本文件
+# 只管 CharAgent 这一个包.
+
+# 构建会产生两个副产物, 都落在**本目录**里 (都不进版本库 —— 根 .gitignore 已覆盖
+# build/ 与 *.egg-info/):
+#
+#     CharAgent/build/                  setuptools 的中间产物
+#     CharAgent/charagent.egg-info/     包元数据 (位置由 setup.cfg 钉住, 见那个文件)
+#
+# 清理:
+#
+#     rm -rf CharAgent/build CharAgent/charagent.egg-info
+#
+# 两者只在**主动构建**时出现 (pip install / pip wheel / python -m build), 跑测试与
+# 跑命令行都不会产生 —— 平时不必管, 想起来时清一次即可. 若它们在场: build/ 会被
+# ruff 扫到 (根 pyproject.toml 的 `extend-exclude = ["build"]` 就是为它加的),
+# egg-info 里只有 .txt 文件, ruff 的 include = ["*.py"] 够不到.
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "charagent"
+version = "0.1.0"
+description = "从零手写的 AI Agent 运行时框架"
+requires-python = ">=3.13"
+
+# 版本只写下界, 不写上界: 本包还没到需要锁大版本的成熟度, 而写死上界会在别人的
+# 依赖树里制造冲突. 下界取的是本机实际验证过的版本 (requirements.txt 里锁的那版).
+dependencies = [
+    "alembic>=1.19",
+    "httpx>=0.28",
+    "openai>=2.48",
+    "psycopg>=3.3",
+    "pydantic>=2.13",
+    "python-dotenv>=1.2",
+    "redis>=8.0",
+    "sqlalchemy>=2.0",
+]
+
+[tool.setuptools.packages.find]
+# 从**上一级**开始找包: 本文件与包目录 (CharAgent/) 同级, 而 import 名是
+# `CharAgent.xxx` —— 起点必须是它的父目录 (仓库根) 才对得上.
+where = [".."]
+include = ["CharAgent*"]
+
+# namespaces **必须显式关掉**. 它的默认值是 true, 而那一档下 setuptools 会把
+# **任何**目录都当成命名空间包收走 —— 实测 (2026-09-18) 在只写 where + include
+# 时会多收 10 个根本不是包的目录:
+#
+#     CharAgent.tests (+ fixtures / snapshots / integration) · CharAgent.docs
+#     (+ difficulties) · CharAgent.alembic (+ versions) · CharAgent.prompt.templates
+#
+# 后果不是"体积大一点": tests/ 里会成为 site-packages 的一部分, 测试替身与真实
+# 模块混在一起, 而 Alembic 的迁移环境也会被当成可 import 的包. 更隐蔽的是
+# `build/lib/CharAgent/` 那种构建产物——它**有** __init__.py, 于是会被再一次
+# 收进去, 一层套一层.
+#
+# 关掉之后口径变回朴素的那条: 有 __init__.py 才是包. 迁移环境 (`alembic/`) 与
+# 模板目录 (`prompt/templates/`) 都不随包分发 —— 前者是开发/运维资产 (运行时建表
+# 走 `db.database.ensure_schema()`), 后者靠下面的 package-data 单独带上.
+namespaces = false
+
+[tool.setuptools.package-data]
+# 提示词是**数据文件**不是代码, 不声明就不会被装进去 —— 装完 import 一切正常,
+# 一调 load_prompt 才说找不到文件. 这类问题只在新机器上出现, 本地永远复现不了.
+"CharAgent.prompt" = ["templates/*.prompt"]

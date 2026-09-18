@@ -20,6 +20,7 @@ FakeRedisClient), 零网络零外部服务.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -67,14 +68,21 @@ def make_session(
     thread_id: str = "client-test",
     model_name: str | None = None,
     tools: list[Tool] | None = None,
+    prompt_name: str = "system",
+    prompt_dir: Path | None = None,
 ) -> ChatSession:
-    """造一个会话 (存储不指定时给内存版; 工具不指定时给回显工具)."""
+    """造一个会话 (存储不指定时给内存版; 工具不指定时给回显工具).
+
+    提示词两项不指定 = 框架自己那份 (`system`) —— 与命令行现在的装配完全一样.
+    """
     return ChatSession(
         model,
         saver=saver if saver is not None else InMemoryCheckpointSaver(),
         tools=[ECHO_TOOL] if tools is None else tools,
         thread_id=thread_id,
         model_name=model_name,
+        prompt_name=prompt_name,
+        prompt_dir=prompt_dir,
     )
 
 
@@ -134,6 +142,26 @@ def test_identity_prompt_carries_the_configured_model_name() -> None:
 
     assert session.model_name == "cli-model"
     assert "cli-model" in session.history[0]["content"]
+
+
+def test_a_business_prompt_replaces_the_framework_one(tmp_path: Path) -> None:
+    """业务提示词接管身份说明, 且照样能用 `${model_name}` 占位符.
+
+    两个新参数都不给时走框架那份 (`test_history_starts_with_the_identity_prompt`
+    盯着默认行为), 这一条管的是给了之后: 读的是业务目录里的那份, 而实际生效的
+    模型名仍然填得进去 —— 业务提示词若要自己声明身份, 不能给它一个空值.
+    """
+    (tmp_path / "cs.prompt").write_text(
+        "你是客服, 跑在 ${model_name} 上.\n", encoding="utf-8"
+    )
+    session = make_session(
+        MockLLM.fixed(text_response("好的")),
+        model_name="cli-model",
+        prompt_name="cs",
+        prompt_dir=tmp_path,
+    )
+
+    assert session.history[0]["content"] == "你是客服, 跑在 cli-model 上.\n"
 
 
 async def test_second_ask_carries_the_first_answer_to_the_model() -> None:

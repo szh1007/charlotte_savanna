@@ -1,7 +1,7 @@
 [tool.ruff]
 line-length = 88
 target-version = "py313"
-exclude = [".venv/"]
+extend-exclude = ["build"]
 
 [tool.ruff.lint]
 select = [
@@ -17,6 +17,9 @@ select = [
     "RUF",    # Ruff 专有规则
 ]
 ignore = ["RUF012", "T201"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
 
 [tool.ruff.lint.per-file-ignores]
 "CharAgent/**/__init__.py" = ["N999"]
