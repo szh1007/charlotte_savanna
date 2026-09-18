@@ -114,7 +114,7 @@ app/charplot/                        # Django 侧（状态与数据, 主项目�
 ├── urls_api.py / urls_html.py / serializers.py / permissions.py / signals.py
 └── migrations/ (9) / tests/ (265 用例)
 
-.scratch/charplot/                   # 需求与追踪: PRD.md / SPEC.md / issues/01~14
+.scratch/charplot/                   # [已归档 2026-09-18 移出仓库] 需求与追踪: PRD.md / SPEC.md / issues/01~14
 ```
 
 ---
@@ -218,7 +218,7 @@ python manage.py test app.charplot           # 265 用例
 
 ## 6. 业务状态（Issue 01~14 已全部闭环）
 
-> 每个 Issue 独立开发/测试/验收（垂直切片），ticket 见 `.scratch/charplot/issues/`。
+> 每个 Issue 独立开发/测试/验收（垂直切片），ticket 原在 `.scratch/charplot/issues/`（2026-09-18 随归档移出仓库，仅在 git 历史中）。
 
 | Issue | 内容 | 状态 |
 |-------|------|------|
@@ -281,7 +281,7 @@ python manage.py test app.charplot           # 265 用例
 | [docs/DESIGN.md](./docs/DESIGN.md) | 架构总览 / API 设计表 / 业务规则表 / UI 规范 / 分步实施计划 |
 | [docs/QA.md](./docs/QA.md) | 架构问答索引（三件套分工 / 流程链路 / 关键决策速查） |
 | [docs/adr/](./docs/adr/) | 0001 双后端 / 0002 统一管道 / 0003 闯关交互归 Django / 0004 图谱图库 |
-| `.scratch/charplot/` | PRD.md / SPEC.md / issues/01~14（需求与验收源头） |
+| `.scratch/charplot/`【已归档 2026-09-18 移出仓库】 | 原为 PRD.md / SPEC.md / issues/01~14（需求与验收源头），现仅在 git 历史中 |
 
 ## 9. Phase 2（明确不做 / 二期）
 

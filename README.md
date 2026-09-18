@@ -35,7 +35,7 @@
 | `project/rag_text2sql/` | 子项目 | RAG Text2SQL 查询智能体（LangGraph + Qdrant/ES + MySQL 双库 + Vue） |
 | `app/charplot/` + `project/charplot/` | 子项目 | AI 闯关学习网站（双后端: Django 账号/闯关规则 + FastAPI AI 能力 + Vue, 三件套实践） |
 | `CharAgent/` | 子项目 | 从零手写的 agent runtime 框架（P0 已交付: 模型/工具/loop/事件/重试/checkpoint/数据层 + CLI 演示, 业务无关, 不依赖 Django） |
-| `CharService/` | 子项目 | 企业级电商智能客服业务层（minimall internal API + 内部网关 + 身份服务三层对接, 13 工具集 + 审批/接管台 + Vue） |
+| `CharService/` | 子项目 | 企业级电商智能客服业务层（minimall internal API + 内部网关 + 身份服务三层对接, 12 工具 + 审批/接管台 + Vue） |
 | `demo/` | 自学教程 | Python / LangChain / LangGraph / DeepAgents / FastAPI 教程 |
 
 ---
@@ -90,7 +90,7 @@ charlotte_savanna/
 ├── demo/                    # 自学教程（非业务代码）
 │   └── SUMMARY.md           # 知识点学习总结
 ├── docs/                    # Agent 定义、triage 规范、学习笔记
-├── .scratch/                # 本地 Issue Tracker（Markdown, 按 feature-slug 分目录: CharAgent / CharService / charplot）
+├── .scratch/                # 本地 Issue Tracker（Markdown, 按 feature-slug 分目录: CharAgent / CharService）
 ├── requirements.txt         # Python 依赖
 ├── .env.example             # 环境变量模板
 └── CLAUDE.md                # 项目上下文与开发规范
@@ -234,7 +234,7 @@ cp .env.example .env               # 填入真实 API Key
 | rag_text2sql | `sh/rag_text2sql_backend.sh` | `sh/rag_text2sql_frontend.sh` |
 | charplot | Django 主项目 `python manage.py runserver`（8000）+ `sh/charplot_backend.sh`（AI 端 8004） | `sh/charplot_frontend.sh`（9004） |
 | CharAgent | 仓库根 `python -m CharAgent.client`（命令行演示, 非常驻服务, 无脚本） | 无（终端界面） |
-| CharService | `sh/charservice_backend.sh`（主服务 10070 + 内部网关 10071 + 身份服务 10072） | `sh/charservice_frontend.sh`（10079） |
+| CharService【待建：issue 01】 | `sh/charservice_backend.sh`（主服务 10070 + 内部网关 10071 + 身份服务 10072） | `sh/charservice_frontend.sh`（10079） |
 
 所有子项目后端/前端脚本均在 `sh/` 目录；前端脚本首次运行自动执行 `npm install`（deep_search / menu 对应 `ui/` 目录，其余为 `frontend/`）。Django 主项目依赖 MySQL + Redis；charplot 额外依赖 Milvus + modelscope 本地模型；CharService 依赖 MySQL + Postgres + Redis + Milvus，并要求 minimall 的 `internal/support` 端点可用。
 

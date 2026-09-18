@@ -120,7 +120,7 @@
 
 -- 业务表（2026-09-18 移出，属 CharService/，不再是框架契约）
 --   tickets / escalations / approvals / audit_logs 四张表落 CharService 自有的
---   Postgres 迁移链（版本表 charsERVICE_alembic_version），表名带 charsERVICE_ 前缀。
+--   Postgres 迁移链（版本表 charservice_alembic_version），表名带 charservice_ 前缀。
 --   框架侧不再建它们。原 approvals 表还曾把业务对象写进字段枚举
 --   （operation(退款/赔付/通知)）—— 那正是策略漂进框架的典型，一并移走。
 --   挂起状态本身存在 checkpoint 的 state.suspension 里，不需要框架建审批表。

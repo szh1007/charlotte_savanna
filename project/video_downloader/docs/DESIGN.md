@@ -149,7 +149,7 @@ project/video_downloader/
 
 ## 9. AI 视频总结能力（Phase 2, ADR-0005）
 
-> 需求与验收：`.scratch/video-downloader/issues/12-ai-video-summary.md`；架构决策：ADR-0005。
+> 需求与验收：原为 `.scratch/video-downloader/issues/12-ai-video-summary.md`（2026-09-18 随归档移出仓库）；架构决策：ADR-0005。
 
 ### 9.1 能力清单
 
@@ -216,7 +216,7 @@ SSE 事件协议不变（`task-update`）, 新增 `transcribing` / `summarizing`
 
 ## 10. 字幕来源与模型下载（Phase 3, ADR-0006）
 
-> 需求与验收：`.scratch/video-downloader/issues/13-subtitle-source-model-download.md`；架构决策：ADR-0006。
+> 需求与验收：原为 `.scratch/video-downloader/issues/13-subtitle-source-model-download.md`（2026-09-18 随归档移出仓库）；架构决策：ADR-0006。
 
 ### 10.1 能力清单
 

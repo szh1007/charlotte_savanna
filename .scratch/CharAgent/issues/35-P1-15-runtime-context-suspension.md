@@ -23,6 +23,7 @@
 - [ ] `execute_tool(..., context=)` 填充注入参数；未提供 context 而工具声明了注入参数时，给**可操作错误**而非 500
 - [ ] `AgentLoop.run(..., context=)`；**用例：同一 loop 实例用不同 context 跑两次，工具拿到各自的值**（证明可跨 run 复用）
 - [ ] 工具返回 `Suspension` → `ToolExecution.suspension` 非空，且**未被文本化回填给模型**
+- [ ] **形状对齐（落地前先定）**：`checkpoint/utils/types.py` 现有的 `Suspension(reason, pending, approval_id)` 是**快照侧的挂起点**（记「还欠哪几条调用」）；本 issue 的工具返回值按 ADR-0010 §二要多带 `kind` / `payload`。两者是**同一类型扩字段**还是**拆成两个类型**（工具返回的挂起信号 vs 快照里的挂起点）尚未定 —— 决策前先看引用面：`checkpoint/serialization.py`（读写）、`checkpoint/utils/pending.py`（欠账扫描）、`checkpoint/utils/history.py`（历史表格）
 - [ ] loop 检测挂起：落帧（`CheckpointSource.SUSPENSION`）→ 置等待态 → 发事件 → 停下；**用例：断言工具只执行一次、`turn_count` 接续、新帧 `parent_id` 指向挂起帧**
 - [ ] `RunStatus` 新增「等待内部审批」态 + `ALLOWED_TRANSITIONS` 迁移规则 + 终态判定
 - [ ] `RunsRepository.list_by_status(status)` + 用例

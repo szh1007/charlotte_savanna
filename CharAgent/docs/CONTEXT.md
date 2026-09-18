@@ -61,7 +61,7 @@ Checkpoint 的存储接口抽象（async 协议），隔离存储介质；能做
 _Avoid_: 存储层, 存储适配器
 
 **Suspension**:
-挂起点：运行停在「等人批准」时落下的信息（reason + 还欠结果的工具调用 pending + approval_id）。机制 P0 已备 —— 快照能存能读、`pending_tool_calls(历史)` 能找出还欠哪几条调用、`resume` 会先补做它们再继续；**触发**（哪些工具需要审批）归 P1-7 HITL。
+挂起点：运行停在「等人批准」时落下的信息（reason + 还欠结果的工具调用 pending + approval_id）。机制 P0 已备 —— 快照能存能读、`pending_tool_calls(历史)` 能找出还欠哪几条调用、`resume` 会先补做它们再继续；**触发通道**（工具怎么让 loop 停下：返回 `Suspension`）归 P1-15（ADR-0010），**审批机制**（落盘 → 恢复 / 拒绝回填 / 超时降级）归 P1-7 HITL。
 _Avoid_: 挂起记录, 中断点
 
 **TimeTravel**:

@@ -170,7 +170,7 @@ CharAgent/
 │   ├── DESIGN.md               # 项目总览（本文件）：核心架构 / 技术栈 / 选型 / 难点清单 / 面试导航
 │   ├── CONTEXT.md              # 领域术语表（glossary）
 │   ├── design/                 # 详细设计文档（01-架构 / 02-数据模型 / 03-API / 04-测试 / 05-路线图）
-│   ├── adr/                    # 架构决策记录（0001-0007）
+│   ├── adr/                    # 架构决策记录（0001-0010）
 │   └── difficulties/           # 70 个编号难点详细清单（14 个分类文件）
 ├── model/                      # P0  ChatModel 协议 + httpx/openai 双实现 + reasoning 兼容
 ├── tool/                       # P0  @tool 装饰器 + JSON schema 生成
@@ -251,5 +251,5 @@ python -m CharAgent.client --help                # 全部选项 + 三步演示�
 
 - [CONTEXT.md](CONTEXT.md) — 领域术语表
 - [design/](design/) — 详细设计文档（01-架构总览 / 02-数据模型 / 03-Server API 与事件协议 / 04-测试计划 / 05-路线图）
-- [adr/](adr/) — 架构决策记录（0001-0007，与实现同步演进）
+- [adr/](adr/) — 架构决策记录（0001-0010，与实现同步演进）
 - [difficulties/](difficulties/) — 70 个编号难点详细清单（14 个分类文件）

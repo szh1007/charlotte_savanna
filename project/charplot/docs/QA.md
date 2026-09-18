@@ -2,7 +2,7 @@
 
 > 用途：项目架构设计的答疑索引，快速查阅「架构为什么这么设计」。
 > 收录范围：仅项目架构设计相关问题（技术栈分工 / 流程链路 / 关键决策），通用技术知识不收录。
-> 来源：2026-08-22 架构梳理与审问会话。文档链接均为仓库内相对路径，可直接跳转。
+> 来源：2026-08-22 架构梳理与审问会话。`docs/` 下的链接为仓库内相对路径，可直接跳转；指向 `.scratch/charplot/` 的条目已于 2026-09-18 随归档移出仓库，已降级为纯文字（内容仅在 git 历史中）。
 
 ---
 
@@ -36,7 +36,7 @@ DeepAgents 底层本身基于 LangGraph 编译图构建（`create_deep_agent` �
 
 **文档指引：**
 - [DESIGN.md §2 架构图](./DESIGN.md#L25) — 管道与 agents 的嵌套关系
-- [SPEC.md §4 技术栈](./../../../.scratch/charplot/SPEC.md#L60) — FastAPI 侧三件套声明
+- SPEC.md §4 技术栈 — FastAPI 侧三件套声明
 
 ### Q3. 为什么 LangGraph 管道里还嵌套 DeepAgents，不重复吗？
 
@@ -49,7 +49,7 @@ DeepAgents 底层本身基于 LangGraph 编译图构建（`create_deep_agent` �
 
 **文档指引：**
 - [DESIGN.md §3 目录结构](./DESIGN.md#L64) — `pipeline/`（LangGraph StateGraph）与 `agents/`（DeepAgents subagents）分工
-- [issue 07](./../../../.scratch/charplot/issues/07-real-knowledge-pipeline.md#L7) — LangGraph 编排四阶段 + DeepAgents 承担检索环节
+- issue 07 — LangGraph 编排四阶段 + DeepAgents 承担检索环节
 
 ### Q4. LangGraph 和 LangChain 的区别是什么？本项目 RAG 为什么不用 LangGraph 编排？
 
@@ -65,7 +65,7 @@ DeepAgents 底层本身基于 LangGraph 编译图构建（`create_deep_agent` �
 需要智能编排的环节（解构/出题）已经在 LangGraph 管道里，且这两个环节恰恰"吃检索"——RAG 检索是被管道节点调用的组件，不是自己再画一张编排图。**"用 LangGraph 写 RAG"指 agentic RAG（检索质量评估/失败重写重试/按需检索），属二期规划。**
 
 **文档指引：**
-- [SPEC.md §7.2 RAG 架构](./../../../.scratch/charplot/SPEC.md#L138) — 各环节实现要点
+- SPEC.md §7.2 RAG 架构 — 各环节实现要点
 - [CONTEXT.md Q21](./CONTEXT.md#L102) — Agentic RAG 二期决策
 - [ADR-0002](./adr/0002-unified-knowledge-pipeline.md#L8) — 检索源可插拔
 
@@ -83,7 +83,7 @@ DeepAgents 底层本身基于 LangGraph 编译图构建（`create_deep_agent` �
 
 **文档指引：**
 - [CONTEXT.md Q21](./CONTEXT.md#L102) — 二期演进路径
-- [SPEC.md §7.2 RAG 架构](./../../../.scratch/charplot/SPEC.md#L138)
+- SPEC.md §7.2 RAG 架构
 
 ---
 
@@ -111,8 +111,8 @@ E. LLM 状态总结（直接 LLM 调用，无 agent）
 **文档指引：**
 - [DESIGN.md §2 架构图](./DESIGN.md#L25) — 五条流程落点
 - [DESIGN.md §4.2 AI 接口表](./DESIGN.md#L109) — 各流程入口
-- [SPEC.md §6 核心流程](./../../../.scratch/charplot/SPEC.md#L86)
-- [issue 13](./../../../.scratch/charplot/issues/13-llm-status-summary.md#L7) — LLM 状态总结（裸 LLM 调用）
+- SPEC.md §6 核心流程
+- issue 13 — LLM 状态总结（裸 LLM 调用）
 
 ### Q7. RAG（流程 B）被流程 A / C 调用，调用什么、提供什么？
 
@@ -127,7 +127,7 @@ E. LLM 状态总结（直接 LLM 调用，无 agent）
 
 **文档指引：**
 - [DESIGN.md §4.2 API 表](./DESIGN.md#L118) — `/ai/kb/search` 标注"管道内部/调试"
-- [SPEC.md §7.3 幻觉防护](./../../../.scratch/charplot/SPEC.md#L150) — 三道防线
+- SPEC.md §7.3 幻觉防护 — 三道防线
 - [CONTEXT.md Q19a](./CONTEXT.md#L100) — 解构/出题都吃检索
 
 ### Q8. 用户输入材料的旅程，材料会入库 RAG 吗？
@@ -145,8 +145,8 @@ E. LLM 状态总结（直接 LLM 调用，无 agent）
 
 **文档指引：**
 - [CONTEXT.md Q18 / Q19](./CONTEXT.md#L95) — 知识库定位与主题关系
-- [SPEC.md §6.2 流程](./../../../.scratch/charplot/SPEC.md#L102) — 两条路径的分叉点
-- [SPEC.md §7.1 检索源可插拔](./../../../.scratch/charplot/SPEC.md#L130)
+- SPEC.md §6.2 流程 — 两条路径的分叉点
+- SPEC.md §7.1 检索源可插拔
 
 ### Q9. 材料旅程用完即弃？用户如何查看历史旅程？中途退出能继续吗？
 
@@ -162,8 +162,8 @@ E. LLM 状态总结（直接 LLM 调用，无 agent）
 **中途退出可以继续**：PRD B-3 验收标准明确"可随时回到未完成的旅程继续"；题目渐进生成 + 预生成机制（Q5）保证下次回来题目已就绪。
 
 **文档指引：**
-- [PRD B-3](./../../../.scratch/charplot/PRD.md#L59) — 旅程列表验收标准
-- [SPEC.md §8 数据模型](./../../../.scratch/charplot/SPEC.md#L158) — 全表定义
+- PRD B-3 — 旅程列表验收标准
+- SPEC.md §8 数据模型 — 全表定义
 - [DESIGN.md §4.1 API 表](./DESIGN.md#L87)
 
 ### Q10. "RAG 两轮解构"和"可插拔检索源"是什么意思？
@@ -184,7 +184,7 @@ E. LLM 状态总结（直接 LLM 调用，无 agent）
 
 **文档指引：**
 - [CONTEXT.md Q19a](./CONTEXT.md#L100) — 两轮解构决策
-- [SPEC.md §6.2](./../../../.scratch/charplot/SPEC.md#L115) — 知识库解构两轮流程
+- SPEC.md §6.2 — 知识库解构两轮流程
 - [ADR-0002](./adr/0002-unified-knowledge-pipeline.md#L10) — 检索源可插拔理由
 
 ---
@@ -207,8 +207,8 @@ E. LLM 状态总结（直接 LLM 调用，无 agent）
 
 **文档指引：**
 - [CONTEXT.md Q22](./CONTEXT.md#L102) — 决策记录
-- [SPEC.md §8 数据模型](./../../../.scratch/charplot/SPEC.md#L165) — level / attempt 字段说明
-- [issue 05 验收项](./../../../.scratch/charplot/issues/05-level-quiz-and-settlement.md#L9) — 断点续答与重开验收标准
+- SPEC.md §8 数据模型 — level / attempt 字段说明
+- issue 05 验收项 — 断点续答与重开验收标准
 
 ### Q12. 二期 Agentic RAG 是什么？和首版 RAG 什么关系？
 
@@ -217,7 +217,7 @@ E. LLM 状态总结（直接 LLM 调用，无 agent）
 **文档指引：**
 - [CONTEXT.md Q21](./CONTEXT.md#L102) — 决策记录
 - [DESIGN.md §9 Phase 2 能力表](./DESIGN.md#L196)
-- [SPEC.md §12 二期清单](./../../../.scratch/charplot/SPEC.md#L202)
+- SPEC.md §12 二期清单
 
 ---
 

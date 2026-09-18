@@ -164,9 +164,9 @@ Thread（thread_id/tenant_id/user_id/title/status/时间戳）→ Run（run_id/t
 ### 4.9 阶段任务序列（Roadmap）
 
 - P0（8 任务）：model.py → tool.py → loop.py（并行/纠错/防护）→ stream.py+hooks.py → retry.py → checkpoint/ → models.py+alembic → tests/
-- P1（14 任务）：server（SSE+TaskQueue）→ 状态机/取消 → 熔断/超时 → 幂等/Saga/锁 → 限流 → 安全护栏 → HITL/脱敏/审计 → 降级 → RAG → 结构化输出/压缩 → token 计量 → 日志指标 → ~~客服 demo~~ → ~~前端~~。**末两项 2026-09-18 整个移交 `CharService/`**（拆为 10 个垂直切片，见 `.scratch/CharService/`）
+- P1（15 任务）：**运行时上下文注入 + 挂起信号通道**（P1-15，ADR-0010，2026-09-18 新增；P1-1 与 P1-7 的前置）→ server（SSE+TaskQueue）→ 状态机/取消 → 熔断/超时 → 幂等/Saga/锁 → 限流 → 安全护栏 → HITL/脱敏/审计 → 降级 → RAG → 结构化输出/压缩 → token 计量 → 日志指标 → ~~客服 demo~~ → ~~前端~~。**末两项 2026-09-18 整个移交 `CharService/`**（拆为 10 个垂直切片，见 `.scratch/CharService/`）
 - P2（11 任务）：8 个插件模块 + event 表 + 规划文档 + 工程化（全部独立挂载）
-- 依赖顺序：P0-1/P0-2 并行 → P0-3 → P0-4/5/6 并行 → P0-7 依赖 P0-6；P1-1 依赖 P0 全量
+- 依赖顺序：P0-1/P0-2 并行 → P0-3 → P0-4/5/6 并行 → P0-7 依赖 P0-6；**P1-15 依赖 P0**（其 `Blocked by` 是 P0 验收 CLI）→ P1-1 依赖 P0 全量 + **P1-15**
 
 ## 5. Testing Decisions
 

@@ -22,7 +22,7 @@
 | `project/rag_text2sql/` | 子项目 | RAG Text2SQL 数据查询智能体（LangGraph + Qdrant/ES + MySQL 双库 + Vue） |
 | `app/charplot/` + `project/charplot/` | 子项目 | AI 闯关学习网站（双后端：Django 账号/闯关规则 + FastAPI AI 能力 + Vue 前端, LangGraph/DeepAgents/LangChain 三件套） |
 | `CharAgent/` | 子项目 | 从零手写的 agent runtime 框架（P0 已交付：模型/工具/loop/事件/重试/checkpoint/数据层/提示词 + CLI 演示），业务无关，无 Django |
-| `CharService/` | 子项目 | 企业级电商智能客服业务层（ADR-0008/0009）：minimall internal API + 内部网关 + 身份服务三层对接，13 个工具集 + 审批/接管台 + Vue 前端；P1 垂直切片实施中 |
+| `CharService/` | 子项目 | 企业级电商智能客服业务层（ADR-0008/0009）：minimall internal API + 内部网关 + 身份服务三层对接，12 个工具 + 审批/接管台 + Vue 前端；P1 垂直切片实施中 |
 | `demo/` | 自学教程 | 非业务代码，见 §1.1 |
 
 ---
@@ -203,8 +203,8 @@ charlotte_savanna/
 │   ├── rag_text2sql_frontend.sh #   启动 rag_text2sql 前端
 │   ├── charplot_backend.sh      #   启动 charplot FastAPI AI 能力端（8004; Django 侧随主项目 8000）
 │   ├── charplot_frontend.sh     #   启动 charplot 前端
-│   ├── charservice_backend.sh   #   启动 CharService（10070 + 内部网关 10071 + 身份服务 10072）
-│   └── charservice_frontend.sh  #   启动 CharService 前端（10079）
+│   ├── charservice_backend.sh   #   启动 CharService（10070 + 内部网关 10071 + 身份服务 10072）【待建：issue 01】
+│   └── charservice_frontend.sh  #   启动 CharService 前端（10079）【待建：issue 01】
 ├── demo/                        # [Demo] 自学教程代码（非业务，忽略）
 │   ├── Base/                    #   Python 基础
 │   ├── LangChain_v1.3/          #   LangChain 1.3 教程
@@ -301,7 +301,7 @@ charlotte_savanna/
 
 ### 4.8 Django + FastAPI 双后端（charplot 子项目）
 
-> CharPlot = AI 闯关学习网站（输入知识 → 图谱解构 → 渐进出题 → 游戏化闯关）。业务术语/产品决策见 `project/charplot/docs/CONTEXT.md`，数据契约见 `docs/CONTRACT.md`（权威），架构问答见 `docs/QA.md`。实施按 `.scratch/charplot/issues/01~14` 垂直切片，已全部闭环。
+> CharPlot = AI 闯关学习网站（输入知识 → 图谱解构 → 渐进出题 → 游戏化闯关）。业务术语/产品决策见 `project/charplot/docs/CONTEXT.md`，数据契约见 `docs/CONTRACT.md`（权威），架构问答见 `docs/QA.md`。实施按 14 个垂直切片推进，已全部闭环（原追踪 issue 在 `.scratch/charplot/issues/`，该目录已于 2026-09-18 有意外移，仅在 git 历史中）。
 
 - **双后端微服务（ADR-0001）**：Django（`app/charplot`, 8000）= 账号/学习数据/闯关交互规则/知识库元数据/Dashboard；FastAPI（`project/charplot/api/server.py`, 8004）= AI 能力（知识管道 / RAG / 题目生成 / 任务系统）
 - **闯关交互归 Django（ADR-0003）**：判分/心动值/XP/连胜/易错分/间隔复习为纯规则 + 预生成讲解，LLM 不参与答题路径；**RAG 全链路归 FastAPI**，Django 只存知识库元数据
@@ -404,7 +404,7 @@ charlotte_savanna/
 | 知识管道（`pipeline/`） | ✅ | 解析(txt/md/html/pdf/docx/pptx/链接) → 主内容分析 → 联网搜索增强 → 图谱解构, 检索源可插拔（网络/Context7/文档/知识库） |
 | RAG 链路（`rag/`） | ✅ | modelscope 本地 bge-m3 embedding + bge-reranker-v2-m3 rerank（必配链路）, Milvus 混合检索 + 软删 filter |
 | 前端（`frontend/`） | ✅ | Vue 3 + Element Plus 动漫主题（9004, /api /r→8000, /ai→8004）, 11 个 view 全部接通 |
-| 文档体系（`docs/`） | ✅ | CONTEXT / CONTRACT / DESIGN / QA + adr/0001~0004, tickets 见 .scratch/charplot/issues/ |
+| 文档体系（`docs/`） | ✅ | CONTEXT / CONTRACT / DESIGN / QA + adr/0001~0004（tickets 原在 .scratch/charplot/issues/，2026-09-18 有意外移） |
 
 > 业务链路已闭环（Issue 01~14, 2026-09-08 三侧契约核对零断链）。已实现：旅程创建 → 图谱落库 → 技能树 → 渐进出题（间隔复习混入）→ 闯关答题 → 复盘分享 → Dashboard + LLM 状态总结 + 知识库管理。启动与已知边界见 `project/charplot/README.md`。
 
@@ -422,7 +422,7 @@ charlotte_savanna/
 | 提示词（`prompt/`） | ✅ | 提示词集中存放：`templates/*.prompt` + `load_prompt()` 按名加载（`string.Template` 占位符，规避字面 JSON 大括号）；框架机制文本（截断指令）刻意留原处 |
 | CLI（`client/`） | ✅ | `python -m CharAgent.client`：带工具问答 + 六类事件实时打印 + Ctrl-C 打断后续跑（说「继续」或 `/resume`）+ 快照后端三选一（P0 验收线） |
 | 测试（`tests/`） | ✅ | 默认全替身 741 例；四个 marker：integration / pg / redis / pg_db |
-| P1（框架侧） | ⬜ 未开工 | 通用运行时 HTTP 层（router 工厂）+ 安全护栏 / HITL / 限流 / 幂等 Saga / 降级 / RAG / 结构化输出 / 计量 / 日志指标（14 个 issue，其中 2 个已移交 CharService、8 个方案修订） |
+| P1（框架侧） | ⬜ 未开工 | 通用运行时 HTTP 层（router 工厂）+ 安全护栏 / HITL / 限流 / 幂等 Saga / 降级 / RAG / 结构化输出 / 计量 / 日志指标（15 个 issue：8 个方案修订 + 1 个新增 P1-15 + 2 个已移交 CharService） |
 | P1（业务侧） | ⬜ 未开工 | **已外移至 `CharService/`** —— 原 P1-13 客服 demo 与 P1-14 前端整个移交，拆为 10 个垂直切片 |
 | P2 | ⬜ 未开工 | 8 个可插拔插件（memory / cost / observability / multiagent / mcp / skills / eval / context_engineering）+ event 表 + 文档 + 工程化；**11 个 issue 不受业务改造影响** |
 
@@ -437,13 +437,13 @@ charlotte_savanna/
 | 模拟渠道（`channels/`） | ⬜ | 会话建立时绑定 `user_id`（模拟 App 已鉴权），身份由此确定 |
 | 身份服务（`identity/`） | ⬜ | RS256 签发委托 token（`sub`/`act`/`aud`/`tenant`/`exp`），私钥仅在此，**agent 无签发权** |
 | 内部网关（`gateway/`） | ⬜ | agent 访问业务系统的**唯一入口**：验签 + 限流 + 双粒度审计 + 转发 |
-| 工具集（`tools/`） | ⬜ | 13 个工具（9 个 L0 只读 / 1 个 L1 加购 / 1 个 L2 退款走审批 / 1 个 L2 取消走用户确认 / 1 个转人工），**签名无 `user_id`** |
+| 工具集（`tools/`） | ⬜ | 12 个工具（8 个 L0 只读 / 1 个 L1 加购 / 1 个 L2 退款走审批 / 1 个 L2 取消走用户确认 / 1 个转人工），**签名无 `user_id`** |
 | 业务端点（`api/`） | ⬜ | 审批台 + 接管台 + 工单；通用运行时端点由 CharAgent 的 router 工厂提供 |
 | 退款 worker | ⬜ | 异步受理：推进退款单状态，同事务改余额 + 写流水 + 置状态。**代码在 `app/minimall/`，不在 CharService**（要同事务改 MySQL，放这里就得开业务库连接，违反 ADR-0008） |
 | 前端（`frontend/`） | ⬜ | Vue 3（:10079）双路由 /chat + /admin，含结构化确认卡片 |
 | minimall 改造 | ⬜ | 新增 `/api/minimall/internal/support/*`（按任务粒度）+ 退款能力（refund 表 / 余额流水 / 服务身份认证）；**不动既有 24 条买家端点** |
 
-> 三层对接设计见 `CharAgent/docs/adr/0008`（业务对接形态）与 `0009`（委托身份 + 写操作分级）。规格与 10 个垂直切片 issue 见 `.scratch/CharService/`。**启动**：`sh/charservice_backend.sh`（:10070，随脚本拉起网关 :10071 与身份服务 :10072）+ `sh/charservice_frontend.sh`（:10079）。
+> 三层对接设计见 `CharAgent/docs/adr/0008`（业务对接形态）与 `0009`（委托身份 + 写操作分级）。规格与 10 个垂直切片 issue 见 `.scratch/CharService/`。**启动**（`CharService/` 目录与脚本随 issue 01 创建）：`sh/charservice_backend.sh`（:10070，随脚本拉起网关 :10071 与身份服务 :10072）+ `sh/charservice_frontend.sh`（:10079）。
 
 ### 5.10 Demo 目录（仅供学习参考，不计入业务/子项目）
 
@@ -512,8 +512,8 @@ charlotte_savanna/
 - **charplot 前端**：`sh/charplot_frontend.sh`（或 `cd project/charplot/frontend && npm run dev`, 127.0.0.1:9004）
 - **CharAgent CLI**：在**仓库根**跑 `python -m CharAgent.client`（交互模式；`-q "问一句"` 一次性、`--backend redis|postgres` 换快照后端、`--history` 看存档、`--help` 看全部选项与三步演示脚本；无 sh 脚本 —— 它不常驻，不是服务）。**打断后续跑有两条路**：Ctrl-C 后已完成的工作会收回对话历史，直接说一句「继续」就接着跑（CLI 不做意图识别，判断交给模型）；`--resume` / `/resume` 走快照恢复（计数器接续、挂起点补做，框架级保证）
 - **CharAgent 测试**：`cd CharAgent && pytest`（默认全替身；`-m integration` 打真实端点、`-m pg` / `-m redis` / `-m pg_db` 连真服务）
-- **CharService 后端**：`sh/charservice_backend.sh`（或 `python -m CharService.api.server`, 127.0.0.1:10070；随脚本一并拉起内部网关 :10071 与身份服务 :10072；前置 MySQL/Postgres/Redis/Milvus + minimall internal/support 端点）
-- **CharService 前端**：`sh/charservice_frontend.sh`（或 `cd CharService/frontend && npm run dev`, 127.0.0.1:10079，首次需 `npm install`）
+- **CharService 后端**【待建：issue 01】：`sh/charservice_backend.sh`（或 `python -m CharService.api.server`, 127.0.0.1:10070；随脚本一并拉起内部网关 :10071 与身份服务 :10072；前置 MySQL/Postgres/Redis/Milvus + minimall internal/support 端点）
+- **CharService 前端**【待建：issue 01】：`sh/charservice_frontend.sh`（或 `cd CharService/frontend && npm run dev`, 127.0.0.1:10079，首次需 `npm install`）
 - **进程状态**：`sh/_status_.sh`（查看各项目运行进程: PID/端口/内存/启动命令）
 - **LangGraph CLI**：`langgraph dev`（`langgraph.json` 配置了 graph 入口，指向 `demo/LangGraph_v1.2`）
 - **LangChain 脚本**：在对应 `demo/` 子目录下 `python <script>.py`（脚本内部 `load_dotenv()`）
@@ -531,7 +531,7 @@ cd project/menu/ui && npm install
 cd project/video_downloader/frontend && npm install
 cd project/rag_text2sql/frontend && npm install
 cd project/charplot/frontend && npm install
-cd CharService/frontend && npm install
+cd CharService/frontend && npm install        # 待建：issue 01
 ```
 
 核心依赖：Django 6.0、DRF、LangChain/LangGraph 1.x、DeepAgents、FastAPI、PyMySQL、SQLAlchemy、django-redis、redis-py、ChromaDB、FAISS、RAGFlow SDK、Milvus、Qdrant、Elasticsearch、python-dotenv、Tavily、yt-dlp、ffmpeg

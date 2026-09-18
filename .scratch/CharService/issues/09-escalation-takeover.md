@@ -4,7 +4,7 @@
 
 **完整轨迹从哪来**（2026-09-18 补）：框架的 `GET /threads/{id}/messages` **刻意只返回一问一答**（工具消息被 `hidden` 过滤），接不了这份需求。框架为此提供**管理端轨迹端点** `GET /runs/{run_id}/transcript`（CharAgent P1-1），接管台改调它。
 
-**Blocked by:** 08、**CharAgent P1-1**（`transcript` 端点）
+**Blocked by:** 08、**CharAgent P1-1**（`transcript` 端点）、**CharAgent P1-3**（下游依赖熔断 + `DEPENDENCY_DOWN` 上报）、**CharAgent P1-8**（错误码分类与映射 + 降级策略 SPI）
 
 **Status:** ready-for-agent
 

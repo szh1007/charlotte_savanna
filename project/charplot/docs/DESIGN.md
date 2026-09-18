@@ -1,8 +1,8 @@
 # DESIGN.md — CharPlot 设计方案
 
-> 状态：待用户终审。确认后按「分步实施计划」开发（对应 `.scratch/charplot/issues/` tickets）。
+> 状态：待用户终审。确认后按「分步实施计划」开发（对应 tickets，原在 `.scratch/charplot/issues/`，2026-09-18 随归档移出仓库）。
 > 领域术语参见 [CONTEXT.md](./CONTEXT.md)，架构决策参见 [docs/adr/](./adr/)。
-> 需求见 `.scratch/charplot/PRD.md`，技术规格见 `.scratch/charplot/SPEC.md`。
+> 需求原见 `.scratch/charplot/PRD.md`，技术规格原见 `.scratch/charplot/SPEC.md`（均于 2026-09-18 随归档移出仓库，仅在 git 历史中）。
 
 ---
 
@@ -165,7 +165,7 @@ project/charplot/frontend/           # Vue 3 + Vite + TS 前端
 
 ## 7. 分步实施计划
 
-> 对应 `.scratch/charplot/issues/01 ~ 14`（垂直切片，每步独立开发/测试/验收）。`→` 为依赖链。
+> 对应 issues 01 ~ 14（垂直切片，每步独立开发/测试/验收；原在 `.scratch/charplot/issues/`，2026-09-18 随归档移出仓库）。`→` 为依赖链。
 
 | 步骤 | 内容 | 验证项 |
 |------|------|--------|

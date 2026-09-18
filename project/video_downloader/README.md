@@ -1,7 +1,7 @@
 # BilibiliDownloader（哔哩哔哩下载器, video_downloader）
 
 > 基于 **FastAPI + yt-dlp + Vue 3** 的哔哩哔哩免费视频下载网站：粘贴链接 → 一键解析 → 选择清晰度 → 批量下载 → 临时直链交付；**AI 视频总结**（转录 / 结构化总结 / 思维导图 / AI 问答, 字幕来源可选 + 模型预下载 + LLM 流式, ADR-0005 ~ 0008）。
-> 需求与验收：`.scratch/video-downloader/PRD.md`（总需求）与 `.scratch/video-downloader/issues/`（分步实施记录）。
+> 需求与验收：原为 `.scratch/video-downloader/PRD.md`（总需求）与 `.scratch/video-downloader/issues/`（分步实施记录），2026-09-18 随归档移出仓库，仅在 git 历史中。
 
 ---
 
@@ -223,8 +223,8 @@ python scripts/e2e_download.py [url] [format_id]
 
 | 文档 | 位置 |
 |------|------|
-| 总需求（PRD） | `.scratch/video-downloader/PRD.md` |
-| 分步实施 issue（T01 ~ T15） | `.scratch/video-downloader/issues/` |
+| 总需求（PRD）【已归档 2026-09-18 移出仓库】 | 原为 `.scratch/video-downloader/PRD.md`，现仅在 git 历史中 |
+| 分步实施 issue（T01 ~ T15）【已归档 2026-09-18 移出仓库】 | 原为 `.scratch/video-downloader/issues/`，现仅在 git 历史中 |
 | 领域术语表 | `project/video_downloader/docs/CONTEXT.md` |
 | 设计方案 | `project/video_downloader/docs/DESIGN.md` |
 | 架构决策记录 | `project/video_downloader/docs/adr/`（ADR-0001 下载引擎 / 0002 会员密钥 / 0003 内存态 TTL 存储 / 0004 仅 B 站范围收缩 / 0005 AI 视频总结 / 0006 字幕来源与模型下载 / 0007 LLM 流式输出 / 0008 总结 Markdown 文档） |

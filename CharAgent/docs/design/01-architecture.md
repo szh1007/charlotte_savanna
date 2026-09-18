@@ -1,7 +1,7 @@
 # 01 架构总览
 
 > 设计文档索引：[02-data-model.md](02-data-model.md) / [03-api.md](03-api.md) / [04-test-plan.md](04-test-plan.md) / [05-roadmap.md](05-roadmap.md)
-> 决策索引：`docs/adr/`（0001-0007）
+> 决策索引：`docs/adr/`（0001-0010）
 
 ## 1. 项目定位
 
@@ -130,7 +130,7 @@ while not done:
 所以不会重做；从**老**快照恢复时新帧的 `parent_id` 指向它，历史就此岔出一条新分支
 （time-travel，要求存储留得住历史：内存 / Postgres 天然支持，Redis 的 `mode="history"`（默认，Stream 流水账）也支持，只有 `mode="latest"` 会明确报能力错）。翻历史拿到的帧还带着「观察值」（来源 / 本轮 token 与耗时 / 工具），`checkpoint/utils/history.py` 的 `format_history` 能把一串帧渲染成可读表格（哪一步最贵、哪一帧是从老快照分叉出来的，一眼可见）。快照停在
 「工具还没有结果」的半路（HITL 挂起点）时，`resume` 先补做欠下的调用再继续 —— 不重复问模型
-一次（#25「恢复而非重跑」的机制 P0 就位；审批流程与触发归 P1-7）。落盘失败**向上抛**
+一次（#25「恢复而非重跑」的机制 P0 就位；挂起触发通道归 P1-15，审批流程归 P1-7）。落盘失败**向上抛**
 （与 `event_sink` 同一条规矩），不吞。
 
 **重试不在 loop 里**（difficulties #13）：瞬态失败（429 / 5xx / 连接失败 / 超时）的重试在
