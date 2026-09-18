@@ -123,6 +123,7 @@ class MinimallClient:
             base_url=base_url.rstrip("/") + "/",
             headers={HEADER_TOKEN: token},
             timeout=timeout,
+            trust_env=False,  # 内部端点是本机地址, 不透传系统代理 (Clash 会隔离)
         )
 
     async def aclose(self) -> None:
