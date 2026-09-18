@@ -1,6 +1,6 @@
-"""POST /api/member + GET /api/member/status (T04 会员鉴权).
+"""POST /api/member + GET /api/member/status (会员鉴权).
 
-契约 (PRD §8): {key} → {is_member, expires_at, token};
+契约: {key} → {is_member, expires_at, token};
 错误密钥 401 明确拒绝; status 通过 X-Member-Token header 识别会话.
 """
 

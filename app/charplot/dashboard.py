@@ -1,7 +1,7 @@
-"""CharPlot 分析 Dashboard 聚合 (Issue 12, SPEC §10).
+"""CharPlot 分析 Dashboard 聚合.
 
 掌握度矩阵 / 学习活动统计 / 易错点清单均从事实表 (charplot_attempt +
-charplot_user_event) 按需聚合, 无额外埋点 (DESIGN.md 步骤 12 验证项:
+charplot_user_event) 按需聚合, 无额外埋点 (验证项:
 数字与 Attempt / 事件一致). 日期语义与 services.py 一致 (timezone.localdate).
 
 易错分优先级公式与 services._review_candidates 同源 (间隔复习同算法),
@@ -23,7 +23,7 @@ from .models import (
 )
 from .services import REVIEW_NEVER_DAYS
 
-WEAK_ACCURACY = 60  # 掌握度正确率 < 60% 判定为薄弱点 (前端高亮, PRD F-1)
+WEAK_ACCURACY = 60  # 掌握度正确率 < 60% 判定为薄弱点 (前端高亮)
 ACTIVITY_DAYS = 14  # 活动趋势图时间窗口 (近 N 天, 含今日)
 
 
@@ -53,7 +53,7 @@ def _kp_attempt_rows(user):
 
 
 def build_mastery_matrix(user):
-    """掌握度矩阵 (PRD F-1): 按旅程 → 章节 → 知识点聚合正确率.
+    """掌握度矩阵: 按旅程 → 章节 → 知识点聚合正确率.
 
     仅返回有答题记录的知识点 (未练习不占位); 章节统计 = 章内知识点
     Attempt 汇总; 薄弱点 (正确率 < WEAK_ACCURACY) 标记 weak=True.
@@ -128,7 +128,7 @@ def build_mastery_matrix(user):
 
 
 def build_activity_stats(user, days=ACTIVITY_DAYS, today=None):
-    """学习活动统计 (PRD F-2): 时长 / 通关数 / 活跃天数 / 连胜 + 近 N 天分布.
+    """学习活动统计: 时长 / 通关数 / 活跃天数 / 连胜 + 近 N 天分布.
 
     - duration_seconds: Attempt.duration 求和 (作答耗时事实)
     - cleared_levels: LEVEL_CLEAR 事件计数 (与 build_profile_stats 同口径)
@@ -202,7 +202,7 @@ def build_activity_stats(user, days=ACTIVITY_DAYS, today=None):
 
 
 def build_weakpoint_list(user, today=None):
-    """易错点清单 (PRD F-3): 全局 error_score>0 知识点按复习优先级排序.
+    """易错点清单: 全局 error_score>0 知识点按复习优先级排序.
 
     优先级公式与间隔复习同源 (services._review_candidates):
     priority = error_score * (距最近复习天数 + 1), 从未复习按

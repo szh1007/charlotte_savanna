@@ -5,7 +5,7 @@ from django.db import migrations, models
 
 
 def backfill_level_fields(apps, schema_editor):
-    """存量关卡回填 (Issue 08): seq / chapter / questions_status.
+    """存量关卡回填: seq / chapter / questions_status.
 
     - seq 按 (chapter.order, kp.order) 从 1 递增, 兼容旧 ordering 语义
     - chapter = knowledge_point.chapter (boss 关迁移时不创建, 由懒创建补)

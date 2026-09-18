@@ -1,7 +1,7 @@
 <script setup lang="ts">
-// 个人主页 (Issue 02, DESIGN.md §6 页面 8):
+// 个人主页:
 // 游戏化状态卡 + 连胜中断警告 + 统计面板 + 连胜冻结兑换.
-// 签名元素: 连胜火焰徽章呼吸动画 (Issue 02 视觉 signature).
+// 签名元素: 连胜火焰徽章呼吸动画 (视觉 signature).
 import { ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { ApiError } from '@/api/client'
@@ -162,7 +162,7 @@ const panelStats: PanelStat[] = [
     <section class="panel">
       <header class="panel-head">
         <h2 class="panel-title">连胜冻结</h2>
-        <p class="panel-sub">学习币兑换，轻量替代付费（PRD G-4）</p>
+        <p class="panel-sub">学习币兑换，轻量替代付费</p>
       </header>
       <div class="freeze-box">
         <div class="freeze-info">

@@ -1,6 +1,6 @@
-// 双后端请求封装: Django 业务侧 /api, FastAPI AI 侧 /ai (DESIGN.md §4).
+// 双后端请求封装: Django 业务侧 /api, FastAPI AI 侧 /ai.
 // Vite dev server 已配置代理, 同源请求即可.
-// Issue 02: 新增 request<T>() 统一封装 (CSRF token 注入 + 错误归一) 与认证 API.
+// 新增 request<T>() 统一封装 (CSRF token 注入 + 错误归一) 与认证 API.
 
 /** 健康检查响应 (Django / FastAPI 双端同构). */
 export interface HealthStatus {
@@ -25,7 +25,7 @@ export interface SessionStatus {
   user: SessionUser | null
 }
 
-/** 统计面板 (SPEC §8, Issue 05 后答题类字段自然流入). */
+/** 统计面板 (答题类字段自然流入). */
 export interface ProfileStats {
   login_days: number
   answered: number
@@ -154,7 +154,7 @@ export async function checkAiHealth(): Promise<HealthStatus> {
   return (await res.json()) as HealthStatus
 }
 
-// ---- 账号体系 (Issue 02) ----
+// ---- 账号体系 ----
 
 /** 会话探测 + CSRF cookie 引导 (SPA 启动必调). */
 export function getSession(): Promise<SessionStatus> {
@@ -196,13 +196,13 @@ export function buyStreakFreeze(): Promise<{ coins: number; frozen: string }> {
   return request('/api/charplot/profile/streak-freeze/', { method: 'POST' })
 }
 
-// ---- 旅程与生成链路 (Issue 03) ----
+// ---- 旅程与生成链路 ----
 
-/** 旅程输入类型: 纯文本 / 文件 / 网页链接 / 知识库 (PRD B-1, Issue 11). */
+/** 旅程输入类型: 纯文本 / 文件 / 网页链接 / 知识库. */
 export type JourneyInputType = 'text' | 'file' | 'link' | 'kb'
 /** 旅程状态: 生成中 / 已就绪 / 生成失败. */
 export type JourneyStatus = 'generating' | 'ready' | 'failed'
-/** 管道任务状态 (CONTRACT.md §2). */
+/** 管道任务状态. */
 export type TaskRunStatus = 'running' | 'done' | 'error'
 
 /** 旅程列表项 (GET /api/charplot/journeys). */
@@ -248,14 +248,14 @@ export interface JourneyDetail {
   created_at: string
   updated_at: string
   chapters: Chapter[]
-  /** kb 旅程 (Issue 11): 知识库 id (重试时透传管道); 知识库被删后为 null. */
+  /** kb 旅程: 知识库 id (重试时透传管道); 知识库被删后为 null. */
   kb_id: number | null
   knowledge_base: Topic | null
 }
 
-// ---- 技能树 (Issue 04) ----
+// ---- 技能树 ----
 
-/** 技能树节点状态: 锁定 / 可解锁 / 进行中(Issue 05) / 已通关点亮. */
+/** 技能树节点状态: 锁定 / 可解锁 / 进行中 / 已通关点亮. */
 export type SkillNodeStatus = 'locked' | 'unlocked' | 'in_progress' | 'cleared'
 
 /** 技能树节点 (GET /api/charplot/journeys/{id}/skill-tree/). */
@@ -266,7 +266,7 @@ export interface SkillTreeNode {
   title: string
   order: number
   status: SkillNodeStatus
-  /** 已通关关卡数 (Issue 05 流入; 大知识点多关时节点徽章显示 cleared/total). */
+  /** 已通关关卡数 (答题流入; 大知识点多关时节点徽章显示 cleared/total). */
   cleared_levels: number
   total_levels: number
 }
@@ -278,24 +278,24 @@ export interface SkillTreeEdge {
   target: number
 }
 
-/** 技能树图数据: 节点 + 依赖边, 闯关地图渲染源 (PRD D-1). */
+/** 技能树图数据: 节点 + 依赖边, 闯关地图渲染源. */
 export interface SkillTreeData {
   nodes: SkillTreeNode[]
   edges: SkillTreeEdge[]
 }
 
-// ---- 闯关答题 (Issue 05) ----
+// ---- 闯关答题 ----
 
-/** 题型: 选择 / 判断 / 填空 (PRD D-3). */
+/** 题型: 选择 / 判断 / 填空. */
 export type QuestionType = 'choice' | 'judge' | 'fill'
 
 /** 关卡状态: 已通关 / 心扣完失败 / 进行中 / 未开始. */
 export type LevelStatus = 'cleared' | 'failed' | 'in_progress' | 'pending'
 
-/** 关卡类型: 常规 / Boss (章节末尾高难度混合题型关, G-5). */
+/** 关卡类型: 常规 / Boss (章节末尾高难度混合题型关). */
 export type LevelType = 'regular' | 'boss'
 
-/** 题目生成状态 (Issue 08 渐进生成): 待生成/生成中/已就绪/生成失败. */
+/** 题目生成状态 (渐进生成): 待生成/生成中/已就绪/生成失败. */
 export type QuestionsStatus = 'pending' | 'generating' | 'ready' | 'failed'
 
 /** 题目载荷 (不含标准答案, 判分在后端; options 仅选择类型使用). */
@@ -305,7 +305,7 @@ export interface Question {
   content: string
   options: string[]
   order: number
-  /** 当前用户是否已反馈过此题 (Issue 14, 去重后的持久化状态). */
+  /** 当前用户是否已反馈过此题 (去重后的持久化状态). */
   flagged: boolean
 }
 
@@ -386,7 +386,7 @@ export function getLevel(levelId: number): Promise<LevelDetail> {
 }
 
 /**
- * 触发出题生成任务 (Issue 08, POST /ai/levels/generate).
+ * 触发出题生成任务 (POST /ai/levels/generate).
  * 渐进生成: 进入关卡/预生成下一关时调用; 幂等由后端 claim 保证
  * (已就绪或已有任务在跑时任务直接 done 跳过).
  */
@@ -417,7 +417,7 @@ export function restartLevel(levelId: number): Promise<LevelDetail> {
 }
 
 /**
- * 「题目有问题」反馈标记 (Issue 14, SPEC §7.3 ③ 幻觉防护第三层).
+ * 「题目有问题」反馈标记 (幻觉防护第三层).
  * 同一用户对同一题重复标记幂等去重, 响应 {created} 区分首次/重复.
  */
 export function flagQuestion(
@@ -437,7 +437,7 @@ export type FlagReason =
   | 'explanation_error'
   | 'other'
 
-// ---- 复盘报告 (Issue 06) ----
+// ---- 复盘报告 ----
 
 /** 每关答题表现 (报告统计 levels 项). */
 export interface LevelReportStat {
@@ -449,7 +449,7 @@ export interface LevelReportStat {
   correct: number
 }
 
-/** 答题统计快照 (与 Attempt 聚合一致, SPEC §8). */
+/** 答题统计快照 (与 Attempt 聚合一致). */
 export interface ReviewStats {
   answered: number
   correct: number
@@ -461,7 +461,7 @@ export interface ReviewStats {
   levels: LevelReportStat[]
 }
 
-/** 知识总结: 章节 → 知识点 (图谱确定性聚合, LLM 总结为 Issue 13). */
+/** 知识总结: 章节 → 知识点 (图谱确定性聚合, LLM 总结另行生成). */
 export interface ReviewKnowledgeSummary {
   chapters: {
     title: string
@@ -490,9 +490,9 @@ export function getReviewReport(journeyId: number): Promise<ReviewReport> {
   return request(`/api/charplot/journeys/${journeyId}/report/`)
 }
 
-// ---- 知识库管理 (Issue 09, PRD C-1~C-4) ----
+// ---- 知识库管理 ----
 
-/** 知识库状态: 草稿 / 索引中 / 已就绪 / 索引失败 / 已下线 (SPEC §6.1). */
+/** 知识库状态: 草稿 / 索引中 / 已就绪 / 索引失败 / 已下线. */
 export type KbStatus = 'draft' | 'indexing' | 'ready' | 'failed' | 'offline'
 
 /** 知识库文档 (软删标记 is_deleted, 管理页回收区展示). */
@@ -600,7 +600,7 @@ export function startKbIndex(kbId: number): Promise<{ task_id: string }> {
   return request('/ai/kb/index', { method: 'POST', body: { kb_id: kbId } })
 }
 
-/** SSE 管道进度事件 (CONTRACT.md §2). */
+/** SSE 管道进度事件. */
 export interface PipelineEvent {
   task_id: string
   stage: string
@@ -640,7 +640,7 @@ async function requestForm<T>(path: string, form: FormData): Promise<T> {
 
 /**
  * 创建旅程: file → multipart, text/link/kb → JSON; 返回 {journey_id, status}.
- * kb 类型 (Issue 11): 必带 kb_id, 后端仅允许就绪知识库开旅程.
+ * kb 类型: 必带 kb_id, 后端仅允许就绪知识库开旅程.
  */
 export function createJourney(input: {
   input_type: JourneyInputType
@@ -664,7 +664,7 @@ export function createJourney(input: {
   })
 }
 
-/** 旅程列表 (进行中/已通关分组在前端渲染, CONTRACT.md §4). */
+/** 旅程列表 (进行中/已通关分组在前端渲染). */
 export function getJourneys(): Promise<{ journeys: JourneySummary[] }> {
   return request('/api/charplot/journeys/')
 }
@@ -674,7 +674,7 @@ export function getJourney(id: number): Promise<JourneyDetail> {
   return request(`/api/charplot/journeys/${id}/`)
 }
 
-/** 启动知识管道 (FastAPI), 返回 {task_id}; kb 类型 (Issue 11) 透传 kb_id. */
+/** 启动知识管道 (FastAPI), 返回 {task_id}; kb 类型透传 kb_id. */
 export function startPipeline(
   journeyId: number,
   inputType: JourneyInputType,
@@ -693,7 +693,7 @@ export function getTaskStatus(taskId: string): Promise<TaskStatus> {
 }
 
 /**
- * SSE 订阅管道进度 (CONTRACT.md §2). 返回 close 函数.
+ * SSE 订阅管道进度. 返回 close 函数.
  * EventSource 断线自动重连并携带 Last-Event-ID (服务端增量续推);
  * 收到终端事件 (done/error) 或组件卸载时必须主动 close, 阻止无限重连.
  */
@@ -729,7 +729,7 @@ export function subscribePipeline(
   return close
 }
 
-// ---- 分析 Dashboard (Issue 12, SPEC §10) ----
+// ---- 分析 Dashboard ----
 
 /** 知识点掌握度 (Attempt 事实聚合, 复习题归属来源知识点). */
 export interface MasteryPoint {
@@ -814,7 +814,7 @@ export function getWeakpoints(): Promise<{ weakpoints: Weakpoint[] }> {
 }
 
 /**
- * LLM 状态总结 (POST /ai/report/summary, Issue 13, DESIGN.md §4.2).
+ * LLM 状态总结 (POST /ai/report/summary).
  * 聚合在 Django 侧权威获取, FastAPI 只做 LLM 生成 (同步, 可重复生成).
  * 返回 markdown 报告 (强项 / 弱项 / 学习建议 三段), 由 MarkdownText 渲染.
  */

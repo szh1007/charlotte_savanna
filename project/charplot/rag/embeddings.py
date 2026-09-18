@@ -1,4 +1,4 @@
-"""Embedding 模型接入抽象 (Issue 10, SPEC §7.2) - 可切换.
+"""Embedding 模型接入抽象 - 可切换.
 
 Embedder 协议定义索引与检索两侧的最小接口 (embed_documents / embed_query),
 返回 {dense: [[float,...], ...], sparse: [{idx: weight}, ...]} 同构结构,

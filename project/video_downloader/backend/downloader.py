@@ -1,4 +1,4 @@
-"""yt-dlp 引擎封装: 集中所有 yt_dlp 调用, 解析/下载结果可 mock (ADR-0001).
+"""yt-dlp 引擎封装: 集中所有 yt_dlp 调用, 解析/下载结果可 mock.
 
 领域边界: 只下载不破解, 引擎能力即为领域能力边界.
 """
@@ -125,7 +125,7 @@ def resolve(url: str) -> dict[str, Any]:
     try:
         info = _extract(url)
     except DownloadError as e:
-        # 失败原因以引擎异常为准透传 (ADR-0001), 不自行猜测
+        # 失败原因以引擎异常为准透传, 不自行猜测
         raise ResolveError(_friendly_message(e)) from e
     return {
         "title": info.get("title") or "未知标题",
@@ -228,10 +228,10 @@ def download(
 
 
 # 主流平台展示清单 (名称 + 图标 + 支持格式 + yt-dlp extractor key)
-# 范围收缩 (ADR-0004): 仅保留哔哩哔哩一项. 其他平台为预留扩展点,
+# 范围收缩: 仅保留哔哩哔哩一项. 其他平台为预留扩展点,
 # 未来如需恢复, 在此追加条目并同步放行 schemas.ensure_bilibili_url
 # 的域名白名单 (接口只接受 B 站 URL, 平台墙数据同步由后端收窄)
-# formats 为平台墙营销标注 (T09), 静态维护, 不随引擎动态探测
+# formats 为平台墙营销标注, 静态维护, 不随引擎动态探测
 POPULAR_SITES: list[dict[str, str]] = [
     {"name": "B 站", "icon": "🅱️", "formats": "MP4 / FLV / 4K", "extractor": "BiliBili"},
 ]

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// 应用壳 (DESIGN.md §6 页面结构 1): 渐变背景 + 顶部导航.
+// 应用壳: 渐变背景 + 顶部导航.
 // 导航 = Logo + 登录态(徽章组 + 个人主页入口 + 登出) / 游客态(登录/注册).
 import { onMounted } from 'vue'
 import { useRouter } from 'vue-router'
@@ -71,11 +71,11 @@ async function onLogout() {
               <span aria-hidden="true">🪙</span>{{ state.profile?.coins ?? 0 }}
             </span>
           </div>
-          <!-- 学习分析入口 (Issue 12): Dashboard 仅登录用户可见 -->
+          <!-- 学习分析入口: Dashboard 仅登录用户可见 -->
           <el-button size="small" round plain @click="router.push('/dashboard')">
             学习分析
           </el-button>
-          <!-- 管理员入口 (Issue 09): 知识库管理页, 仅 is_staff 显示 -->
+          <!-- 管理员入口: 知识库管理页, 仅 is_staff 显示 -->
           <el-button
             v-if="state.user.is_staff"
             size="small"

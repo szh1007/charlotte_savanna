@@ -1,8 +1,8 @@
-"""CharPlot 序列化器 (Issue 02 / 03 / 05).
+"""CharPlot 序列化器.
 
 注册/登录对齐 minimall 模式 (Serializer + validate_password + create_user);
 Profile 响应直出模型字段 + 统计面板 + 连胜中断警告; 旅程序列化器输出
-图谱规范化嵌套 (prerequisites 为 DB 主键 int 列表, CONTRACT.md); 关卡
+图谱规范化嵌套 (prerequisites 为 DB 主键 int 列表); 关卡
 序列化器输出进度/心动值/当前题 (题目不含标准答案, 判分在后端).
 """
 
@@ -61,7 +61,7 @@ class UserRegisterSerializer(serializers.Serializer):
             user = User.objects.create_user(**validated_data)
         except IntegrityError:
             raise serializers.ValidationError("注册失败, 请重试")
-        # 注册即建 profile, 游戏化状态载体 (Issue 01 骨架约定)
+        # 注册即建 profile, 游戏化状态载体
         CharplotProfile.objects.create(user=user)
         return user
 
@@ -124,7 +124,7 @@ class CharplotProfileSerializer(serializers.ModelSerializer):
 
 
 # ---------------------------------------------------------------------------
-# 旅程 (Issue 03)
+# 旅程
 # ---------------------------------------------------------------------------
 
 
@@ -132,7 +132,7 @@ class TopicSerializer(serializers.ModelSerializer):
     """主题卡片 (用户端, GET /api/charplot/topics/): 仅就绪知识库.
 
     定义在旅程序列化器之前 (JourneyDetailSerializer 嵌套引用); 亦用于
-    JourneyDetail 的 knowledge_base 展示 (Issue 11).
+    JourneyDetail 的 knowledge_base 展示.
     """
 
     class Meta:
@@ -143,7 +143,7 @@ class TopicSerializer(serializers.ModelSerializer):
 class JourneyCreateSerializer(serializers.Serializer):
     """创建旅程: JSON (text/link/kb) 或 multipart (file), DRF 按 Content-Type 选解析器.
 
-    Issue 11: kb 类型必带 kb_id, 知识库必须存在且已就绪 (仅就绪库开旅程).
+    kb 类型必带 kb_id, 知识库必须存在且已就绪 (仅就绪库开旅程).
     """
 
     input_type = serializers.ChoiceField(choices=["text", "file", "link", "kb"])
@@ -157,7 +157,7 @@ class JourneyCreateSerializer(serializers.Serializer):
         if input_type == "file":
             if not attrs.get("source_file"):
                 raise serializers.ValidationError("文件输入必须上传 source_file")
-            attrs["content"] = ""  # file 输入忽略 content, 文件内容解析是 Issue 07
+            attrs["content"] = ""  # file 输入忽略 content, 文件内容解析在管道侧
         elif input_type == "kb":
             kb_id = attrs.get("kb_id")
             if not kb_id:
@@ -226,7 +226,7 @@ class JourneyDetailSerializer(serializers.ModelSerializer):
     """旅程详情: 图谱规范化嵌套; graph 快照不返回 (权威 = chapters 嵌套).
 
     content 返回输入原文, 供前端失败重试时重新启动管道 (POST /ai/pipeline);
-    kb_id/knowledge_base (Issue 11): kb 旅程重试需 kb_id, 展示需库信息.
+    kb_id/knowledge_base: kb 旅程重试需 kb_id, 展示需库信息.
     """
 
     chapters = ChapterNestedSerializer(many=True, read_only=True)
@@ -253,7 +253,7 @@ class JourneyDetailSerializer(serializers.ModelSerializer):
 
 
 # ---------------------------------------------------------------------------
-# 闯关答题 (Issue 05)
+# 闯关答题
 # ---------------------------------------------------------------------------
 
 
@@ -266,7 +266,7 @@ def _boss_title(obj):
 class LevelListSerializer(serializers.ModelSerializer):
     """关卡列表项: 进度 / 剩余心 / 状态 / 生成状态 / 解锁, 前端关卡入口渲染.
 
-    Issue 08: boss 关 kp_id=null、kp_title 为章级标题; locked 由
+    boss 关 kp_id=null、kp_title 为章级标题; locked 由
     level_locked 计算 (前置章节 Boss 未通关); questions_status 供前端
     生成中/失败重试三态展示.
     """
@@ -326,7 +326,7 @@ class LevelListSerializer(serializers.ModelSerializer):
 class QuestionBriefSerializer(serializers.ModelSerializer):
     """题目载荷 (不含 answer, 判分在后端; options 仅选择类型使用).
 
-    flagged (Issue 14): 当前用户是否已标记过此题 (去重后的持久化状态),
+    flagged: 当前用户是否已标记过此题 (去重后的持久化状态),
     供答题页反馈入口恢复「已反馈」展示; 序列化 context 需带 request,
     否则 (内部调用) 恒为 False.
     """
@@ -345,11 +345,11 @@ class QuestionBriefSerializer(serializers.ModelSerializer):
 
 
 class LevelDetailSerializer(serializers.ModelSerializer):
-    """关卡详情: 进度/心 + 当前题 (断点续答定位源, Issue 05).
+    """关卡详情: 进度/心 + 当前题 (断点续答定位源).
 
     question 为当前题 (current_index 定位), 通关 / 心扣完 / 已答完 / 题目未
     就绪时返回 null, 前端据 questions_status 与 level_status 区分渲染
-    结算 / 重开 / 生成中面板. Issue 08: boss 关 kp_id=null、locked 输出.
+    结算 / 重开 / 生成中面板. boss 关 kp_id=null、locked 输出.
     """
 
     kp_id = serializers.SerializerMethodField()
@@ -422,7 +422,7 @@ class LevelDetailSerializer(serializers.ModelSerializer):
         if count == 0 or obj.current_index >= count:
             return None
         current = obj.questions.order_by("order", "id")[obj.current_index]
-        # context 透传 (Issue 14): flagged 字段按当前用户计算
+        # context 透传: flagged 字段按当前用户计算
         return QuestionBriefSerializer(current, context=self.context).data
 
 
@@ -435,7 +435,7 @@ class AnswerRequestSerializer(serializers.Serializer):
 
 
 class QuestionFlagRequestSerializer(serializers.Serializer):
-    """题目反馈标记载荷 (Issue 14): reason 可选, 空 = 仅标记无原因."""
+    """题目反馈标记载荷: reason 可选, 空 = 仅标记无原因."""
 
     reason = serializers.ChoiceField(
         choices=CharplotQuestionFlag.Reason.choices,
@@ -446,12 +446,12 @@ class QuestionFlagRequestSerializer(serializers.Serializer):
 
 
 # ---------------------------------------------------------------------------
-# 复盘报告 (Issue 06)
+# 复盘报告
 # ---------------------------------------------------------------------------
 
 
 class ReviewReportSerializer(serializers.ModelSerializer):
-    """复盘报告 (DESIGN §4.1, GET /api/charplot/journeys/{id}/report/).
+    """复盘报告 (GET /api/charplot/journeys/{id}/report/).
 
     快照数据直出 (知识总结 + 答题统计, 生成后不可变); share_url 为相对
     路径, 前端复制时拼 location.origin 得到完整公开链接.
@@ -480,12 +480,12 @@ class ReviewReportSerializer(serializers.ModelSerializer):
 
 
 # ---------------------------------------------------------------------------
-# 知识库 (Issue 09, PRD C-1~C-4)
+# 知识库
 # ---------------------------------------------------------------------------
 
 
 class KbCreateSerializer(serializers.Serializer):
-    """创建知识库 (DESIGN §4.1 POST /api/kb): {name, desc, cover} JSON."""
+    """创建知识库 (POST /api/kb): {name, desc, cover} JSON."""
 
     name = serializers.CharField(max_length=200)
     description = serializers.CharField(required=False, allow_blank=True, default="")
@@ -572,7 +572,7 @@ class KnowledgeBaseDetailSerializer(serializers.ModelSerializer):
     """知识库详情 (管理页): documents 按有效/软删分组 (恢复 UX 用).
 
     单对象两次小查询可接受; 软删文档标记 is_deleted, 管理列表隐藏于
-    有效区、展示于回收区 (验收标准 3).
+    有效区、展示于回收区.
     """
 
     document_count = serializers.SerializerMethodField()

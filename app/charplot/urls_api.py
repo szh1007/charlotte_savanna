@@ -47,14 +47,14 @@ app_name = "charplot_api"
 
 urlpatterns = [
     path("health", HealthView.as_view(), name="health"),
-    # 账号体系 (Issue 02)
+    # 账号体系
     path("auth/session/", SessionView.as_view(), name="session"),
     path("auth/register/", RegisterView.as_view(), name="register"),
     path("auth/login/", LoginView.as_view(), name="login"),
     path("auth/logout/", LogoutView.as_view(), name="logout"),
     path("profile/", ProfileView.as_view(), name="profile"),
     path("profile/streak-freeze/", StreakFreezeView.as_view(), name="streak-freeze"),
-    # 旅程链路 (Issue 03)
+    # 旅程链路
     path("journeys/", JourneyListView.as_view(), name="journey-list"),
     path("journeys/<int:pk>/", JourneyDetailView.as_view(), name="journey-detail"),
     path(
@@ -62,14 +62,14 @@ urlpatterns = [
         SkillTreeView.as_view(),
         name="journey-skill-tree",
     ),
-    # 闯关答题 (Issue 05)
+    # 闯关答题
     path("journeys/<int:pk>/levels/", LevelListView.as_view(), name="level-list"),
     path("levels/<int:pk>/", LevelDetailView.as_view(), name="level-detail"),
     path("levels/<int:pk>/answer/", LevelAnswerView.as_view(), name="level-answer"),
     path("levels/<int:pk>/restart/", LevelRestartView.as_view(), name="level-restart"),
-    # 题目反馈标记 (Issue 14, SPEC §7.3 ③)
+    # 题目反馈标记
     path("questions/<int:pk>/flag/", QuestionFlagView.as_view(), name="question-flag"),
-    # 复盘报告 (Issue 06)
+    # 复盘报告
     path(
         "journeys/<int:pk>/report/",
         JourneyReportView.as_view(),
@@ -85,7 +85,7 @@ urlpatterns = [
     path(
         "journeys/<int:pk>/status/", JourneyStatusView.as_view(), name="journey-status"
     ),
-    # 题目生成 (Issue 08, FastAPI → Django)
+    # 题目生成 (FastAPI → Django)
     path(
         "journeys/<int:pk>/level-generation/",
         LevelGenerationClaimView.as_view(),
@@ -101,7 +101,7 @@ urlpatterns = [
         LevelGenerationFailedView.as_view(),
         name="level-generation-failed",
     ),
-    # 知识库 (Issue 09, PRD C-1~C-4)
+    # 知识库
     path("kb/", KnowledgeBaseListView.as_view(), name="kb-list"),
     path("kb/<int:pk>/", KnowledgeBaseDetailView.as_view(), name="kb-detail"),
     path(
@@ -138,7 +138,7 @@ urlpatterns = [
         KnowledgeBaseIndexFailedView.as_view(),
         name="kb-index-failed",
     ),
-    # Issue 10 内部端点: 文档内容 (索引解析输入) / 软删清单 (检索过滤)
+    # 内部端点: 文档内容 (索引解析输入) / 软删清单 (检索过滤)
     path(
         "kb/documents/<int:pk>/content/",
         KbDocumentContentView.as_view(),
@@ -149,9 +149,9 @@ urlpatterns = [
         KbDeletedDocIdsView.as_view(),
         name="kb-deleted-doc-ids",
     ),
-    # Issue 11 内部端点: 知识库元信息 (kb 旅程管道解析输入)
+    # 内部端点: 知识库元信息 (kb 旅程管道解析输入)
     path("kb/<int:pk>/meta/", KbMetaView.as_view(), name="kb-meta"),
-    # 分析 Dashboard (Issue 12, DESIGN.md §4.1)
+    # 分析 Dashboard
     path(
         "dashboard/mastery/",
         DashboardMasteryView.as_view(),
@@ -167,7 +167,7 @@ urlpatterns = [
         DashboardWeakpointsView.as_view(),
         name="dashboard-weakpoints",
     ),
-    # 状态总结聚合输入 (Issue 13, FastAPI → Django, X-Internal-Token 认证)
+    # 状态总结聚合输入 (FastAPI → Django, X-Internal-Token 认证)
     path(
         "users/<int:pk>/status-summary-input/",
         StatusSummaryInputView.as_view(),

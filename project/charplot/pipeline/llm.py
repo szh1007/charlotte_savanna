@@ -1,4 +1,4 @@
-"""LLM 模型单例 (Issue 07).
+"""LLM 模型单例.
 
 与 deep_search 同款初始化: DeepSeek 模型 + 关闭 thinking 加速.
 惰性单例: 首次调用时构建 (避免 import 阶段初始化客户端, 测试可

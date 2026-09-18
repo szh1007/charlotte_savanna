@@ -1,8 +1,8 @@
-"""T05 付费差异验收测试 (HTTP seam, 引擎 mock).
+"""付费差异验收测试 (HTTP seam, 引擎 mock).
 
-免费/会员差异矩阵 (PRD §5, 验收标准): 档位锁定 / 锁定档选择被拒 /
+免费/会员差异矩阵 (验收标准): 档位锁定 / 锁定档选择被拒 /
 下载前重校验 / 并发槽差异 / 队列上限 429 / 会员优先调度.
-会员身份通过 X-Member-Token header 识别 (T04).
+会员身份通过 X-Member-Token header 识别.
 """
 
 import json

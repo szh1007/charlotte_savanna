@@ -1,6 +1,6 @@
-"""内存态任务存储 + 状态机流转 + 并发调度 (线程安全, ADR-0003).
+"""内存态任务存储 + 状态机流转 + 并发调度 (线程安全).
 
-任务状态机 (见 CONTEXT.md):
+任务状态机:
     pending → resolving → resolved → queued → downloading → completed
                               ↘                ↘
                                failed            failed
@@ -33,7 +33,7 @@ STATUS_DOWNLOADING = "downloading"
 STATUS_COMPLETED = "completed"
 STATUS_FAILED = "failed"
 STATUS_EXPIRED = "expired"
-# 总结任务运行态 (ADR-0005): 四子任务按依赖链推进 (转录→总结→导图/问答),
+# 总结任务运行态: 四子任务按依赖链推进 (转录→总结→导图/问答),
 # 任务级仅标记「运行中」, 各子任务进度独立 (见 Subtask)
 STATUS_RUNNING = "running"
 
@@ -41,14 +41,14 @@ STATUS_RUNNING = "running"
 # 从列表移除卡片. 不进状态机: 移除即不存在, 无需落任务状态
 STATUS_REMOVED = "removed"
 
-# 总结子任务标识 (ADR-0005 四标签): 转录/总结/思维导图/问答上下文
+# 总结子任务标识 (四标签): 转录/总结/思维导图/问答上下文
 SUBTASK_TRANSCRIPT = "transcript"
 SUBTASK_SUMMARY = "summary"
 SUBTASK_MINDMAP = "mindmap"
 SUBTASK_QA = "qa"
 SUBTASK_NAMES = (SUBTASK_TRANSCRIPT, SUBTASK_SUMMARY, SUBTASK_MINDMAP, SUBTASK_QA)
 
-# 字幕来源 (ADR-0006 创建者快照): official = 官方字幕快路径 / model = 模型生成
+# 字幕来源 (创建者快照): official = 官方字幕快路径 / model = 模型生成
 SUBTITLE_SOURCE_OFFICIAL = "official"
 SUBTITLE_SOURCE_MODEL = "model"
 
@@ -77,14 +77,14 @@ _SUBTASK_WEIGHTS = {
     SUBTASK_QA: 0.2,
 }
 
-# 付费差异 (T05, PRD §5): 免费/会员能力边界, 后端强制, 非 UI 摆设
+# 付费差异: 免费/会员能力边界, 后端强制, 非 UI 摆设
 FREE_MAX_HEIGHT = 720  # 免费档清晰度上限: >720p 档位标记锁定
 FREE_CONCURRENCY = 1  # 免费档并发下载槽位
 MEMBER_CONCURRENCY = 3  # 会员档并发下载槽位
 FREE_QUEUE_LIMIT = 5  # 免费档批量队列上限
 MEMBER_QUEUE_LIMIT = 50  # 会员档批量队列上限
 
-# 调度器扫描间隔 (秒): 把 queued 任务分配到空闲槽位 (PRD 设计值约 0.5s)
+# 调度器扫描间隔 (秒): 把 queued 任务分配到空闲槽位 (设计值约 0.5s)
 _SCHEDULER_INTERVAL = 0.5
 
 # 字幕重排单次 LLM 调用字符上限: 正常视频全量转录为单块, 一次性润色
@@ -100,7 +100,7 @@ class QueueLimitError(Exception):
 
 @dataclass
 class Subtask:
-    """总结任务子任务状态 (ADR-0005): 四标签独立进度/错误, 独立失败与重试."""
+    """总结任务子任务状态: 四标签独立进度/错误, 独立失败与重试."""
 
     name: str
     status: str = ST_PENDING
@@ -130,19 +130,19 @@ class Task:
     message: str | None = None
     file_path: str | None = None
     error: str | None = None
-    completed_at: float | None = None  # 完成时刻 (TTL 过期起点, T06)
+    completed_at: float | None = None  # 完成时刻 (TTL 过期起点)
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
     # 视频元信息 (解析时回填, 前端卡片展示: up主/播放量/简介)
     uploader: str | None = None
     view_count: int | None = None
     description: str | None = None
-    # 总结任务结果 (ADR-0005): transcript = [{start, end, text}],
+    # 总结任务结果: transcript = [{start, end, text}],
     # summary = 结构化总结 JSON, mindmap = 由总结生成的导图结构 JSON
     transcript: list[dict[str, Any]] | None = None
     summary: dict[str, Any] | None = None
     mindmap: dict[str, Any] | None = None
-    # 总结流式缓冲 (ADR-0007): worker 锁内 append 增量 chunk, SSE 端点锁内
+    # 总结流式缓冲: worker 锁内 append 增量 chunk, SSE 端点锁内
     # 快照轮询 (summary_stream_snapshot); 重试/重跑前清空
     summary_stream: list[str] = field(default_factory=list)
     # 字幕重排流式缓冲 (模型生成增强): 重排期间 LLM 增量实时写入, SSE 端点
@@ -155,7 +155,7 @@ class Task:
     # 瞬时置 100) / 总结生成中置 30, 完成置 100
     transcript_progress: float = 0.0
     summary_progress: float = 0.0
-    # 字幕来源快照 (ADR-0006): official = 官方字幕快路径 / model = 模型生成,
+    # 字幕来源快照: official = 官方字幕快路径 / model = 模型生成,
     # 创建者选择在创建时固化, 重试沿用
     subtitle_source: str = SUBTITLE_SOURCE_OFFICIAL
     # 创建者匿名身份 (字幕缓存命中退还配额用, 会员为空)
@@ -275,7 +275,7 @@ class TaskManager:
         """总结流快照: (子任务状态, 错误, 缓冲 chunk 副本); 任务不存在返回 None.
 
         SSE 端点每轮轮询调用: 状态推进与文本 append 同锁, 快照为同一时刻
-        一致视图; 返回副本避免端点持有期间被 worker 改写 (ADR-0007).
+        一致视图; 返回副本避免端点持有期间被 worker 改写.
         """
         with self._lock:
             task = self._tasks.get(task_id)
@@ -294,7 +294,7 @@ class TaskManager:
     ) -> tuple[str, str | None, list[str]] | None:
         """字幕重排流快照: (转录子任务状态, 错误, 缓冲 chunk 副本); 任务不存在返回 None.
 
-        SSE 端点每轮轮询调用, 语义与 summary_stream_snapshot 一致 (ADR-0007):
+        SSE 端点每轮轮询调用, 语义与 summary_stream_snapshot 一致:
         状态推进与文本 append 同锁, 返回副本避免端点持有期间被 worker 改写.
         """
         with self._lock:
@@ -314,7 +314,7 @@ class TaskManager:
             return tasks[:limit]
 
     def list_completed(self) -> list[Task]:
-        """全部 completed 任务 (TTL 清理扫描范围, 不设列表上限, T06)."""
+        """全部 completed 任务 (TTL 清理扫描范围, 不设列表上限)."""
         with self._lock:
             return [t for t in self._tasks.values() if t.status == STATUS_COMPLETED]
 
@@ -343,7 +343,7 @@ class TaskManager:
         """同步解析链接: 任务状态 pending → resolving → resolved / failed.
 
         解析耗时通常在秒级, 同步等待引擎返回; 失败时任务标记 failed 并抛出
-        ResolveError, 由路由层转为 4xx 响应. 按创建者身份标记档位锁定 (T05).
+        ResolveError, 由路由层转为 4xx 响应. 按创建者身份标记档位锁定.
         """
         task = self.create_task(url=url, kind="resolve", is_member=is_member)
         self._fill_resolved(task)
@@ -352,7 +352,7 @@ class TaskManager:
     def _fill_resolved(self, task: Task) -> dict[str, Any]:
         """执行解析并回填元信息 (resolve / create_download 共用解析段).
 
-        档位锁定按任务创建者身份标记: 免费用户 >720p 档位 locked (PRD §5 强制校验点 1).
+        档位锁定按任务创建者身份标记: 免费用户 >720p 档位 locked.
         """
         self.update_status(task.id, STATUS_RESOLVING)
         try:
@@ -384,7 +384,7 @@ class TaskManager:
     ) -> Task:
         """创建下载任务: 解析 → 校验档位 → 入队, 启动调度器.
 
-        校验按身份执行 (T05): 免费用户选择 locked 档位 / 队列超限均拒绝,
+        校验按身份执行: 免费用户选择 locked 档位 / 队列超限均拒绝,
         分别抛 ValueError / QueueLimitError, 由路由层转为 4xx 响应.
         """
         task = self.create_task(url=url, kind="download", is_member=is_member)
@@ -426,14 +426,14 @@ class TaskManager:
         subtitle_source: str = SUBTITLE_SOURCE_OFFICIAL,
         client_id: str | None = None,
     ) -> Task:
-        """创建总结任务 (kind=summary, ADR-0005): 解析元信息 → 入队, 启动调度器.
+        """创建总结任务 (kind=summary): 解析元信息 → 入队, 启动调度器.
 
         元信息解析 (标题/封面/时长) 供任务卡片展示, 失败不阻塞总结
         (转录与总结不依赖标题, 记日志不静默). 配额已在路由层检查 (免费
         按 client_id), 总结任务不受批量队列上限约束 (每日配额已限制滥用),
         与下载任务共享并发槽位 (CPU 密集, 复用调度器).
 
-        subtitle_source 为创建者选择快照 (ADR-0006 决策 1: 全局设置创建时
+        subtitle_source 为创建者选择快照 (全局设置创建时
         固化), 转录子任务按此走官方快路径或模型生成; client_id 用于字幕
         缓存命中时退还配额 (创建时先扣, 命中净消耗 0, 防滥用).
         """
@@ -522,7 +522,7 @@ class TaskManager:
 
     @staticmethod
     def _is_locked(fmt: dict[str, Any], is_member: bool) -> bool:
-        """档位对指定身份是否锁定: 免费用户 >720p 档位锁定 (PRD §5)."""
+        """档位对指定身份是否锁定: 免费用户 >720p 档位锁定."""
         return not is_member and (fmt.get("height") or 0) > FREE_MAX_HEIGHT
 
     def _queue_size(self, is_member: bool, exclude_id: int | None = None) -> int:
@@ -587,8 +587,8 @@ class TaskManager:
         """周期扫描: 有空闲并发槽时, 把排队任务派发给执行线程.
 
         并发槽按身份独立计算 (免费 1 / 会员 3), 槽位空闲才派发对应身份的任务.
-        派发状态按任务类型区分: 下载 → downloading; 总结 → running
-        (ADR-0005), 避免总结卡片闪「下载中」; 子任务进度走 subtasks 字段.
+        派发状态按任务类型区分: 下载 → downloading; 总结 → running,
+        避免总结卡片闪「下载中」; 子任务进度走 subtasks 字段.
         """
         while not self._scheduler_stop.is_set():
             task = None
@@ -601,7 +601,7 @@ class TaskManager:
                     )
                     self.update_status(task.id, status)
             if task:
-                # 按任务类型分派 worker: 下载 / 总结 (ADR-0005) 共用并发槽
+                # 按任务类型分派 worker: 下载 / 总结共用并发槽
                 runner = (
                     self._run_summary_worker
                     if task.kind == "summary"
@@ -635,7 +635,7 @@ class TaskManager:
     def _run_download(self, task_id: int, is_member: bool) -> None:
         """执行下载并更新任务状态 (独立线程, 完成后释放并发槽).
 
-        执行前重校验档位访问权 (PRD §5 强制校验点 3): 即使创建时被绕过
+        执行前重校验档位访问权: 即使创建时被绕过
         (伪造请求 / 内部篡改), 非会员任务的锁定档位也会在下载前被拒绝.
         任务清除记录后 (取消): 引擎 hook 抛异常退出, 收尾更新由 update_status
         防御跳过; is_member 在派发时捕获 (任务可能已被移除, 槽位按此释放).
@@ -667,7 +667,7 @@ class TaskManager:
                 file_path=path,
                 progress=100.0,
                 message="下载完成",
-                completed_at=time.time(),  # TTL 起点: 文件就绪时刻 (T06)
+                completed_at=time.time(),  # TTL 起点: 文件就绪时刻
             )
         except downloader.DownloadError as e:
             self.update_status(task_id, STATUS_FAILED, error=str(e))
@@ -682,7 +682,7 @@ class TaskManager:
                 self._workers.discard(threading.current_thread())
 
     def _run_summary_worker(self, task_id: int, is_member: bool) -> None:
-        """四子任务 DAG 执行 (独立线程, 完成后释放并发槽, ADR-0005).
+        """四子任务 DAG 执行 (独立线程, 完成后释放并发槽).
 
         每轮扫描「可运行」子任务 (pending/blocked 且依赖全部 done), 并行启动
         线程执行, 等待期间轮询扫描新解锁子任务并立即启动 (mindmap/qa 仅
@@ -788,7 +788,7 @@ class TaskManager:
             self.update_subtask(task_id, name, ST_FAILED, error=f"{name} 异常: {e}")
 
     def _run_transcript_subtask(self, task: Task) -> None:
-        """转录子任务 (ADR-0006 双路径): 官方字幕快路径 / 模型生成 (缓存优先).
+        """转录子任务 (双路径): 官方字幕快路径 / 模型生成 (缓存优先).
 
         official: 官方字幕秒级提取 (不写缓存, 秒级获取无需缓存), 为空
         回退模型生成 — 仅校验模型存在, 缺失 → failed 提示先下载 (不自动
@@ -928,7 +928,7 @@ class TaskManager:
         return polished
 
     def _wait_model_ready(self, task: Task) -> None:
-        """等待模型就绪 (ADR-0006): 触发下载 (幂等) + 轮询进度映射 0~50.
+        """等待模型就绪: 触发下载 (幂等) + 轮询进度映射 0~50.
 
         下载为全局资产: 幂等触发 (可能已被其他任务/手动触发), 已就绪即
         返回; 轮询期间转录子任务进度 = 模型下载进度 x 50% (0~50 区间,
@@ -955,7 +955,7 @@ class TaskManager:
             time.sleep(0.5)
 
     def _refund_quota_on_cache_hit(self, task: Task) -> None:
-        """字幕缓存命中退还配额 (ADR-0006): 创建时先扣, 命中净消耗 0.
+        """字幕缓存命中退还配额: 创建时先扣, 命中净消耗 0.
 
         仅免费用户退还 (会员不限量无需退); quota_refunded 标志保证幂等
         (重试命中缓存不重复退还). 退还与转录结果解耦, 缓存命中与否由
@@ -970,7 +970,7 @@ class TaskManager:
         """LLM 生成子任务: summary 结构化总结 / mindmap 导图结构 (独立调用).
 
         summary 输入 = 转录文本: 流式收集, 增量实时写入 task.summary_stream
-        (SSE 端点锁内快照轮询, ADR-0007), 流结束后统一解析结构化结果;
+        (SSE 端点锁内快照轮询), 流结束后统一解析结构化结果;
         mindmap 输入 = 结构化总结 (DAG 保证总结先完成, 用户反馈: 导图用
         总结后的数据). 置 progress=30 仅作「生成中」标记 (前端渲染不确定条),
         与旧 summary_progress 语义一致; 结果分别存 task.summary / task.mindmap.
@@ -980,7 +980,7 @@ class TaskManager:
         )
         meta = {"title": task.title, "duration": task.duration, "site": task.site}
         if name == SUBTASK_SUMMARY:
-            # 重试/重跑前清空旧流缓冲 (防新旧文本拼接, ADR-0007)
+            # 重试/重跑前清空旧流缓冲 (防新旧文本拼接)
             with self._lock:
                 if task.id in self._tasks:
                     task.summary_stream.clear()

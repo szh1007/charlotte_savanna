@@ -6,7 +6,7 @@ import {
   submitMemberKey,
 } from '../api/client.js'
 
-// 会员状态组合式 (T09): 解锁 / 恢复 / 清除全站会员身份.
+// 会员状态组合式: 解锁 / 恢复 / 清除全站会员身份.
 // 与解析 / 下载 / SSE 逻辑解耦 (Home 仅接线), 组件树内单一数据源
 export function useMember({ onUnlocked } = {}) {
   const isMember = ref(false)

@@ -1,4 +1,4 @@
-"""ASR 转写兜底 (ADR-0005): SenseVoice (funasr) 本地转写, 无登录依赖.
+"""ASR 转写兜底: SenseVoice (funasr) 本地转写, 无登录依赖.
 
 链路: 下载音频流 (yt-dlp bestaudio) → ffmpeg 分片 (16k 单声道 wav,
 每片 ASR_CHUNK_SECONDS) → 逐片 SenseVoice 转写 → 合并为
@@ -194,7 +194,7 @@ def _load_model():
         except ImportError as e:
             raise TranscriptError(f"ASR SDK (funasr) 导入失败: {e}") from e
         try:
-            # 优先加载项目 models/ 本地模型 (ADR-0006 预下载产物, funasr
+            # 优先加载项目 models/ 本地模型 (预下载产物, funasr
             # AutoModel 支持本地路径), 未下载时回退 modelscope 模型 id
             # (旧行为: 自动下载到 modelscope 缓存).
             # vad_model 必须有: SenseVoice 本身无句子边界能力, 缺 VAD 时整段

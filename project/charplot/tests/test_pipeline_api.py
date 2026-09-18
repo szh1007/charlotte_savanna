@@ -1,4 +1,4 @@
-"""/ai/pipeline 与 /ai/tasks/{id} 测试 (Issue 03).
+"""/ai/pipeline 与 /ai/tasks/{id} 测试.
 
 覆盖: 任务创建 / 状态迁移 running→done / 入参校验 (text 缺 content 422) /
 管道异常 → error + 失败标记 / 落库失败 → error.

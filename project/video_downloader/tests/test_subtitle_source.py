@@ -1,4 +1,4 @@
-"""T13 字幕来源与模型下载联动 (ADR-0006): 双路径 / 缓存 / 配额退还 / 自动下载.
+"""字幕来源与模型下载联动: 双路径 / 缓存 / 配额退还 / 自动下载.
 
 验收: POST /api/summarize 新增 subtitle_source (official/model, 默认
 official); official 官方字幕 → 不写缓存; official 空 → 回退模型生成

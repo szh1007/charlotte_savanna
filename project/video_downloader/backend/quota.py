@@ -1,9 +1,9 @@
-"""免费档每日配额 (ADR-0005): 按匿名 client_id + 日窗口计数, 内存态.
+"""免费档每日配额: 按匿名 client_id + 日窗口计数, 内存态.
 
 免费用户无会话 token (会员密钥体系), 前端在 localStorage 生成持久化
 client_id (UUID), 随请求以 X-Client-Id header 携带, 作为免费身份计数键.
 会员 (有效 X-Member-Token) 不受配额限制, 不进入本模块计数.
-计数内存态 (与 ADR-0003 一致), 服务重启清零; 过期日窗口惰性清理.
+计数内存态, 服务重启清零; 过期日窗口惰性清理.
 """
 
 from __future__ import annotations
@@ -104,7 +104,7 @@ class QuotaManager:
             setattr(usage, field_name, getattr(usage, field_name) + 1)
 
     def refund(self, client_id: str, kind: str) -> None:
-        """退还一次用量 (ADR-0006: 字幕缓存命中不另扣配额).
+        """退还一次用量 (字幕缓存命中不另扣配额).
 
         创建时先扣 (防滥用占队列), 转录命中缓存后退还 → 净消耗 0;
         由调用方保证幂等 (task 记录已退还标志), 计数下限 0.
@@ -118,7 +118,7 @@ class QuotaManager:
 
     @staticmethod
     def _limit(kind: str) -> int:
-        """配额上限按类型从 config 读取 (免费 3 总结 / 10 问答, ADR-0005)."""
+        """配额上限按类型从 config 读取 (免费 3 总结 / 10 问答)."""
         _, var, _ = _spec(kind)
         return getattr(config, var)
 

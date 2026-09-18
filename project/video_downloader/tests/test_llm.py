@@ -1,9 +1,9 @@
-"""LLM 单元测试: JSON 解析容错 + 流式调用 (ADR-0007/0008).
+"""LLM 单元测试: JSON 解析容错 + 流式调用.
 
 覆盖 _parse_json 容错 (正常 / 代码块包裹 / Extra data / 尾随文本 / 非法 /
 非对象) 与 _chat_stream 流式增量 (空块跳过 / 顺序拼接 / close 调用 /
 错误透传) 及 summarize_stream / ask_stream / parse_summary_text
-(Markdown 总结文档解析, ADR-0008).
+(Markdown 总结文档解析).
 """
 
 from __future__ import annotations
@@ -61,7 +61,7 @@ def test_chat_stream_yields_deltas_and_skips_empty(monkeypatch) -> None:
 
 
 def test_chat_stream_passes_stream_flag(monkeypatch) -> None:
-    """create 收到 stream=True 与 model (ADR-0008: 不再有 json_mode 分支)."""
+    """create 收到 stream=True 与 model (不再有 json_mode 分支)."""
     seen: dict = {}
 
     def _create(**kw):
@@ -103,7 +103,7 @@ def test_summarize_stream_yields_text(monkeypatch) -> None:
     monkeypatch.setattr(llm, "_chat_stream", _fake)
     out = list(llm.summarize_stream("转录文本", {"title": "t", "duration": 60}))
     assert "".join(out) == "# 视频总结: t\n"
-    assert "## 章节时间线" in seen["messages"][1]["content"]  # 模板注入 (ADR-0008)
+    assert "## 章节时间线" in seen["messages"][1]["content"]  # 模板注入
     assert "转录文本" in seen["messages"][1]["content"]
 
 
@@ -118,7 +118,7 @@ def test_ask_stream_yields_text_without_strip(monkeypatch) -> None:
     assert "".join(llm.ask_stream("转录", {"key_points": []}, "问题")) == "你好 世界"
 
 
-# 完整模板示例 (ADR-0008): 解析结果与 test_summarize.FAKE_SUMMARY 同构
+# 完整模板示例: 解析结果与 test_summarize.FAKE_SUMMARY 同构
 FAKE_SUMMARY_MD = """# 视频总结: 测试视频标题
 > 时长: 60s
 
@@ -159,7 +159,7 @@ def test_parse_summary_markdown_full() -> None:
 
 
 def test_parse_summary_markdown_missing_sections_tolerated() -> None:
-    """部分小节缺失容忍空值 (仅章节时间线缺失判非法, ADR-0008)."""
+    """部分小节缺失容忍空值 (仅章节时间线缺失判非法)."""
     text = "# 视频总结: t\n## 章节时间线\n### 无时间戳章节\n- 要点"
     assert llm.parse_summary_text(text) == {
         "title": "t",

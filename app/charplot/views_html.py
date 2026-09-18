@@ -1,7 +1,7 @@
-"""CharPlot 页面视图 (Issue 06): 公开分享页.
+"""CharPlot 页面视图: 公开分享页.
 
 分享页为服务端渲染 (爬虫可读 OG 标签), 未登录可访问, 纯只读展示
-通关快照; 无任何写端点 → 内容不可篡改 (PRD E-2, DESIGN §4.1 GET /r/{slug}).
+通关快照; 无任何写端点 → 内容不可篡改 (GET /r/{slug}).
 """
 
 from django.shortcuts import get_object_or_404, render
@@ -11,7 +11,7 @@ from .models import CharplotReviewReport
 
 
 class ReportShareView(View):
-    """公开复盘报告页: slug URL, 无登录可看 (PRD E-2).
+    """公开复盘报告页: slug URL, 无登录可看.
 
     OG 社交卡片标签 (og:title/og:description/og:image) 在此输出, 爬虫
     抓取即得完整卡片; 页面正文与报告快照一致, 只读展示.

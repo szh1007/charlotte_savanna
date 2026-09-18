@@ -1,4 +1,4 @@
-"""LLM 状态总结测试 (Issue 13, DESIGN.md §4.2 步骤 13 / PRD F-4).
+"""LLM 状态总结测试.
 
 覆盖: /ai/report/summary 端点契约 ({user_id} → {summary} markdown) /
 错误语义 (缺 user_id 422 / 用户不存在 404 / 聚合获取失败 502 / LLM 未配置

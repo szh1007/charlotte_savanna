@@ -1,19 +1,18 @@
 # BilibiliDownloader（哔哩哔哩下载器, video_downloader）
 
-> 基于 **FastAPI + yt-dlp + Vue 3** 的哔哩哔哩免费视频下载网站：粘贴链接 → 一键解析 → 选择清晰度 → 批量下载 → 临时直链交付；**AI 视频总结**（转录 / 结构化总结 / 思维导图 / AI 问答, 字幕来源可选 + 模型预下载 + LLM 流式, ADR-0005 ~ 0008）。
-> 需求与验收：原为 `.scratch/video-downloader/PRD.md`（总需求）与 `.scratch/video-downloader/issues/`（分步实施记录），2026-09-18 随归档移出仓库，仅在 git 历史中。
+> 基于 **FastAPI + yt-dlp + Vue 3** 的哔哩哔哩免费视频下载网站：粘贴链接 → 一键解析 → 选择清晰度 → 批量下载 → 临时直链交付；**AI 视频总结**（转录 / 结构化总结 / 思维导图 / AI 问答, 字幕来源可选 + 模型预下载 + LLM 流式）。
 
 ---
 
 ## 一、项目简介
 
-`project/video_downloader` 是一个以学习为目的的哔哩哔哩视频下载网站，实践「方案确认 → 文档先行（CONTEXT/ADR/PRD）→ 分步实现 → 测试验收」的工程模式：
+`project/video_downloader` 是一个以学习为目的的哔哩哔哩视频下载网站，实践「方案确认 → 分步实现 → 测试验收」的工程模式：
 
 - **核心流程**：粘贴视频链接 → 解析元信息与可用清晰度档位 → 选择档位发起下载 → 任务队列顺序执行 → 生成临时直链 → 手机/电脑随时保存文件。
-- **支持范围**：仅支持哔哩哔哩免费公开视频（非会员、非充电内容），URL 域名白名单校验（bilibili.com 主域/子域 + b23.tv 短链），其余平台在引擎调用前拒绝；其他平台预留扩展点（ADR-0004）。
+- **支持范围**：仅支持哔哩哔哩免费公开视频（非会员、非充电内容），URL 域名白名单校验（bilibili.com 主域/子域 + b23.tv 短链），其余平台在引擎调用前拒绝；其他平台预留扩展点。
 - **下载引擎**：直接嵌入开源项目 **yt-dlp**（Unlicense），零代码改动继承引擎能力；音视频分离流由 **ffmpeg** 合并输出单一 MP4。
 - **付费差异（后端强制）**：免费档限 720p / 1 并发 / 队列 5 / 直链 24h / AI 总结每日 3 次 / 问答 10 次；会员（密钥解锁）全部清晰度 / 3 并发 / 队列 50 / 直链 72h / AI 能力无限。
-- **无数据库**：任务 / 队列 / 会员会话全部内存态，交付文件 TTL 过期自动清理（ADR-0003）。
+- **无数据库**：任务 / 队列 / 会员会话全部内存态，交付文件 TTL 过期自动清理。
 - **批量下载**：一次提交多个任务，队列顺序执行 + 并发槽调度（会员任务优先）。
 
 ---
@@ -57,10 +56,7 @@ project/video_downloader/
 │   ├── check_subtitle_cookie.py  # 验证 BILI_COOKIE 能否取到官方字幕（真实网络, 不 mock）
 │   └── probe_ytdlp.py            # yt-dlp cookie 注入诊断探针（对比三种附加方式, 保留用于排查）
 ├── tests/                        # HTTP seam 自动化测试（210 个, 引擎 / 字幕 / ASR / LLM mock, 无网络依赖）
-├── docs/
-│   ├── CONTEXT.md                # 领域术语表（Ubiquitous Language）
-│   ├── DESIGN.md                 # 设计方案
-│   └── adr/                      # ADR-0001 ~ 0008（下载引擎 / 会员密钥 / 内存态 TTL 存储 / 仅 B 站范围收缩 / AI 总结 / 字幕来源与模型下载 / LLM 流式 / Markdown 总结文档）
+├── bugfix/                       # 缺陷修复记录（0001~0007, markdown, 含根因分析与改动清单）
 └── downloads/                    # 交付文件目录（.gitignore, TTL 到期自动清理）
 ```
 
@@ -73,8 +69,8 @@ project/video_downloader/
 | Python | 3.13（使用仓库根 `.venv`） | 见仓库根 README |
 | ffmpeg | yt-dlp 音视频合并必需（分离流视频必须, 否则无音频） | `winget install ffmpeg`（全局, 需 PATH 生效） |
 | yt-dlp | 下载引擎, Python API 嵌入（已装 2026.07.04） | `pip install yt-dlp` |
-| funasr + torch | SenseVoice 转写运行时（ADR-0005 兜底链路） | `pip install funasr torch` |
-| modelscope | 转写模型下载引擎（ADR-0006, 首次转写 / 手动预下载时使用） | `pip install modelscope` |
+| funasr + torch | SenseVoice 转写运行时（兜底链路） | `pip install funasr torch` |
+| modelscope | 转写模型下载引擎（首次转写 / 手动预下载时使用） | `pip install modelscope` |
 
 > 后端依赖不在根 `requirements.txt`（手动安装, 见上表）；前端为独立工程, 需 `npm install` 一次。
 
@@ -112,7 +108,7 @@ npm run dev        # 默认 http://localhost:9003, /api 代理到 127.0.0.1:8003
 | `FREE_DELIVERY_TTL` | `86400`（24h） | 免费用户交付直链有效期（秒） |
 | `MEMBER_DELIVERY_TTL` | `259200`（72h） | 会员用户交付直链有效期（秒） |
 | `BILI_COOKIE` | （空） | 服务端自备 B 站登录 Cookie, 仅用于取官方字幕（不收集用户 cookie）; 空 = 官方字幕不可用, 前端提示切换模型生成字幕 |
-| `MODELS_DIR` | `models/` | 转写模型下载目录（ADR-0006, 持久资产不清理, 约 1GB） |
+| `MODELS_DIR` | `models/` | 转写模型下载目录（持久资产不清理, 约 1GB） |
 | `SUBTITLES_DIR` | `models/subtitles/` | 模型字幕缓存目录（转录段 JSON 按 TTL 清理, 与交付 TTL 同源） |
 | `LLM_API_KEY` | （空） | DeepSeek API Key（AI 总结必需; 未配置时回退 `DEEPSEEK_API_KEY`） |
 | `LLM_BASE_URL` | `https://api.deepseek.com` | LLM 端点 |
@@ -141,15 +137,15 @@ npm run dev        # 默认 http://localhost:9003, /api 代理到 127.0.0.1:8003
 
 **会员鉴权**：前端输入密钥 → `POST /api/member` 校验 → 通过签发内存态会话 token（24h）→ 后续请求以 `X-Member-Token` header 携带（前端 localStorage 持久化, 刷新可恢复）。
 
-**AI 视频总结（ADR-0005 ~ 0008）**：解析结果卡点击「AI 总结」→ 创建总结任务（免费档超每日配额 429）→ 后端获取转录文本 → DeepSeek 生成总结 → 完成弹窗展示四个能力：
+**AI 视频总结**：解析结果卡点击「AI 总结」→ 创建总结任务（免费档超每日配额 429）→ 后端获取转录文本 → DeepSeek 生成总结 → 完成弹窗展示四个能力：
 
-**字幕来源全局二选一**（ADR-0006, 前端 localStorage 持久化, 默认官方字幕）：
+**字幕来源全局二选一**（前端 localStorage 持久化, 默认官方字幕）：
 - **官方字幕快路径**：`.env` 配置 `BILI_COOKIE` 且有效时提取官方字幕, 秒级; 未配置时前端经 `has_official_subtitle` 提示
 - **模型生成字幕**：SenseVoice 转写（CPU 约 5~15 分钟/小时视频, fsmn-vad 分句产出句子级 `[MM:SS]` 时间戳）；模型缺失时主动选择自动触发预下载, 官方字幕为空回退则提示先下载
 
-**模型预下载 + 字幕缓存**（ADR-0006）：模型（SenseVoiceSmall + fsmn-vad, 约 1GB）统一下载到 `models/`, 全局唯一状态机（missing / downloading / ready）, 进度经 SSE `model-update` 事件广播, 任务取消不中断; 模型生成的字幕按 BV 号落盘缓存（`SUBTITLES_DIR`）, TTL 与交付同源, 全局共享命中不重复扣配额, 官方字幕不缓存。
+**模型预下载 + 字幕缓存**：模型（SenseVoiceSmall + fsmn-vad, 约 1GB）统一下载到 `models/`, 全局唯一状态机（missing / downloading / ready）, 进度经 SSE `model-update` 事件广播, 任务取消不中断; 模型生成的字幕按 BV 号落盘缓存（`SUBTITLES_DIR`）, TTL 与交付同源, 全局共享命中不重复扣配额, 官方字幕不缓存。
 
-**LLM 流式输出**（ADR-0007 ~ 0008）：
+**LLM 流式输出**：
 - 总结 = DeepSeek 流式生成 **Markdown 文档**（章节时间线 + 要点大纲）, 前端 marked 实时渲染打字机, 完成后解析回结构化数据（思维导图同源）
 - 问答 = SSE 流式打字机（完整输出才计数配额, 失败/断开不计数）
 
@@ -180,7 +176,7 @@ npm run dev        # 默认 http://localhost:9003, /api 代理到 127.0.0.1:8003
 | GET | `/api/member/status` | 当前会话会员状态 |
 | POST | `/api/summarize` | 创建 AI 总结任务 `{url, subtitle_source}` → `{task_id}`（subtitle_source: official / model, 缺省 official; 免费超每日配额 429） |
 | GET | `/api/tasks/{id}/summary` | 结构化总结（章节时间线 + 要点 JSON, 思维导图数据源） |
-| GET | `/api/tasks/{id}/summary/stream` | 总结 SSE 流（ADR-0007 帧协议: `snapshot` / `delta` / `done` / `error` / `heartbeat`; 断线重连不丢文本） |
+| GET | `/api/tasks/{id}/summary/stream` | 总结 SSE 流（帧协议: `snapshot` / `delta` / `done` / `error` / `heartbeat`; 断线重连不丢文本） |
 | GET | `/api/tasks/{id}/transcript` | 带时间戳转录全文 |
 | GET | `/api/tasks/{id}/transcript/stream` | 转录全文 SSE 流（长文本渐进加载） |
 | POST | `/api/tasks/{id}/qa` | AI 问答 `{question}` → SSE 流式（完整输出才计数配额, 失败/断开不计数; 超限 429 仍为 HTTP 响应） |
@@ -191,7 +187,7 @@ npm run dev        # 默认 http://localhost:9003, /api 代理到 127.0.0.1:8003
 | GET | `/api/sites` | 支持平台列表（当前仅哔哩哔哩, total 为引擎全量支持数） |
 | GET | `/api/health` | 健康检查 |
 
-**SSE 事件协议**：`event: task-update` — `{task_id, status, title, cover, progress, message, url?, error?, expires_at?}`（title/cover 为解析完成的元信息，前端据此补全卡片）；任务清除记录时广播 `{task_id, status: "removed"}`（前端移除卡片）。`event: model-update` — `{status, progress}` 模型下载进度（与任务事件同流, 不受 task_id 过滤）。总结流为独立端点（`/summary/stream`, ADR-0007 命名事件 + 单行 JSON, 0.2s 轮询快照, 不走事件总线防丢帧）。
+**SSE 事件协议**：`event: task-update` — `{task_id, status, title, cover, progress, message, url?, error?, expires_at?}`（title/cover 为解析完成的元信息，前端据此补全卡片）；任务清除记录时广播 `{task_id, status: "removed"}`（前端移除卡片）。`event: model-update` — `{status, progress}` 模型下载进度（与任务事件同流, 不受 task_id 过滤）。总结流为独立端点（`/summary/stream`, 命名事件 + 单行 JSON, 0.2s 轮询快照, 不走事件总线防丢帧）。
 
 ---
 
@@ -203,10 +199,10 @@ python -m pytest -q                       # 210 passed
 
 # 真实链接 E2E（起服务 → 解析 → 选档下载 → 直链取回 → 校验 MP4）
 python scripts/e2e_download.py [url] [format_id]
-# 默认 B 站公开 MV（仅支持哔哩哔哩域名, 见 ADR-0004）
+# 默认 B 站公开 MV（仅支持哔哩哔哩域名）
 ```
 
-**测试 seam 约定（PRD Testing Decisions）**：只测外部行为（HTTP 请求 → 响应 / SSE 事件），不直接测内部函数；yt-dlp 调用集中在引擎封装层（`backend/downloader.py`），字幕 / ASR / LLM / 模型下载各一层 mock（`test_summarize.py` / `test_model.py` / `test_asr.py` / `test_subtitle_source.py` 等）。流式断言覆盖：帧顺序 / snapshot 断线恢复 / 配额仅成功计数 / 重试清缓冲。
+**测试 seam 约定**：只测外部行为（HTTP 请求 → 响应 / SSE 事件），不直接测内部函数；yt-dlp 调用集中在引擎封装层（`backend/downloader.py`），字幕 / ASR / LLM / 模型下载各一层 mock（`test_summarize.py` / `test_model.py` / `test_asr.py` / `test_subtitle_source.py` 等）。流式断言覆盖：帧顺序 / snapshot 断线恢复 / 配额仅成功计数 / 重试清缓冲。
 
 ---
 
@@ -216,15 +212,3 @@ python scripts/e2e_download.py [url] [format_id]
 - **不破解 DRM / 不绕过付费墙**：引擎能力即领域能力边界, 本项目不提供任何绕过能力。
 - **封号风险自担**：部分平台对批量下载有限制, 使用下载功能可能面临账号风险, 用户需自行承担。
 - **尊重版权**：请仅下载自己拥有版权或已获授权的内容。
-
----
-
-## 九、相关文档
-
-| 文档 | 位置 |
-|------|------|
-| 总需求（PRD）【已归档 2026-09-18 移出仓库】 | 原为 `.scratch/video-downloader/PRD.md`，现仅在 git 历史中 |
-| 分步实施 issue（T01 ~ T15）【已归档 2026-09-18 移出仓库】 | 原为 `.scratch/video-downloader/issues/`，现仅在 git 历史中 |
-| 领域术语表 | `project/video_downloader/docs/CONTEXT.md` |
-| 设计方案 | `project/video_downloader/docs/DESIGN.md` |
-| 架构决策记录 | `project/video_downloader/docs/adr/`（ADR-0001 下载引擎 / 0002 会员密钥 / 0003 内存态 TTL 存储 / 0004 仅 B 站范围收缩 / 0005 AI 视频总结 / 0006 字幕来源与模型下载 / 0007 LLM 流式输出 / 0008 总结 Markdown 文档） |

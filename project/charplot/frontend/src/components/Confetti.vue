@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// 彩花粒子动画 (通关结算 / 答对反馈, PRD §6 动效).
+// 彩花粒子动画 (通关结算 / 答对反馈).
 // 纯 CSS 实现零依赖: burst 值变化时重放一次粒子雨, 主题色系 (粉/紫/蓝/金).
 import { computed } from 'vue'
 

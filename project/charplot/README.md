@@ -3,8 +3,6 @@
 > 输入想学的**任何知识**（一句话 / 一段话 / 文档 / 网页链接 / 管理员预建知识库）→ AI 联网获取知识 → 解构成技能树图谱 → 渐进生成闯关题目 → 游戏化答题（Duolingo 式：心动值 / 连胜 / XP）→ 通关复盘报告可分享。
 >
 > 架构按**真实产品**设计（账号体系 / 分享页 / 后台分析 Dashboard 齐全），付费商业机制（连胜冻结卡等）一律降级为学习币兑换的轻量化实现。
->
-> 业务术语与产品决策见 [docs/CONTEXT.md](./docs/CONTEXT.md)（权威术语表）；接口与数据结构契约见 [docs/CONTRACT.md](./docs/CONTRACT.md)；方案设计见 [docs/DESIGN.md](./docs/DESIGN.md)；架构问答索引见 [docs/QA.md](./docs/QA.md)；决策记录见 [docs/adr/](./docs/adr/)。
 
 ---
 
@@ -12,7 +10,7 @@
 
 | 能力 | 说明 |
 |------|------|
-| 知识获取 | 统一知识管道（ADR-0002）：输入归一化解析（txt/md/html/pdf/docx/pptx/网页链接）→ LLM 主内容分析 → 联网搜索增强 → 图谱解构 |
+| 知识获取 | 统一知识管道：输入归一化解析（txt/md/html/pdf/docx/pptx/网页链接）→ LLM 主内容分析 → 联网搜索增强 → 图谱解构 |
 | 知识图谱 | 章节 → 知识点（带前置依赖边），技能树 / 关卡 / 间隔复习全部锚定图谱 |
 | 闯关学习 | 关卡按知识点粒度渐进生成（3 分钟/关），选择 / 判断 / 填空三题型，5 心动值安全失败机制，断点续答，通关结算 |
 | 间隔复习 | 新关生成时混入 Top 20% 历史易错题（易错分 × 时间衰减规则调度，无 LLM 参与） |
@@ -47,7 +45,7 @@
 
 ## 2. 架构总览
 
-**双后端微服务（ADR-0001）**：Django = 状态与数据（账号体系 / 学习数据 / 闯关交互规则 / 知识库元数据 / Dashboard / 分享页）；FastAPI = AI 能力（知识管道 / RAG 全链路 / 题目生成 / 任务系统）。闯关交互归 Django（ADR-0003：判分与游戏化是纯规则 + 预生成讲解，**LLM 不参与答题路径**）；RAG 全链路归 FastAPI，Django 只存知识库元数据。
+**双后端微服务**：Django = 状态与数据（账号体系 / 学习数据 / 闯关交互规则 / 知识库元数据 / Dashboard / 分享页）；FastAPI = AI 能力（知识管道 / RAG 全链路 / 题目生成 / 任务系统）。闯关交互归 Django（判分与游戏化是纯规则 + 预生成讲解，**LLM 不参与答题路径**）；RAG 全链路归 FastAPI，Django 只存知识库元数据。
 
 ```
 ┌────────────── Vue 3 前端 (frontend/, 9004) ──────────────┐
@@ -66,20 +64,20 @@
         MySQL (schema 归 Django) / Redis /4 (任务) / Milvus
 ```
 
-- **服务间通信**：FastAPI 调 Django 内部端点一律 `X-Internal-Token`（`CHARPLOT_INTERNAL_TOKEN`, 两端 .env 同值, 未配置 fail closed）；**不存在 Django → FastAPI 反向调用**（索引/出题触发由前端直调 `/ai/*`, CONTRACT §6.3 决策）
+- **服务间通信**：FastAPI 调 Django 内部端点一律 `X-Internal-Token`（`CHARPLOT_INTERNAL_TOKEN`, 两端 .env 同值, 未配置 fail closed）；**不存在 Django → FastAPI 反向调用**（索引/出题触发由前端直调 `/ai/*`）
 - **共享存储**：MySQL schema 归 Django ORM 管理；FastAPI 读题/写学习数据一律经 Django 内部端点，不直连库
 
 ### AI 能力全景（LLM 参与的五个流程）
 
 | 流程 | 编排 | 状态 |
 |------|------|------|
-| A. 知识管道: 解析(无 LLM) → 主内容分析 → 联网搜索增强 → 图谱解构 | LangGraph StateGraph 编排, 检索环节套 DeepAgents | ✅ Issue 07 |
-| B. RAG: 索引(批处理) → 检索(rewrite → 混合 → rerank → Top-K) | LangChain 管线式, 被动服务 | ✅ Issue 10 |
-| C. 题目生成: 知识点 + 检索片段 → 题目 JSON(讲解+来源引用) | DeepAgents 出题 subagent | ✅ Issue 08 |
-| D. 闯关答题: 判分/心动值/间隔复习混入 | 纯规则, **无 LLM** | ✅ Issue 05 |
-| E. LLM 状态总结: 统计聚合 → 文字报告 | 裸 LLM 调用 | ✅ Issue 13 |
+| A. 知识管道: 解析(无 LLM) → 主内容分析 → 联网搜索增强 → 图谱解构 | LangGraph StateGraph 编排, 检索环节套 DeepAgents | ✅ |
+| B. RAG: 索引(批处理) → 检索(rewrite → 混合 → rerank → Top-K) | LangChain 管线式, 被动服务 | ✅ |
+| C. 题目生成: 知识点 + 检索片段 → 题目 JSON(讲解+来源引用) | DeepAgents 出题 subagent | ✅ |
+| D. 闯关答题: 判分/心动值/间隔复习混入 | 纯规则, **无 LLM** | ✅ |
+| E. LLM 状态总结: 统计聚合 → 文字报告 | 裸 LLM 调用 | ✅ |
 
-> 关键设计：**RAG 只返回片段不生成答案**（QA.md Q7）——生成动作（图谱/题目/讲解）全在 A/C 的 LLM 环节，「生成依据」与「生成动作」拆开，实现幻觉防护。
+> 关键设计：**RAG 只返回片段不生成答案**——生成动作（图谱/题目/讲解）全在 A/C 的 LLM 环节，「生成依据」与「生成动作」拆开，实现幻觉防护。
 
 ---
 
@@ -98,7 +96,6 @@ project/charplot/                    # FastAPI 侧（AI 能力）
 ├── prompt/                          # prompt 配置(analyze/search/deconstruct/questions/status_summary)
 ├── frontend/                        # Vue 3 + Vite + TS (11 views: Home/闯关地图/答题/复盘/
 │   │                               #   Profile/Dashboard/KBManage/Login…)
-├── docs/                            # CONTEXT / CONTRACT / DESIGN / QA + adr/0001~0004
 ├── tests/                           # FastAPI 侧 9 个测试文件 (Redis /15 隔离 + Fake LLM, 不触网)
 ├── .env / .env.example              # CHARPLOT_* 前缀独立配置 (不提交 / 模板可提交)
 └── pytest.ini                       # pythonpath=../.. → 以 project.charplot.* 包导入
@@ -113,8 +110,6 @@ app/charplot/                        # Django 侧（状态与数据, 主项目�
 ├── dashboard.py                     # 掌握度/活动/易错点聚合
 ├── urls_api.py / urls_html.py / serializers.py / permissions.py / signals.py
 └── migrations/ (9) / tests/ (265 用例)
-
-.scratch/charplot/                   # [已归档 2026-09-18 移出仓库] 需求与追踪: PRD.md / SPEC.md / issues/01~14
 ```
 
 ---
@@ -216,22 +211,22 @@ python manage.py test app.charplot           # 265 用例
 
 ---
 
-## 6. 业务状态（Issue 01~14 已全部闭环）
+## 6. 业务状态（已全部闭环）
 
-> 每个 Issue 独立开发/测试/验收（垂直切片），ticket 原在 `.scratch/charplot/issues/`（2026-09-18 随归档移出仓库，仅在 git 历史中）。
+> 按垂直切片独立开发/测试/验收。
 
-| Issue | 内容 | 状态 |
-|-------|------|------|
-| 01~02 | 三端骨架 + 健康检查 / 账号体系与个人主页 | ✅ |
-| 03 | 旅程创建链路 + stub 管道 + **全链路数据契约** (CONTRACT.md) | ✅ |
-| 04~05 | 技能树地图 / 闯关答题与通关结算闭环 | ✅ |
-| 06 | 复盘报告 + slug 公开分享页 + OG 卡片 | ✅ |
-| 07 | 真实知识管道（LangGraph + DeepAgents + 检索源抽象替换 stub） | ✅ |
-| 08 | 真实题目生成 + 间隔复习混入 + Boss 标记 | ✅ |
-| 09~10 | 知识库管理链路 / 真实 Milvus 索引 + 混合检索 + rerank + 软删过滤 | ✅ |
-| 11~14 | 主题卡片 + KB 驱动旅程 / 分析 Dashboard / LLM 状态总结 / 题目反馈标记 | ✅ |
+| 内容 | 状态 |
+|------|------|
+| 三端骨架 + 健康检查 / 账号体系与个人主页 | ✅ |
+| 旅程创建链路 + stub 管道 + **全链路数据契约** | ✅ |
+| 技能树地图 / 闯关答题与通关结算闭环 | ✅ |
+| 复盘报告 + slug 公开分享页 + OG 卡片 | ✅ |
+| 真实知识管道（LangGraph + DeepAgents + 检索源抽象替换 stub） | ✅ |
+| 真实题目生成 + 间隔复习混入 + Boss 标记 | ✅ |
+| 知识库管理链路 / 真实 Milvus 索引 + 混合检索 + rerank + 软删过滤 | ✅ |
+| 主题卡片 + KB 驱动旅程 / 分析 Dashboard / LLM 状态总结 / 题目反馈标记 | ✅ |
 
-**2026-09-08 业务完整性审查**：三端（FastAPI 7 端点 + 13 内部调用 / Django 12 表 41 路由 265 测试 / 前端 11 页 30 API 调用）与 CONTRACT 契约逐条核对一致，无断链、无 stub 参与运行时；`stub.py`（Issue 03 退役产物）与 `services._stub_questions`（Issue 05 遗留）为有意保留的死代码。
+**2026-09-08 业务完整性审查**：三端（FastAPI 7 端点 + 13 内部调用 / Django 12 表 41 路由 265 测试 / 前端 11 页 30 API 调用）与数据契约逐条核对一致，无断链、无 stub 参与运行时；`stub.py`（早期退役产物）与 `services._stub_questions`（早期遗留）为有意保留的死代码。
 
 ---
 
@@ -241,7 +236,7 @@ python manage.py test app.charplot           # 265 用例
 
 | 位置 | 问题 |
 |------|------|
-| frontend: LevelList / QuizView / KBManage | SSE 任务丢失（FastAPI 重启等）后卡死在 generating/indexing 态且无恢复入口：QuizView 无退出/重试按钮、LevelList 卡片无兜底动作、KBManage indexing 态禁用重试按钮（后端允许超 10 分钟重抢, UI 无入口）。CONTRACT §2 承诺「SSE 404 → 前端兜底重新生成」仅 JourneyDetail 实现。`client.ts:691 getTaskStatus` 轮询函数已封装未接线, 可直接补 |
+| frontend: LevelList / QuizView / KBManage | SSE 任务丢失（FastAPI 重启等）后卡死在 generating/indexing 态且无恢复入口：QuizView 无退出/重试按钮、LevelList 卡片无兜底动作、KBManage indexing 态禁用重试按钮（后端允许超 10 分钟重抢, UI 无入口）。承诺的「SSE 404 → 前端兜底重新生成」仅 JourneyDetail 实现。`client.ts:691 getTaskStatus` 轮询函数已封装未接线, 可直接补 |
 | api/server.py:167-171 | `/ai/kb/search` 的 RuntimeError（Milvus/Django 不可达/模型加载失败）直达 500, django_client.py:291 注释承诺转 503 —— 注释与实现不一致 |
 | api/tasks.py:201 | 管道 error 事件 progress 恒 0（`last_progress` 死变量, 应报崩溃前阶段 60） |
 
@@ -268,24 +263,13 @@ python manage.py test app.charplot           # 265 用例
 - **同步阻塞在事件循环**：pipeline kb 检索、bge-m3 encode（模型 4.3GB, 首次加载 + CPU 推理）、FlagReranker 全为同步调用跑在 async 事件循环上, 首次加载/推理最长可冻结 Redis 心跳数十秒；单机自用可接受, SSE 断线靠 Last-Event-ID 续推兜底（有测试覆盖）
 - **agents/（DeepAgents 0.7 编排）无测试覆盖**：真实 `create_deep_agent` 执行只靠运行期验证, 测试用 Fake 替换（conftest）
 - rag/__init__.py 顶层 re-export 使 import 顺序敏感（kb_source → rag.retriever → pipeline 环）, 当前入口顺序无环
-- 有意降级（非未完成）：Tavily key 缺失跳网络源 / rerank 留空不精排 / rewrite 失败用原 query / kb 旅程绕过 subagent 走确定性 KbSource 检索（QA.md Q7、Q8）
+- 有意降级（非未完成）：Tavily key 缺失跳网络源 / rerank 留空不精排 / rewrite 失败用原 query / kb 旅程绕过 subagent 走确定性 KbSource 检索
 
 ---
 
-## 8. 文档体系
+## 8. Phase 2（明确不做 / 二期）
 
-| 文档 | 内容 |
-|------|------|
-| [docs/CONTEXT.md](./docs/CONTEXT.md) | 领域术语（Language 表）+ 产品决策记录 Q1~Q22 |
-| [docs/CONTRACT.md](./docs/CONTRACT.md) | 数据契约 v1: 图谱 JSON / 任务 SSE / 内部端点 / 知识库状态机 |
-| [docs/DESIGN.md](./docs/DESIGN.md) | 架构总览 / API 设计表 / 业务规则表 / UI 规范 / 分步实施计划 |
-| [docs/QA.md](./docs/QA.md) | 架构问答索引（三件套分工 / 流程链路 / 关键决策速查） |
-| [docs/adr/](./docs/adr/) | 0001 双后端 / 0002 统一管道 / 0003 闯关交互归 Django / 0004 图谱图库 |
-| `.scratch/charplot/`【已归档 2026-09-18 移出仓库】 | 原为 PRD.md / SPEC.md / issues/01~14（需求与验收源头），现仅在 git 历史中 |
-
-## 9. Phase 2（明确不做 / 二期）
-
-视频输入（复用 video_downloader 转录）、代码题与对话式 Boss 战（LLM 评判组件）、成就勋章、排行榜、增量索引、Agentic RAG（corrective/adaptive, 在 `rag/` 模块内演进、外部接口不变）—— 详见 [docs/DESIGN.md §8~9](./docs/DESIGN.md)。
+视频输入（复用 video_downloader 转录）、代码题与对话式 Boss 战（LLM 评判组件）、成就勋章、排行榜、增量索引、Agentic RAG（corrective/adaptive, 在 `rag/` 模块内演进、外部接口不变）。
 
 ---
 

@@ -1,4 +1,4 @@
-"""模型路由 (ADR-0006): 语音转写模型状态查询与手动下载.
+"""模型路由: 语音转写模型状态查询与手动下载.
 
 契约:
 - GET  /api/model/status → {status, progress, has_official_subtitle}

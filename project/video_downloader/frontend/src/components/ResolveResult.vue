@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import ErrorAlert from './ErrorAlert.vue'
 
 // 解析结果卡: 封面 + 标题 + 平台徽章 + 时长
-// + 清晰度下拉 (锁定档带 🔒) + 「开始下载」按钮 (T08)
+// + 清晰度下拉 (锁定档带 🔒) + 「开始下载」按钮
 const props = defineProps({
   // ResolveResponse 字段:
   // task_id/title/cover/duration/site/formats/member_limited
@@ -19,7 +19,7 @@ const props = defineProps({
   summarizing: { type: Boolean, default: false },
   // 创建总结任务失败的错误信息 (免费档每日配额用尽 429 等, 父组件透传)
   summarizeError: { type: String, default: '' },
-  // 总结禁用原因 (ADR-0005 + 用户反馈: 已总结过不可再次总结), Home 按当前
+  // 总结禁用原因 (用户反馈: 已总结过不可再次总结), Home 按当前
   // 解析链接计算传入: '' 可总结 / 'active' 已有进行中任务 / 'retry' 上次
   // 总结失败 (可点击重试) / 'done' 已总结过
   summarizeDisabled: { type: String, default: '' },

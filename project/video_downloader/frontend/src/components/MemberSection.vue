@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import ErrorAlert from './ErrorAlert.vue'
 
-// 会员弹窗 (原会员营销区 T09 改为弹窗展示): 点击导航栏「会员解锁」打开.
+// 会员弹窗 (原会员营销区改为弹窗展示): 点击导航栏「会员解锁」打开.
 // 未解锁: 功能对比表 + 密钥输入解锁; 已解锁: 权益状态与有效期.
 // 密钥由父组件 (Home) 提交并管理全站会员状态, 本组件纯展示与输入
 const props = defineProps({
@@ -24,7 +24,7 @@ function close() {
   emit('update:visible', false)
 }
 
-// 功能对比表 (PRD §5 付费差异, 后端强制的能力对照)
+// 功能对比表 (付费差异, 后端强制的能力对照)
 // AI 总结行: 免费每日 3 次总结 / 10 次问答, 会员不限 (对齐 config FREE_SUMMARY_DAILY=3 / FREE_QA_DAILY=10)
 const PLAN_ROWS = [
   { ability: 'AI 总结', free: '每日 3 次总结 / 10 次问答', member: '不限次数' },
@@ -34,7 +34,7 @@ const PLAN_ROWS = [
   { ability: '交付直链有效期', free: '24h', member: '72h' },
 ]
 
-// 付费引导文案 (PRD §10)
+// 付费引导文案
 const FREE_SLOGAN = '免费下载 · 最高 720p · AI 总结每日 3 次'
 const MEMBER_SLOGAN = '解锁 4K 高清 · AI 总结不限 · 批量 50 个 · 3 倍速并发 · 72h 文件保留'
 

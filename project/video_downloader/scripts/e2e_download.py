@@ -1,4 +1,4 @@
-"""T02 真实链接下载 E2E: 起服务 → 解析 → 选档下载 → 直链取回 → 验证 MP4.
+"""真实链接下载 E2E: 起服务 → 解析 → 选档下载 → 直链取回 → 验证 MP4.
 
 用法: python scripts/e2e_download.py [url] [format_id]
 默认使用 B 站公开 MV (YouTube 需 cookies 验证, 不适合无头 E2E),

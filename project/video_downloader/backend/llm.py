@@ -1,8 +1,8 @@
-"""LLM 调用封装 (ADR-0005/0006/0008): DeepSeek, openai 兼容 SDK, 不引入 LangChain.
+"""LLM 调用封装: DeepSeek, openai 兼容 SDK, 不引入 LangChain.
 
 流式调用点 (测试 mock 目标, 均 yield 文本增量):
 - summarize_stream(transcript, meta) -> Iterator[str]: 视频总结的 Markdown
-  文档增量 (ADR-0008), 消费方流结束后调 parse_summary_text 解析回结构化 dict
+  文档增量, 消费方流结束后调 parse_summary_text 解析回结构化 dict
 - generate_mindmap(summary, meta) -> dict: 思维导图结构, 输入为结构化总结
   (非原始转录), 输出 {title, chapters} 与总结 chapters 同构, 前端直接渲染
 - ask_stream(transcript, summary, question) -> Iterator[str]: AI 问答增量
@@ -29,7 +29,7 @@ from . import config
 # 0.7~1 token/字, 安全余量取 15 万字符 (≈ 2h 视频转录), 超长截头部
 LLM_MAX_TRANSCRIPT_CHARS = 150_000
 
-# 总结输出模板 (LLM 输出 Markdown 文档, 后端解析回结构化 dict, ADR-0008).
+# 总结输出模板 (LLM 输出 Markdown 文档, 后端解析回结构化 dict).
 # 标题措辞与后端 _render_markdown / 前端 buildMarkdown 保持一致,
 # 变更需四处同步 (llm 模板 / 解析器 / 后端导出 / 前端渲染)
 SUMMARY_MD_TEMPLATE = """# 视频总结: {title}
@@ -85,7 +85,7 @@ def _chat_stream(messages: list[dict[str, str]]) -> Iterator[str]:
     """流式对话补全: 逐块 yield 文本增量 (失败抛 LLMError, 语义同 _chat).
 
     跳过无内容块 (usage 尾块 / delta 为空); finally 关闭底层 HTTP 流,
-    调用方中途放弃 (客户端断开) 时等效取消请求 (ADR-0007).
+    调用方中途放弃 (客户端断开) 时等效取消请求.
     """
     kwargs: dict[str, Any] = {
         "model": config.LLM_MODEL,
@@ -121,7 +121,7 @@ def _truncate_transcript(transcript: str) -> str:
 
 
 def summarize_stream(transcript: str, meta: dict[str, Any]) -> Iterator[str]:
-    """流式生成视频总结: yield Markdown 文档增量 (ADR-0008).
+    """流式生成视频总结: yield Markdown 文档增量.
 
     meta: {title, duration, site} 视频元信息, 注入总结上下文.
     消费方流结束后调 parse_summary_text 解析回结构化 dict
@@ -161,7 +161,7 @@ _CHAPTER_TS_RE = re.compile(
 
 
 def parse_summary_text(text: str) -> dict[str, Any]:
-    """解析 LLM 输出的 Markdown 总结文档 → 结构化 dict (ADR-0008).
+    """解析 LLM 输出的 Markdown 总结文档 → 结构化 dict.
 
     行级扫描: # 标题行 → title (剥离「视频总结:」前缀); ## 小节按关键词
     识别 (概述/章节时间线/核心要点/结论, 容忍 LLM 微调措辞); ### 在章节
@@ -282,7 +282,7 @@ def ask_stream(
 ) -> Iterator[str]:
     """流式回答: yield 文本增量 (上下文 = 转录 + 结构化总结, 单次塞入).
 
-    增量原样透传, 不逐块 strip (strip 会吞 chunk 边界空格, 丢字, ADR-0007);
+    增量原样透传, 不逐块 strip (strip 会吞 chunk 边界空格, 丢字);
     两端空白由消费端整体处理.
     """
     summary_text = json.dumps(summary, ensure_ascii=False, indent=2)

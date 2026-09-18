@@ -1,7 +1,7 @@
-"""权限类单元测试 (Issue 02).
+"""权限类单元测试.
 
 IsStaff 行为锁定: 管理员放行 / 普通用户拒绝 / 匿名拒绝.
-知识库管理等管理端接口 (Issue 09) 直接复用.
+知识库管理等管理端接口直接复用.
 """
 
 from django.contrib.auth import get_user_model

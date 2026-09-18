@@ -1,7 +1,7 @@
 <script setup lang="ts">
-// 闯关答题页 (Issue 05/08, PRD D-2~D-5): 答题 → 即时反馈 (讲解/来源) →
+// 闯关答题页: 答题 → 即时反馈 (讲解/来源) →
 // 答错扣心 (温和鼓励动画) → 通关结算 (XP/币/连胜/彩花) / 5 心扣完重开.
-// Issue 08 渐进生成: 题目未就绪时展示生成进度 (SSE), 失败可重试;
+// 渐进生成: 题目未就绪时展示生成进度 (SSE), 失败可重试;
 // 学当前关时后台预生成下一关 (进入关卡与通关时触发, 进入下一关零等待).
 // 断点续答: 每次进入/下一题都从后端拉取当前题 (current_index 定位),
 // 中途退出再进自动续答; 进度/剩余心持久化在后端 (charplot_level).
@@ -162,7 +162,7 @@ async function onSubmit(answer: number[] | string[]) {
     // 答对彩花小庆祝; 答错不触发 (温和鼓励, 非错误反馈)
     if (result.value.correct) confettiBurst.value += 1
     phase.value = 'feedback'
-    // 答题即改动游戏化状态 (XP/心/连胜), 同步导航徽章 (PRD A-2 实时同步)
+    // 答题即改动游戏化状态 (XP/心/连胜), 同步导航徽章 (实时同步)
     refreshProfile().catch(() => {})
   } catch (e) {
     ElMessage.error(e instanceof ApiError ? e.message : '提交失败, 请稍后重试')
@@ -201,7 +201,7 @@ async function onRestart() {
   }
 }
 
-/** 题目反馈 (Issue 14): 落库 + 已反馈提示; 重复标记由后端幂等去重. */
+/** 题目反馈: 落库 + 已反馈提示; 重复标记由后端幂等去重. */
 async function onFlag(reason: FlagReason | '') {
   const question = detail.value?.question
   if (!question) return
@@ -248,7 +248,7 @@ onUnmounted(() => closeSse?.())
       <el-skeleton :rows="4" animated />
     </section>
 
-    <!-- 题目生成中 (Issue 08 渐进生成): SSE 进度, 完成后自动进入答题 -->
+    <!-- 题目生成中 (渐进生成): SSE 进度, 完成后自动进入答题 -->
     <section v-else-if="detail && phase === 'generating'" class="panel gen-card">
       <p class="gen-emoji" aria-hidden="true">✨</p>
       <h2 class="gen-title">正在生成题目</h2>
@@ -268,7 +268,7 @@ onUnmounted(() => closeSse?.())
       </el-button>
     </section>
 
-    <!-- 未解锁 (前置章节 Boss 未通关, G-5) -->
+    <!-- 未解锁 (前置章节 Boss 未通关) -->
     <section v-else-if="detail && phase === 'locked'" class="panel gen-card">
       <p class="gen-emoji" aria-hidden="true">🔒</p>
       <h2 class="gen-title">关卡尚未解锁</h2>
@@ -291,7 +291,7 @@ onUnmounted(() => closeSse?.())
         @flag="onFlag"
       />
 
-      <!-- 即时反馈区 (答对答错均展示讲解 + 来源引用, PRD D-4) -->
+      <!-- 即时反馈区 (答对答错均展示讲解 + 来源引用) -->
       <div v-if="phase === 'feedback' && result" class="feedback" :class="result.correct ? 'is-right' : 'is-wrong'">
         <div class="feedback-emoji" aria-hidden="true">
           {{ result.correct ? '🎉' : '🌱' }}
@@ -301,7 +301,7 @@ onUnmounted(() => closeSse?.())
         </h3>
         <p class="feedback-explanation">{{ result.explanation || '暂无讲解' }}</p>
 
-        <!-- 来源引用位: 真实知识源 (Issue 08) 填充前显示占位 -->
+        <!-- 来源引用位: 真实知识源填充前显示占位 -->
         <div v-if="sources.length" class="sources">
           <span class="sources-label">来源:</span>
           <a
@@ -351,7 +351,7 @@ onUnmounted(() => closeSse?.())
       </el-button>
     </section>
 
-    <!-- 通关结算 (PRD D-5): 彩花 + XP/币/连胜 -->
+    <!-- 通关结算: 彩花 + XP/币/连胜 -->
     <section v-else-if="detail && phase === 'cleared'" class="panel settle-card">
       <p class="settle-emoji" aria-hidden="true">🎊</p>
       <h2 class="settle-title">关卡通关!</h2>
@@ -543,7 +543,7 @@ onUnmounted(() => closeSse?.())
   width: 100%;
 }
 
-/* ---- 生成中 / 生成失败 / 锁定 (Issue 08) ---- */
+/* ---- 生成中 / 生成失败 / 锁定 ---- */
 .gen-card {
   margin-top: 8px;
 }

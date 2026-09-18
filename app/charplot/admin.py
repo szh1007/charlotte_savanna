@@ -49,7 +49,7 @@ class CharplotUserEventAdmin(admin.ModelAdmin):
 
 @admin.register(CharplotJourney)
 class CharplotJourneyAdmin(admin.ModelAdmin):
-    """学习旅程后台管理 (Issue 03, 便于人工验证图谱落库)."""
+    """学习旅程后台管理 (便于人工验证图谱落库)."""
 
     list_display = (
         "id",
@@ -86,7 +86,7 @@ class CharplotKnowledgePointAdmin(admin.ModelAdmin):
 
 @admin.register(CharplotLevel)
 class CharplotLevelAdmin(admin.ModelAdmin):
-    """关卡后台管理 (Issue 05): 进度 / 剩余心 / 通关状态, 便于人工验证."""
+    """关卡后台管理: 进度 / 剩余心 / 通关状态, 便于人工验证."""
 
     list_display = (
         "id",
@@ -107,7 +107,7 @@ class CharplotLevelAdmin(admin.ModelAdmin):
 class CharplotQuestionAdmin(admin.ModelAdmin):
     """题目后台管理.
 
-    flag_count (Issue 14): 反馈标记数, 内容质量信号 (幻觉防护第三层),
+    flag_count: 反馈标记数, 内容质量信号 (幻觉防护第三层),
     高标记数题目是待核对候选; annotate 聚合避免 N+1.
     """
 
@@ -126,7 +126,7 @@ class CharplotQuestionAdmin(admin.ModelAdmin):
 
 @admin.register(CharplotQuestionFlag)
 class CharplotQuestionFlagAdmin(admin.ModelAdmin):
-    """题目反馈标记后台管理 (Issue 14): 列表 + 原因过滤 + 用户/内容搜索.
+    """题目反馈标记后台管理: 列表 + 原因过滤 + 用户/内容搜索.
 
     同一用户对同一题唯一 (unique_together), 列表即全量质量信号;
     created_at 按标记时间倒序, 最新反馈优先核对.
@@ -141,7 +141,7 @@ class CharplotQuestionFlagAdmin(admin.ModelAdmin):
 
 @admin.register(CharplotAttempt)
 class CharplotAttemptAdmin(admin.ModelAdmin):
-    """答题记录后台管理 (Issue 05, 统计事实源)."""
+    """答题记录后台管理 (统计事实源)."""
 
     list_display = ("id", "user", "level", "question", "is_correct", "created_at")
     list_filter = ("is_correct",)
@@ -159,7 +159,7 @@ class CharplotAttemptAdmin(admin.ModelAdmin):
 
 @admin.register(CharplotKnowledgeBase)
 class CharplotKnowledgeBaseAdmin(admin.ModelAdmin):
-    """知识库后台管理 (Issue 09, 便于人工验证状态机与 collection 配置)."""
+    """知识库后台管理 (便于人工验证状态机与 collection 配置)."""
 
     list_display = (
         "id",
@@ -176,7 +176,7 @@ class CharplotKnowledgeBaseAdmin(admin.ModelAdmin):
 
 @admin.register(CharplotKnowledgeBaseDocument)
 class CharplotKnowledgeBaseDocumentAdmin(admin.ModelAdmin):
-    """知识库文档后台管理 (Issue 09): 软删标记便于人工验证恢复."""
+    """知识库文档后台管理: 软删标记便于人工验证恢复."""
 
     list_display = (
         "id",

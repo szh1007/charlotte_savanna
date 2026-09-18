@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// 登录页 (Issue 02): 居中白卡 + 渐变主按钮, 成功后跳转 redirect.
+// 登录页: 居中白卡 + 渐变主按钮, 成功后跳转 redirect.
 import { reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'

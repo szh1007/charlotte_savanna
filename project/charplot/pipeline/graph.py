@@ -1,8 +1,8 @@
-"""LangGraph StateGraph 编排 (Issue 07).
+"""LangGraph StateGraph 编排.
 
 四阶段串行编排: parse → analyze → search → deconstruct → END.
 每个节点开头通过 emit 回调上报阶段事件 (阶段名/进度/消息, 与
-Issue 03 SSE 契约一致, 每阶段恰好一次事件).
+SSE 契约一致, 每阶段恰好一次事件).
 
 节点失败向上抛异常 → 任务系统 (tasks.py) 转 error 事件 + 失败标记,
 前端可重新 POST /ai/pipeline 重试 (幂等落库).
@@ -74,7 +74,7 @@ def build_graph(emit):
 
 
 async def run_pipeline(inp, emit) -> dict:
-    """执行知识管道, 返回契约图谱 dict (CONTRACT.md §1, Issue 03 签名不变).
+    """执行知识管道, 返回契约图谱 dict (签名不变).
 
     emit(stage, progress, message) async 回调上报进度 (任务系统写 Redis + SSE);
     每个阶段真实执行对应工作, 不再有 stub 模拟延迟.

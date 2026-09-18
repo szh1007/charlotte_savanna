@@ -1,4 +1,4 @@
-"""闯关题目生成 (Issue 08): LLM 生成 + pydantic 校验 + 重试带错误反馈.
+"""闯关题目生成: LLM 生成 + pydantic 校验 + 重试带错误反馈.
 
 输入为 Django 内部端点提供的出题素材 (build_level_generation_input):
 知识点标题/概述/前置依赖 + 章节信息 + 目标题数/难度. LLM 只生成新题

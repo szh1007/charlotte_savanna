@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// 注册页 (Issue 02): 注册成功后跳登录页提示 (注册不自动登录, 对齐 minimall).
+// 注册页: 注册成功后跳登录页提示 (注册不自动登录, 对齐 minimall).
 import { reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'

@@ -1,4 +1,4 @@
-"""SSE 事件总线: 后台线程 → asyncio 循环的线程安全广播 (T03).
+"""SSE 事件总线: 后台线程 → asyncio 循环的线程安全广播.
 
 任务状态更新发生在后台调度线程, SSE 订阅者位于 asyncio 事件循环.
 EventBus.publish 把事件经目标 loop 的 call_soon_threadsafe 投递到订阅队列,
@@ -68,7 +68,7 @@ class EventBus:
         self._deliver(subs, event)
 
     def publish_all(self, event: dict) -> None:
-        """广播给全部订阅者 (不受 task_id 过滤影响, ADR-0006 model-update).
+        """广播给全部订阅者 (不受 task_id 过滤影响, model-update).
 
         模型进度是全局资产状态, 订阅者即使只关注指定任务也应收到的
         模型进度事件走此通道; 其余语义同 publish.
@@ -139,7 +139,7 @@ def task_event(task: Task) -> dict:
 
 
 def model_update_event(status: str, progress: float) -> dict:
-    """模型状态 → SSE 事件负载 (ADR-0006): event 名标记 + 状态 + 进度."""
+    """模型状态 → SSE 事件负载: event 名标记 + 状态 + 进度."""
     return {"event": "model-update", "status": status, "progress": progress}
 
 

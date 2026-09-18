@@ -2,8 +2,8 @@
 import { onMounted, ref } from 'vue'
 import { fetchSites } from '../api/client.js'
 
-// 平台墙 (T09): 彩色卡片网格 (icon + 名称 + 支持格式)
-// 数据来自平台接口 /api/sites; 范围收缩后 (ADR-0004) 仅展示哔哩哔哩,
+// 平台墙: 彩色卡片网格 (icon + 名称 + 支持格式)
+// 数据来自平台接口 /api/sites; 范围收缩后仅展示哔哩哔哩,
 // 其他平台为预留扩展点
 const sites = ref([])
 const loadError = ref('')

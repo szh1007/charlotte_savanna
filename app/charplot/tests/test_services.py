@@ -1,4 +1,4 @@
-"""服务层单元测试 (Issue 02).
+"""服务层单元测试.
 
 连胜冻结 / 中断警告 / 事件记录 / 统计, 均通过 today 参数注入日期, 不 mock 时钟.
 """
@@ -69,7 +69,7 @@ class StreakLossWarningTests(TestCase):
 
 
 class StreakSettleOnLoginTests(TestCase):
-    """登录时惰性归零判定 (Issue 02 补充)."""
+    """登录时惰性归零判定."""
 
     def setUp(self):
         user = User.objects.create_user(
@@ -82,7 +82,7 @@ class StreakSettleOnLoginTests(TestCase):
         self.assertEqual(self.profile.streak, 5)
 
     def test_skip_when_studied_today(self):
-        # 今天已学习, 学习结算已处理 (last_study_date 由 Issue 05 更新)
+        # 今天已学习, 学习结算已处理 (last_study_date 由学习结算推进)
         self.profile.last_study_date = TODAY
         self.profile.save(update_fields=["last_study_date"])
         settle_streak_on_login(self.profile, today=TODAY)

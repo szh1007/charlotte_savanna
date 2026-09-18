@@ -152,7 +152,7 @@ def test_delete_queued_task_cancels(
 
 def test_delete_failed_task_clears_record(client: TestClient, fake_extract) -> None:
     """验收: 失败任务清除 → 204, 任务移除 (无交付文件, 直接移除)."""
-    # 免费用户选锁定档位: 创建被拒 (400), 但任务已落库 failed (T05)
+    # 免费用户选锁定档位: 创建被拒 (400), 但任务已落库 failed
     resp = client.post(
         "/api/downloads", json={"url": VIDEO_URL, "format_id": FORMAT_1080P}
     )

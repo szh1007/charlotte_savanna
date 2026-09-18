@@ -1,4 +1,4 @@
-"""CharPlot FastAPI 侧环境配置集中读取 (Issue 03, 07).
+"""CharPlot FastAPI 侧环境配置集中读取.
 
 .env 加载在此模块顶部完成 (首个被 import 的配置模块), 保证 config 的
 模块级读取 (INTERNAL_TOKEN / DJANGO_API_BASE / LLM / 检索源配置) 拿到真实值.
@@ -22,7 +22,7 @@ DJANGO_API_BASE = os.environ.get(
     "CHARPLOT_DJANGO_BASE_URL", "http://127.0.0.1:8000"
 ).rstrip("/")
 
-# ---- LLM 与检索源 (Issue 07 真实管道, 全部 CHARPLOT_ 前缀) ----
+# ---- LLM 与检索源 (真实管道, 全部 CHARPLOT_ 前缀) ----
 # DeepSeek 模型名 (init_chat_model 格式: deepseek:xxx), 未配置时管道不可用
 LLM_MODEL = os.environ.get("CHARPLOT_DEEPSEEK_MODEL_NAME", "")
 # DeepSeek API key / base (显式传给 ChatDeepSeek, 不依赖库级 DEEPSEEK_* 读取)
@@ -41,7 +41,7 @@ LINK_FETCH_TIMEOUT = float(os.environ.get("CHARPLOT_LINK_FETCH_TIMEOUT", "10"))
 # LLM 分析/解构失败重试次数 (每次重试带上次错误反馈给模型修正)
 LLM_RETRIES = int(os.environ.get("CHARPLOT_LLM_RETRIES", "1"))
 
-# ---- RAG 全链路 (Issue 10, rag/ 模块) ----
+# ---- RAG 全链路 (rag/ 模块) ----
 # modelscope 本地模型根目录 (modelscope 下载平铺结构: {root}/models/{org}/{name}).
 # 模型加载前经 resolve_local_model_path 解析到本地目录, 本地缺失时报错
 # (embedding) / 降级 (rerank), 杜绝库静默从 HF 重新下载 (bge-m3 约 2GB)

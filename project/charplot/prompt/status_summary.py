@@ -1,4 +1,4 @@
-"""LLM 状态总结 prompt (Issue 13, DESIGN.md §7 步骤 13).
+"""LLM 状态总结 prompt.
 
 基于 Dashboard 聚合事实 (掌握度 / 活动统计 / 易错清单) 生成文字版状态
 报告: 强项 / 弱项 / 学习建议三部分. 输出为受限 markdown (固定三个 ## 标题

@@ -32,7 +32,7 @@ urlpatterns = [
     path("minimall/", include("app.minimall.urls_html")),
     path("api/minimall/", include("app.minimall.urls_api")),
     path("api/charplot/", include("app.charplot.urls_api")),
-    # CharPlot 公开分享页 (Issue 06): /r/{slug}, 未登录可访问
+    # CharPlot 公开分享页: /r/{slug}, 未登录可访问
     path("", include("app.charplot.urls_html")),
 ]
 

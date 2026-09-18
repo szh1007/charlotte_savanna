@@ -1,4 +1,4 @@
-"""知识库管理链路测试 (Issue 09, PRD C-1~C-4).
+"""知识库管理链路测试.
 
 覆盖: 服务层 (格式校验/创建/批量事务/claim 状态机矩阵/下线上下线) +
 API 权限矩阵 (仅 is_staff 可管理) + 文档软删恢复 + 内部端点三连
@@ -159,7 +159,7 @@ class ClaimKbIndexTests(TestCase):
         self.assertEqual(self.kb.error_message, "")  # 重试清空失败原因
 
     def test_ready_claimed_full_rebuild(self):
-        # 全量重建 (Q18b): ready 也可重新索引
+        # 全量重建: ready 也可重新索引
         self.kb.status = CharplotKnowledgeBase.Status.READY
         self.kb.save()
         claimed, _ = self.claim(self.kb)
@@ -502,7 +502,7 @@ class TopicsTests(TestCase):
         make_kb(name="下线库", status=CharplotKnowledgeBase.Status.OFFLINE)
         make_kb(name="索引中", status=CharplotKnowledgeBase.Status.INDEXING)
 
-        # 未登录可访问 (PRD A-1: 游客可浏览主题列表)
+        # 未登录可访问 (游客可浏览主题列表)
         resp = self.client.get(TOPICS_URL)
         self.assertEqual(resp.status_code, 200)
         topics = resp.json()["topics"]
@@ -517,7 +517,7 @@ class TopicsTests(TestCase):
 
 
 # ---------------------------------------------------------------------------
-# E. Issue 10 内部端点 (文档内容 / 软删清单, CONTRACT.md §6.6)
+# E. 内部端点 (文档内容 / 软删清单)
 # ---------------------------------------------------------------------------
 
 
@@ -562,7 +562,7 @@ class KbDocumentContentEndpointTests(TestCase):
 
 @override_settings(CHARPLOT_INTERNAL_TOKEN=INTERNAL_TOKEN)
 class KbDeletedDocIdsEndpointTests(TestCase):
-    """GET /kb/{id}/deleted-doc-ids/: 检索软删过滤 (立即生效, Q18c)."""
+    """GET /kb/{id}/deleted-doc-ids/: 检索软删过滤 (立即生效)."""
 
     def setUp(self):
         self.client = APIClient()

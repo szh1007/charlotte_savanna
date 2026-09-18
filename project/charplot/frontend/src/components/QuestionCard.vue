@@ -1,8 +1,8 @@
 <script setup lang="ts">
-// 题目卡 (Issue 05, PRD D-3): 选择 / 判断 / 填空三种题型交互.
+// 题目卡: 选择 / 判断 / 填空三种题型交互.
 // 选择 = 选项按钮 (单选), 判断 = 对/错大按钮, 填空 = 输入框 + 提交.
 // 提交后禁用 (反馈态由 QuizView 接管), 选项在答错后标出正确答案帮助学习.
-// Issue 14: 底部低调「题目有问题?」反馈入口 (可选原因, 去重后展示已反馈态).
+// 底部低调「题目有问题?」反馈入口 (可选原因, 去重后展示已反馈态).
 import { computed, ref, watch } from 'vue'
 import type { FlagReason, Question } from '@/api/client'
 
@@ -60,7 +60,7 @@ function optionClass(index: number) {
   }
 }
 
-// ---- 题目反馈 (Issue 14): 入口低调, 原因可选, 去重后展示已反馈态 ----
+// ---- 题目反馈: 入口低调, 原因可选, 去重后展示已反馈态 ----
 
 /** 可选原因 (与后端 choices 一致), 不选 = 仅标记无原因. */
 const FLAG_REASONS: { value: FlagReason; label: string }[] = [
@@ -172,7 +172,7 @@ defineExpose({ markFlagged })
       提交答案
     </el-button>
 
-    <!-- 题目反馈 (Issue 14): 低调入口, 答前答后均可反馈 (讲解有误也是反馈点) -->
+    <!-- 题目反馈: 低调入口, 答前答后均可反馈 (讲解有误也是反馈点) -->
     <div class="q-flag">
       <button
         class="q-flag-toggle"
@@ -360,7 +360,7 @@ defineExpose({ markFlagged })
   width: 100%;
 }
 
-/* ---- 题目反馈 (Issue 14): 低调入口, 不打扰答题氛围 ---- */
+/* ---- 题目反馈: 低调入口, 不打扰答题氛围 ---- */
 .q-flag {
   margin-top: 14px;
   text-align: center;

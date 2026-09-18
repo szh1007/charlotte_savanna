@@ -1,6 +1,6 @@
-"""CharPlot FastAPI 侧请求/响应 Schemas (Issue 03).
+"""CharPlot FastAPI 侧请求/响应 Schemas.
 
-对齐 DESIGN.md §4.2 契约: /ai/pipeline 与 /ai/tasks/{id} 载荷.
+对齐契约: /ai/pipeline 与 /ai/tasks/{id} 载荷.
 """
 
 from typing import Literal
@@ -12,7 +12,7 @@ TaskStatus = Literal["running", "done", "error"]
 
 
 class PipelineRequest(BaseModel):
-    """启动知识管道 (DESIGN §4.2): text/link 必带 content, file 可空, kb 必带 kb_id."""
+    """启动知识管道: text/link 必带 content, file 可空, kb 必带 kb_id."""
 
     journey_id: int
     input_type: InputType
@@ -36,7 +36,7 @@ class PipelineResponse(BaseModel):
 
 
 class LevelGenerateRequest(BaseModel):
-    """渐进出题 (DESIGN §4.2): 按关卡序号触发生成任务."""
+    """渐进出题: 按关卡序号触发生成任务."""
 
     journey_id: int
     level_seq: int
@@ -49,7 +49,7 @@ class LevelGenerateResponse(BaseModel):
 
 
 class KbIndexRequest(BaseModel):
-    """知识库索引任务 (DESIGN §4.2 POST /ai/kb/index): 全量重建."""
+    """知识库索引任务 (POST /ai/kb/index): 全量重建."""
 
     kb_id: int
 
@@ -61,7 +61,7 @@ class KbIndexResponse(BaseModel):
 
 
 class KbSearchRequest(BaseModel):
-    """混合检索 (DESIGN §4.2 POST /ai/kb/search, QA.md Q7): 片段检索.
+    """混合检索 (POST /ai/kb/search): 片段检索.
 
     top_k 可选 (默认精排后 Top 5); kb 未就绪/软删文档自动过滤.
     """
@@ -89,7 +89,7 @@ class KbSearchResponse(BaseModel):
 
 
 class TaskStatusOut(BaseModel):
-    """任务状态 (DESIGN §4.2): {status, stage, progress, error_message?}.
+    """任务状态: {status, stage, progress, error_message?}.
 
     task_type 标记任务类型 (pipeline / level-generation), 前端状态展示用.
     """
@@ -103,7 +103,7 @@ class TaskStatusOut(BaseModel):
 
 
 class PipelineEvent(BaseModel):
-    """SSE 事件载荷 (DESIGN §4.2): {task_id, stage, progress, message}."""
+    """SSE 事件载荷: {task_id, stage, progress, message}."""
 
     task_id: str
     stage: str
@@ -112,7 +112,7 @@ class PipelineEvent(BaseModel):
 
 
 class StatusSummaryRequest(BaseModel):
-    """LLM 状态总结请求 (Issue 13, DESIGN.md §4.2): {user_id} → {summary}.
+    """LLM 状态总结请求: {user_id} → {summary}.
 
     user_id 定位聚合数据的用户 (FastAPI 经内部端点取, 单机个人项目
     前端直调, 与现有 /ai/* 接口同认证模型).

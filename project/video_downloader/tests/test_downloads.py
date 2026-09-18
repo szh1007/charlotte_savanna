@@ -1,4 +1,4 @@
-"""T02 下载 + 交付直链链路验收测试 (HTTP seam, 引擎 mock)."""
+"""下载 + 交付直链链路验收测试 (HTTP seam, 引擎 mock)."""
 
 import time
 
@@ -63,7 +63,7 @@ def test_create_download_resolve_failure_returns_400(
 def test_create_download_rejects_non_bilibili_domain_422(
     client: TestClient,
 ) -> None:
-    """创建下载时非哔哩哔哩域名: 前置域名白名单拒绝 (422), 不触达引擎 (ADR-0004)."""
+    """创建下载时非哔哩哔哩域名: 前置域名白名单拒绝 (422), 不触达引擎."""
     resp = client.post(
         "/api/downloads",
         json={"url": "https://www.youtube.com/watch?v=test", "format_id": "18"},
@@ -262,7 +262,7 @@ def test_tasks_desc_order_and_progress(
 def test_task_detail_returns_task(
     client: TestClient, fake_extract, fake_download
 ) -> None:
-    """单任务详情: 200 返回完整任务, 不存在的任务 404 (契约 PRD §8)."""
+    """单任务详情: 200 返回完整任务, 不存在的任务 404 (契约)."""
     task_id = create_download(client, "https://www.bilibili.com/video/av12", "22")
     assert wait_until(lambda: find_task(client, task_id)["status"] == STATUS_COMPLETED)
 

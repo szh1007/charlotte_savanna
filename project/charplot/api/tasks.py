@@ -1,18 +1,18 @@
-"""CharPlot 任务系统 (Issue 03/08, CONTEXT Q14): FastAPI 异步任务 + Redis 状态 + SSE.
+"""CharPlot 任务系统: FastAPI 异步任务 + Redis 状态 + SSE.
 
 Redis 数据结构 (db 0, charplot:task: 前缀):
   charplot:task:{task_id}             HASH  {status, stage, progress, task_type, ...}
   charplot:task:{task_id}:events      LIST  事件 JSON 串, 下标即事件序号 (SSE id 帧)
-两个 key 均 EXPIRE 24h (任务持久化明确不做, DESIGN.md §8).
+两个 key 均 EXPIRE 24h (任务持久化明确不做).
 
-任务类型 (task_type): pipeline = 知识管道 (Issue 03); level-generation =
-渐进出题 (Issue 08, DESIGN §4.2). 出题任务 stages: preparing → generating
-→ saving → done/error, SSE 事件名统一 pipeline-progress (DESIGN §4.2 先例:
+任务类型 (task_type): pipeline = 知识管道; level-generation =
+渐进出题. 出题任务 stages: preparing → generating
+→ saving → done/error, SSE 事件名统一 pipeline-progress (先例:
 不同任务类型不同 stage 列表, 同一事件名).
 
 SSE 恢复: 客户端断线重连带 Last-Event-ID (= 最后收到的序号), 服务端从
 LIST 增量续推, 不丢事件; 服务重启丢内存任务 → GET events 404 → 前端兜底
-「重新生成」(CONTRACT.md §2).
+「重新生成」.
 """
 
 import asyncio
@@ -90,7 +90,7 @@ async def _init_task(
 ) -> None:
     """初始化任务 hash (hset + EXPIRE), 内存 registry 由调用方注册执行体.
 
-    Issue 09: entity_type 泛化 (journey / kb), hash 增写 entity_id/entity_type
+    entity_type 泛化 (journey / kb), hash 增写 entity_id/entity_type
     两键; 旧键 journey_id 保留 (get_task 与测试不读该键, 向后兼容).
     """
     redis = get_redis()
@@ -121,7 +121,7 @@ async def create_task(
 ) -> str:
     """初始化管道任务 hash 并后台执行, 返回 task_id.
 
-    Issue 11: kb 类型旅程透传 kb_id (管道解析输入, 两轮解构检索源).
+    kb 类型旅程透传 kb_id (管道解析输入, 两轮解构检索源).
     """
     task_id = uuid.uuid4().hex
     await _init_task(task_id, journey_id, TASK_TYPE_PIPELINE, "parsing")
@@ -132,7 +132,7 @@ async def create_task(
 
 
 async def create_level_generation_task(journey_id: int, level_seq: int) -> str:
-    """初始化出题任务 hash 并后台执行 (DESIGN §4.2 /ai/levels/generate)."""
+    """初始化出题任务 hash 并后台执行 (/ai/levels/generate)."""
     task_id = uuid.uuid4().hex
     await _init_task(task_id, journey_id, TASK_TYPE_LEVEL_GENERATION, "preparing")
     _tasks_registry[task_id] = asyncio.create_task(
@@ -142,10 +142,10 @@ async def create_level_generation_task(journey_id: int, level_seq: int) -> str:
 
 
 async def create_kb_index_task(kb_id: int) -> str:
-    """初始化知识库索引任务 hash 并后台执行 (DESIGN §4.2 /ai/kb/index).
+    """初始化知识库索引任务 hash 并后台执行 (/ai/kb/index).
 
     task_type=kb-index, 阶段 parsing → chunking → embedding → indexing
-    → done/error (CONTRACT.md §6.5); 幂等/拒绝理由由 Django 侧 claim 保证.
+    → done/error; 幂等/拒绝理由由 Django 侧 claim 保证.
     """
     task_id = uuid.uuid4().hex
     await _init_task(task_id, kb_id, TASK_TYPE_KB_INDEX, "parsing", entity_type="kb")
@@ -230,7 +230,7 @@ async def _run_task(
 async def _run_level_generation_task(
     task_id: str, journey_id: int, level_seq: int
 ) -> None:
-    """出题任务执行体 (Issue 08): 抢占 → LLM 生成 → 落库 → done.
+    """出题任务执行体: 抢占 → LLM 生成 → 落库 → done.
 
     抢占未成功 (关卡已就绪/已有任务在跑) → 直接 done, 幂等由 Django 侧
     claim 保证; 生成失败 → error + mark_level_generation_failed (best-effort),
@@ -268,15 +268,15 @@ async def _run_level_generation_task(
 
 
 async def _run_kb_index_task(task_id: str, kb_id: int) -> None:
-    """索引任务执行体 (Issue 10, 真实索引): 抢占 → per-doc 解析/切分/向量化
+    """索引任务执行体 (真实索引): 抢占 → per-doc 解析/切分/向量化
     → Milvus 全量重建入库 → 落库 → done.
 
-    全链路 (SPEC §7.2): 文档二进制经 Django 内部端点获取 (CONTRACT §6.6),
+    全链路: 文档二进制经 Django 内部端点获取,
     解析复用 pipeline.parsers (pdf/docx/pptx/md/txt/html) → 按类型调优
     切分 (rag.chunking) → embedding 抽象 (rag.embeddings, 可切换) →
     Milvus drop+create 全量重建 (rag.milvus.ensure_collection, 软删物理
     剔除) + 批量入库. 每文档两阶段事件 (chunking/embedding) 提供真实
-    进度 (契约阶段序列不变, CONTRACT §6.5).
+    进度 (契约阶段序列不变).
 
     抢占未成功 (索引中/下线/无文档) → 直接 done, 幂等由 Django 侧 claim
     保证; 任一文档失败 (取内容/解析/向量化) → error + mark_kb_index_failed

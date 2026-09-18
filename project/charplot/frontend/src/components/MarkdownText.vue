@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// 轻量 markdown 渲染器 (Issue 13): 零依赖, 白名单语法.
+// 轻量 markdown 渲染器: 零依赖, 白名单语法.
 // 支持 LLM 状态总结的受控输出 (prompt 约束): ## / ### 标题, **粗体**,
 // - 无序列表, 1. 有序列表, 段落. 先全量 HTML 转义再替换语法标记, 杜绝
 // XSS (LLM 输出作为 HTML 注入 v-html 前的唯一安全边界).

@@ -1,4 +1,4 @@
-"""T01 POST /api/resolve 解析链路验收测试."""
+"""POST /api/resolve 解析链路验收测试."""
 
 from backend import task_manager as tm
 from backend.task_manager import STATUS_FAILED, STATUS_RESOLVED, STATUS_RESOLVING
@@ -30,7 +30,7 @@ def test_resolve_valid_link_returns_metadata(
         "720p MP4",
         "1080p WEBM",
     ]
-    # 免费用户: >720p 档位标记 locked, member_limited 为 True (T05)
+    # 免费用户: >720p 档位标记 locked, member_limited 为 True
     assert formats[0] == {
         "format_id": "18",
         "height": 360,
@@ -70,7 +70,7 @@ def test_resolve_invalid_url_returns_422(client: TestClient) -> None:
 
 
 def test_resolve_rejects_non_bilibili_domain_422(client: TestClient) -> None:
-    """非哔哩哔哩域名: 前置域名白名单直接拒绝 (422), 不触达引擎 (ADR-0004)."""
+    """非哔哩哔哩域名: 前置域名白名单直接拒绝 (422), 不触达引擎."""
     resp = client.post("/api/resolve", json={"url": "https://example.com/v"})
     assert resp.status_code == 422
     assert "仅支持哔哩哔哩" in resp.json()["detail"]

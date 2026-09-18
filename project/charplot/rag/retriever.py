@@ -1,10 +1,10 @@
-"""检索门面 (Issue 10, QA.md Q7) - 对外统一入口 {kb_id, query} → {chunks[]}.
+"""检索门面 - 对外统一入口 {kb_id, query} → {chunks[]}.
 
 全链路: query rewriting (LLM 改写, 失败降级) → 混合检索 (稠密+稀疏,
 filter 软删排除) → rerank (必配, 精排取 Top-K) → chunks 输出.
 
-软删立即生效 (Q18c): 检索时实时向 Django 查询软删 doc_id 集合, 构造
-filter expr 排除 (CONTRACT §6.6); Django 不可达 → 抛 RuntimeError
+软删立即生效: 检索时实时向 Django 查询软删 doc_id 集合, 构造
+filter expr 排除; Django 不可达 → 抛 RuntimeError
 (接口层转 503, 不静默返回脏数据).
 
 对外形态: search_kb(kb_id, query, top_k) 返回统一 dict 列表 (与

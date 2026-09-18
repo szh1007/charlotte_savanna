@@ -1,9 +1,9 @@
-"""Milvus 索引与混合检索 (Issue 10, SPEC §7.2).
+"""Milvus 索引与混合检索.
 
-collection 生命周期 (全量重建策略, Q18b): ensure_collection 每次 drop +
+collection 生命周期 (全量重建): ensure_collection 每次 drop +
 create (物理剔除软删文档, collection 名沿用 Django 侧 cp_kb_{id}).
 schema 含软删有效标记 (valid, 索引时恒 True) 与来源 metadata
-(doc_id/title/filename/chunk_index), 检索 filter 排除软删 (CONTRACT §6.6).
+(doc_id/title/filename/chunk_index), 检索 filter 排除软删.
 
 混合检索: 稠密 (dense_vector, IP) + 稀疏 (sparse_vector, SPARSE 倒排,
 BM25 语义) 双 AnnSearchRequest + WeightedRanker 加权融合 (参考
@@ -82,7 +82,7 @@ def _build_index_params(client) -> object:
 
 
 def ensure_collection(collection_name: str, dim: int | None = None) -> None:
-    """全量重建: drop 旧 collection + create + 双索引 (Q18b 物理剔除).
+    """全量重建: drop 旧 collection + create + 双索引 (物理剔除).
 
     dim 默认 config.EMBEDDING_DIM (bge-m3 1024 维); 若已存在同名
     collection 则丢弃重建 (任何变更触发全量重建, 数据一致).

@@ -1,6 +1,6 @@
 <script setup lang="ts">
-// 关卡入口页 (Issue 05/08): 旅程关卡列表 (首次访问后端懒生成关卡骨架).
-// Issue 08 渐进生成: 进入页面时对 frontier (第一个未通关关) 及其下一关触发
+// 关卡入口页: 旅程关卡列表 (首次访问后端懒生成关卡骨架).
+// 渐进生成: 进入页面时对 frontier (第一个未通关关) 及其下一关触发
 // 出题生成 (预生成), 生成中订阅 SSE 进度, 失败可重试; Boss 关与解锁状态
 // 在卡片上标记. 地图页点击知识点节点时带 query.kp 过滤到该知识点关卡.
 import { computed, onMounted, onUnmounted, ref } from 'vue'
@@ -312,7 +312,7 @@ onUnmounted(() => {
   box-shadow: 0 8px 20px rgba(52, 201, 142, 0.08);
 }
 
-/* Boss 关: 高难度标记 (G-5), 弱强调边框 */
+/* Boss 关: 高难度标记, 弱强调边框 */
 .level-card.is-boss {
   border: 1.5px solid rgba(251, 114, 153, 0.28);
 }

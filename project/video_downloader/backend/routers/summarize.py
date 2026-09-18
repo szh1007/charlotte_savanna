@@ -1,16 +1,16 @@
-"""AI 总结路由 (ADR-0005/0006): 创建总结任务 / 结果查询 / 转录 / 问答 / 导出.
+"""AI 总结路由: 创建总结任务 / 结果查询 / 转录 / 问答 / 导出.
 
 契约:
 - POST /api/summarize {url} → {task_id, status}; 同 url 活跃任务幂等返回;
   免费超每日配额 429
 - GET  /api/tasks/{id}/summary → 结构化总结 (章节时间线 + 要点)
-- GET  /api/tasks/{id}/summary/stream → 总结生成过程流式输出 (SSE, ADR-0007:
+- GET  /api/tasks/{id}/summary/stream → 总结生成过程流式输出 (SSE:
   snapshot 首帧累积全文 / delta 增量 / done / error, 空闲 15s heartbeat)
 - GET  /api/tasks/{id}/transcript/stream → 字幕重排过程流式输出 (SSE, 帧协议
   同总结流: 精修增量实时可见, done 后前端拉取完整结果)
 - GET  /api/tasks/{id}/transcript → 带时间戳转录文本 (转录子任务完成即可访问)
 - GET  /api/tasks/{id}/mindmap → 思维导图结构 (独立 LLM 生成)
-- POST /api/tasks/{id}/qa {question} → SSE 流式回答 (ADR-0007: delta 增量 →
+- POST /api/tasks/{id}/qa {question} → SSE 流式回答 (delta 增量 →
   done 收尾 / error 收尾); 免费超每日配额 429 (流开始前以 HTTP 状态返回)
 - POST /api/tasks/{id}/retry {subtask} → 重试失败/阻塞的子任务 (不扣配额)
 - GET  /api/tasks/{id}/export?format=md|txt|srt|vtt → 总结/转录导出
@@ -18,11 +18,11 @@
 四子任务独立运行: transcript → summary (依赖转录) → mindmap (依赖总结,
 导图用总结后的数据生成) / qa (依赖转录+总结, 总结完成后就绪交互问答).
 各接口按子任务完成态判定可用性 (转录先完成即可先查看), 不再等整个任务
-completed (ADR-0005).
+completed.
 
 免费配额按匿名 client_id (X-Client-Id header, 前端 localStorage 持久化)
-计数, 会员 (有效 X-Member-Token) 不限 (ADR-0005). 流式配额语义: 调用前
-check (429 提前返回), 完整输出 done 帧后才 use (失败/断开不计数, ADR-0007).
+计数, 会员 (有效 X-Member-Token) 不限. 流式配额语义: 调用前
+check (429 提前返回), 完整输出 done 帧后才 use (失败/断开不计数).
 """
 
 from __future__ import annotations
@@ -65,7 +65,7 @@ from ..task_manager import (
 
 router = APIRouter(tags=["summarize"])
 
-# 总结流式 SSE (ADR-0007): 轮询间隔与心跳 (与 /api/events 心跳同值)
+# 总结流式 SSE: 轮询间隔与心跳 (与 /api/events 心跳同值)
 SUMMARY_STREAM_POLL = 0.2
 SUMMARY_STREAM_HEARTBEAT = 15.0
 
@@ -130,7 +130,7 @@ def create_summarize(
     task = manager.create_summary(
         url,
         is_member=member is not None,
-        # 字幕来源创建者选择快照 (ADR-0006 决策 1: 全局设置创建时固化,
+        # 字幕来源创建者选择快照 (全局设置创建时固化,
         # 转录子任务按此走官方快路径或模型生成)
         subtitle_source=req.subtitle_source,
         # 匿名身份透传: 字幕缓存命中时退还配额 (创建时已扣, 命中净消耗 0)
@@ -159,7 +159,7 @@ def get_summary(task_id: int) -> SummaryOut:
 
 @router.get("/api/tasks/{task_id}/summary/stream")
 async def stream_summary(task_id: int) -> StreamingResponse:
-    """总结生成过程流式输出 (SSE, ADR-0007): 逐 delta 帧实时可见.
+    """总结生成过程流式输出 (SSE): 逐 delta 帧实时可见.
 
     帧协议: 首 poll 必发 snapshot (累积全文, 含空文本, 断线重连恢复现场) →
     只推新增量 delta → 子任务 done 发 done 收尾 / failed|blocked 发 error
@@ -294,7 +294,7 @@ def qa(
     member: MemberSession | None = Depends(get_member),
     x_client_id: str | None = Header(default=None, alias="X-Client-Id"),
 ) -> StreamingResponse:
-    """针对视频内容提问, SSE 流式回答 (ADR-0007): delta 增量 → done 收尾.
+    """针对视频内容提问, SSE 流式回答: delta 增量 → done 收尾.
 
     上下文 = 转录 + 结构化总结; 问答子任务 (qa) done 即上下文就绪, 解锁
     交互问答, 不需要等任务 completed. 配额: 调用前 check (429 以 HTTP 状态
@@ -318,7 +318,7 @@ def _qa_stream(task, question: str, client_id: str, is_member: bool) -> Iterator
     """问答流生成器 (sync, Starlette 在线程池迭代): 逐 delta 帧, done/error 收尾.
 
     客户端断开时 sync 生成器线程无法被杀, 会继续消费 LLM 流到自然结束,
-    finally 延迟但最终执行 (ADR-0007); success 标志保证仅完整输出才计配额
+    finally 延迟但最终执行; success 标志保证仅完整输出才计配额
     (失败不计数, 与旧语义一致).
     """
     success = False
@@ -426,7 +426,7 @@ def _render_markdown(task) -> str:
     out.extend(
         [
             "",
-            "## 视频概述",  # 措辞与 LLM 模板/前端 buildMarkdown 统一 (ADR-0008)
+            "## 视频概述",  # 措辞与 LLM 模板/前端 buildMarkdown 统一
             str(summary.get("overview") or ""),
             "",
             "## 章节时间线",
@@ -439,9 +439,7 @@ def _render_markdown(task) -> str:
         out.append(f"### {ch.get('title')} ({span})")
         for point in ch.get("points") or []:
             out.append(f"- {point}")
-    out.extend(
-        ["", "## 核心要点"]
-    )  # 措辞与 LLM 模板/前端 buildMarkdown 统一 (ADR-0008)
+    out.extend(["", "## 核心要点"])  # 措辞与 LLM 模板/前端 buildMarkdown 统一
     for key in summary.get("key_points") or []:
         out.append(f"- {key}")
     out.extend(["", "## 结论", str(summary.get("conclusion") or "")])

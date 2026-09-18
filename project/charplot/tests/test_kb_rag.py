@@ -1,4 +1,4 @@
-"""RAG 全链路测试 (Issue 10, DESIGN.md §7 步骤 10 / SPEC §7.2).
+"""RAG 全链路测试.
 
 覆盖: query rewriting (LLM 改写 / 失败降级原查询) / Milvus filter 软删
 表达式 / 混合检索全链路 (rewrite → embed → 软删过滤 → hybrid → rerank,
@@ -171,7 +171,7 @@ def test_search_api_empty_query_400(client, fake_rag_deps):
     assert resp.status_code == 400
 
 
-# ---- KbSource 协议适配 (管道检索源, Issue 11 接入位) ----
+# ---- KbSource 协议适配 (管道检索源接入位) ----
 
 
 def test_kb_source_mapping(monkeypatch):

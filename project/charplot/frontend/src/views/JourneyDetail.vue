@@ -1,6 +1,6 @@
 <script setup lang="ts">
-// 旅程详情 (Issue 03): 生成中 → SSE 五阶段进度 (失败可重试);
-// 已就绪 → 图谱展示 (章节 + 知识点 + 前置依赖 chips, 技能树可视化留 Issue 04).
+// 旅程详情: 生成中 → SSE 五阶段进度 (失败可重试);
+// 已就绪 → 图谱展示 (章节 + 知识点 + 前置依赖 chips, 技能树可视化另见闯关地图页).
 // 视觉遵循 /frontend-design: 进度 stepper 为签名元素 (五阶段点亮动画).
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -77,7 +77,7 @@ function beginSse(nextTaskId: string) {
 async function runPipeline() {
   const d = detail.value
   if (!d) return
-  // kb 旅程 (Issue 11): 重试必须透传 kb_id; 知识库被删 (null) 时无法重试
+  // kb 旅程: 重试必须透传 kb_id; 知识库被删 (null) 时无法重试
   if (d.input_type === 'kb' && !d.kb_id) {
     ElMessage.error('知识库已删除, 无法重新生成该旅程')
     return
@@ -176,7 +176,7 @@ onUnmounted(() => {
         <el-button type="primary" round @click="runPipeline">重试生成</el-button>
       </section>
 
-      <!-- 已就绪: 图谱展示 + 闯关地图入口 (Issue 04) / 复盘报告入口 (Issue 06) -->
+      <!-- 已就绪: 图谱展示 + 闯关地图入口 / 复盘报告入口 -->
       <section v-else class="graph">
         <div class="graph-head">
           <h2 class="graph-title">知识图谱</h2>
@@ -263,7 +263,7 @@ onUnmounted(() => {
   margin: 0;
 }
 
-/* kb 旅程来源标记 (Issue 11): 弱化 chip, 与 meta 同层级 */
+/* kb 旅程来源标记: 弱化 chip, 与 meta 同层级 */
 .kb-chip {
   display: inline-block;
   font-size: 12px;

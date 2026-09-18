@@ -1,9 +1,9 @@
 """CharPlot API 视图 (DRF).
 
-账号体系 (Issue 02): 注册/登录/登出 + 会话探测 + 个人主页 + 连胜冻结兑换.
-旅程链路 (Issue 03): 创建/列表/详情 + FastAPI 内部落库端点 (X-Internal-Token).
-闯关答题 (Issue 05): 关卡列表/详情 + 提交答案 + 重开.
-分析 Dashboard (Issue 12): 掌握度矩阵 / 学习活动统计 / 易错点清单.
+账号体系: 注册/登录/登出 + 会话探测 + 个人主页 + 连胜冻结兑换.
+旅程链路: 创建/列表/详情 + FastAPI 内部落库端点 (X-Internal-Token).
+闯关答题: 关卡列表/详情 + 提交答案 + 重开.
+分析 Dashboard: 掌握度矩阵 / 学习活动统计 / 易错点清单.
 """
 
 import base64
@@ -96,7 +96,7 @@ logger = logging.getLogger(__name__)
 class HealthView(APIView):
     """健康检查 - 探活 MySQL 与 Redis.
 
-    三端联通的基础链路 (Issue 01): 前端 / 运维可轮询此端点确认 Django 侧就绪.
+    三端联通的基础链路: 前端 / 运维可轮询此端点确认 Django 侧就绪.
     """
 
     # 健康检查无需认证
@@ -196,7 +196,7 @@ class LoginView(APIView):
             login(request, user)
             # profile 自动创建兜底: 覆盖 admin 手工建号等老用户
             CharplotProfile.objects.get_or_create(user=user)
-            # 登录事件落库 (按自然日去重), 登录天数统计源 (SPEC §8)
+            # 登录事件落库 (按自然日去重), 登录天数统计源
             record_event(user, CharplotUserEvent.EventType.LOGIN)
             return Response(
                 {
@@ -241,7 +241,7 @@ class StreakFreezeView(APIView):
 
 
 class JourneyListView(APIView):
-    """旅程创建与列表 (DESIGN §4.1).
+    """旅程创建与列表.
 
     GET: 仅本人旅程, 计数 prefetch 避免 N+1, 全量返回 (个人量小, 契约 {journeys[]}).
     POST: JSON (text/link) 或 multipart (file) 创建, 返回 {journey_id, status}.
@@ -282,7 +282,7 @@ class JourneyListView(APIView):
 
 
 class JourneyDetailView(APIView):
-    """旅程详情 + 图谱 + 任务状态 (DESIGN §4.1). 非本人旅程返回 404 不泄露存在性."""
+    """旅程详情 + 图谱 + 任务状态. 非本人旅程返回 404 不泄露存在性."""
 
     permission_classes = [IsAuthenticated]
 
@@ -292,10 +292,10 @@ class JourneyDetailView(APIView):
 
 
 class SkillTreeView(APIView):
-    """技能树图数据 (DESIGN §4.1): 节点 (点亮状态/进度) + 依赖边.
+    """技能树图数据: 节点 (点亮状态/进度) + 依赖边.
 
-    闯关地图页渲染源 (PRD D-1); 点亮状态由服务层从关卡数据聚合计算
-    (Issue 05): 已通关点亮, 有关卡进行中 in_progress, 依赖未满足锁定.
+    闯关地图页渲染源; 点亮状态由服务层从关卡数据聚合计算 (已通关点亮,
+    有关卡进行中 in_progress, 依赖未满足锁定).
     """
 
     permission_classes = [IsAuthenticated]
@@ -306,9 +306,9 @@ class SkillTreeView(APIView):
 
 
 class LevelListView(APIView):
-    """关卡列表 (DESIGN §4.1, GET /api/charplot/journeys/{id}/levels/).
+    """关卡列表 (GET /api/charplot/journeys/{id}/levels/).
 
-    懒创建: 首次进入为无关卡的知识点生成空关卡 (Issue 08: 题目渐进生成,
+    懒创建: 首次进入为无关卡的知识点生成空关卡 (题目渐进生成,
     状态 pending), 每章末尾补 Boss 关; 幂等, 图谱重生成新增知识点自动补关.
     全部关卡返回 (含 questions_status / locked), 前端按需过滤与触发生成.
     """
@@ -335,9 +335,9 @@ def get_level_for_user(pk, user):
 
 
 class LevelDetailView(APIView):
-    """关卡详情 (Issue 05): 进度/心/当前题, 断点续答定位源.
+    """关卡详情: 进度/心/当前题, 断点续答定位源.
 
-    中途退出再进 (PRD D-2 持久化): 后端从 current_index / hearts 续答,
+    中途退出再进 (持久化): 后端从 current_index / hearts 续答,
     前端直接渲染返回的当前题.
     """
 
@@ -349,7 +349,7 @@ class LevelDetailView(APIView):
 
 
 class LevelAnswerView(APIView):
-    """提交答案 (DESIGN §4.1, POST /api/charplot/levels/{id}/answer/).
+    """提交答案 (POST /api/charplot/levels/{id}/answer/).
 
     判分 + 讲解/来源 + 心动值扣减 + 通关结算, 全部在服务层事务内完成;
     业务异常 (已通关/心扣完/题目不匹配) 映射 400 中文 detail.
@@ -401,9 +401,9 @@ class LevelRestartView(APIView):
 
 
 class QuestionFlagView(APIView):
-    """题目反馈标记 (DESIGN §4.1, POST /api/charplot/questions/{id}/flag/).
+    """题目反馈标记 (POST /api/charplot/questions/{id}/flag/).
 
-    Issue 14 (SPEC §7.3 ③ 幻觉防护第三层): 答题页「题目有问题」入口落库.
+    幻觉防护第三层: 答题页「题目有问题」入口落库.
     题目归属校验与关卡一致 (仅本人旅程可标记, 404 不泄露存在性);
     reason 可选 (空 = 仅标记); 同一用户对同一题重复标记幂等去重
     (get_or_create), 首末均返回 200 {created}, 前端据此提示文案.
@@ -432,7 +432,7 @@ class QuestionFlagView(APIView):
 
 
 class JourneyReportView(APIView):
-    """复盘报告 (DESIGN §4.1, GET /api/charplot/journeys/{id}/report/).
+    """复盘报告 (GET /api/charplot/journeys/{id}/report/).
 
     仅本人旅程可见 (非本人 404 不泄露存在性); 未通关无报告 → 404, 前端
     据旅程 cleared 状态决定入口显隐. 报告为通关时快照, 只读不改.
@@ -452,7 +452,7 @@ class JourneyReportView(APIView):
 
 
 class JourneyGraphView(APIView):
-    """图谱落库 (内部端点, FastAPI → Django, CONTRACT.md §3).
+    """图谱落库 (内部端点, FastAPI → Django).
 
     DRF APIView 默认 csrf_exempt, 免 CSRF 校验; 认证靠 X-Internal-Token.
     落库先删后建, 重复调用幂等 (重试语义).
@@ -477,9 +477,9 @@ class JourneyGraphView(APIView):
 
 
 class JourneyContentView(APIView):
-    """源文件内容获取 (内部端点, FastAPI → Django, CONTRACT.md §5).
+    """源文件内容获取 (内部端点, FastAPI → Django).
 
-    Issue 07 真实管道解析 file 输入: FastAPI 经此端点取文件二进制
+    真实管道解析 file 输入: FastAPI 经此端点取文件二进制
     (base64 编码, 支持 pdf/docx 等二进制格式), 解析在 FastAPI 侧完成
     (AI 能力端职责). 无源文件 → 404; 文件缺失 (磁盘已清理) → 400.
     """
@@ -537,7 +537,7 @@ def _get_level_for_generation(journey, level_seq):
 
 
 class LevelGenerationClaimView(APIView):
-    """出题任务抢占 + 输入 (内部端点, FastAPI → Django, DESIGN §4.2).
+    """出题任务抢占 + 输入 (内部端点, FastAPI → Django).
 
     原子抢占 (select_for_update) 保证并发幂等: 已就绪 → claimed=false
     (reason=ready); 生成中 → claimed=false (reason=generating, 附现有
@@ -631,15 +631,15 @@ class LevelGenerationFailedView(APIView):
 
 
 # ---------------------------------------------------------------------------
-# 知识库 (Issue 09, PRD C-1~C-4, DESIGN §4.1)
+# 知识库
 # ---------------------------------------------------------------------------
 
 
 class KnowledgeBaseListView(APIView):
-    """知识库列表与创建 (DESIGN §4.1, 双语义单端点).
+    """知识库列表与创建 (双语义单端点).
 
     GET: 管理员含全部状态 / 普通用户仅就绪 (用户端另有 /topics/ 主入口);
-    POST: 管理员创建 (非 staff 403, 验收标准 1). 列表 document_count
+    POST: 管理员创建 (非 staff 403). 列表 document_count
     用 annotate 条件计数防 N+1.
     """
 
@@ -709,7 +709,7 @@ class KnowledgeBaseDocumentsView(APIView):
 
 
 class KnowledgeBaseDocumentView(APIView):
-    """软删文档 (is_staff): 列表隐藏可恢复, 磁盘文件保留 (Q18c)."""
+    """软删文档 (is_staff): 列表隐藏可恢复, 磁盘文件保留."""
 
     permission_classes = [IsStaff]
 
@@ -759,7 +759,7 @@ class KnowledgeBaseOnlineView(APIView):
 
 
 class TopicsView(APIView):
-    """主题卡片 (DESIGN §4.1 GET /api/topics): 就绪知识库, 游客可浏览 (PRD A-1)."""
+    """主题卡片 (GET /api/topics): 就绪知识库, 游客可浏览."""
 
     permission_classes = [AllowAny]
     pagination_class = None
@@ -769,9 +769,9 @@ class TopicsView(APIView):
 
 
 class KnowledgeBaseIndexClaimView(APIView):
-    """索引任务抢占 (内部端点, FastAPI → Django, CONTRACT.md §6).
+    """索引任务抢占 (内部端点, FastAPI → Django).
 
-    原子置 indexing + 返回有效文档清单 (Issue 10 索引输入, 含 extension
+    原子置 indexing + 返回有效文档清单 (索引输入, 含 extension
     供解析器选型); 拒绝理由 indexing/offline/no_documents 幂等跳过.
     """
 
@@ -827,9 +827,9 @@ class KnowledgeBaseIndexFailedView(APIView):
 
 
 class KbDocumentContentView(APIView):
-    """知识库文档内容获取 (内部端点, FastAPI → Django, CONTRACT.md §6.6).
+    """知识库文档内容获取 (内部端点, FastAPI → Django).
 
-    Issue 10 真实索引的解析器输入: FastAPI 经此端点取文档文件二进制
+    真实索引的解析器输入: FastAPI 经此端点取文档文件二进制
     (base64 编码, 支持 pdf/docx 等二进制格式), 解析在 FastAPI 侧完成.
     软删文档同样可读 (恢复后重新索引需要), 是否索引由 claim 的有效文档
     清单决定. 文件缺失 (磁盘已清理) → 400.
@@ -861,10 +861,10 @@ class KbDocumentContentView(APIView):
 
 
 class KbDeletedDocIdsView(APIView):
-    """软删文档 id 清单 (内部端点, FastAPI → Django, CONTRACT.md §6.6).
+    """软删文档 id 清单 (内部端点, FastAPI → Django).
 
-    Issue 10 检索过滤用: FastAPI 实时查询软删集合, 构造 Milvus filter
-    排除 → 软删立即生效 (Q18c, 无需等全量重建); 恢复的文档自动从集合
+    检索过滤用: FastAPI 实时查询软删集合, 构造 Milvus filter
+    排除 → 软删立即生效 (无需等全量重建); 恢复的文档自动从集合
     移除 → 重新命中.
     """
 
@@ -880,7 +880,7 @@ class KbDeletedDocIdsView(APIView):
 
 
 class KbMetaView(APIView):
-    """知识库元信息 (内部端点, FastAPI → Django, Issue 11 管道解析输入).
+    """知识库元信息 (内部端点, FastAPI → Django, 管道解析输入).
 
     kb 类型旅程的 parse 阶段取名称/描述构造材料 (analyze 输入), 状态校验
     已由 Django 创建旅程时完成 (仅就绪库可开旅程), 此处不重复校验.
@@ -902,7 +902,7 @@ class KbMetaView(APIView):
 
 
 class DashboardMasteryView(APIView):
-    """掌握度矩阵 (Issue 12, PRD F-1): 旅程 → 章节 → 知识点正确率.
+    """掌握度矩阵: 旅程 → 章节 → 知识点正确率.
 
     数据从 Attempt 事实表按需聚合 (知识点归属 = 来源知识点或关卡知识点),
     薄弱点 (正确率 < 60%) 由前端高亮. 仅登录用户可见.
@@ -915,7 +915,7 @@ class DashboardMasteryView(APIView):
 
 
 class DashboardActivityView(APIView):
-    """学习活动统计 (Issue 12, PRD F-2): 时长 / 通关数 / 活跃天数 / 连胜.
+    """学习活动统计: 时长 / 通关数 / 活跃天数 / 连胜.
 
     时长 = Attempt.duration 聚合, 通关数 = LEVEL_CLEAR 事件计数, 活跃天数 =
     LOGIN 事件按日去重, 近 N 天分布由事件表按日聚合. 仅登录用户可见.
@@ -928,7 +928,7 @@ class DashboardActivityView(APIView):
 
 
 class DashboardWeakpointsView(APIView):
-    """易错点清单 (Issue 12, PRD F-3): 易错分排序 + 复习优先级.
+    """易错点清单: 易错分排序 + 复习优先级.
 
     优先级公式与间隔复习同源 (services._review_candidates), 全局聚合,
     标注所属旅程 / 章节 / 答错次数. 仅登录用户可见.
@@ -941,7 +941,7 @@ class DashboardWeakpointsView(APIView):
 
 
 class StatusSummaryInputView(APIView):
-    """状态总结聚合输入 (内部端点, FastAPI → Django, Issue 13, DESIGN.md §4.2).
+    """状态总结聚合输入 (内部端点, FastAPI → Django).
 
     LLM 状态总结 (POST /ai/report/summary) 的事实来源: FastAPI 经此端点
     取指定用户的掌握度 / 活动统计 / 易错清单聚合 (与 Dashboard 三个用户

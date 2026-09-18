@@ -1,10 +1,10 @@
-"""真实管道契约测试 (Issue 07 + Issue 11 知识库两轮, CONTRACT.md §1).
+"""真实管道契约测试 (知识库两轮).
 
 覆盖: 全流程 (text/file/link/kb 四形态) 产出契约图谱 (章节/知识点/依赖边/
 来源引用) / 阶段事件序 / LLM 输出非法 → 重试修正 / 重试耗尽 → 异常 /
 解析失败传播. LLM 与检索由 conftest 假件隔离 (不触网不调真实模型).
 
-Issue 11 kb 形态: parse 取知识库元信息 → search 确定性概览检索 (不走
+kb 形态: parse 取知识库元信息 → search 确定性概览检索 (不走
 subagent) → 两轮解构 (骨架轮 + 逐知识点细化轮).
 """
 
@@ -36,7 +36,7 @@ def run(inp):
 
 
 def assert_contract_graph(graph):
-    """契约断言 (CONTRACT.md v1): 结构/临时 id 唯一/依赖边引用存在."""
+    """契约断言 (契约 v1): 结构/临时 id 唯一/依赖边引用存在."""
     assert graph["version"] == 1
     assert graph["title"]
     assert len(graph["chapters"]) >= 1
@@ -170,7 +170,7 @@ EMPTY_REPORT = _EmptyReport()
 
 
 # ---------------------------------------------------------------------------
-# Issue 11: 知识库驱动旅程 (kb 输入形态 + RAG 两轮解构)
+# 知识库驱动旅程 (kb 输入形态 + RAG 两轮解构)
 # ---------------------------------------------------------------------------
 
 KB_META_READY = {

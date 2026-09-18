@@ -1,5 +1,5 @@
 // 认证状态单例 (无 pinia): 仅 auth + profile 两个状态, reactive 单例足够.
-// 状态规模变大 (Issue 03+ 旅程/答题) 再平滑迁移 pinia.
+// 状态规模变大 (旅程/答题) 再平滑迁移 pinia.
 import { reactive } from 'vue'
 import * as api from '@/api/client'
 

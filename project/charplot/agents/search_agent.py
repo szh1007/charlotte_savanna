@@ -1,4 +1,4 @@
-"""检索 subagent (Issue 07 阶段 3: searching 的 DeepAgents 执行体).
+"""检索 subagent (阶段 3: searching 的 DeepAgents 执行体).
 
 DeepAgents subagent 承担检索环节: 挂各检索源工具 (网络/Context7/文档),
 自主编排查询策略, 结构化输出检索报告 (response_format 约束, 便于

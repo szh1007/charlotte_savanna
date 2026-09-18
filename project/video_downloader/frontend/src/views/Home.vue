@@ -23,7 +23,7 @@ import {
   retrySubtask,
 } from '../api/client.js'
 
-// 单页布局 (PRD §10): 导航 → Hero → 功能亮点区 → 解析结果 → 任务面板 → 页脚
+// 单页布局: 导航 → Hero → 功能亮点区 → 解析结果 → 任务面板 → 页脚
 // (平台墙已移除, 会员区改弹窗由导航栏触发)
 const resolving = ref(false)
 const result = ref(null)
@@ -32,16 +32,16 @@ const downloading = ref(false)
 const downloadError = ref('')
 const tasks = ref([])
 
-// AI 总结 (ADR-0005): 创建中防重复点击, 免费档每日配额用尽 (429) 透传提示
+// AI 总结: 创建中防重复点击, 免费档每日配额用尽 (429) 透传提示
 const summarizing = ref(false)
 const summarizeError = ref('')
 
-// 字幕来源全局设置 (ADR-0006): localStorage 持久化, 默认官方字幕
+// 字幕来源全局设置: localStorage 持久化, 默认官方字幕
 // (official 快路径; 无官方字幕自动回退模型生成, model 生成缓存优先)
 const subtitleSource = ref(localStorage.getItem(SUBTITLE_SOURCE_KEY) === 'model' ? 'model' : 'official')
 watch(subtitleSource, (v) => localStorage.setItem(SUBTITLE_SOURCE_KEY, v))
 
-// 语音转写模型状态 (ADR-0006): 初始拉取 + SSE model-update 增量更新
+// 语音转写模型状态: 初始拉取 + SSE model-update 增量更新
 // (下载中进度 / 完成 / 失败回 missing 均经该事件广播, 与任务事件同流)
 const modelStatus = ref({ status: 'missing', progress: 0, has_official_subtitle: false })
 const modelDownloading = ref(false)
@@ -67,7 +67,7 @@ async function handleDownloadModel() {
   }
 }
 
-// 总结禁用判定 (ADR-0005 + 用户反馈: 已 AI 总结过的视频不可再次总结):
+// 总结禁用判定 (用户反馈: 已 AI 总结过的视频不可再次总结):
 // 返回 '' 可总结 / 'active' 已有进行中任务 (queued/running) / 'retry' 上次
 // 总结失败 (任务级 failed = 全部子任务失败, 一键重试) / 'done' 已总结过
 // (completed/expired 等终态, 清除记录后可重新总结). 供 TaskPanel 逐组 /
@@ -114,7 +114,7 @@ async function handleRetrySummarize(url) {
 // 最近一次解析的链接 (「开始下载」发起请求用; 会员解锁后自动重新解析)
 const lastUrl = ref('')
 
-// 会员状态 (T09): 全站共享, 解锁后 NavBar / 解析锁定档位 / 营销区联动
+// 会员状态: 全站共享, 解锁后 NavBar / 解析锁定档位 / 营销区联动
 const {
   isMember,
   memberExpires,
@@ -164,7 +164,7 @@ async function refreshTasks() {
     // (bugfix/0004)
     const merged = new Map(tasks.value.map((t) => [t.task_id, t]))
     for (const t of list) {
-      // 面板展示下载 + 总结任务 (ADR-0005), 排除瞬时 resolve 短任务
+      // 面板展示下载 + 总结任务, 排除瞬时 resolve 短任务
       if (t.kind === 'resolve') continue
       const local = merged.get(t.task_id)
       merged.set(t.task_id, local ? { ...t, ...local } : t)
@@ -201,7 +201,7 @@ async function handleSummarize(url) {
   summarizing.value = true
   summarizeError.value = ''
   try {
-    // 携带全局字幕来源设置 (ADR-0006): official 官方字幕 / model 模型生成
+    // 携带全局字幕来源设置: official 官方字幕 / model 模型生成
     const { task_id } = await createSummarize(url, subtitleSource.value)
     // 本地构造总结任务卡片 (元信息来自解析结果或同 url 已有任务兜底,
     // 状态/进度由 SSE 覆盖; 与下载任务同模式, 见 handleDownload 竞态说明)
@@ -368,7 +368,7 @@ async function handleClearUnfinished() {
   }
 }
 
-// SSE model-update (ADR-0006): 模型下载进度 / 完成 / 失败回 missing
+// SSE model-update: 模型下载进度 / 完成 / 失败回 missing
 // 增量合并到 modelStatus (保留 has_official_subtitle 等静态字段)
 function handleModelUpdate(evt) {
   let data

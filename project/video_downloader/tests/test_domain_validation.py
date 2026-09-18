@@ -1,4 +1,4 @@
-"""ADR-0004 域名白名单校验验收测试 (resolve / downloads 路由共用)."""
+"""域名白名单校验验收测试 (resolve / downloads 路由共用)."""
 
 import pytest
 from fastapi.testclient import TestClient

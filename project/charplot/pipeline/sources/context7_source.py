@@ -1,4 +1,4 @@
-"""Context7 官方文档检索源 (Issue 07).
+"""Context7 官方文档检索源.
 
 Context7 Public API v2 (https://context7.com/docs/openapi.json):
   1. GET /api/v2/libs/search  -> 按库名解析出匹配库 (LLM 智能排序)

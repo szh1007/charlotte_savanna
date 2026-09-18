@@ -1,4 +1,4 @@
-"""输入解析器测试 (Issue 07 阶段 1: parsing).
+"""输入解析器测试 (阶段 1: parsing).
 
 覆盖: 文本归一化 / 标题提取 / 多格式文件解析 (txt/md/html/pdf/docx/pptx,
 内存构造样本) / 链接抓取 (mock httpx) / 不支持格式抛错.

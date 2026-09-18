@@ -1,6 +1,6 @@
-"""GET /api/events: SSE 进度流 (T03).
+"""GET /api/events: SSE 进度流.
 
-事件协议 (PRD §8): event: task-update, data 为 JSON
+事件协议: event: task-update, data 为 JSON
 {task_id, status, progress, message, url?, error?}; 空闲连接 15s 心跳保活.
 """
 
@@ -19,14 +19,14 @@ from ..task_manager import manager
 
 router = APIRouter(tags=["events"])
 
-# 心跳间隔 (秒): 无事件时每 15s 推送 heartbeat 保活 (PRD 设计值)
+# 心跳间隔 (秒): 无事件时每 15s 推送 heartbeat 保活 (设计值)
 HEARTBEAT_INTERVAL = 15.0
 
 
 def _sse_frame(event: dict) -> str:
     """单事件帧: event + data (JSON, 中文不转义), 空行结尾.
 
-    event 名为事件负载的 "event" 键 (task-update / model-update, ADR-0006),
+    event 名为事件负载的 "event" 键 (task-update / model-update),
     不硬编码 — 模型进度是全局资产事件, 无事件名标记的旧负载缺省 task-update.
     """
     name = event.get("event", "task-update")
@@ -60,7 +60,7 @@ async def task_events(
             for task in manager.list_tasks():
                 if sub.accepts(task.id):
                     yield _sse_frame(task_event(task))
-            # 模型状态快照 (ADR-0006): 全局资产, 连接建立即推当前状态
+            # 模型状态快照: 全局资产, 连接建立即推当前状态
             # (前端由此恢复下载按钮/进度条显示, 不依赖事件时序)
             st = model_downloader.status()
             yield _sse_frame(model_update_event(st["status"], st["progress"]))

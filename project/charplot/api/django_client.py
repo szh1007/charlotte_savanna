@@ -1,7 +1,7 @@
-"""FastAPI → Django 内部端点客户端 (Issue 03).
+"""FastAPI → Django 内部端点客户端.
 
-双后端写记录必经 Django API (DESIGN.md §2); 认证用共享
-X-Internal-Token (CONTRACT.md §3). 落库失败语义: transient 错误重试 1 次,
+双后端写记录必经 Django API; 认证用共享
+X-Internal-Token. 落库失败语义: transient 错误重试 1 次,
 4xx (契约校验失败) 直接抛, 由任务系统转 error 事件.
 """
 
@@ -32,7 +32,7 @@ async def _post_internal(path: str, payload: dict) -> httpx.Response:
 
 
 async def fetch_journey_content(journey_id: int) -> tuple[str, bytes]:
-    """取 file 输入的源文件二进制 (内部端点, Issue 07).
+    """取 file 输入的源文件二进制 (内部端点).
 
     返回 (filename, bytes); 4xx (契约/无文件) 与网络错误抛 RuntimeError,
     由管道转任务 error (前端可重试). 解析在 FastAPI 侧完成.
@@ -57,7 +57,7 @@ async def fetch_journey_content(journey_id: int) -> tuple[str, bytes]:
 
 
 async def fetch_kb_meta(kb_id: int) -> dict:
-    """取知识库元信息 (内部端点, Issue 11 kb 旅程 parse 输入).
+    """取知识库元信息 (内部端点, kb 旅程 parse 输入).
 
     返回 {id, name, description, status}; 4xx (不存在) 与网络错误抛
     RuntimeError, 由管道转任务 error (前端可重试). status 供管道运行时
@@ -118,7 +118,7 @@ async def mark_journey_failed(
 async def claim_level_generation(
     journey_id: int, level_seq: int, task_id: str
 ) -> tuple[bool, dict]:
-    """出题任务抢占 (Issue 08, 内部端点): 原子置 generating 并取回出题输入.
+    """出题任务抢占 (内部端点): 原子置 generating 并取回出题输入.
 
     返回 (claimed, payload): claimed=True 时 payload["input"] 为出题素材
     (含间隔复习题, 带完整答案); claimed=False 时 payload 为
@@ -196,10 +196,10 @@ async def mark_level_generation_failed(
 
 
 async def claim_kb_index(kb_id: int, task_id: str) -> tuple[bool, dict]:
-    """索引任务抢占 (Issue 09, 内部端点): 原子置 indexing 并取回文档清单.
+    """索引任务抢占 (内部端点): 原子置 indexing 并取回文档清单.
 
     返回 (claimed, payload): claimed=True 时 payload["documents"] 为有效
-    文档清单 (id/title/filename/file_size/extension, Issue 10 索引输入);
+    文档清单 (id/title/filename/file_size/extension, 索引输入);
     claimed=False 时 payload 为 {"reason": "indexing"|"offline"|
     "no_documents", "task_id"?} (幂等跳过).
     """
@@ -258,7 +258,7 @@ async def mark_kb_index_failed(kb_id: int, task_id: str, error_message: str) -> 
 
 
 async def fetch_kb_document_content(doc_id: int) -> tuple[str, bytes]:
-    """取知识库文档文件二进制 (内部端点, CONTRACT.md §6.6, Issue 10).
+    """取知识库文档文件二进制 (内部端点).
 
     返回 (filename, bytes); 4xx (契约/无文件) 与网络错误抛 RuntimeError,
     由索引任务转 error (前端可重试). 与 fetch_journey_content 同构,
@@ -284,9 +284,9 @@ async def fetch_kb_document_content(doc_id: int) -> tuple[str, bytes]:
 
 
 def fetch_kb_deleted_doc_ids(kb_id: int) -> list[int]:
-    """取知识库软删文档 id 集合 (内部端点, Issue 10 检索过滤用).
+    """取知识库软删文档 id 集合 (内部端点, 检索过滤用).
 
-    软删立即生效 (Q18c): 检索时 (同步链路 search_kb/KbSource) 实时查询
+    软删立即生效: 检索时 (同步链路 search_kb/KbSource) 实时查询
     Django, 构造 Milvus filter 排除. 网络/4xx 错误抛 RuntimeError
     (检索接口转 503, 不静默返回脏数据).
     """
@@ -305,11 +305,11 @@ def fetch_kb_deleted_doc_ids(kb_id: int) -> list[int]:
 
 
 class UserNotFoundError(RuntimeError):
-    """内部端点用户不存在 (Issue 13): FastAPI 转 404, 与数据/服务错误区分."""
+    """内部端点用户不存在: FastAPI 转 404, 与数据/服务错误区分."""
 
 
 async def fetch_status_summary_input(user_id: int) -> dict:
-    """取状态总结聚合输入 (内部端点, Issue 13, DESIGN.md §4.2).
+    """取状态总结聚合输入 (内部端点).
 
     返回 {mastery, activity, weakpoints} (与 Dashboard 三个用户端点同构,
     按 user_id 查询实现用户隔离). 用户不存在 → UserNotFoundError (转 404);

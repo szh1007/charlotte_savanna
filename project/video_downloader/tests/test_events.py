@@ -1,4 +1,4 @@
-"""T03 SSE 进度流验收测试 (HTTP seam, 引擎 mock, 自定义 ASGI 流式客户端).
+"""SSE 进度流验收测试 (HTTP seam, 引擎 mock, 自定义 ASGI 流式客户端).
 
 httpx ASGITransport 不支持流式响应, 故用 SseStream 直接驱动 app 消费事件流
 (见 sse_client.py); 创建任务等普通请求仍走 TestClient.
@@ -66,7 +66,7 @@ def test_events_pushes_status_updates(
     events = wait_events(
         stream, lambda e: e.get("data", {}).get("status") == STATUS_COMPLETED
     )
-    # 跳过 model-update 帧 (ADR-0006): 模型进度同流广播, 无 task_id
+    # 跳过 model-update 帧: 模型进度同流广播, 无 task_id
     task_events = [e["data"] for e in events if "task_id" in e["data"]]
     statuses = [e["status"] for e in task_events]
     # 状态流转顺序: resolving → queued → downloading → completed
@@ -100,7 +100,7 @@ def test_events_initial_snapshot(
     assert wait_until(lambda: find_task(client, task_id)["status"] == STATUS_COMPLETED)
 
     stream = SseStream(main.app, "/api/events")
-    # 等任务事件帧 (初始快照含模型状态帧 model-update, ADR-0006, 跳过)
+    # 等任务事件帧 (初始快照含模型状态帧 model-update, 跳过)
     events = wait_events(stream, lambda e: e.get("event") == "task-update")
     assert events[0]["data"]["task_id"] == task_id
     assert events[0]["data"]["status"] == STATUS_COMPLETED
@@ -142,7 +142,7 @@ def test_events_disconnect_cleanup_via_heartbeat(monkeypatch) -> None:
 def test_events_task_ids_filter(
     client: TestClient, fake_extract, fake_download
 ) -> None:
-    """PRD 契约: ?task_ids 只推送关注任务的事件 (快照与广播均过滤)."""
+    """契约: ?task_ids 只推送关注任务的事件 (快照与广播均过滤)."""
     stream = SseStream(main.app, "/api/events?task_ids=1")
     id1 = create_download(client, "https://www.bilibili.com/video/av4", "22")
     # 任务 2: 应被过滤 (不投递事件)
@@ -156,7 +156,7 @@ def test_events_task_ids_filter(
         ),
     )
     # 推送到连接的事件全部属于任务 1 (任务 2 的事件被过滤, 不投递;
-    # model-update 帧为全局广播无 task_id, ADR-0006, 跳过)
+    # model-update 帧为全局广播无 task_id, 跳过)
     assert all(e["data"]["task_id"] == id1 for e in events if "task_id" in e["data"])
     stream.close()
 

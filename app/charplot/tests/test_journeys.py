@@ -1,7 +1,7 @@
-"""旅程链路测试 (Issue 03, 07).
+"""旅程链路测试.
 
 覆盖创建 (text/link/file 三形态) / 列表 / 详情 / 内部落库端点 (token 校验 +
-契约校验 + 幂等) / 失败标记 / 源文件内容端点 (Issue 07) / 服务层契约校验.
+契约校验 + 幂等) / 失败标记 / 源文件内容端点 / 服务层契约校验.
 """
 
 import base64
@@ -28,7 +28,7 @@ User = get_user_model()
 JOURNEYS_URL = "/api/charplot/journeys/"
 INTERNAL_TOKEN = "test-internal-token"
 
-# 契约合法图谱: 2 章节 + 跨章节依赖边 (CONTRACT.md v1)
+# 契约合法图谱: 2 章节 + 跨章节依赖边 (契约 v1)
 VALID_GRAPH = {
     "version": JOURNEY_GRAPH_VERSION,
     "title": "Python 装饰器",
@@ -156,7 +156,7 @@ def create_kb(
 
 
 class JourneyKbCreateTests(TestCase):
-    """知识库驱动旅程创建 (Issue 11): 仅就绪库可开旅程."""
+    """知识库驱动旅程创建: 仅就绪库可开旅程."""
 
     def setUp(self):
         self.client = APIClient()
@@ -309,7 +309,7 @@ class JourneyDetailTests(TestCase):
 
 @override_settings(CHARPLOT_INTERNAL_TOKEN=INTERNAL_TOKEN)
 class KbMetaInternalTests(TestCase):
-    """知识库元信息端点 (内部端点, FastAPI → Django, Issue 11 管道解析输入)."""
+    """知识库元信息端点 (内部端点, FastAPI → Django, 管道解析输入)."""
 
     def setUp(self):
         self.client = APIClient()
@@ -466,7 +466,7 @@ class JourneyGraphInternalTests(TestCase):
 
 @override_settings(CHARPLOT_INTERNAL_TOKEN=INTERNAL_TOKEN)
 class JourneyContentInternalTests(TestCase):
-    """源文件内容端点 (内部端点, FastAPI → Django, Issue 07)."""
+    """源文件内容端点 (内部端点, FastAPI → Django)."""
 
     def setUp(self):
         self.client = APIClient()
@@ -515,7 +515,7 @@ class JourneyContentInternalTests(TestCase):
 
 
 class ValidateGraphTests(TestCase):
-    """服务层契约校验单测 (CONTRACT.md v1 非法形态)."""
+    """服务层契约校验单测 (契约 v1 非法形态)."""
 
     def test_valid_graph_passes(self):
         validate_graph(VALID_GRAPH)  # 不抛异常即通过

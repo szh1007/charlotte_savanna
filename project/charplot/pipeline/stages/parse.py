@@ -1,9 +1,9 @@
-"""阶段 1: 归一化解析 (Issue 07, ADR-0002 统一管道输入侧).
+"""阶段 1: 归一化解析 (统一管道输入侧).
 
-text / link / file / kb (Issue 11) 形态统一归一化为 ParsedMaterial:
+text / link / file / kb 形态统一归一化为 ParsedMaterial:
 - text: 内容归一化 (压缩空白/截断)
 - link: 抓取网页正文 (httpx + bs4)
-- file: 经 Django 内部端点取文件二进制 (CONTRACT.md §5) + 按格式解析
+- file: 经 Django 内部端点取文件二进制 + 按格式解析
 - kb: 经 Django 内部端点取知识库元信息 (名称/描述), 名称+描述作为材料
   (analyze 阶段输入); 知识库非就绪 (创建后被下线/删除) 快速失败
 

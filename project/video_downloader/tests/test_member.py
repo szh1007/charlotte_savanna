@@ -1,4 +1,4 @@
-"""T04 会员鉴权验收测试 (HTTP seam).
+"""会员鉴权验收测试 (HTTP seam).
 
 密钥校验 / 会话签发 / token 识别 / 24h TTL 过期均通过 HTTP 行为验证;
 时间用注入时钟 (backend.auth._now) 推进, 无需真实等待.

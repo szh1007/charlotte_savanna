@@ -1,7 +1,7 @@
 <script setup lang="ts">
-// 心动值条形 (Issue 05): 满心彩色, 已扣心置灰.
+// 心动值条形: 满心彩色, 已扣心置灰.
 // 扣心瞬间有「心飞走了」动画 (缩小上浮淡出), 答错的温和反馈核心元素
-// (DESIGN.md §6: 答错是鼓励而非红叉).
+// (答错是鼓励而非红叉).
 import { computed, ref, watch } from 'vue'
 
 const props = defineProps<{ hearts: number; max?: number }>()

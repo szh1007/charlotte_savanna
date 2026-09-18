@@ -1,4 +1,4 @@
-"""账号体系 API 测试 (Issue 02).
+"""账号体系 API 测试.
 
 覆盖注册/登录/登出/会话/个人主页/连胜冻结/CSRF 全流程.
 """
@@ -38,7 +38,7 @@ class RegisterTests(TestCase):
         )
         self.assertEqual(resp.status_code, 201)
         self.assertEqual(resp.json()["username"], "alice")
-        # profile 自动创建 (Issue 01 骨架约定)
+        # profile 自动创建 (骨架约定)
         user = User.objects.get(username="alice")
         self.assertTrue(CharplotProfile.objects.filter(user=user).exists())
 
@@ -109,7 +109,7 @@ class LoginLogoutTests(TestCase):
         data = resp.json()
         self.assertEqual(data["username"], "alice")
         self.assertFalse(data["is_staff"])
-        # 登录事件落库 (SPEC §8)
+        # 登录事件落库
         today = timezone.localdate()
         self.assertTrue(
             CharplotUserEvent.objects.filter(

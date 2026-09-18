@@ -1,7 +1,7 @@
 <script setup lang="ts">
-// 技能树图渲染封装 (Issue 04): vue-flow + dagre 布局.
+// 技能树图渲染封装: vue-flow + dagre 布局.
 // 选型: vue-flow (Vue 3 原生, 节点即 Vue 组件, 点亮动效自由定制) + dagre
-// (DAG 分层布局, 前置在上 / 依赖在下), 理由与对比见 docs/adr/0004.
+// (DAG 分层布局, 前置在上 / 依赖在下).
 // 点击事件: 锁定节点忽略, 其余 emit select 交地图页跳转关卡入口.
 import { computed } from 'vue'
 import { Background } from '@vue-flow/background'

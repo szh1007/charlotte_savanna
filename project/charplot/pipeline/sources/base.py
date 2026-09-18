@@ -1,7 +1,7 @@
-"""检索源抽象 (Issue 07, SPEC §7.1).
+"""检索源抽象.
 
 可插拔检索源: 网络搜索 (Tavily) / Context7 官方文档 / 输入文档材料 /
-知识库 (预留, Issue 10 接入 Milvus). 统一管道 (ADR-0002) 中搜索增强
+知识库 (预留, 接入 Milvus). 统一管道中搜索增强
 阶段通过 DeepAgents subagent 调用各源工具; 源按配置启用 (无 Tavily
 key 时自动降级, 不影响其余源).
 """

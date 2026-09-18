@@ -1,4 +1,4 @@
-"""LLM 输出 → JSON 提取通用工具 (Issue 07).
+"""LLM 输出 → JSON 提取通用工具.
 
 LLM 文本输出常带 ```json 代码块 / 前后叙述, 统一提取逻辑供
 analyze / deconstruct 阶段复用; 提取失败抛 ValueError (触发重试).

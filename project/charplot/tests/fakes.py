@@ -1,4 +1,4 @@
-"""测试假件 (Issue 07): FakeChatModel + 固定契约图谱/分析 JSON.
+"""测试假件: FakeChatModel + 固定契约图谱/分析 JSON.
 
 真实管道测试不触网不调 LLM: FakeChatModel 按 prompt 关键词返回预置
 JSON (analyze → 分析 JSON; deconstruct → 契约图谱 JSON), 支持注入
@@ -133,7 +133,7 @@ class FakeChatModel(BaseChatModel):
     BaseChatModel 是 pydantic 模型, 字段必须显式声明 (不能 __init__ 赋值).
     sequence: [(关键词, 响应), ...] 优先于默认匹配 (模拟修正反馈); 响应
     可为 str 或 Callable[[str], str] (收完整 user prompt 返回 JSON,
-    Issue 11 两轮解构的细化轮 N 次调用需按知识点动态返回).
+    两轮解构的细化轮 N 次调用需按知识点动态返回).
     fail_first_n: 前 N 次调用返回非 JSON 文本 (模拟 LLM 首次输出非法,
     触发管道重试路径); calls 记录每次调用的人类消息内容, 供断言.
 

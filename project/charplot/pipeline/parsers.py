@@ -1,10 +1,10 @@
-"""输入归一化解析 (Issue 07 阶段 1: parsing).
+"""输入归一化解析 (阶段 1: parsing).
 
-统一管道 (ADR-0002) 的输入侧: 文本归一化 / 网页链接抓取 / 文件解析
+统一管道的输入侧: 文本归一化 / 网页链接抓取 / 文件解析
 (pdf/docx/pptx/md/txt/html, 复用项目文档解析库). 全部产出一份纯文本
 材料, 供后续分析/解构使用.
 
-file 输入的文件二进制经 Django 内部端点 (CONTRACT.md §5) 获取, 解析
+file 输入的文件二进制经 Django 内部端点获取, 解析
 在 FastAPI 侧完成 (AI 能力端职责).
 """
 
@@ -132,7 +132,7 @@ def _parse_html(data: bytes) -> str:
 def parse_document(filename: str, data: bytes) -> str:
     """按扩展名分发解析文件二进制, 返回纯文本材料.
 
-    支持 .txt/.md/.html/.pdf/.docx/.pptx (PRD B-1); 其他格式抛 ParseError.
+    支持 .txt/.md/.html/.pdf/.docx/.pptx; 其他格式抛 ParseError.
     """
     ext = (filename.rsplit(".", 1)[-1] if "." in filename else "").lower()
     ext = f".{ext}"

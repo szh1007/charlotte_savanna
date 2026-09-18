@@ -1,4 +1,4 @@
-"""Rerank 抽象 (Issue 10, SPEC §7.2) - 必配链路, 实现可切换.
+"""Rerank 抽象 - 必配链路, 实现可切换.
 
 search_kb 门面无条件调用 rerank (架构必配); 具体实现按配置切换:
 - BGEReranker: 本地 bge-reranker-v2-m3 (FlagReranker 跨编码器, 对
@@ -7,7 +7,7 @@ search_kb 门面无条件调用 rerank (架构必配); 具体实现按配置切�
   warning 日志明示原因) - 模型由用户经 modelscope 预下载 (主动行为),
   缺失降级/报错, 不触发库级自动下载
 
-FlagEmbedding 依赖在 requirements.txt (Issue 10 新增, 与 rag_knowledge
+FlagEmbedding 依赖在 requirements.txt (新增, 与 rag_knowledge
 参考实现同款); 测试用 FakeReranker 注入 (不加载真实模型).
 """
 

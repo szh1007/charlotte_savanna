@@ -1,6 +1,6 @@
 """CharPlot 数据模型.
 
-命名约定: 模型统一带 charplot_ 前缀 (SPEC §2), 表名与模型名一致.
+命名约定: 模型统一带 charplot_ 前缀, 表名与模型名一致.
 """
 
 import os
@@ -13,7 +13,7 @@ from django.utils import timezone
 class CharplotProfile(models.Model):
     """用户扩展 - 与 auth_user 通过 OneToOne 关联.
 
-    游戏化状态挂载于此 (SPEC §8): XP / 等级 / 连胜 / 心动值 / 学习币.
+    游戏化状态挂载于此: XP / 等级 / 连胜 / 心动值 / 学习币.
     """
 
     user = models.OneToOneField(
@@ -31,7 +31,7 @@ class CharplotProfile(models.Model):
     last_study_date = models.DateField(
         null=True, blank=True, verbose_name="最后学习日期"
     )
-    # Issue 05 答题/通关结算时更新; null = 从未学习
+    # 答题/通关结算时更新; null = 从未学习
     freeze_until = models.DateField(
         null=True, blank=True, verbose_name="连胜冻结截止日期"
     )
@@ -49,16 +49,16 @@ class CharplotProfile(models.Model):
 
 
 class CharplotUserEvent(models.Model):
-    """用户事件事实表 (SPEC §8) - 统计源, 全记录按需聚合.
+    """用户事件事实表 - 统计源, 全记录按需聚合.
 
-    登录天数 / 通关数等统计均由此表聚合; 答题逐题明细归 charplot_attempt
-    (Issue 05), 此处只记录统计级事实.
+    登录天数 / 通关数等统计均由此表聚合; 答题逐题明细归 charplot_attempt,
+    此处只记录统计级事实.
     """
 
     class EventType(models.TextChoices):
         LOGIN = "login", "登录"
-        LEVEL_CLEAR = "level_clear", "通关"  # Issue 05 使用
-        ANSWER = "answer", "答题"  # Issue 05 使用
+        LEVEL_CLEAR = "level_clear", "通关"  # 通关结算使用
+        ANSWER = "answer", "答题"  # 答题结算使用
 
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -105,9 +105,9 @@ def journey_file_upload_to(instance, filename):
 
 
 class CharplotJourney(models.Model):
-    """学习旅程 (SPEC §8) - 一次输入产出的完整学习单元: 知识图谱 + 关卡集.
+    """学习旅程 - 一次输入产出的完整学习单元: 知识图谱 + 关卡集.
 
-    graph 为管道原始产出快照 (含管道临时 id), 供 Issue 07 契约验证与审计;
+    graph 为管道原始产出快照 (含管道临时 id), 供契约验证与审计;
     权威结构 = charplot_chapter / charplot_knowledge_point 规范化表 (API 返回).
     """
 
@@ -134,14 +134,14 @@ class CharplotJourney(models.Model):
         max_length=16, choices=InputType.choices, verbose_name="输入类型"
     )
     content = models.TextField(blank=True, verbose_name="输入内容")
-    # text/link 存原文; file 输入为空 (文件内容解析是 Issue 07)
+    # text/link 存原文; file 输入为空 (文件内容解析在管道侧)
     source_file = models.FileField(
         upload_to=journey_file_upload_to,
         blank=True,
         null=True,
         verbose_name="源文件",
     )
-    # Issue 11: 知识库驱动旅程 (input_type="kb") 关联的知识库; 非 kb 旅程为空.
+    # 知识库驱动旅程 (input_type="kb") 关联的知识库; 非 kb 旅程为空.
     # 软删知识库 SET_NULL 保留旅程历史 (删除知识库不连带删用户旅程)
     knowledge_base = models.ForeignKey(
         "CharplotKnowledgeBase",
@@ -164,7 +164,7 @@ class CharplotJourney(models.Model):
     )
     # 任务结束时经内部端点写入; 生成中由前端内存态持有 (route query)
     cleared = models.BooleanField(default=False, verbose_name="是否已通关")
-    # 本票无关卡系统, 默认 False; Issue 05 通关结算时置 True
+    # 当前无关卡系统, 默认 False; 通关结算时置 True
     error_message = models.TextField(blank=True, verbose_name="失败原因")
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
     updated_at = models.DateTimeField(auto_now=True, verbose_name="更新时间")
@@ -186,7 +186,7 @@ class CharplotJourney(models.Model):
 
 
 class CharplotChapter(models.Model):
-    """章节 (SPEC §8) - 知识图谱的第一层分组, 末尾可挂 Boss 战 (二期)."""
+    """章节 - 知识图谱的第一层分组, 末尾可挂 Boss 战 (二期)."""
 
     journey = models.ForeignKey(
         CharplotJourney,
@@ -215,10 +215,10 @@ class CharplotChapter(models.Model):
 
 
 class CharplotKnowledgePoint(models.Model):
-    """知识点 (SPEC §8) - 图谱原子节点.
+    """知识点 - 图谱原子节点.
 
     prerequisites 自引用 M2M 构成前置依赖有向图, 是技能树 / 关卡 / 间隔复习的
-    锚点; error_score 为易错分 (答错 +2 / 答对 -1, 下限 0), Issue 05 结算更新.
+    锚点; error_score 为易错分 (答错 +2 / 答对 -1, 下限 0), 结算时更新.
     """
 
     chapter = models.ForeignKey(
@@ -241,7 +241,7 @@ class CharplotKnowledgePoint(models.Model):
     last_reviewed_at = models.DateTimeField(
         null=True, blank=True, verbose_name="最近复习时间"
     )
-    # Issue 08 间隔复习调度: 复习题被混入新关时更新, 参与时间衰减排序
+    # 间隔复习调度: 复习题被混入新关时更新, 参与时间衰减排序
 
     class Meta:
         db_table = "charplot_knowledge_point"
@@ -254,16 +254,16 @@ class CharplotKnowledgePoint(models.Model):
 
 
 class CharplotLevel(models.Model):
-    """关卡 (SPEC §8) - 挂知识点, 5-8 题, 3 分钟量级.
+    """关卡 - 挂知识点, 5-8 题, 3 分钟量级.
 
     进度持久化字段: hearts 为本关剩余心动值 (5 心, 答错 -1, 扣完需重开),
     current_index 为下一题下标 (0-based), 通关 = cleared. 中途退出再进
     按这两个字段断点续答; 重开 = hearts/current_index 重置, 历史 Attempt 保留.
 
-    Issue 08 渐进生成: questions_status 为题目生成状态机 (pending → generating
+    渐进生成: questions_status 为题目生成状态机 (pending → generating
     → ready / failed), 题目由 FastAPI 任务生成后经内部端点落库; seq 为旅程内
     全局序号 (boss 关无知识点, 排序不依赖 kp). level_type=boss 为章节末尾
-    高难度混合题型关 (G-5), 通关才可进入下一章.
+    高难度混合题型关, 通关才可进入下一章.
     """
 
     class LevelType(models.TextChoices):
@@ -326,7 +326,7 @@ class CharplotLevel(models.Model):
         db_table = "charplot_level"
         verbose_name = "CharPlot 关卡"
         verbose_name_plural = verbose_name
-        # 知识点与关卡 1:N (大知识点拆多关, Issue 08 间隔复习), 允许重复
+        # 知识点与关卡 1:N (大知识点拆多关, 间隔复习), 允许重复
         indexes = [
             models.Index(
                 fields=["journey", "knowledge_point"],
@@ -344,12 +344,12 @@ class CharplotLevel(models.Model):
 
 
 class CharplotQuestion(models.Model):
-    """题目 (SPEC §8) - 选择 / 判断 / 填空; 含预生成讲解与来源引用位.
+    """题目 - 选择 / 判断 / 填空; 含预生成讲解与来源引用位.
 
     options 仅选择/判断类型使用 (判断 = 固定 [对, 错] 选项, 由前端内置);
     answer 存 JSON: 选择 = 正确选项下标 int, 判断 = "true"/"false", 填空 =
     可接受答案字符串数组 (归一化后模糊匹配). sources 为来源引用数组,
-    Issue 08 真实管道填充, 本票 stub 留空占位.
+    真实管道生成后填充, 当前 stub 留空占位.
     """
 
     class QuestionType(models.TextChoices):
@@ -380,7 +380,7 @@ class CharplotQuestion(models.Model):
         blank=True,
         verbose_name="来源知识点",
     )
-    # Issue 08 间隔复习: 复制历史题到新关时指向来源知识点, 答错易错分
+    # 间隔复习: 复制历史题到新关时指向来源知识点, 答错易错分
     # 记在来源上 (否则来源 kp 易错分永远降不下来, 永远在复习候选 Top 20%)
     order = models.PositiveIntegerField(default=0, verbose_name="序号")
 
@@ -412,13 +412,13 @@ def kb_document_upload_to(instance, filename):
 
 
 class CharplotKnowledgeBase(models.Model):
-    """知识库 (SPEC §8) - 1 库 1 主题 (Q19), 管理员预建, 用户点击直达开旅程.
+    """知识库 - 1 库 1 主题, 管理员预建, 用户点击直达开旅程.
 
     主题字段: 名称 / 描述 / 封面 (cover 存图片 URL, 契约 {name, desc, cover}
-    为 JSON, 避免图片上传的 multipart 复杂度). 状态机 (SPEC §6.1):
+    为 JSON, 避免图片上传的 multipart 复杂度). 状态机:
     draft → indexing → ready, failed 可重试, ready 可手动下线 (offline),
-    offline 恢复上线回到 ready. 任何变更触发全量重建 (Q18b): ready 也可
-    重新索引. collection_name 为 Milvus collection 配置预留 (Issue 10),
+    offline 恢复上线回到 ready. 任何变更触发全量重建: ready 也可
+    重新索引. collection_name 为 Milvus collection 配置预留,
     创建时生成, 全量重建沿用同名 collection.
     """
 
@@ -441,7 +441,7 @@ class CharplotKnowledgeBase(models.Model):
     collection_name = models.CharField(
         max_length=128, blank=True, verbose_name="Milvus collection 名称"
     )
-    # Issue 10 索引时按此名建 collection/入库; 创建时生成 cp_kb_{id}
+    # 索引时按此名建 collection/入库; 创建时生成 cp_kb_{id}
     latest_task_id = models.CharField(
         max_length=64, blank=True, verbose_name="最近索引任务 ID"
     )
@@ -460,11 +460,11 @@ class CharplotKnowledgeBase(models.Model):
 
 
 class CharplotKnowledgeBaseDocument(models.Model):
-    """知识库文档 (SPEC §8) - 文件记录, is_deleted 软删标记 (Q18c).
+    """知识库文档 - 文件记录, is_deleted 软删标记.
 
-    软删除: 列表隐藏 + 可恢复; Issue 10 检索时 filter 排除 (Django 软删标记
+    软删除: 列表隐藏 + 可恢复; 检索时 filter 排除 (Django 软删标记
     + Milvus metadata 有效标记), 重建时物理剔除. 磁盘文件软删后保留,
-    物理删除发生在重建 (Issue 10) 或管理员明确清理时.
+    物理删除发生在重建或管理员明确清理时.
     """
 
     knowledge_base = models.ForeignKey(
@@ -497,11 +497,11 @@ class CharplotKnowledgeBaseDocument(models.Model):
 
 
 class CharplotReviewReport(models.Model):
-    """复盘报告 (SPEC §8) - 通关总结, 公开链接页可分享 (Issue 06).
+    """复盘报告 - 通关总结, 公开链接页可分享.
 
     旅程全部关卡通关时由服务层生成并落库快照: 知识总结 (章节 → 知识点)
     + 答题统计 (生成时点从 Attempt 聚合, 与事实表一致). 快照生成后不可变,
-    分享页只读展示; slug 不可猜测 → 内容不可篡改 (PRD E-2).
+    分享页只读展示; slug 不可猜测 → 内容不可篡改.
 
     og_image 为 Pillow 绘制的社交卡片 PNG 相对 URL (media 下); 生成失败时
     为空串 (OG 卡片仅标题/摘要, 不阻塞报告).
@@ -541,12 +541,12 @@ class CharplotReviewReport(models.Model):
 
 
 class CharplotQuestionFlag(models.Model):
-    """题目反馈标记 (SPEC §7.3 ③ 幻觉防护第三层, Issue 14).
+    """题目反馈标记 (幻觉防护第三层).
 
     答题页「题目有问题」入口的落库记录: 题目 + 用户 + 可选原因, 是内容
     质量信号 (管理员侧列表/计数可见). reason 为可选预设原因 (choices),
     不选 = 仅标记无原因; unique_together 保证同一用户对同一题只留一条
-    记录 (重复标记幂等去重, 验收标准 4).
+    记录 (重复标记幂等去重).
     """
 
     class Reason(models.TextChoices):
@@ -600,7 +600,7 @@ class CharplotQuestionFlag(models.Model):
 
 
 class CharplotAttempt(models.Model):
-    """答题记录 (SPEC §8) - 逐题事实, 统计与分析的事实源.
+    """答题记录 - 逐题事实, 统计与分析的事实源.
 
     关卡重开产生新记录, 历史 Attempt 保留不覆盖 (掌握度分析需要历史事实);
     不做唯一约束. user_answer 存用户原始作答 (填空原文 / 选项下标 / 判断值),

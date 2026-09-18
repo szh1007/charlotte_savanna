@@ -1,4 +1,4 @@
-"""检索源测试 (Issue 07, SPEC §7.1 可插拔源抽象).
+"""检索源测试 (可插拔源抽象).
 
 覆盖: 按配置构建 (Tavily 无 key 降级 / 材料非空才挂文档源) / 文档源
 关键词命中与回退 / Context7 响应切分与来源 URL 提取 / 知识库预留源空.
@@ -40,7 +40,7 @@ def test_build_sources_skips_document_without_material(monkeypatch):
 
 
 def test_build_sources_kb_id_returns_only_kb_source(monkeypatch):
-    """知识库旅程 (Issue 11): kb_id 非空时仅注册 KbSource, 不联网/不带文档源."""
+    """知识库旅程: kb_id 非空时仅注册 KbSource, 不联网/不带文档源."""
     from project.charplot.api import config
     from project.charplot.pipeline.sources.kb_source import KbSource
 

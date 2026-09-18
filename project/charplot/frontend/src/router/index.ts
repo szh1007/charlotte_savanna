@@ -1,4 +1,4 @@
-// 路由表 + 守卫 (Issue 02): /profile 需登录, /login /register 仅游客.
+// 路由表 + 守卫: /profile 需登录, /login /register 仅游客.
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuth } from '@/stores/auth'
 
@@ -31,42 +31,42 @@ const router = createRouter({
       meta: { requiresAuth: true },
     },
     {
-      // 闯关地图 (Issue 04): 技能树可视化 + 点亮状态 + 关卡入口
+      // 闯关地图: 技能树可视化 + 点亮状态 + 关卡入口
       path: '/journeys/:id/map',
       name: 'journey-map',
       component: () => import('@/views/SkillTreeMap.vue'),
       meta: { requiresAuth: true },
     },
     {
-      // 关卡入口 (Issue 05): 关卡列表 + 状态/进度
+      // 关卡入口: 关卡列表 + 状态/进度
       path: '/journeys/:id/levels',
       name: 'level-list',
       component: () => import('@/views/LevelList.vue'),
       meta: { requiresAuth: true },
     },
     {
-      // 答题页 (Issue 05): 答题 → 反馈 → 结算/重开, 断点续答
+      // 答题页: 答题 → 反馈 → 结算/重开, 断点续答
       path: '/journeys/:id/levels/:levelId',
       name: 'level-quiz',
       component: () => import('@/views/QuizView.vue'),
       meta: { requiresAuth: true },
     },
     {
-      // 复盘报告页 (Issue 06): 知识总结 + 答题表现 + 公开分享链接
+      // 复盘报告页: 知识总结 + 答题表现 + 公开分享链接
       path: '/journeys/:id/report',
       name: 'journey-report',
       component: () => import('@/views/ReportView.vue'),
       meta: { requiresAuth: true },
     },
     {
-      // 知识库管理页 (Issue 09): 管理员预建主题知识库 (创建/上传/索引/下线)
+      // 知识库管理页: 管理员预建主题知识库 (创建/上传/索引/下线)
       path: '/admin/kb',
       name: 'kb-manage',
       component: () => import('@/views/KBManage.vue'),
       meta: { requiresAuth: true, requiresStaff: true },
     },
     {
-      // 学习分析 Dashboard (Issue 12): 掌握度矩阵 + 活动统计 + 易错清单
+      // 学习分析 Dashboard: 掌握度矩阵 + 活动统计 + 易错清单
       path: '/dashboard',
       name: 'dashboard',
       component: () => import('@/views/Dashboard.vue'),

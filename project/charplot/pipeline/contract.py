@@ -1,4 +1,4 @@
-"""图谱契约校验与类型 (CONTRACT.md v1, Issue 07).
+"""图谱契约校验与类型 (v1).
 
 与 Django 侧 app/charplot/services.py::validate_graph 逻辑一致 (权威校验
 在 Django 落库端点), 此处为 FastAPI 侧本地快速校验: LLM 解构输出立即
@@ -19,13 +19,13 @@ CONTRACT_VERSION = 1
 
 
 class KnowledgePoint(BaseModel):
-    """知识点: 原子节点 + 前置依赖边 + 来源引用 (07 追加字段)."""
+    """知识点: 原子节点 + 前置依赖边 + 来源引用 (v1 追加字段)."""
 
     id: str
     title: str
     summary: str = ""
     prerequisites: list[str] = Field(default_factory=list)
-    # v1 追加字段 (CONTRACT.md §1 扩展位): 来源引用, 落库端不校验未知字段
+    # v1 追加字段 (扩展位): 来源引用, 落库端不校验未知字段
     sources: list[str] = Field(default_factory=list)
 
 

@@ -91,7 +91,7 @@ def clean_state():
     # 停止并 join 任务调度线程 + 已派发 worker: 跨测试存活的调度线程会
     # 继续派发任务, 残留 worker 的子任务线程 (如取消任务中轮询等待的转录
     # 线程) 可能在上一测试 monkeypatch 撤销后运行 (读到真实 MODELS_DIR /
-    # 真实 asr), 导致真实下载与状态串扰 (ADR-0006 测试稳定性). join 在
+    # 真实 asr), 导致真实下载与状态串扰 (测试稳定性). join 在
     # _active 重置前: 残留 worker 收尾的槽位释放减到旧值, 重置后归零
     tm.manager.stop_scheduler()
     if tm.manager._scheduler is not None:
@@ -99,12 +99,12 @@ def clean_state():
     tm.manager.join_workers(timeout=1.0)
     tm.manager._tasks.clear()
     tm.manager._seq = 0
-    tm.manager._active = {False: 0, True: 0}  # 免费/会员并发槽占用 (T05 按身份拆分)
+    tm.manager._active = {False: 0, True: 0}  # 免费/会员并发槽占用 (按身份拆分)
     member_manager._sessions.clear()
-    daily_quota._usages.clear()  # 每日配额计数 (ADR-0005): 测试间隔离
+    daily_quota._usages.clear()  # 每日配额计数: 测试间隔离
     with bus._lock:  # 测试中断时 collector 可能未关闭, 清理订阅防串扰
         bus._subs.clear()
-    # 模型下载状态机重置 (ADR-0006): 残留的 downloading/ready 状态不串扰
+    # 模型下载状态机重置: 残留的 downloading/ready 状态不串扰
     # (线程句柄保留: is_alive() 判定防双线程; 旧线程收尾的状态覆盖无害,
     # 下次 status()/download() 以文件为准重新同步)
     model_dl.model_downloader._status = model_dl.STATUS_MISSING
@@ -119,7 +119,7 @@ def client():
 
 @pytest.fixture(autouse=True)
 def model_assets(monkeypatch, tmp_path):
-    """模型资产目录隔离 (ADR-0006): MODELS_DIR/SUBTITLES_DIR 指向 tmp 目录.
+    """模型资产目录隔离: MODELS_DIR/SUBTITLES_DIR 指向 tmp 目录.
 
     预置 ready 模型文件 (config.yaml + model.pt): 现有 ASR 回退路径测试
     依赖模型就绪才能走到转写 (缺失会 failed「请先下载模型」), ready 以
@@ -201,7 +201,7 @@ def fake_download(monkeypatch, tmp_path):
                 }
             )
         release.wait(timeout=5.0)
-        # 文件名派生自档位, 贴近生产 outtmpl (同测试多任务产出独立文件, T06)
+        # 文件名派生自档位, 贴近生产 outtmpl (同测试多任务产出独立文件)
         path = tmp_path / f"{format_id}.mp4"
         path.write_bytes(b"fake-video-content")
         if progress_hook:

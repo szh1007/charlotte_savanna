@@ -1,4 +1,4 @@
-"""文档切分 (Issue 10, SPEC §7.2) - chunk_size/overlap 按文档类型调优.
+"""文档切分 - chunk_size/overlap 按文档类型调优.
 
 输入: 解析后的纯文本 (pipeline/parsers.py 产出) + 来源元数据; 输出:
 chunk 列表 [{doc_id, title, filename, chunk_index, content, valid}],
@@ -69,7 +69,7 @@ def split_document(
 
     每 chunk 携带 metadata: doc_id/title/filename (来源引用),
     chunk_index (文档内序号), valid=True (有效标记, 软删 filter 兜底;
-    Issue 10 重建物理剔除即 valid 恒 True).
+    重建物理剔除即 valid 恒 True).
     """
     text = text.strip()
     if not text:

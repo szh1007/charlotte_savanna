@@ -126,7 +126,7 @@ charlotte_savanna/
 
 ### video_downloader — B 站视频下载站（子项目）
 
-基于 **FastAPI + yt-dlp + Vue 3** 的哔哩哔哩免费视频下载网站，实践「文档先行（CONTEXT/ADR/PRD）→ 分步实现 → 测试验收」工程模式。
+基于 **FastAPI + yt-dlp + Vue 3** 的哔哩哔哩免费视频下载网站，实践「文档先行 → 分步实现 → 测试验收」工程模式。
 
 - **下载流程**：粘贴链接 → 解析清晰度档位 → 批量下载（队列顺序执行 + 并发槽调度）→ 临时直链交付
 - **无数据库**：任务 / 队列 / 会员会话全部内存态，交付文件 TTL 到期自动清理；仅支持 B 站免费公开视频（URL 白名单校验）
@@ -158,7 +158,7 @@ charlotte_savanna/
 
 ### charplot — AI 闯关学习网站（双后端子项目）
 
-输入想学的知识（一句话 / 文档 / 网页 / 管理员预建知识库）→ AI 自动获取并解构成技能树图谱 → 渐进生成闯关题目 → 游戏化答题（心动值 / 连胜 / XP）→ 通关复盘可分享。实践「Django 状态端 + FastAPI AI 能力端」双后端微服务与 LangGraph / DeepAgents / LangChain 三件套分工（文档先行模式：CONTEXT / CONTRACT / DESIGN / QA + 4 个 ADR + 14 个 Issue tickets）。
+输入想学的知识（一句话 / 文档 / 网页 / 管理员预建知识库）→ AI 自动获取并解构成技能树图谱 → 渐进生成闯关题目 → 游戏化答题（心动值 / 连胜 / XP）→ 通关复盘可分享。实践「Django 状态端 + FastAPI AI 能力端」双后端微服务与 LangGraph / DeepAgents / LangChain 三件套分工。
 
 - **知识管道（LangGraph）**：解析（txt/md/html/pdf/docx/pptx/网页链接）→ LLM 主内容分析 → 联网搜索增强（Tavily / Context7 / 文档 / 知识库检索源可插拔）→ 图谱解构（章节 → 知识点 + 前置依赖边）
 - **闯关规则（Django 纯规则, 无 LLM）**：判分（选择/判断/填空三题型）/ 5 心动值安全失败 / 断点续答重开 / XP 等级 / 连胜冻结 / 间隔复习混入 Top 20% 易错题（易错分 × 时间衰减）

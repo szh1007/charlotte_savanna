@@ -1,11 +1,11 @@
-"""知识库检索源 (Issue 10 接入, SPEC §7.1) - Milvus 混合检索 + rerank.
+"""知识库检索源 - Milvus 混合检索 + rerank.
 
 实现 SearchSource 协议: KbSource(kb_id) 按知识库检索, 返回统一
 SearchResult (content=片段原文, metadata 带来源/doc_id/chunk_index,
-供解构/出题引用与来源展示, QA.md Q7). 检索链路在 rag/retriever.py
+供解构/出题引用与来源展示). 检索链路在 rag/retriever.py
 (rewrite → 混合检索 + 软删过滤 → rerank), 本类只做协议适配.
 
-接入方式: 知识库驱动旅程 (Issue 11) 时在 build_sources 注册
+接入方式: 知识库驱动旅程时在 build_sources 注册
 KbSource(journey 的 kb_id); 当前可独立实例化调用 (调试/接口测试).
 检索失败 (Milvus/Django 不可达) 抛 RuntimeError, 由调用方降级.
 """

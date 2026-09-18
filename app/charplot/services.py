@@ -1,6 +1,6 @@
-"""CharPlot 游戏化 / 统计 / 旅程 / 闯关服务层 (Issue 02 / 03 / 05 / 06).
+"""CharPlot 游戏化 / 统计 / 旅程 / 闯关服务层.
 
-规则参数集中配置 (DESIGN.md §5); 日期一律用 timezone.localdate() 保证
+规则参数集中配置; 日期一律用 timezone.localdate() 保证
 Asia/Shanghai 自然日语义 (USE_TZ=True). 所有函数支持 today 参数注入,
 便于测试免 mock 时钟.
 """
@@ -37,30 +37,30 @@ FREEZE_COIN_COST = 10  # 兑换 1 天连胜冻结所需学习币
 FREEZE_DAYS = 1  # 每次兑换冻结天数
 
 JOURNEY_TITLE_MAX = 40  # 列表卡展示标题截断长度
-JOURNEY_GRAPH_VERSION = 1  # 图谱契约版本 (CONTRACT.md, 只增不改)
+JOURNEY_GRAPH_VERSION = 1  # 图谱契约版本 (只增不改)
 
-# ---- 闯关 / 游戏化规则 (DESIGN §5, SPEC §9) ----
+# ---- 闯关 / 游戏化规则 ----
 MAX_HEARTS = 5  # 每关心动值上限, 答错 -1, 扣完本关重开
 ANSWER_CORRECT_XP = 10  # 答对即时 XP
 LEVEL_CLEAR_XP = 50  # 通关奖励 XP
 LEVEL_CLEAR_COINS = 15  # 通关奖励学习币
 ERROR_SCORE_WRONG = 2  # 易错分: 答错 +2
 ERROR_SCORE_RIGHT = -1  # 易错分: 答对 -1
-LEVEL_QUESTION_MIN = 5  # 关卡题数范围 (PRD D-2)
+LEVEL_QUESTION_MIN = 5  # 关卡题数范围
 LEVEL_QUESTION_MAX = 8
 LEVEL_XP_THRESHOLDS = [0, 100, 250, 450, 700, 1000, 1400, 1800, 2300, 3000]
 # 等级 = 满足的档位数, 如 xp=0 → 1 级, xp=100 → 2 级
 
-# ---- 题目渐进生成 / 间隔复习 / Boss (Issue 08, DESIGN §5, SPEC §9) ----
+# ---- 题目渐进生成 / 间隔复习 / Boss ----
 LEVEL_QUESTION_TARGET = 6  # 常规关目标题数 (5-8 范围)
 BOSS_QUESTION_COUNT = 8  # Boss 关题数 (= LEVEL_QUESTION_MAX)
 REVIEW_RATIO = 0.2  # 间隔复习混入比例 (Top 20% 历史易错知识点)
 REVIEW_NEVER_DAYS = 30  # 从未复习按 30 天计 (时间衰减上界)
 GENERATION_STALE_MINUTES = 10  # 生成中状态陈旧超时 (任务丢失后可重新抢占)
 
-# ---- 知识库 (Issue 09, SPEC §6.1 / §8, Q18b/c) ----
+# ---- 知识库 ----
 KB_ALLOWED_EXTENSIONS = frozenset({".pdf", ".docx", ".pptx", ".md", ".txt", ".html"})
-# 文档格式白名单 (与 PRD B-1 输入形态一致, 解析器按扩展名选型于 Issue 10)
+# 文档格式白名单 (解析器按扩展名选型)
 KB_MAX_FILE_SIZE_MB = 20  # 单文档大小上限
 KB_COLLECTION_PREFIX = "cp_kb_"  # Milvus collection 命名前缀 (创建时生成)
 KB_INDEX_STALE_MINUTES = 10  # 索引中状态陈旧超时 (任务丢失后可重新抢占)
@@ -109,7 +109,7 @@ def count_login_days(user):
 
 
 def buy_streak_freeze(profile, today=None):
-    """学习币兑换连胜冻结 (DESIGN §5): 扣币 + 冻结顺延, 可叠加.
+    """学习币兑换连胜冻结: 扣币 + 冻结顺延, 可叠加.
 
     冻结未过期则从现有 freeze_until 顺延, 已过期则从今天起算, 防止越兑越短.
     币不足抛 InsufficientCoinsError.
@@ -166,7 +166,7 @@ def get_streak_loss_warning(profile, today=None):
 def settle_streak_on_login(profile, today=None):
     """登录时惰性连胜归零判定: 断连才动, 不学习不动.
 
-    last_study_date == today → 今天已学习, 学习结算 (Issue 05) 已处理, 跳过;
+    last_study_date == today → 今天已学习, 学习结算已处理, 跳过;
     冻结保护期内豁免归零; 间隔 > 1 天且冻结已过期 → streak 归零 (max_streak
     保留历史峰值). 判定纯读状态且幂等, 未学习日重复登录重复执行无副作用.
     """
@@ -183,7 +183,7 @@ def settle_streak_on_login(profile, today=None):
 
 
 def build_profile_stats(user):
-    """统计面板 (DESIGN §4.1): 事实表聚合, 与 Attempt / 用户事件一致 (SPEC §8).
+    """统计面板: 事实表聚合, 与 Attempt / 用户事件一致.
 
     登录天数 = LOGIN 事件按日去重; 答题对错 = attempt 逐条计数; 通关数 =
     LEVEL_CLEAR 事件计数 (同一关多次通关按事件行计, 与结算行为一致).
@@ -205,7 +205,7 @@ def build_profile_stats(user):
 
 
 # ---------------------------------------------------------------------------
-# 旅程 (Issue 03)
+# 旅程
 # ---------------------------------------------------------------------------
 
 
@@ -215,7 +215,7 @@ class JourneyGraphError(ValueError):
 
 def derive_journey_title(input_type, content="", filename="", knowledge_base=None):
     """从输入推导旅程标题: text/link 取内容首行截断, file 取去扩展名文件名,
-    kb (Issue 11) 取知识库名."""
+    kb 取知识库名."""
     if input_type == CharplotJourney.InputType.KB and knowledge_base:
         return knowledge_base.name[:JOURNEY_TITLE_MAX]
     if input_type == CharplotJourney.InputType.FILE and filename:
@@ -232,7 +232,7 @@ def derive_journey_title(input_type, content="", filename="", knowledge_base=Non
 def create_journey(user, input_type, content, source_file=None, knowledge_base=None):
     """创建旅程: status=generating, title 由输入推导, 源文件/知识库一并落库.
 
-    Issue 11: kb 旅程挂 knowledge_base (input_type=kb 时由 serializer 校验
+    kb 旅程挂 knowledge_base (input_type=kb 时由 serializer 校验
     就绪状态后传入), 供详情页展示与管道解析. 服务层防御性复校验 (覆盖
     serializer 校验后知识库被下线/删除的竞态, 权威校验在服务层).
     """
@@ -255,7 +255,7 @@ def create_journey(user, input_type, content, source_file=None, knowledge_base=N
 
 
 def validate_graph(graph):
-    """图谱契约校验 (CONTRACT.md v1), 失败抛 JourneyGraphError.
+    """图谱契约校验 (v1), 失败抛 JourneyGraphError.
 
     校验项: 顶层 version/title/chapters; 章节 ≥1 且 id/title 必填;
     每章知识点 ≥1 且 id/title 必填; 临时 id 全局唯一; prerequisites 引用
@@ -299,10 +299,10 @@ def validate_graph(graph):
 
 
 def save_journey_graph(journey, task_id, graph):
-    """图谱落库 (CONTRACT.md): 先删后建, 事务内原子完成.
+    """图谱落库: 先删后建, 事务内原子完成.
 
     幂等性: 重试只会发生在 failed 旅程 (无答题数据, Attempt/Level 是
-    Issue 05 产物), 删除重建不产生重复行; 若未来对 ready 旅程重生成
+    答题结算产物), 删除重建不产生重复行; 若未来对 ready 旅程重生成
     (涉及保留 error_score), 届时再评估更新策略.
     """
     validate_graph(graph)
@@ -357,19 +357,19 @@ def mark_journey_failed(journey, task_id, error_message):
 
 
 # ---------------------------------------------------------------------------
-# 技能树 (Issue 04)
+# 技能树
 # ---------------------------------------------------------------------------
 
 # 技能树节点状态枚举 (skill-tree 接口输出, 前端 SkillNode 消费):
-# locked=依赖未满足锁定 / unlocked=可解锁 / in_progress=进行中(Issue 05) /
+# locked=依赖未满足锁定 / unlocked=可解锁 / in_progress=进行中 /
 # cleared=已通关点亮
 SKILL_STATUS = ("locked", "unlocked", "in_progress", "cleared")
 
 
 def _kp_status(prereq_ids, cleared_kp_ids):
-    """知识点点亮状态 (PRD D-1): 依赖全部通关才解锁, 否则锁定.
+    """知识点点亮状态: 依赖全部通关才解锁, 否则锁定.
 
-    纯函数便于测试: 调用方把已通关知识点 id 集合 (Issue 05 由通关结算
+    纯函数便于测试: 调用方把已通关知识点 id 集合 (由通关结算
     产出) 注入, 本期无关卡数据时传空集 → 有前置依赖的知识点一律锁定.
     """
     if prereq_ids and not set(prereq_ids) <= set(cleared_kp_ids):
@@ -378,13 +378,13 @@ def _kp_status(prereq_ids, cleared_kp_ids):
 
 
 def build_skill_tree(journey, cleared_kp_ids=None):
-    """技能树图数据 (DESIGN §4.1, GET /api/charplot/journeys/{id}/skill-tree).
+    """技能树图数据 (GET /api/charplot/journeys/{id}/skill-tree).
 
     返回 {nodes, edges}: nodes 为知识点节点 (章节归属 + 点亮状态 + 关卡进度
     合并字段), edges 为前置依赖边 (source → target, DAG). 前端据此渲染
     闯关地图 (vue-flow + dagre 布局).
 
-    关卡数据从 journey.levels 聚合 (Issue 05): cleared_kp_ids 缺省时由已通关
+    关卡数据从 journey.levels 聚合: cleared_kp_ids 缺省时由已通关
     关卡推导, 进度徽章 cleared_levels/total_levels 按知识点合并; 某知识点
     有关卡进行中 (未通关但已作答/已扣心) 时节点状态为 in_progress.
     """
@@ -435,7 +435,7 @@ def build_skill_tree(journey, cleared_kp_ids=None):
 
 
 # ---------------------------------------------------------------------------
-# 闯关答题 (Issue 05)
+# 闯关答题
 # ---------------------------------------------------------------------------
 
 
@@ -475,7 +475,7 @@ def level_status(level):
 
 
 def normalize_answer(text):
-    """填空归一化 (DESIGN §5 判分规则): NFKC 全角→半角 + 去空白 + 小写."""
+    """填空归一化 (判分规则): NFKC 全角→半角 + 去空白 + 小写."""
     normalized = unicodedata.normalize("NFKC", str(text or "")).strip()
     return "".join(normalized.split()).lower()
 
@@ -483,17 +483,17 @@ def normalize_answer(text):
 # stub 题目干扰项兜底词 (章节/知识点不足时填充选项)
 _STUB_DISTRACTORS = ("核心概念", "基础理论", "实践技巧")
 
-# 关卡题数 (5-8 范围, PRD D-2)
+# 关卡题数 (5-8 范围)
 _STUB_QUESTION_COUNT = 6
 
 
 def _stub_questions(level, journey):
-    """确定性 stub 题目 (Issue 05; Issue 08 真实生成替换).
+    """确定性 stub 题目 (真实生成后替换).
 
     6 题 = 选择 2 + 判断 2 + 填空 1 + 判断 1 (简单收尾): 由浅入深
-    (识别 → 回忆, PRD D-2), 填空中后段难度峰值, 简单判断题收尾保成功感.
+    (识别 → 回忆), 填空中后段难度峰值, 简单判断题收尾保成功感.
     内容基于图谱内知识点/章节标题派生, 讲解自洽; sources 留空为来源引用位
-    (Issue 08 填充). 同一旅程重复生成结果一致 (重开同题).
+    (真实生成时填充). 同一旅程重复生成结果一致 (重开同题).
     """
     kp = level.knowledge_point
     chapter = kp.chapter
@@ -587,10 +587,10 @@ def _stub_questions(level, journey):
 
 
 def ensure_levels_for_journey(journey):
-    """为无关卡的知识点创建关卡 (Issue 08: 空关待生成, 题目由 FastAPI 任务生成).
+    """为无关卡的知识点创建关卡 (空关待生成, 题目由 FastAPI 任务生成).
 
     幂等: 已有关卡的知识点跳过 (常规关); 每章末尾补 1 个 Boss 关
-    (level_type=boss, 覆盖整章知识点, G-5). seq 按 (章节 order, 知识点 order)
+    (level_type=boss, 覆盖整章知识点). seq 按 (章节 order, 知识点 order)
     从 1 递增, boss 关 seq 紧随章内常规关; 图谱重生成后新增知识点自动补关.
     返回新创建的关卡列表.
     """
@@ -641,7 +641,7 @@ def ensure_levels_for_journey(journey):
 
 
 def level_locked(level):
-    """Boss 解锁规则 (G-5): 通关才可进入下一章.
+    """Boss 解锁规则: 通关才可进入下一章.
 
     - 常规关: 上一章 (order-1) 的 Boss 关存在且未通关 → locked
     - Boss 关: 本章常规关存在未通关 → locked; 或上一章 Boss 未通关 → locked
@@ -685,9 +685,9 @@ def _kp_info(kp):
 
 
 def _review_candidates(journey, exclude_kp_ids, today):
-    """间隔复习候选 (DESIGN §5): error_score>0 的知识点按「易错分与时间衰减」排序.
+    """间隔复习候选: error_score>0 的知识点按「易错分与时间衰减」排序.
 
-    时间衰减: 距上次复习越久越优先 (CONTEXT Q11), 从未复习按
+    时间衰减: 距上次复习越久越优先, 从未复习按
     REVIEW_NEVER_DAYS 天计; priority = error_score * (days + 1),
     排序 priority 降序 → error_score 降序 → id 升序 (确定性 tie-break).
     """
@@ -960,7 +960,7 @@ def mark_level_generation_failed(level, task_id, error_message):
 
 
 def check_answer(question, user_answer):
-    """判分 (DESIGN §5): 选择/判断精确匹配, 填空归一化模糊匹配.
+    """判分: 选择/判断精确匹配, 填空归一化模糊匹配.
 
     user_answer 为 JSON 数组 (与 answer 同构): 选择 [下标 int], 判断
     ["true"/"false"], 填空 [原文 str]. 格式不匹配一律判错, 不抛异常.
@@ -986,7 +986,7 @@ def level_from_xp(xp):
 
 
 def _update_streak_on_study(profile, today):
-    """学习日连胜结算 (PRD G-2): 昨天学过 → +1; 断连或首次 → 1; 今日已结算 → 不变.
+    """学习日连胜结算: 昨天学过 → +1; 断连或首次 → 1; 今日已结算 → 不变.
 
     max_streak 保留历史峰值; last_study_date 推进为今日 (登录惰性归零判定
     依赖此字段, 冻结期内学习同样推进).
@@ -1003,9 +1003,9 @@ def _update_streak_on_study(profile, today):
 
 
 def _settle_level_clear(level, profile, today):
-    """通关结算 (PRD D-5): XP + 学习币 + 连胜更新 + 事件落库 + 旅程点亮检查.
+    """通关结算: XP + 学习币 + 连胜更新 + 事件落库 + 旅程点亮检查.
 
-    旅程全部关卡通关后置 journey.cleared (CONTRACT.md §4); 返回 reward 载荷
+    旅程全部关卡通关后置 journey.cleared; 返回 reward 载荷
     供 API 透传前端结算动画.
     """
     profile.xp += LEVEL_CLEAR_XP
@@ -1026,7 +1026,7 @@ def _settle_level_clear(level, profile, today):
     ):
         journey.cleared = True
         journey.save(update_fields=["cleared", "updated_at"])
-        # 旅程全部通关 → 自动生成复盘报告 (Issue 06, 幂等, 与结算同事务)
+        # 旅程全部通关 → 自动生成复盘报告 (幂等, 与结算同事务)
         create_review_report(journey)
     return {
         "xp": LEVEL_CLEAR_XP,
@@ -1043,7 +1043,7 @@ def submit_answer(level, question_id, answer, duration=0, today=None):
 
     防重放: question_id 必须属于本关且是当前题 (current_index 定位), 否则抛
     LevelNotCurrentError; 已通关抛 LevelClearedError; 心扣完抛 LevelFailedError.
-    Issue 08 守卫: 题目未就绪抛 LevelNotReadyError; 未解锁 (前置章节 Boss 未
+    守卫: 题目未就绪抛 LevelNotReadyError; 未解锁 (前置章节 Boss 未
     通关) 抛 LevelLockedError. 答错扣关卡心 (扣完即本关失败, 不结算), 答对
     即时 +XP; 答完最后一题且还有剩余心 → 通关结算. 复习题 (source_kp) 答错
     易错分记来源知识点, 答对 -1 同理. 返回结构化结果 (serializer 直出).
@@ -1143,7 +1143,7 @@ def submit_answer(level, question_id, answer, duration=0, today=None):
 def restart_level(level):
     """重开关卡 (5 心扣完): 心与进度重置, 题目保持 (已生成题库).
 
-    Attempt 历史记录保留不覆盖 (掌握度分析的事实源, SPEC §8); profile.hearts
+    Attempt 历史记录保留不覆盖 (掌握度分析的事实源); profile.hearts
     同步重置回满.
     """
     user = level.journey.user
@@ -1157,7 +1157,7 @@ def restart_level(level):
 
 
 def flag_question(question, user, reason=""):
-    """题目反馈标记落库 (Issue 14, SPEC §7.3 ③).
+    """题目反馈标记落库.
 
     同一用户对同一题只保留一条记录 (unique_together), 重复标记幂等去重,
     返回 created=False 且不覆盖原记录 (含原 reason); reason 为空 = 仅标记
@@ -1172,7 +1172,7 @@ def flag_question(question, user, reason=""):
 
 
 # ---------------------------------------------------------------------------
-# 复盘报告 (Issue 06)
+# 复盘报告
 # ---------------------------------------------------------------------------
 
 REPORT_SLUG_LENGTH = 12  # 公开短链长度
@@ -1203,7 +1203,7 @@ def generate_report_slug():
 
 
 def build_report_stats(journey):
-    """答题统计快照 (PRD E-1): 从 Attempt 聚合, 与事实表逐条一致 (SPEC §8).
+    """答题统计快照: 从 Attempt 聚合, 与事实表逐条一致.
 
     返回总答题数/对/错/正确率(整数百分比)/总耗时 + 每关明细; 关卡重开的
     历史 Attempt 一并计入 (与 profile 统计同源, 掌握度分析需要历史事实).
@@ -1242,10 +1242,10 @@ def build_report_stats(journey):
 
 
 def build_knowledge_summary(journey):
-    """知识总结 (PRD E-1): 章节 → 知识点 (标题 + 概述).
+    """知识总结: 章节 → 知识点 (标题 + 概述).
 
     stub 阶段为图谱确定性聚合, 与 JourneyDetail 图谱同源 (LLM 文字总结
-    为 Issue 13, 接入后分享页同步增强, 快照结构不变).
+    接入后, 分享页同步增强, 快照结构不变).
     """
     chapters = []
     for chapter in journey.chapters.prefetch_related("knowledge_points").all():
@@ -1263,7 +1263,7 @@ def build_knowledge_summary(journey):
 
 
 def _report_og_texts(journey, stats):
-    """OG 标题/描述 (PRD E-2): 分享到社交平台卡片展示用."""
+    """OG 标题/描述: 分享到社交平台卡片展示用."""
     og_title = f"{journey.title} · 通关复盘"[:REPORT_TITLE_MAX]
     kp_count = CharplotKnowledgePoint.objects.filter(chapter__journey=journey).count()
     og_description = (
@@ -1318,7 +1318,7 @@ def render_og_image(report, journey, stats):
     except ImportError:
         return ""
     try:
-        # 粉色 → 浅紫竖向渐变 (B站粉主色 + 二次元柔和色系, DESIGN §6)
+        # 粉色 → 浅紫竖向渐变 (B站粉主色 + 二次元柔和色系)
         img = Image.new("RGB", (_OG_IMAGE_WIDTH, _OG_IMAGE_HEIGHT))
         top = (251, 114, 153)
         bottom = (201, 182, 228)
@@ -1367,10 +1367,10 @@ def render_og_image(report, journey, stats):
 
 
 def create_review_report(journey):
-    """旅程全部通关后生成复盘报告 (PRD E-1), 幂等: 已存在直接返回.
+    """旅程全部通关后生成复盘报告, 幂等: 已存在直接返回.
 
     由 _settle_level_clear 在事务内调用; OG 图文件 IO 异常已在 render 内
-    吞掉, 不污染通关结算事务. 快照生成后不可变 (分享页只读防篡改, E-2).
+    吞掉, 不污染通关结算事务. 快照生成后不可变 (分享页只读防篡改).
     """
     existing = CharplotReviewReport.objects.filter(journey=journey).first()
     if existing:
@@ -1394,7 +1394,7 @@ def create_review_report(journey):
 
 
 # ---------------------------------------------------------------------------
-# 知识库 (Issue 09, SPEC §6.1 / §8, PRD C-1~C-4)
+# 知识库
 # ---------------------------------------------------------------------------
 
 
@@ -1409,7 +1409,7 @@ class KnowledgeBaseStateError(KnowledgeBaseError):
 def validate_kb_document_file(uploaded_file):
     """文档格式校验 (扩展名白名单 + 大小上限), 非法抛 ValueError.
 
-    不信任 content_type (客户端可伪造), 以扩展名为准; Issue 10 解析器
+    不信任 content_type (客户端可伪造), 以扩展名为准; 解析器
     同样按扩展名选型. 返回规范化 basename (含扩展名, 供 title 展示).
     """
     filename = getattr(uploaded_file, "name", "") or ""
@@ -1428,8 +1428,8 @@ def validate_kb_document_file(uploaded_file):
 def create_knowledge_base(name, description="", cover=""):
     """创建知识库 (状态 draft) + 生成 Milvus collection 名称.
 
-    collection_name 依赖 pk, 分两步写; 全量重建沿用同名 collection
-    (Q18b), 名称对外不可变.
+    collection_name 依赖 pk, 分两步写; 全量重建沿用同名 collection,
+    名称对外不可变.
     """
     kb = CharplotKnowledgeBase.objects.create(
         name=name, description=description, cover=cover
@@ -1504,9 +1504,9 @@ def claim_kb_index(kb, task_id):
     """原子抢占索引任务 (select_for_update, 对齐 claim_level_generation).
 
     返回 (claimed, payload): claimed=True 时 payload 为文档清单 dict
-    ({"documents": [...]}, Issue 10 索引输入); 否则 payload 为拒绝理由:
+    ({"documents": [...]}, 索引输入); 否则 payload 为拒绝理由:
     {"reason": "indexing"|"offline"|"no_documents", "task_id"?}.
-    状态机 (SPEC §6.1): draft/failed/ready → indexing (ready 为全量重建);
+    状态机: draft/failed/ready → indexing (ready 为全量重建);
     indexing 非陈旧拒绝 (并发幂等), 陈旧 (任务丢失) 允许重新抢占;
     offline 拒绝 (需先恢复上线); 无有效文档拒绝 (防止"就绪但零内容").
     """

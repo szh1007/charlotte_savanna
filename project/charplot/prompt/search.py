@@ -1,4 +1,4 @@
-"""联网搜索增强 prompt (Issue 07 阶段 3: searching).
+"""联网搜索增强 prompt (阶段 3: searching).
 
 DeepAgents 检索 subagent 的系统提示: 自主决定调用哪些检索源工具,
 每个查询结束后返回结构化检索报告 (response_format 约束输出).

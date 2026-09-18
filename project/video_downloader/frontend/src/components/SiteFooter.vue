@@ -1,6 +1,6 @@
 <script setup>
-// 页脚 (T09): 品牌简介 + 版权免责声明
-// 仅个人学习使用 / 不破解 DRM / 封号风险自担 / 尊重版权 (PRD §10.7)
+// 页脚: 品牌简介 + 版权免责声明
+// 仅个人学习使用 / 不破解 DRM / 封号风险自担 / 尊重版权
 const year = new Date().getFullYear()
 </script>
 

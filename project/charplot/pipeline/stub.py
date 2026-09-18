@@ -1,7 +1,7 @@
-"""Stub 图谱生成器 (Issue 03).
+"""Stub 图谱生成器.
 
 确定性模板图谱: 基于输入内容派生标题, 产出 2 章节共 4 知识点的线性依赖链
-(含跨章节边), 结构与 CONTRACT.md v1 一致; 真实管道 (Issue 07) 替换
+(含跨章节边), 结构与 v1 契约一致; 真实管道替换
 run_pipeline 函数体后本模块随之退役.
 
 与 Django 侧 derive_journey_title 保持一致的标题规则, 保证旅程标题可读.
@@ -17,7 +17,7 @@ def _topic(inp):
 
 
 def generate_graph(inp) -> dict:
-    """生成契约图谱 (CONTRACT.md v1): 2 章节线性依赖链, 含跨章节边."""
+    """生成契约图谱 (v1): 2 章节线性依赖链, 含跨章节边."""
     topic = _topic(inp)
 
     def variant(suffix):

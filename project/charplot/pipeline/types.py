@@ -1,4 +1,4 @@
-"""管道状态与数据类型 (Issue 07).
+"""管道状态与数据类型.
 
 LangGraph StateGraph 的全局状态定义 + 各阶段产出的数据类型.
 """
@@ -11,10 +11,10 @@ from pydantic import BaseModel, Field
 
 @dataclass
 class PipelineInput:
-    """管道入参 (保持 Issue 03 签名, tasks.py 复用).
+    """管道入参 (保持原有签名, tasks.py 复用).
 
     content: text/link 输入为原文/URL; file 输入为空 (文件内容经
-    Django 内部端点获取, 见 stages/parse.py); kb (Issue 11) 输入为
+    Django 内部端点获取, 见 stages/parse.py); kb 输入为
     知识库驱动旅程, kb_id 指向 Django 侧 CharplotKnowledgeBase.
     """
 

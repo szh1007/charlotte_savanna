@@ -1,4 +1,4 @@
-"""FastAPI 侧测试基建 (Issue 03).
+"""FastAPI 侧测试基建.
 
 环境隔离: 测试专用 Redis db 15 (Redis 默认上限 16 库, 远离开发库 /4 与
 Django 库 /0, 每测试 flushdb 不影响开发环境任务状态) + stub 阶段零延迟
@@ -45,7 +45,7 @@ def flush_redis():
 
 @pytest.fixture(autouse=True)
 def fake_llm_and_search(monkeypatch):
-    """隔离真实管道的外部依赖 (Issue 07): LLM / 检索 subagent / Django 取文件.
+    """隔离真实管道的外部依赖: LLM / 检索 subagent / Django 取文件.
 
     - get_chat_model → FakeChatModel (按 prompt 关键词返回预置 JSON)
     - run_search_agent → 固定空检索报告 (不触网)

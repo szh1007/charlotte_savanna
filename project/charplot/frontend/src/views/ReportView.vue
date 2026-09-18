@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// 复盘报告页 (Issue 06, PRD E-1/E-2): 通关成果展示 (知识总结 + 答题表现)
+// 复盘报告页: 通关成果展示 (知识总结 + 答题表现)
 // + 公开分享链接 (slug URL + OG 卡片说明, 未登录可访问, 只读).
 // 视觉遵循 /frontend-design: 正确率环形徽章为签名元素 (成果证据即页面的
 // 第一特征), 分享卡片置于浏览成果之后 (分享是看完之后的动作).
@@ -159,7 +159,7 @@ function formatDuration(seconds: number) {
         </div>
       </section>
 
-      <!-- 分享: 公开只读链接 + OG 卡片说明 (PRD E-2) -->
+      <!-- 分享: 公开只读链接 + OG 卡片说明 -->
       <section class="panel share">
         <h2 class="section-title"><span class="emoji" aria-hidden="true">🔗</span>分享复盘报告</h2>
         <p class="share-desc">

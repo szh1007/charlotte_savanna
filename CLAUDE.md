@@ -101,9 +101,11 @@ charlotte_savanna/
 │   │   ├── views_api.py         #   内部端点（X-Internal-Token）+ 用户端点
 │   │   ├── views_html.py        #   /r/{slug} 公开分享页（CBV）
 │   │   ├── dashboard.py         #   掌握度 / 活动 / 易错点聚合查询
+│   │   ├── admin.py             #   后台管理（旅程/关卡/答题/知识库的人工验证入口）
 │   │   ├── urls_api.py / urls_html.py / serializers.py / permissions.py / signals.py
 │   │   ├── migrations/          #   9 个迁移
-│   │   └── tests/               #   265 用例（含内部端点认证 / 规则层）
+│   │   ├── tests/               #   265 用例（含内部端点认证 / 规则层）
+│   │   └── uploads/             #   知识库文档 / OG 图片上传（.gitignore 排除）
 ├── project/                     # 独立子项目（deep_search / menu / video_downloader / rag_knowledge / rag_text2sql / charplot）
 │   ├── deep_search/             #   深度检索智能体（FastAPI + DeepAgents）
 │   │   ├── agent/               #   main_agent + subagents（数据库查询/网络搜索/知识库）
@@ -128,18 +130,21 @@ charlotte_savanna/
 │   │   ├── frontend/            #   Vue 3 + Vite 前端（零 UI 库, markmap 思维导图）
 │   │   ├── models/              #   SenseVoice / fsmn-vad 模型（.gitignore, 约 1GB）
 │   │   ├── downloads/           #   交付文件目录（TTL 清理, .gitignore）
-│   │   ├── docs/                #   CONTEXT / DESIGN / ADR-0001 ~ 0008
-│   │   ├── tests/               #   HTTP seam 自动化测试（119 个）
+│   │   ├── bugfix/              #   缺陷修复记录（0001~0007, markdown, 含根因与改动清单）
+│   │   ├── tests/               #   HTTP seam 自动化测试（210 个）
 │   │   ├── scripts/             #   E2E 下载 / 字幕 cookie / yt-dlp 探测脚本
 │   │   ├── README.md            #   子项目文档
 │   │   └── .env                 #   独立环境变量（不提交）
 │   ├── rag_knowledge/           #   工业级 RAG 知识库问答（LangGraph + Milvus + FastAPI）
 │   │   ├── app/                 #   核心代码: api / process（load+query 双图）/ rag / rag_eval 评估
+│   │   ├── assets/              #   PDF 样本素材（86 个用户手册, 加载链路测试用）
 │   │   ├── output/              #   加载产物（MinerU markdown + chunks 备份）
+│   │   ├── logs/                #   运行日志（本地, 不提交）
 │   │   ├── tests/               #   图级冒烟测试 + 评测最小调用样例
 │   │   ├── README.md            #   子项目文档
 │   │   └── .env                 #   独立环境变量（RK_ 前缀, 不提交）
 │   ├── rag_text2sql/            #   RAG Text2SQL 查询智能体（LangGraph + Qdrant/ES + MySQL 双库 + Vue）
+│   │   ├── main.py              #   FastAPI 入口（端口 8200, SSE 流式）
 │   │   ├── app/                 #   核心代码: agent（9 节点图）/ api / clients / repositories / services / scripts
 │   │   ├── conf/                #   本地私有配置（app_config / meta_config, *.yaml 被 gitignore）
 │   │   ├── prompts/             #   提示词模板（关键词扩展 / 过滤 / SQL 生成 / 校正）
@@ -156,7 +161,6 @@ charlotte_savanna/
 │   │   │                        #   本地模型 bge-m3 / bge-reranker-v2-m3（modelscope 预下载, 缺失降级）
 │   │   ├── prompt/              #   prompt 配置（analyze/search/deconstruct/questions/status_summary）
 │   │   ├── frontend/            #   Vue 3 + Vite 前端（端口 9004, /api→8000, /ai→8004）
-│   │   ├── docs/                #   CONTEXT / CONTRACT / DESIGN / QA + adr/0001~0004
 │   │   ├── tests/               #   FastAPI 侧测试（9 文件, Redis /15 隔离 + Fake LLM）
 │   │   ├── .env / .env.example  #   CHARPLOT_* 独立环境变量（不提交 / 模板）
 │   │   └── README.md            #   子项目文档
@@ -248,10 +252,10 @@ charlotte_savanna/
 
 ### 4.5 FastAPI / yt-dlp（video_downloader 子项目）
 
-- **后端**：FastAPI（`backend/main.py`）+ yt-dlp 引擎（`backend/downloader.py`），音视频分离流由 ffmpeg 合并输出 MP4；URL 白名单限 bilibili.com 主域/子域 + b23.tv 短链（ADR-0004）
-- **无数据库**：任务 / 队列 / 会员会话全部内存态，交付直链 TTL 到期由后台线程自动清理（ADR-0003）
-- **付费差异（后端强制）**：免费档限 720p / 1 并发 / 队列 5 / 直链 24h；会员密钥解锁全部能力（`backend/auth.py` + `backend/quota.py`, ADR-0002）
-- **AI 视频总结（ADR-0005）**：字幕快路径（`backend/subtitle.py`, 服务端 `BILI_COOKIE` 取官方字幕）→ 兜底 SenseVoice 转写（`backend/asr.py`）→ DeepSeek 生成总结（`backend/llm.py`），SSE 流式输出
+- **后端**：FastAPI（`backend/main.py`）+ yt-dlp 引擎（`backend/downloader.py`），音视频分离流由 ffmpeg 合并输出 MP4；URL 白名单限 bilibili.com 主域/子域 + b23.tv 短链
+- **无数据库**：任务 / 队列 / 会员会话全部内存态，交付直链 TTL 到期由后台线程自动清理
+- **付费差异（后端强制）**：免费档限 720p / 1 并发 / 队列 5 / 直链 24h；会员密钥解锁全部能力（`backend/auth.py` + `backend/quota.py`）
+- **AI 视频总结**：字幕快路径（`backend/subtitle.py`, 服务端 `BILI_COOKIE` 取官方字幕）→ 兜底 SenseVoice 转写（`backend/asr.py`）→ DeepSeek 生成总结（`backend/llm.py`），SSE 流式输出
 - **前端**：Vue 3 + Vite（`frontend/`），零 UI 库，d3 / markmap 渲染思维导图，详细文档见 `project/video_downloader/README.md`
 
 ### 4.6 FastAPI / LangGraph（rag_knowledge 子项目）
@@ -273,10 +277,10 @@ charlotte_savanna/
 
 ### 4.8 Django + FastAPI 双后端（charplot 子项目）
 
-> CharPlot = AI 闯关学习网站（输入知识 → 图谱解构 → 渐进出题 → 游戏化闯关）。业务术语/产品决策见 `project/charplot/docs/CONTEXT.md`，数据契约见 `docs/CONTRACT.md`（权威），架构问答见 `docs/QA.md`。实施按 14 个垂直切片推进，已全部闭环（原追踪 issue 在 `.scratch/charplot/issues/`，该目录已于 2026-09-18 有意外移，仅在 git 历史中）。
+> CharPlot = AI 闯关学习网站（输入知识 → 图谱解构 → 渐进出题 → 游戏化闯关）。实施按 14 个垂直切片推进，已全部闭环。
 
-- **双后端微服务（ADR-0001）**：Django（`app/charplot`, 8000）= 账号/学习数据/闯关交互规则/知识库元数据/Dashboard；FastAPI（`project/charplot/api/server.py`, 8004）= AI 能力（知识管道 / RAG / 题目生成 / 任务系统）
-- **闯关交互归 Django（ADR-0003）**：判分/心动值/XP/连胜/易错分/间隔复习为纯规则 + 预生成讲解，LLM 不参与答题路径；**RAG 全链路归 FastAPI**，Django 只存知识库元数据
+- **双后端微服务**：Django（`app/charplot`, 8000）= 账号/学习数据/闯关交互规则/知识库元数据/Dashboard；FastAPI（`project/charplot/api/server.py`, 8004）= AI 能力（知识管道 / RAG / 题目生成 / 任务系统）
+- **闯关交互归 Django**：判分/心动值/XP/连胜/易错分/间隔复习为纯规则 + 预生成讲解，LLM 不参与答题路径；**RAG 全链路归 FastAPI**，Django 只存知识库元数据
 - **服务间认证**：FastAPI 调 Django 内部端点（图谱落库/出题 claim/索引 claim 等 13 个）一律 `X-Internal-Token`（`CHARPLOT_INTERNAL_TOKEN` 两端 .env 同值, fail closed）；不存在 Django → FastAPI 反向调用
 - **三件套分工**：LangGraph = 管道编排（`pipeline/` 4 阶段图）· DeepAgents = 检索/解构 subagent（`agents/`）· LangChain = RAG 组件（`rag/`：按类型调优切分 + Milvus 混合检索 + rerank + query rewrite）
 - **本地模型（仅 2 个）**：bge-m3（embedding）+ bge-reranker-v2-m3（rerank），modelscope 预下载到本地目录（`CHARPLOT_MODELSCOPE_ROOT`, 默认 `D:/__WorkSpace__/modelscope`, `models/BAAI/` 平铺）；加载前 `config.resolve_local_model_path` 校验存在 —— embedding 缺失报错、rerank 缺失降级不精排，均不触发库级自动下载
@@ -340,7 +344,7 @@ charlotte_savanna/
 | 下载引擎 | ✅ | yt-dlp 嵌入（Python API），ffmpeg 合并 MP4 |
 | AI 视频总结 | ✅ | 字幕快路径 + SenseVoice 兜底 + DeepSeek（转录 / 总结 / 思维导图 / 问答） |
 | 前端 (`frontend/`) | ✅ | Vue 3 + Vite，零 UI 库，markmap 思维导图 |
-| 测试 (`tests/`) | ✅ | HTTP seam 119 个（引擎 / 字幕 / ASR / LLM mock，无网络依赖） |
+| 测试 (`tests/`) | ✅ | HTTP seam 210 个（引擎 / 字幕 / ASR / LLM mock，无网络依赖） |
 
 > 已完成闭环，可通过 `sh/video_downloader_backend.sh` + `sh/video_downloader_frontend.sh` 启动。详细文档见 `project/video_downloader/README.md`。
 
@@ -376,9 +380,8 @@ charlotte_savanna/
 | 知识管道（`pipeline/`） | ✅ | 解析(txt/md/html/pdf/docx/pptx/链接) → 主内容分析 → 联网搜索增强 → 图谱解构, 检索源可插拔（网络/Context7/文档/知识库） |
 | RAG 链路（`rag/`） | ✅ | modelscope 本地 bge-m3 embedding + bge-reranker-v2-m3 rerank（必配链路）, Milvus 混合检索 + 软删 filter |
 | 前端（`frontend/`） | ✅ | Vue 3 + Element Plus 动漫主题（9004, /api /r→8000, /ai→8004）, 11 个 view 全部接通 |
-| 文档体系（`docs/`） | ✅ | CONTEXT / CONTRACT / DESIGN / QA + adr/0001~0004（tickets 原在 .scratch/charplot/issues/，2026-09-18 有意外移） |
 
-> 业务链路已闭环（Issue 01~14, 2026-09-08 三侧契约核对零断链）。已实现：旅程创建 → 图谱落库 → 技能树 → 渐进出题（间隔复习混入）→ 闯关答题 → 复盘分享 → Dashboard + LLM 状态总结 + 知识库管理。启动与已知边界见 `project/charplot/README.md`。
+> 业务链路已闭环（2026-09-08 三侧契约核对零断链）。已实现：旅程创建 → 图谱落库 → 技能树 → 渐进出题（间隔复习混入）→ 闯关答题 → 复盘分享 → Dashboard + LLM 状态总结 + 知识库管理。启动与已知边界见 `project/charplot/README.md`。
 
 ### 5.8 Demo 目录（仅供学习参考，不计入业务/子项目）
 

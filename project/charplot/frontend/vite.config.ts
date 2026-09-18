@@ -18,7 +18,7 @@ export default defineConfig({
         target: 'http://127.0.0.1:8000',
         changeOrigin: true,
       },
-      // 公开分享页 (Issue 06): /r/{slug} 服务端渲染, 代理到 Django
+      // 公开分享页: /r/{slug} 服务端渲染, 代理到 Django
       '/r': {
         target: 'http://127.0.0.1:8000',
         changeOrigin: true,

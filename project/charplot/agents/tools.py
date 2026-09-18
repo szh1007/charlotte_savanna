@@ -1,4 +1,4 @@
-"""检索源 → LangChain 工具封装 (Issue 07).
+"""检索源 → LangChain 工具封装.
 
 把可插拔检索源 (pipeline/sources) 包成 @tool 挂给 DeepAgents 检索
 subagent; 工具名 = <源名>_search, 描述来自源定义 (LLM 据此决定调用).

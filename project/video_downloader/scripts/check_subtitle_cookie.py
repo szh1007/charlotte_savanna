@@ -1,4 +1,4 @@
-"""验证脚本: 已配置 BILI_COOKIE 时能否提取到 B 站字幕 (ADR-0005 快路径回归).
+"""验证脚本: 已配置 BILI_COOKIE 时能否提取到 B 站字幕 (快路径回归).
 
 真实网络调用, 不 mock. 用法:
     python scripts/check_subtitle_cookie.py [video_url ...]

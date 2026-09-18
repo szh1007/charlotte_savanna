@@ -1,8 +1,8 @@
-"""技能树地图测试 (Issue 04).
+"""技能树地图测试.
 
 覆盖服务层状态计算 (无前置解锁 / 依赖锁定 / 已通关点亮) 与 skill-tree
 接口 (payload 结构 / 权限隔离). 关卡进度合并字段 (cleared_levels /
-total_levels) 本期无 Level 数据恒为 0, Issue 05 流入.
+total_levels) 本期无 Level 数据恒为 0, 待关卡数据流入.
 """
 
 from django.contrib.auth import get_user_model
@@ -26,7 +26,7 @@ def create_user(username="alice", password="TestPass#2026"):
 
 
 class KpStatusTests(TestCase):
-    """点亮状态纯函数单测: locked/unlocked 判定 (Issue 05 后 cleared 由调用侧注入)."""
+    """点亮状态纯函数单测: locked/unlocked 判定 (cleared 由调用侧注入)."""
 
     def test_no_prerequisites_unlocked(self):
         self.assertEqual(_kp_status([], set()), "unlocked")
@@ -92,7 +92,7 @@ class BuildSkillTreeTests(TestCase):
         self.assertEqual(by_id[self.kp2.id]["status"], "locked")
 
     def test_cleared_and_dependency_unlock_after_progress(self):
-        # Issue 05 传入已通关集合: 已通关点亮 + 依赖满足解锁
+        # 传入已通关集合: 已通关点亮 + 依赖满足解锁
         by_id = self.nodes_by_id(build_skill_tree(self.journey, {self.kp1.id}))
         self.assertEqual(by_id[self.kp1.id]["status"], "cleared")
         self.assertEqual(by_id[self.kp2.id]["status"], "unlocked")

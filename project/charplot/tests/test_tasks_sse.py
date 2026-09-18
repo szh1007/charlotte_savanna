@@ -1,4 +1,4 @@
-"""SSE 进度流测试 (Issue 03, DESIGN §4.2 / CONTRACT.md §2).
+"""SSE 进度流测试.
 
 覆盖: 完整流事件序 + 帧 id 递增 + 终端事件后流结束; 断线重连全量重放;
 Last-Event-ID 增量续推; 未知任务 404.

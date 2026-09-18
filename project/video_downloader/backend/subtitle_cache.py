@@ -1,4 +1,4 @@
-"""模型字幕缓存 (ADR-0006): 转录段按 BV 号落盘, TTL 过期由 cleaner 清理.
+"""模型字幕缓存: 转录段按 BV 号落盘, TTL 过期由 cleaner 清理.
 
 缓存文件: SUBTITLES_DIR/<BV>.json; URL 带 p=N 且 N>1 时加 _pN 后缀
 (分 P 隔离不串味). 内容 = 转录段 JSON + created_at + is_member
@@ -40,7 +40,7 @@ def _bvid(url: str) -> str | None:
 def cache_key(url: str) -> str | None:
     """缓存文件名 (不含扩展名): BV 号; URL 带 p=N 且 N>1 时 BV_pN.
 
-    分 P 隔离: 多 P 视频每 P 的字幕独立缓存 (PRD US 75), 单 P (缺省)
+    分 P 隔离: 多 P 视频每 P 的字幕独立缓存, 单 P (缺省)
     不加后缀. BV 号解析失败返回 None, 调用方跳过缓存 (不查不写).
     """
     bvid = _bvid(url)

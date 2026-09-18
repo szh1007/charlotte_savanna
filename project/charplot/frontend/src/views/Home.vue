@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// 首页 (Issue 03): Hero 输入区 (一句话/链接/文件) + 我的旅程 (进行中/已通关).
+// 首页: Hero 输入区 (一句话/链接/文件) + 我的旅程 (进行中/已通关).
 // 创建旅程 → 启动 FastAPI 管道 → 跳转详情页 (带 task_id, 详情页接管 SSE).
 // 视觉遵循 /frontend-design: brief 已 pin down B 站粉动漫风 (theme.css 令牌),
 // 签名元素 = Hero 输入区 (唯一 bold 点), 其余克制.
@@ -28,11 +28,11 @@ const file = ref<File | null>(null)
 const uploading = ref(false)
 const uploadRef = ref<UploadInstance>()
 
-// 主题卡片墙 (Issue 09/11): 就绪知识库, 游客也可浏览; 点击直达开旅程
+// 主题卡片墙: 就绪知识库, 游客也可浏览; 点击直达开旅程
 const topics = ref<Topic[]>([])
 const startingKbId = ref<number | null>(null)
 
-/** 点击主题卡片 → 创建 kb 旅程 → 启动管道 → 详情页接管 SSE (Issue 11). */
+/** 点击主题卡片 → 创建 kb 旅程 → 启动管道 → 详情页接管 SSE. */
 async function startTopicJourney(t: Topic) {
   if (!auth.user) {
     router.push({ path: '/login', query: { redirect: '/' } })
@@ -65,7 +65,7 @@ const canSubmit = computed(() => {
   return !!textContent.value.trim()
 })
 
-/** 进行中 = 未通关 (含生成中/可继续/失败), 已通关 = cleared (Issue 05 后非空). */
+/** 进行中 = 未通关 (含生成中/可继续/失败), 已通关 = cleared (答题后非空). */
 const inProgress = computed(() => (state.list ?? []).filter((j) => !j.cleared))
 const cleared = computed(() => (state.list ?? []).filter((j) => j.cleared))
 
@@ -198,7 +198,7 @@ onMounted(async () => {
       </div>
     </section>
 
-    <!-- 主题知识库 (Issue 09/11): 管理员预建, 仅就绪库展示; 点击直达开旅程 -->
+    <!-- 主题知识库: 管理员预建, 仅就绪库展示; 点击直达开旅程 -->
     <section v-if="topics.length" class="topics" aria-label="主题知识库">
       <h2 class="section-title">主题知识库</h2>
       <ul class="topic-grid">
@@ -409,7 +409,7 @@ onMounted(async () => {
   margin: 10px 0 0;
 }
 
-/* ---- 主题知识库 (Issue 09/11) ---- */
+/* ---- 主题知识库 ---- */
 .topics {
   margin-top: 36px;
 }

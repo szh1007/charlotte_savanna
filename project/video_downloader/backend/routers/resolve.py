@@ -1,4 +1,4 @@
-"""POST /api/resolve 解析视频链接元信息 (T05: 按会员身份标记档位锁定)."""
+"""POST /api/resolve 解析视频链接元信息 (按会员身份标记档位锁定)."""
 
 from fastapi import APIRouter, Depends, HTTPException
 

@@ -1,4 +1,4 @@
-"""T13 模型状态与下载 (ADR-0006): 状态机 / 幂等触发 / 失败重试 / SSE 广播.
+"""模型状态与下载: 状态机 / 幂等触发 / 失败重试 / SSE 广播.
 
 验收: GET /api/model/status → {status, progress, has_official_subtitle};
 POST /api/model/download 幂等 (ready/downloading 不重复启动, missing 启动);

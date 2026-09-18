@@ -1,4 +1,4 @@
-"""下载/任务/文件路由 + 清除记录 (T02, T05, T10)."""
+"""下载/任务/文件路由 + 清除记录."""
 
 import logging
 from pathlib import Path
@@ -48,7 +48,7 @@ def list_tasks() -> dict[str, list[TaskOut]]:
 
 @router.get("/api/tasks/{task_id}")
 def get_task_detail(task_id: int) -> TaskOut:
-    """单任务详情 (契约 PRD §8): 与列表同一序列化结构, 不存在返回 404."""
+    """单任务详情 (契约): 与列表同一序列化结构, 不存在返回 404."""
     task = manager.get_task(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="任务不存在")
@@ -100,7 +100,7 @@ def get_delivery_file(task_id: int) -> FileResponse:
     if task is None:
         raise HTTPException(status_code=404, detail="任务不存在")
     if task.status == STATUS_EXPIRED:
-        # 曾存在但已移除: 410 Gone 语义 + 明确提示 (验收标准, T06)
+        # 曾存在但已移除: 410 Gone 语义 + 明确提示 (验收标准)
         raise HTTPException(status_code=410, detail="交付链接已过期, 文件已清理")
     if task.status != STATUS_COMPLETED or not task.file_path:
         raise HTTPException(status_code=404, detail="文件未就绪或任务未完成")

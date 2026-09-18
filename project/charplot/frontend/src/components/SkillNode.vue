@@ -1,6 +1,6 @@
 <script setup lang="ts">
-// 技能树节点 (Issue 04): 状态样式 + 多关进度徽章.
-// 点亮动效 (is-cleared 光晕 + 点亮动画) 是闯关地图的签名元素 (PRD 亮点 1),
+// 技能树节点: 状态样式 + 多关进度徽章.
+// 点亮动效 (is-cleared 光晕 + 点亮动画) 是闯关地图的签名元素,
 // 动效集中在此一处, 画布其余保持安静. 锁定/可挑战/已通关文案见地图页图例.
 // 点击跳转由 SkillTree.vue 统一处理 (node-click), 节点组件不感知路由.
 import { computed } from 'vue'
@@ -178,7 +178,7 @@ const progressText = computed(() => {
   }
 }
 
-/* 进行中呼吸提示 (Issue 05 数据流入后可见) */
+/* 进行中呼吸提示 (答题数据流入后可见) */
 @keyframes in-progress-pulse {
   0%,
   100% {

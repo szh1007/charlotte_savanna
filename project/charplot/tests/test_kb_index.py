@@ -1,4 +1,4 @@
-"""知识库索引任务测试 (Issue 09/10, DESIGN §4.2 /ai/kb/index, CONTRACT §6.5).
+"""知识库索引任务测试 (/ai/kb/index).
 
 覆盖: 成功流 (parsing → chunking x N → embedding x N → indexing → done,
 per-doc 真实进度 + 切分/向量化/入库行结构 + 全量重建落库) / 未抢占

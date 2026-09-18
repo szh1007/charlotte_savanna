@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// 学习分析 Dashboard (Issue 12, SPEC §10): 掌握度矩阵 + 学习活动统计 +
+// 学习分析 Dashboard: 掌握度矩阵 + 学习活动统计 +
 // 易错点清单. 数据全部来自事实表 (Attempt + 用户事件) 按需聚合, 无埋点.
 // 视觉 (frontend-design): 延续 B 站粉主题令牌, 掌握度条为签名元素
 // (体检报告气质: 绿 → 粉 → 琥珀按正确率分级, 薄弱点红色系胶囊高亮).
@@ -26,7 +26,7 @@ const journeys = ref<MasteryJourney[]>([])
 const activity = ref<ActivityStats | null>(null)
 const weakpoints = ref<Weakpoint[]>([])
 
-// AI 学习总结 (Issue 13): 生成按钮 + markdown 报告, 可重复生成
+// AI 学习总结: 生成按钮 + markdown 报告, 可重复生成
 const summaryText = ref('')
 const generating = ref(false)
 
@@ -157,7 +157,7 @@ const priorityMeta: Record<Weakpoint['priority_level'], { label: string; cls: st
         </div>
       </section>
 
-      <!-- AI 学习总结: 点击生成当前状态分析 (Issue 13, PRD F-4) -->
+      <!-- AI 学习总结: 点击生成当前状态分析 -->
       <section class="panel summary-panel" aria-label="AI 学习总结">
         <header class="panel-head summary-head">
           <div>
@@ -449,7 +449,7 @@ const priorityMeta: Record<Weakpoint['priority_level'], { label: string; cls: st
   color: var(--cp-ink-soft);
 }
 
-/* ---- AI 学习总结 (Issue 13) ---- */
+/* ---- AI 学习总结 ---- */
 .summary-head {
   display: flex;
   align-items: flex-start;
@@ -560,7 +560,7 @@ const priorityMeta: Record<Weakpoint['priority_level'], { label: string; cls: st
   border-top: 1px solid rgba(138, 138, 153, 0.08);
 }
 
-/* 薄弱点行: 淡琥珀底 + 红系字, 一眼定位 (PRD F-1 高亮) */
+/* 薄弱点行: 淡琥珀底 + 红系字, 一眼定位 (高亮) */
 .point-weak {
   background: rgba(245, 166, 35, 0.08);
 }

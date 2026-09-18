@@ -4,14 +4,14 @@
 const BASE = '/api'
 
 // 会员会话 token 存储键 (localStorage): 当前会话持久,
-// 页面刷新后仍通过该 token 向后端恢复会员状态 (T09)
+// 页面刷新后仍通过该 token 向后端恢复会员状态
 export const MEMBER_TOKEN_KEY = 'vd_member_token'
 
-// 匿名客户端身份存储键 (localStorage): 免费档每日配额按此计数 (ADR-0005)
+// 匿名客户端身份存储键 (localStorage): 免费档每日配额按此计数
 export const CLIENT_ID_KEY = 'vd_client_id'
 
 // AI 总结字幕来源存储键 (localStorage): official 官方字幕 / model 模型生成
-// (ADR-0006, 默认官方字幕; 未配置 B 站 Cookie 时官方字幕不可用)
+// (默认官方字幕; 未配置 B 站 Cookie 时官方字幕不可用)
 export const SUBTITLE_SOURCE_KEY = 'vd_subtitle_source'
 
 /** 读取匿名客户端 ID, 不存在则生成并持久化 (配额身份, 刷新后保持不变). */
@@ -43,7 +43,7 @@ export function setMemberToken(token) {
 /**
  * 通用请求: 非 2xx 时抛出带后端 detail 的 Error, 网络失败给出明确提示.
  * 自动附加 X-Member-Token header (有本地 token 时), 使解析/下载/状态
- * 等接口按会员身份计算能力 (T05 后端强制校验).
+ * 等接口按会员身份计算能力 (后端强制校验).
  * @param {string} path 以 / 开头的 API 路径
  * @param {object} [options] fetch 选项 (method / body / headers 等)
  * @returns {Promise<any>} 解析后的 JSON 响应体
@@ -55,7 +55,7 @@ async function request(path, options = {}) {
     res = await fetch(`${BASE}${path}`, {
       headers: {
         'Content-Type': 'application/json',
-        // 免费档每日配额按匿名客户端身份计数 (ADR-0005); 其它接口忽略该头
+        // 免费档每日配额按匿名客户端身份计数; 其它接口忽略该头
         'X-Client-Id': getClientId(),
         ...(token ? { 'X-Member-Token': token } : {}),
         ...(options.headers || {}),
@@ -133,12 +133,12 @@ export function submitMemberKey(key) {
   return request('/member', { method: 'POST', body: JSON.stringify({ key }) })
 }
 
-// ---- AI 视频总结 (ADR-0005): 字幕/ASR 转录 + LLM 结构化总结 ----
+// ---- AI 视频总结: 字幕/ASR 转录 + LLM 结构化总结 ----
 
 /**
  * 创建总结任务 (kind=summary): 免费档超每日配额时后端 429 拒绝.
  * @param {string} url 视频链接
- * @param {'official'|'model'} subtitleSource 字幕来源 (ADR-0006):
+ * @param {'official'|'model'} subtitleSource 字幕来源:
  *   official 官方字幕 (快路径, 无字幕自动回退模型生成) / model 模型生成
  *   (缓存优先, 模型缺失自动触发下载)
  */
@@ -149,7 +149,7 @@ export function createSummarize(url, subtitleSource = 'official') {
   })
 }
 
-// ---- 语音转写模型 (ADR-0006): 全局状态 / 手动下载 ----
+// ---- 语音转写模型: 全局状态 / 手动下载 ----
 
 /** 查询语音转写模型状态: {status, progress, has_official_subtitle}. */
 export function fetchModelStatus() {
@@ -190,7 +190,7 @@ export function exportUrl(taskId, format) {
 }
 
 /**
- * SSE 流式读取 (总结流 / 问答流, ADR-0007): fetch 后逐帧解析并回调.
+ * SSE 流式读取 (总结流 / 问答流): fetch 后逐帧解析并回调.
  *
  * 帧协议: `event: <name>\ndata: <单行 JSON>\n\n` (后端 json.dumps 保证
  * data 单行); 无 data 行的帧忽略 (协议扩展预留). 错误语义与 request()
@@ -210,7 +210,7 @@ async function readSseStream(path, { method = 'GET', body, signal, onFrame } = {
       signal,
       headers: {
         'Content-Type': 'application/json',
-        // 免费档每日配额按匿名客户端身份计数 (ADR-0005)
+        // 免费档每日配额按匿名客户端身份计数
         'X-Client-Id': getClientId(),
         ...(token ? { 'X-Member-Token': token } : {}),
       },
@@ -268,7 +268,7 @@ function handleFrame(frame, onFrame) {
   if (data !== null) onFrame(event, data)
 }
 
-/** 订阅总结生成流 (SSE, ADR-0007): snapshot 首帧累积全文 / delta 增量 / done / error. */
+/** 订阅总结生成流 (SSE): snapshot 首帧累积全文 / delta 增量 / done / error. */
 export function streamSummary(taskId, { signal, onFrame }) {
   return readSseStream(`/tasks/${taskId}/summary/stream`, { signal, onFrame })
 }
@@ -278,7 +278,7 @@ export function streamTranscript(taskId, { signal, onFrame }) {
   return readSseStream(`/tasks/${taskId}/transcript/stream`, { signal, onFrame })
 }
 
-/** 针对视频内容提问, SSE 流式回答 (ADR-0007): delta 增量 → done 收尾; 超配额 429. */
+/** 针对视频内容提问, SSE 流式回答: delta 增量 → done 收尾; 超配额 429. */
 export function askQuestionStream(taskId, question, { signal, onFrame }) {
   return readSseStream(`/tasks/${taskId}/qa`, {
     method: 'POST',

@@ -1,4 +1,4 @@
-"""T12+ AI 总结验收测试 (HTTP seam, mock 字幕/ASR/LLM 三层, ADR-0005).
+"""AI 总结验收测试 (HTTP seam, mock 字幕/ASR/LLM 三层).
 
 验收: 创建总结任务 / 字幕快路径与 ASR 回退 / 状态流转 (SSE) / 免费配额 429 /
 AI 问答与配额 / 导出 / 过期 410 / 域名校验 / 字幕解析器单元.
@@ -60,7 +60,7 @@ FAKE_MINDMAP = {
     ],
 }
 
-# LLM 流式输出为 Markdown 文档 (ADR-0008): 真实 parse_summary_text 解析后
+# LLM 流式输出为 Markdown 文档: 真实 parse_summary_text 解析后
 # 必须精确还原 FAKE_SUMMARY (test_summary_completes 整 dict 相等契约)
 FAKE_SUMMARY_MD = """# 视频总结: 测试视频标题
 > 时长: 60s
@@ -268,7 +268,7 @@ def test_summary_sse_status_flow(client, fake_subtitle, fake_llm) -> None:
         )
         evt = json.loads(data_line.removeprefix("data: "))
         if evt.get("event") == "model-update":
-            continue  # 模型进度帧 (ADR-0006): 同流广播, 无任务字段
+            continue  # 模型进度帧: 同流广播, 无任务字段
         statuses.append(evt["status"])
         subs = evt.get("subtasks") or {}
         # 四子任务独立状态随事件携带 (前端四 tab 数据源)
@@ -390,7 +390,7 @@ def test_summary_failed_when_llm_errors(client, fake_subtitle, monkeypatch) -> N
 
 
 def test_summary_domain_validation(client, fake_subtitle, fake_llm) -> None:
-    """非 B 站域名创建总结任务 → 422 明确拒绝 (域名白名单共用, ADR-0004)."""
+    """非 B 站域名创建总结任务 → 422 明确拒绝 (域名白名单共用)."""
     resp = client.post(
         "/api/summarize",
         json={"url": "https://www.youtube.com/watch?v=abc"},
@@ -496,7 +496,7 @@ def test_qa_requires_ready_context(client, fake_subtitle, fake_llm) -> None:
 def test_qa_stream_error_not_charged(
     client, fake_subtitle, fake_llm, monkeypatch
 ) -> None:
-    """问答流失败: error 帧收尾, 配额不计数 (仅完整输出 done 才计数, ADR-0007)."""
+    """问答流失败: error 帧收尾, 配额不计数 (仅完整输出 done 才计数)."""
     monkeypatch.setattr(
         "backend.llm.ask_stream",
         lambda t, s, q: (_ for _ in ()).throw(llm.LLMError("LLM 调用失败: 测试")),
@@ -516,7 +516,7 @@ def test_qa_stream_error_not_charged(
     assert daily_quota._usages[client_id].qa_count == 0  # 失败不计数
 
 
-# ----- 总结流式输出 (ADR-0007: SSE snapshot/delta/done) -----
+# ----- 总结流式输出 (SSE snapshot/delta/done) -----
 
 
 def _sse_frame_parts(frame: str) -> tuple[str, dict]:
@@ -616,7 +616,7 @@ def test_summary_stream_404_400(client, fake_download) -> None:
 
 
 def test_summary_stream_retry_clears_buffer(client, fake_subtitle, monkeypatch) -> None:
-    """重试清流缓冲: 首次失败残留的旧文本不与新文本拼接 (ADR-0007)."""
+    """重试清流缓冲: 首次失败残留的旧文本不与新文本拼接."""
     boom = {"active": True}
 
     def _flaky(text: str, meta: dict):
@@ -847,7 +847,7 @@ def test_sse_event_carries_tab_progress(client, fake_subtitle, fake_llm) -> None
         )
         evt = json.loads(data_line.removeprefix("data: "))
         if evt.get("event") == "model-update":
-            continue  # 模型进度帧 (ADR-0006): 同流广播, 无任务字段
+            continue  # 模型进度帧: 同流广播, 无任务字段
         assert "source_url" in evt
         assert "transcript_progress" in evt
         assert "summary_progress" in evt
@@ -866,7 +866,7 @@ def test_sse_event_carries_tab_progress(client, fake_subtitle, fake_llm) -> None
     assert seen_all_done
 
 
-# ----- 转录先行 / 思维导图 / 字幕导出 (四子任务独立语义, ADR-0005) -----
+# ----- 转录先行 / 思维导图 / 字幕导出 (四子任务独立语义) -----
 
 
 def test_transcript_accessible_before_summary_ready(

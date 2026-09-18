@@ -1,6 +1,6 @@
-"""TTL 后台清理 (T06, ADR-0003): 周期扫描过期交付任务, 删文件 + 标记 expired.
+"""TTL 后台清理: 周期扫描过期交付任务, 删文件 + 标记 expired.
 
-免费任务 24h / 会员任务 72h (PRD §5), 按任务创建者身份快照计算,
+免费任务 24h / 会员任务 72h, 按任务创建者身份快照计算,
 不依赖当前会话状态. 时间判定用可注入时钟 _now() (测试推进时间,
 与 auth._now 同一模式, 无需真实等待).
 """
@@ -15,7 +15,7 @@ from pathlib import Path
 from . import config, subtitle_cache
 from .task_manager import STATUS_COMPLETED, STATUS_EXPIRED, TaskManager, manager
 
-# 清理扫描周期 (秒): 后台线程每周期全量扫描一次 (PRD 设计值约 60s)
+# 清理扫描周期 (秒): 后台线程每周期全量扫描一次 (设计值约 60s)
 _CLEANER_INTERVAL = 60
 
 logger = logging.getLogger(__name__)
@@ -64,7 +64,7 @@ class DeliveryCleaner:
         (权限/占用等异常) 记录日志但不阻塞过期标记, 避免任务永驻 completed
         且清理线程被异常杀死 (无人复活).
         """
-        # 字幕缓存过期清理 (ADR-0006): 按文件内创建者身份 TTL (免费 24h /
+        # 字幕缓存过期清理: 按文件内创建者身份 TTL (免费 24h /
         # 会员 72h, 与交付 TTL 同源); 模型本体不在缓存目录, 天然不清理
         # (持久资产, 独立目录 SUBTITLES_DIR ≠ MODELS_DIR)
         subtitle_cache.cleanup_expired()
@@ -173,7 +173,7 @@ class DeliveryCleaner:
 
     @staticmethod
     def _delivery_ttl(is_member: bool) -> float:
-        """交付直链有效期按身份计算 (免费 24h / 会员 72h, PRD §5)."""
+        """交付直链有效期按身份计算 (免费 24h / 会员 72h)."""
         return config.delivery_ttl(is_member)
 
 

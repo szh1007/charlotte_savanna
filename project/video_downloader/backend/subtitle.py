@@ -1,11 +1,11 @@
-"""字幕快路径 (ADR-0005): yt-dlp + 服务端自备 cookie 提取 B 站官方字幕.
+"""字幕快路径: yt-dlp + 服务端自备 cookie 提取 B 站官方字幕.
 
 独立引擎调用点 (测试 mock 目标): 提取字幕映射 → 下载字幕内容 → 解析为
 统一的 [{start, end, text}] 时间戳文本结构 (Transcript 原料).
 
 B 站 AI 字幕为 JSON (body: [{from, to, content}]), CC 字幕为 vtt/srt 文本.
 字幕接口要求 Referer 校验, 统一附加 B 站 Referer 头.
-任何一步失败 / 无字幕返回 None, 由调用方回退 SenseVoice 转写 (ADR-0005).
+任何一步失败 / 无字幕返回 None, 由调用方回退 SenseVoice 转写.
 """
 
 from __future__ import annotations

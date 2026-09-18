@@ -1,4 +1,4 @@
-"""Pydantic 请求 / 响应模型 (API 契约, 见 DESIGN.md 第 4 节)."""
+"""Pydantic 请求 / 响应模型 (API 契约)."""
 
 from urllib.parse import urlsplit
 
@@ -22,8 +22,8 @@ def ensure_http_url(url: str) -> str:
 def ensure_bilibili_url(url: str) -> str:
     """校验并规范化哔哩哔哩链接 (http/https + 域名白名单), 非法时抛 ValueError.
 
-    领域规则「仅支持哔哩哔哩免费公开视频」集中定义, resolve / downloads 路由共用
-    (ADR-0004). 允许 bilibili.com 主域及任意子域 (www. / m. / player. 等) 与
+    领域规则「仅支持哔哩哔哩免费公开视频」集中定义, resolve / downloads 路由共用.
+    允许 bilibili.com 主域及任意子域 (www. / m. / player. 等) 与
     b23.tv 短链, 其余域名一律拒绝. 只约束用户输入, 引擎内部的短链跳转不受影响.
     """
     url = ensure_http_url(url)
@@ -42,13 +42,13 @@ class FormatOut(BaseModel):
     label: str
     height: int | None
     ext: str
-    locked: bool = False  # 该档位对该用户是否锁定 (免费用户 >720p, T05)
+    locked: bool = False  # 该档位对该用户是否锁定 (免费用户 >720p)
     has_audio: bool = True  # 是否含音频 (DASH 分离流 False: 下载时自动合并音频流)
     filesize: float | None = None  # 文件大小 (字节, 引擎缺失时为 None)
 
 
 class SubtaskOut(BaseModel):
-    """总结子任务状态 (四 tab 独立进度/错误, ADR-0005)."""
+    """总结子任务状态 (四 tab 独立进度/错误)."""
 
     status: str
     progress: float = 0.0
@@ -115,7 +115,7 @@ class TaskOut(BaseModel):
     summary_progress: float = 0.0
     # 四子任务状态 (kind=summary; 下载任务为空 dict), 前端逐 tab 驱动
     subtasks: dict[str, SubtaskOut] = Field(default_factory=dict)
-    subtitle_source: str = "official"  # 字幕来源快照 (ADR-0006, 创建时固化)
+    subtitle_source: str = "official"  # 字幕来源快照 (创建时固化)
     message: str | None = None
     error: str | None = None
     expires_at: float | None = None  # 交付过期时刻 (仅 completed, 前端倒计时)
@@ -124,14 +124,14 @@ class TaskOut(BaseModel):
 
 class SummarizeRequest(BaseModel):
     url: str = Field(..., min_length=1, description="视频页面链接")
-    # 字幕来源 (ADR-0006): official = 官方字幕快路径 (默认) / model = 模型生成
+    # 字幕来源: official = 官方字幕快路径 (默认) / model = 模型生成
     subtitle_source: str = Field(
         default="official", pattern="^(official|model)$", description="字幕来源"
     )
 
 
 class RetryRequest(BaseModel):
-    """重试总结子任务 (ADR-0005): 仅失败/阻塞的子任务可重试."""
+    """重试总结子任务: 仅失败/阻塞的子任务可重试."""
 
     subtask: str = Field(
         ..., pattern="^(transcript|summary|mindmap|qa)$", description="子任务名"
@@ -145,7 +145,7 @@ class TranscriptSegment(BaseModel):
 
 
 class SummaryOut(BaseModel):
-    """总结结果 (契约 ADR-0005): 结构化总结 JSON + 元信息."""
+    """总结结果 (契约): 结构化总结 JSON + 元信息."""
 
     task_id: int
     status: str
@@ -166,7 +166,7 @@ class TranscriptOut(BaseModel):
 
 
 class MindMapOut(BaseModel):
-    """思维导图结果 (ADR-0005): 基于结构化总结生成的导图结构 JSON."""
+    """思维导图结果: 基于结构化总结生成的导图结构 JSON."""
 
     task_id: int
     status: str
@@ -211,7 +211,7 @@ def task_to_out(task) -> TaskOut:
             )
             for name, sub in task.subtasks.items()
         },
-        subtitle_source=task.subtitle_source,  # 字幕来源快照 (ADR-0006)
+        subtitle_source=task.subtitle_source,  # 字幕来源快照
         message=task.message,
         error=task.error,
         # 交付过期时刻 = 完成时刻 + 身份 TTL; 仅 completed 有交付资产, 其余为 None

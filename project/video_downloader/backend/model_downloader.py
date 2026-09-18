@@ -1,10 +1,10 @@
-"""语音转写模型下载 (ADR-0006): 全局唯一状态机 + 幂等触发 + SSE 进度.
+"""语音转写模型下载: 全局唯一状态机 + 幂等触发 + SSE 进度.
 
 状态机: missing → downloading → ready; 下载失败回 missing 可重试.
 ready 判定 = 各模型配置与权重文件均存在 (config.yaml + model.pt),
 以文件为准, 不依赖内存状态残留.
 
-管理两个模型资产 (ADR-0006 统一管理):
+管理两个模型资产 (统一目录管理):
 - SenseVoiceSmall (models/SenseVoiceSmall/, ~1GB): 转写主模型
 - fsmn-vad (models/fsmn-vad/, 几 MB): VAD 分段, 句子级时间戳必需
   (SenseVoice 本身无句子边界, 缺 VAD 整段音频只出一条无时间字幕)
@@ -37,7 +37,7 @@ STATUS_MISSING = "missing"
 STATUS_DOWNLOADING = "downloading"
 STATUS_READY = "ready"
 
-# ready 判定所需文件 (config.yaml + model.pt, ADR-0006)
+# ready 判定所需文件 (config.yaml + model.pt)
 _READY_FILES = ("config.yaml", "model.pt")
 
 

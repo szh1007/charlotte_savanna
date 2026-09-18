@@ -1,4 +1,4 @@
-"""分析 Dashboard 测试 (Issue 12).
+"""分析 Dashboard 测试.
 
 覆盖: 掌握度矩阵 (知识点/章节聚合与 Attempt 一致, 薄弱点高亮, 复习题
 归属来源知识点) / 活动统计 (时长/通关数/活跃天数与事件表一致, 近 N 天
@@ -120,7 +120,7 @@ class MasteryMatrixTests(TestCase):
         journey, _, kps = make_journey(self.user, kp_count=2)
         source = make_answered_level(self.user, journey, kps[0], [True, False, True])
         review_level = make_level_ready(journey, kp=kps[1], count=2)
-        # 把第 1 题改为来源知识点复习题 (复制题, 与 Issue 08 生成逻辑一致)
+        # 把第 1 题改为来源知识点复习题 (复制题, 与生成逻辑一致)
         question = review_level.questions.first()
         question.source_kp = kps[0]
         question.save(update_fields=["source_kp"])
@@ -364,7 +364,7 @@ class DashboardApiTests(TestCase):
 
 
 # ---------------------------------------------------------------------------
-# 状态总结聚合输入内部端点 (Issue 13, FastAPI → Django, DESIGN.md §4.2)
+# 状态总结聚合输入内部端点 (FastAPI → Django)
 # ---------------------------------------------------------------------------
 
 INTERNAL_TOKEN = "test-internal-token"

@@ -1,4 +1,4 @@
-"""出题任务测试 (Issue 08, DESIGN §4.2 /ai/levels/generate).
+"""出题任务测试 (/ai/levels/generate).
 
 覆盖: 成功流 (preparing→generating→saving→done, 新题+复习题拼接落库) /
 未抢占直接 done 不调 LLM / LLM 输出非法触发重试 / LLM 异常 → error + 失败

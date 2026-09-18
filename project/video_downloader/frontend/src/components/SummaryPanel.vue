@@ -165,11 +165,11 @@ watch(
   { deep: true, immediate: true },
 )
 
-// ---- 总结流式渲染 (ADR-0007/0008): 订阅 /summary/stream 展示 Markdown 文档增量 ----
+// ---- 总结流式渲染: 订阅 /summary/stream 展示 Markdown 文档增量 ----
 // 帧协议: snapshot 首帧累积全文 (重连恢复现场, 覆盖旧文本) → delta 追加 →
 // done 收尾; 断线且子任务仍 running 时指数退避重连 (1s/2s/4s 封顶 10s,
 // snapshot 兜底不丢文本); tab 离开 / 卸载 abort 断开 (fetch 信号取消).
-// 流式期间 marked 实时渲染 (ADR-0008), 完成切换完成态 Markdown 无感.
+// 流式期间 marked 实时渲染, 完成切换完成态 Markdown 无感.
 const summaryStreamText = ref('')
 const summaryStreamCtrl = ref(null) // 当前流 AbortController
 const summaryRetryTimer = ref(null) // 重连定时器 (关闭/卸载时清除)
@@ -272,11 +272,11 @@ function buildMarkdown(s) {
 const mdHtml = computed(() =>
   summary.value ? marked.parse(buildMarkdown(summary.value)) : '',
 )
-// 流式期间 Markdown 实时渲染 (ADR-0008): 打字机效果, 完成切换 mdHtml 无感
+// 流式期间 Markdown 实时渲染: 打字机效果, 完成切换 mdHtml 无感
 const streamMdHtml = computed(() =>
   summaryStreamText.value ? marked.parse(summaryStreamText.value) : '',
 )
-// 问答消息 Markdown 渲染 (ADR-0008): assistant 回答实时渲染, user 消息走插值
+// 问答消息 Markdown 渲染: assistant 回答实时渲染, user 消息走插值
 function renderMarkdown(text) {
   return text ? marked.parse(text) : ''
 }
@@ -347,8 +347,8 @@ async function sendQuestion() {
   qaError.value = ''
   const ctrl = new AbortController()
   qaAbort.value = ctrl
-  // 空文本占位消息: 流式增量 (delta 帧) 直接追加, 替代「思考中」spinner (ADR-0007).
-  // 流式期间 marked 实时渲染 (ADR-0008); 必须用 reactive 包装: 普通对象
+  // 空文本占位消息: 流式增量 (delta 帧) 直接追加, 替代「思考中」spinner.
+  // 流式期间 marked 实时渲染; 必须用 reactive 包装: 普通对象
   // push 进 ref 数组后, 原变量改属性不触发响应
   const placeholder = reactive({ role: 'assistant', text: '' })
   messages.value.push(placeholder)
@@ -572,7 +572,7 @@ onBeforeUnmount(() => {
           <div v-if="subStatus('summary') === 'running'" class="tab-pane__progress">
             <div class="bar bar--indeterminate"><span class="bar__fill"></span></div>
             <p>总结生成中......</p>
-            <!-- 流式渲染 (ADR-0008): Markdown 文档增量 marked 实时渲染, 完成切换 Markdown -->
+            <!-- 流式渲染: Markdown 文档增量 marked 实时渲染, 完成切换 Markdown -->
             <div class="md summary__stream" v-html="streamMdHtml"></div>
           </div>
           <div v-else-if="subStatus('summary') === 'pending'" class="tab-pane__wait">
@@ -710,7 +710,7 @@ onBeforeUnmount(() => {
                 "
               >
                 <template v-if="msg.role === 'user'">{{ msg.text }}</template>
-                <!-- 回答流式期间实时渲染 Markdown (ADR-0008) -->
+                <!-- 回答流式期间实时渲染 Markdown -->
                 <div
                   v-else
                   class="qa__msg-markdown"
@@ -913,7 +913,7 @@ onBeforeUnmount(() => {
 /* 各 tab 内加载提示: 显示在内容区顶部 (用户反馈: 提示词放该 tab 区域
    最上面, 不垂直居中; 每个提示词留在属于自己的 tab 页).
    flex:1 + min-height:0: 定高 .tab-pane 内占满剩余, 流式文本容器
-   (.summary__stream) 才有高度上限可内部滚动, 不撑出 tab 区域 (ADR-0007) */
+   (.summary__stream) 才有高度上限可内部滚动, 不撑出 tab 区域 */
 .tab-pane__progress {
   display: flex;
   flex-direction: column;
@@ -1071,7 +1071,7 @@ onBeforeUnmount(() => {
   white-space: pre-wrap;
 }
 
-/* 总结流式渲染 (ADR-0008): 复用 .md 完成态样式, 仅微调进度条下方间距 */
+/* 总结流式渲染: 复用 .md 完成态样式, 仅微调进度条下方间距 */
 .summary__stream {
   margin-top: 4px;
 }

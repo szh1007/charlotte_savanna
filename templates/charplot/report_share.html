@@ -7,7 +7,7 @@
   <title>{{ og_title }} — CharPlot</title>
   <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><circle cx='32' cy='32' r='32' fill='%23fb7299'/><text x='32' y='46' font-size='40' font-weight='bold' text-anchor='middle' fill='%23fff'>C</text></svg>">
 
-  <!-- OG 社交卡片 (PRD E-2): 爬虫抓取即得标题/摘要/缩略图 -->
+  <!-- OG 社交卡片: 爬虫抓取即得标题/摘要/缩略图 -->
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="CharPlot">
   <meta property="og:title" content="{{ og_title }}">
@@ -22,7 +22,7 @@
   {% if og_image_url %}<meta name="twitter:image" content="{{ og_image_url }}">{% endif %}
 
   <style>
-    /* CharPlot 设计令牌 (theme.css 同款, B站粉动漫风, DESIGN.md §6) */
+    /* CharPlot 设计令牌 (theme.css 同款, B站粉动漫风) */
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
       font-family: "PingFang SC", "Hiragino Sans GB", "MiSans", "Microsoft YaHei", system-ui, sans-serif;
@@ -173,7 +173,7 @@
       </p>
     </header>
 
-    <!-- 答题表现 (PRD E-1) -->
+    <!-- 答题表现 -->
     <section class="card" aria-label="答题表现">
       <h2 class="section-title"><span class="emoji" aria-hidden="true">📊</span>答题表现</h2>
       <div class="accuracy">
@@ -213,7 +213,7 @@
       {% endif %}
     </section>
 
-    <!-- 知识总结 (PRD E-1): 章节 → 知识点 -->
+    <!-- 知识总结: 章节 → 知识点 -->
     <section class="card" aria-label="知识总结">
       <h2 class="section-title"><span class="emoji" aria-hidden="true">📚</span>知识总结</h2>
       {% for chapter in chapters %}

@@ -1,4 +1,4 @@
-"""会员会话管理: 密钥校验 + 内存态会话 token (24h TTL, ADR-0002).
+"""会员会话管理: 密钥校验 + 内存态会话 token (24h TTL).
 
 提交正确 MEMBER_KEY 后签发随机 token, 后续请求通过 X-Member-Token header
 被识别为会员; 会话内存态存储, 查询时惰性清理过期项 (量级极小, 无后台线程).
@@ -17,7 +17,7 @@ from fastapi import Header
 
 from . import config
 
-# 会话有效期 (秒): 24h (PRD §6), 测试可缩短验证过期
+# 会话有效期 (秒): 24h, 测试可缩短验证过期
 MEMBER_SESSION_TTL = 24 * 60 * 60
 
 
@@ -87,6 +87,6 @@ def get_member(
 ) -> MemberSession | None:
     """FastAPI 依赖: 从 X-Member-Token header 识别会员, 无 / 无效返回 None.
 
-    供受保护逻辑 (T05 档位锁定 / 并发槽 / 队列上限) 注入使用.
+    供受保护逻辑 (档位锁定 / 并发槽 / 队列上限) 注入使用.
     """
     return member_manager.get_session(x_member_token)

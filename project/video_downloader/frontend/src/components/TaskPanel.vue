@@ -5,7 +5,7 @@ import ErrorAlert from './ErrorAlert.vue'
 import SummaryPanel from './SummaryPanel.vue'
 import { retrySubtask } from '../api/client.js'
 
-// 任务面板 (T08 重构): 同一视频的下载任务与 AI 总结任务按源链接 (url) 合并为
+// 任务面板 (重构): 同一视频的下载任务与 AI 总结任务按源链接 (url) 合并为
 // 一个视频行, 左右两栏对齐展示 (左: 视频下载清晰度列表; 右: AI 总结四标签).
 // 每个视频行可折叠 (默认展开, 折叠按钮在组头右侧).
 // 清晰度 chip 五态: done 已完成可下载文件 / running 进行中 / locked 会员专属
@@ -19,7 +19,7 @@ import { retrySubtask } from '../api/client.js'
 const props = defineProps({
   // 任务列表 (kind=download|summary, 按 task_id 降序)
   tasks: { type: Array, default: () => [] },
-  // 总结禁用判定 (ADR-0005 + 用户反馈: 已总结过不可再次总结): 入参 url,
+  // 总结禁用判定 (用户反馈: 已总结过不可再次总结): 入参 url,
   // 返回 '' 可总结 / 'active' 已有进行中任务 / 'done' 已总结过.
   // Home 传 summaryBlockReason 函数, 逐组判断 (跨标签页竞态兜底)
   summarizeDisabled: { type: Function, default: () => '' },

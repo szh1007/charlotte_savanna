@@ -1,1 +1,1 @@
-"""DeepAgents subagents (Issue 07): 检索研究员承担搜索增强环节."""
+"""DeepAgents subagents: 检索研究员承担搜索增强环节."""

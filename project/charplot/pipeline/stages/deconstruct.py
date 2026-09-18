@@ -1,16 +1,16 @@
-"""阶段 4: 图谱解构 (Issue 07 + Issue 11 知识库两轮).
+"""阶段 4: 图谱解构 (知识库两轮).
 
 LLM 基于材料 + 分析 + 检索结果, 解构为契约知识图谱
-(CONTRACT.md v1: 章节 → 知识点 + 依赖边 + 来源引用).
+(v1: 章节 → 知识点 + 依赖边 + 来源引用).
 
 自输入旅程 (text/file/link): 单轮全量解构.
-知识库旅程 (Issue 11, kb): RAG 两轮解构 (QA.md Q9/Q10) — 第一轮基于
+知识库旅程 (kb): RAG 两轮解构 — 第一轮基于
 概览检索资料 (search 阶段产出) 建图谱骨架; 第二轮逐知识点精检索
 (KbSource) 并发细化依赖边/摘要/来源. 骨架错了后面全错, 先粗后细.
 
 质量保障: JSON 提取 → 契约本地校验 (contract.validate_graph_dict,
 与 Django 落库端校验同逻辑) → 失败重试带错误反馈 → 超限抛异常
-(任务 error, 前端可重试). 产出严格遵循 v1 契约, 04/05/06 不受影响.
+(任务 error, 前端可重试). 产出严格遵循 v1 契约.
 """
 
 import asyncio
@@ -95,7 +95,7 @@ async def deconstruct_graph(material, analysis, search_report, journey_id: int) 
 
 
 def _format_kb_snippets(items: list) -> str:
-    """知识点精检片段 → 编号列表 (prompt 中 sources 引用编号, Issue 11)."""
+    """知识点精检片段 → 编号列表 (prompt 中 sources 引用编号)."""
     lines = []
     for idx, item in enumerate(items[:_KB_REFINE_SNIPPET_LIMIT], start=1):
         source = item.metadata.get("filename") or item.title
@@ -204,7 +204,7 @@ async def _refine_kp(
 async def _deconstruct_kb(
     material, analysis, search_report, journey_id: int, kb_id: int
 ) -> dict:
-    """知识库 RAG 两轮解构 (Issue 11, QA.md Q9/Q10).
+    """知识库 RAG 两轮解构.
 
     第一轮: 概览检索资料 (search 阶段产出) → 骨架 (章节 + 知识点粗结构).
     第二轮: 逐知识点精检索 (同步收集, 检索阻塞不并发) → LLM 并发细化
