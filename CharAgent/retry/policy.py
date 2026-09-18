@@ -1,4 +1,4 @@
-"""RetryPolicy (issue 06 / difficulties #13): 退避策略与上限裁决.
+"""RetryPolicy (difficulties #13): 退避策略与上限裁决.
 
 一句话理解: 「失败了要不要再试一次、等多久再试」的规矩. 分两问:
 
@@ -8,14 +8,14 @@
    上游继续加压), 再叠一点随机抖动 (避免大批请求在同一瞬间一起回头, 即
    「惊群」).
 
-三个上限, 任一命中就不再试 (全部构造期可配, ticket 第 2 条「上限可控」):
+三个上限, 任一命中就不再试 (全部构造期可配, 上限可控):
 - max_attempts:        总尝试次数 (含首次)
 - max_elapsed_seconds: 自首次尝试起的总耗时预算 (含调用耗时与等待) ——
                        本次等待已经会撞破预算就不等 (等待只是白等)
 - max_delay:           单次等待封顶 (指数增长必须收敛)
 
 **没有熔断**: 上游持续 429 时重试确实会放大压力, 本模块只靠上面三条上限兜底
-(次数与总耗时都封死, 不会无限放大); 「别再打给它了」的熔断 + failover 属 P1-3.
+(次数与总耗时都封死, 不会无限放大); 「别再打给它了」的熔断 + failover 属 P1.
 
 三条缝 (注入点, 对齐 LoopGuard.time_source 的惯例; 测试零等待且完全确定 #61):
 - sleep:         如何等待 (默认 asyncio.sleep; 测试换成记录式睡眠, 不真等)
@@ -139,7 +139,7 @@ class RetryPolicy:
     def next_delay(self, *, attempt: int, elapsed: float) -> float | None:
         """第 ``attempt`` 次尝试失败后: 还能再试吗? 能则返回等待秒数 (#13).
 
-        三个上限共同裁决 (ticket 第 2 条「上限可控」):
+        三个上限共同裁决 (上限可控):
 
         1. 尝试次数: ``attempt >= max_attempts`` -> 不再试 (None)
         2. 总耗时: ``elapsed + delay > max_elapsed_seconds`` -> 不再试 (None)

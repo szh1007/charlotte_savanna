@@ -1,4 +1,4 @@
-"""跨实现语义对比测试 (ADR-0002 的验收线: 同一段经历喂不同存储, 恢复结果一致).
+"""跨实现语义对比测试 (同一段经历喂不同存储, 恢复结果一致).
 
 对比的口径是「**恢复出来的东西**一样」, 而不是「存储里长得一样」—— 介质不同,
 长相本来就不同 (Redis 是流里的一串 JSON, Postgres 是列 + 两个 JSON 列).
@@ -161,7 +161,7 @@ async def test_history_capability_matches_declaration(
 ):
     """能力声明与实际行为对得上: 说没有历史的, 翻历史就明确报错 (不给空结果).
 
-    这一条是 ADR-0002 的教学点落成断言: 四组参数里只有 redis-latest 走 else 分支,
+    这一条把「声明即契约」的教学点落成断言: 四组参数里只有 redis-latest 走 else 分支,
     另外三个都必须真的翻得出历史.
     """
     for index in (1, 2):
@@ -225,8 +225,8 @@ async def test_branching_stays_in_history_for_history_capable_savers(
     assert by_id[old_line.checkpoint_id].parent_id == origin.checkpoint_id
 
 
-def test_capability_matrix_matches_adr_0002():
-    """能力矩阵与 ADR-0002 的说法一致 (造 saver 不必连库, 所以能静态断言)."""
+def test_capability_matrix_matches_the_contract():
+    """能力矩阵被钉住 (造 saver 不必连库, 所以能静态断言)."""
     assert InMemoryCheckpointSaver().capabilities == CheckpointCapabilities(
         history=True, ttl=False
     )

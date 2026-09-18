@@ -8,9 +8,8 @@
 设计依据 (CharAgent/docs):
 - difficulties #5: 每 Turn 结束落快照; thread 分区; 恢复要「不重复已完成动作」;
   三种存储语义不同; JSON 主格式 + 自定义编码器 + schema 版本号向前兼容
-- ADR-0002: Redis (Stream 全历史 + 可配 TTL, 快而弱一致) 与 Postgres (强一致 + 历史)
+- 三种存储对比: Redis (Stream 全历史 + 可配 TTL, 快而弱一致) 与 Postgres (强一致 + 历史)
   双实现, 运行时配置切换; 内存版供测试
-- 02-data-model.md §1/§3: Checkpoint 字段表与存储分布 (三后端的存储形态与能力差异)
 
 结构总览 (顶层是行为模块, 静态零件收在 utils/):
 - base.py          CheckpointSaver 协议 (插座形状: 存 / 取最新 / 按编号取 / 翻历史)

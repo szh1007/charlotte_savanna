@@ -1,4 +1,4 @@
-"""retry_async (issue 06 / difficulties #13): 通用重试驱动器.
+"""retry_async (difficulties #13): 通用重试驱动器.
 
 一句话理解: 把「调用 → 失败 → 判断 → 等待 → 再来一次」这条流水线做成一个
 函数 —— 调用方只给出「怎么调」, 判断与等待的规矩在 policy.py (RetryPolicy),
@@ -16,7 +16,7 @@
 
 为什么响应路径要单列一条 (#13): 那条路上的响应**通常已经计费** (带 usage),
 重试等于再烧一次 token —— 这正是 on_retry 存在的理由: 每次「决定再试」都把一条
-RetryAttempt (含原样结果) 递给调用方, 供 P1-11 token 计量 / P2 观测挂钩.
+RetryAttempt (含原样结果) 递给调用方, 供 token 计量 / 观测挂钩.
 异常路径拿不到 usage (请求没成功), 故其 RetryAttempt.result 为 None.
 
 取消语义: ``CancelledError`` 属 BaseException, 不被 ``except Exception`` 捕获 ——
@@ -135,7 +135,7 @@ async def retry_async[T](
             return result
 
         # 失败尝试的记账单: 异常路径带 error, 响应路径带原样结果 —— 模型场景那次
-        # 响应已经计费, 调用方 (P1-11) 可读其 usage (#13 的账目就在这一项)
+        # 响应已经计费, 调用方 (token 计量) 可读其 usage (#13 的账目就在这一项)
         record = RetryAttempt(
             attempt=attempt, delay=delay, elapsed=elapsed, reason=reason
         )

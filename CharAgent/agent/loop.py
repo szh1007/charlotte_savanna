@@ -1,4 +1,4 @@
-"""AgentLoop (issue 04 / difficulties #1 #2 #10): 替模型「跑腿」的循环管家.
+"""AgentLoop (difficulties #1 #2 #10): 替模型「跑腿」的循环管家.
 
 一句话理解: 模型不会自己调用工具 —— AgentLoop.run() 反复做同一件事:
 把「到目前为止的完整对话」交给模型, 模型读完自己决定下一步 (要调工具就
@@ -24,7 +24,7 @@
        模型一次要求并行调 3 个工具 (同一条 assistant 消息里 3 个
        tool_calls), 3 个并发跑完一起回填, 仍然只算一个 turn —— 并行不
        增加 turn 数 (difficulties #1). 每 turn 结束会记一条 TurnRecord
-       快照 (供 checkpoint 落盘, P0-6).
+       快照 (供 checkpoint 落盘).
 - turn_count  整个 run 里模型决策了几次 = 几次 generate 调用.
 
 循环怎么停 (三种停法, 区别很重要):
@@ -42,7 +42,7 @@
 3. 上游中断停: 服务端没把这次生成跑完 (finish_reason=
    insufficient_system_resource 资源不足 / aborted 被中断) -> 内容可能是
    半截, 不能当最终答复返回, outcome=SERVER_INTERRUPTED. 资源不足属瞬态,
-   官方指引稍后重试 —— 但**重试不归本层** (归 P0-5 retry), 本层只如实上报,
+   官方指引稍后重试 —— 但**重试不归本层** (归重试层), 本层只如实上报,
    由调用方决定是否重放
 
 本文件其他要点:
@@ -64,17 +64,17 @@
 - emit_terminal() 单一终局出口 (在 utils/events.py): final / error
 可变状态统一收在 LoopState (utils/types.py), 逐 run 独立, 不再散落局部变量
 
-三条输出通道 (issue 05 接上后, 一次 run 同时喂三条, 互不干扰):
+三条输出通道 (一次 run 同时喂三条, 互不干扰):
 1. wire 历史 (messages): 发给模型的对话, 含 reasoning_content (#11)
 2. 事件流 (EventBus → event_sink): 推给前端的渐进展示 —— 每轮模型响应产
    reasoning 事件, 工具轮产 thinking + tool_call + tool_result, 收尾产恰好
-   一个终局事件 (正常 final / 异常 error); 契约见 03-api.md §2
-3. hook (HookRegistry): 五个生命周期触发点 (ADR-0007 扩展点), 空注册零开销
+   一个终局事件 (正常 final / 异常 error)
+3. hook (HookRegistry): 五个生命周期触发点 (扩展点), 空注册零开销
 
-存档线 (issue 07 接上后, 依然是「只加不改」):
+存档线 (依然是「只加不改」):
 - 配了 saver + thread_id 时, 每 Turn 结束把进度落成一帧快照 (历史 + 计数器),
-  存在哪儿由 checkpoint/ 的实现决定 (内存 / Redis 流式历史 / Postgres, ADR-0002).
-  没配就一个字节都不落, 行为与 issue 04/05 完全一样
+  存在哪儿由 checkpoint/ 的实现决定 (内存 / Redis 流式历史 / Postgres).
+  没配就一个字节都不落, 行为与之前完全一样
 - 每帧还记下「观察值」(来源 / 本轮 token 与耗时 / 调了哪些工具): 与「进度」分开
   存, 回放调试时能看出哪一步最贵、哪一帧是从老快照分叉出来的
   (checkpoint/utils/history.py 有现成的表格视图)
@@ -89,13 +89,13 @@
   会变成「以为存上了」的事故. 注意与 hook 的「插件异常被隔离留痕」相反 —— hook
   是可选的旁挂插件, 快照是核心可靠性
 
-大白话版 (issue 05 给主循环加的两根线):
+大白话版 (给主循环加的两根线):
 - 直播线 (event_sink): 主循环每干一件事就「喊一嗓子」—— 我要去查什么、查
   回来什么、最后答什么. 这些话经 EventBus 编号后推给前端, 用户就能边跑边
   看到进度, 而不是干等一分钟才蹦出一整段答案.
 - 插座线 (hooks): 在 5 个固定时机顺手看一眼有没有插件要搭把手 (记记忆 /
   算钱 / 记日志), 没插就直接跳过, 不拖慢速度.
-- 两条线都是「只加不改」: 不接出口、不插插件时, 主循环行为与 issue 04 时
+- 两条线都是「只加不改」: 不接出口、不插插件时, 主循环行为与之前
   完全一致 (既有 233 个用例原样通过).
 """
 
@@ -179,16 +179,16 @@ class AgentLoop:
         reasoning_effort: 思考强度透传 (low/high/max, 兼容别名由上游归一;
             "none" 关闭思考模式), None 走上游默认 (high). 与 thinking 同时
             显式传入且方向相反时, 模型调用期报 ModelConfigError.
-        event_sink: 流式事件出口 (同步或异步回调, issue 05): 运行过程逐个推
+        event_sink: 流式事件出口 (同步或异步回调): 运行过程逐个推
             事件 (thinking / tool_call / tool_result / reasoning / final /
             error), 供 SSE 推送 / CLI 打印 / 测试收集. 每个 run 独立编号
-            (seq 从 1 起), 终局事件恰好一个; 事件契约见 03-api.md §2.
+            (seq 从 1 起), 终局事件恰好一个.
             None 表示不接出口 (事件仍会触发 hooks 的 on_event).
-        hooks: hook 注册表 (ADR-0007 扩展点, issue 05), 五个触发点与载荷见
+        hooks: hook 注册表 (扩展点), 五个触发点与载荷见
             HookRegistry docstring; 空注册零开销. None 表示无扩展点 (内部用
             空注册表, 触发点不必逐处判空).
-        saver: 快照存储 (issue 07, checkpoint/ 的三实现之一). 给了它, 每 Turn
-            结束就把进度落一帧; None 表示不落盘 (行为与 issue 04/05 完全一致).
+        saver: 快照存储 (checkpoint/ 的三实现之一). 给了它, 每 Turn
+            结束就把进度落一帧; None 表示不落盘 (行为与之前完全一致).
             必须与 thread_id 一起给 —— 只给一半属于配置写错, 构造期就报错.
         thread_id: 这段对话的标识 (快照按它分区). 同一会话的多次 run 给同一个
             thread_id, 快照才串成一条链、resume 才取得到 (见 resume).
@@ -341,21 +341,21 @@ class AgentLoop:
             LoopResult: 完整消息历史 + 结束原因 + 每轮快照.
 
         Raises:
-            ModelError: 模型调用失败 (重试/降级属 P0-5 retry / P1-8, 本层
+            ModelError: 模型调用失败 (重试/降级分层处理, 本层
                 不包装不吞). 此时**不发终局事件** —— 事件流中断即如实反映
-                失败, 错误码与降级由调用方按 03-api.md §4 发给前端.
+                失败, 错误码与降级由调用方发给前端.
             CheckpointError: 快照落盘失败 (配了 saver 时). 同样不吞: 存不下存档
                 是可靠性故障, 必须让调用方看见 (与 event_sink 同一条规矩).
             asyncio.CancelledError: 外部 kill switch (task.cancel) 即时打断
                 —— 本模块捕获后不做吞没处理, 直接传播 (difficulties #3);
-                取消收尾的 error(cancelled) 事件由 P1-2 server 层产出.
+                取消收尾的 error(cancelled) 事件由服务层产出.
         """
         return await self._run(messages, resume=None, run_id=run_id)
 
     async def resume(
         self, checkpoint: Checkpoint, *, run_id: str | None = None
     ) -> LoopResult:
-        """从一帧快照接着跑 (断点续跑 / time-travel 的入口, issue 07 / #5).
+        """从一帧快照接着跑 (断点续跑 / time-travel 的入口, #5).
 
         这是「换一个起点」的 run: 把快照里的历史当输入、计数器接着数, 于是已经
         做完的事一件都不会重做 (工具结果都躺在历史里). 从**老**快照恢复时, 新落
@@ -550,7 +550,7 @@ class AgentLoop:
           不是最终答复的一部分 —— 弃之, 否则会混进最终答案
         """
         if response.content:
-            # 文本边界 (03-api.md §2.4): 工具轮的正文属过程叙述 (下面的
+            # 文本边界: 工具轮的正文属过程叙述 (下面的
             # content_parts.clear() 会把它从最终答案里剔掉), 故归 thinking
             # 事件; 截断轮的正文是答案素材 (CONTINUE 进拼合链 / CONDENSE
             # 丢弃), 不作 thinking —— 否则会与 final 重复展示或把已作废内容
@@ -624,7 +624,7 @@ class AgentLoop:
 
         上游中断: 服务端没跑完这次生成 (资源不足 / 被中断), content 可能只是
         半截, 不能当最终答复返回 (content 保持 None). 半截原文仍保真入历史与
-        TurnRecord.response, 供调用方排查或重放; 重试决策不归本层 (归 P0-5 retry).
+        TurnRecord.response, 供调用方排查或重放; 重试决策不归本层 (归重试层).
         """
         state.history.append(assistant_wire(response))
         state.outcome = LoopOutcome.SERVER_INTERRUPTED
@@ -634,7 +634,7 @@ class AgentLoop:
         """自然终止处理: 拼合正文并结束 run (stop 及 content_filter 等非继续信号).
 
         自然终止 (stop / content_filter 等非继续信号): content_filter 仅在此
-        终止循环, 拦截语义由调用方依据 finish_reason 决定 (输出护栏属 P1-6).
+        终止循环, 拦截语义由调用方依据 finish_reason 决定 (输出护栏属另一层).
         """
         state.history.append(assistant_wire(response))
         # 拼合续写各段为完整答复 (无截断时 content_parts 为空, 即尾段
@@ -657,7 +657,7 @@ class AgentLoop:
 
         顺序说明 (为什么先落盘、后触发 hook): 存档是可靠性基线 —— 插件晚一步收到
         通知没关系, 快照晚一步存就可能永远丢了; 落盘失败向上抛 (不吞), 而 hook
-        里的插件异常由注册表隔离留痕 (两条通道的可靠性要求本来就不同, ADR-0007).
+        里的插件异常由注册表隔离留痕 (两条通道的可靠性要求本来就不同).
         """
         cumulative_ms = self._guard.elapsed_ms
         # 本轮耗时 = 这次累计 - 上次累计: TurnRecord 存累计值 (供整体观察),
@@ -720,7 +720,7 @@ class AgentLoop:
         )
 
     # ------------------------------------------------------------------
-    # checkpoint 落盘与恢复 (issue 07; 没配 saver 时下面这些一步都不走)
+    # checkpoint 落盘与恢复 (没配 saver 时下面这些一步都不走)
     # ------------------------------------------------------------------
 
     @staticmethod

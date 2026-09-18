@@ -1,4 +1,4 @@
-"""hooks 包异常语义 (issue 05 / ADR-0007 扩展点).
+"""hooks 包异常语义 (扩展点).
 
 对齐 model/utils/errors.py 与 tool/utils/errors.py 的错误族组织 (纯 Exception
 基类, 与 agent/utils/errors.py 的 ValueError 基类形成对照 —— 后者是用户可传错

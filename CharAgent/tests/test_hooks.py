@@ -1,7 +1,7 @@
-"""hooks 包单元测试 (issue 05 / ADR-0007): hook 注册表骨架.
+"""hooks 包单元测试: hook 注册表骨架.
 
 场景 → 断言:
-- HookPoint 五个点齐全 (与 01-architecture.md §4.2 表格一致)
+- HookPoint 五个点齐全 (名字与顺序都被钉住)
 - 空注册零开销: has/handlers 为假, fire 立即返回且无副作用
 - register 按注册顺序保存; 非法参数 (非 callable) → HookConfigError
 - fire: 多个 hook 按注册顺序依次执行; sync 与 async hook 都支持
@@ -42,8 +42,8 @@ def _sync_noop(**kwargs: object) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_hook_points_cover_adr_table() -> None:
-    """五个 hook 点与 ADR-0007 / 架构文档表格一致."""
+def test_hook_points_cover_expected_set() -> None:
+    """五个 hook 点齐全且与实现一致."""
     assert [p.value for p in HookPoint] == [
         "before_turn",
         "after_turn",
@@ -132,7 +132,7 @@ async def test_fire_runs_hooks_in_order_with_kwargs() -> None:
 
 
 async def test_hook_can_mutate_payload_object() -> None:
-    """hook 收到的是活引用 (非拷贝): memory 插件据此注入记忆 (P2-3 挂载点)."""
+    """hook 收到的是活引用 (非拷贝): 今后的 memory 插件据此注入记忆."""
     messages: list[dict[str, object]] = [{"role": "user", "content": "你好"}]
 
     def inject(*, messages: list[dict[str, object]], **kwargs: object) -> None:

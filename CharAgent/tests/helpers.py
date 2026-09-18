@@ -4,7 +4,7 @@
 - TOOL_SCHEMA: 真实端点接受的工具 wire 样本 (tools 参数直通 /chat/completions).
 - text_completion_json / sse_chunk: 双适配器测试共用的响应样本工厂
   (契约测试「同一 mock 响应喂两适配器」依赖同源样本保证对比公平).
-- make_state / make_metadata / make_checkpoint: checkpoint 样本工厂 (issue 07) ——
+- make_state / make_metadata / make_checkpoint: checkpoint 样本工厂 ——
   序列化协议、三个存储实现、跨实现对比这几组用例都拿同一份样本, 对比才有意义;
   编号与时刻是常量, 于是「同样的输入 → 一模一样的结果」(#61 确定性) 成立.
 """
@@ -27,7 +27,7 @@ API_KEY = "sk-test-charagent"
 BASE_URL = "https://api.deepseek.com"
 CHAT_URL = f"{BASE_URL}/chat/completions"
 
-# 单工具 JSON Schema (P0-2 @tool 装饰器产出的同构 wire 格式)
+# 单工具 JSON Schema (@tool 装饰器产出的同构 wire 格式)
 TOOL_SCHEMA: dict[str, Any] = {
     "type": "function",
     "function": {
@@ -66,7 +66,7 @@ def sse_chunk(payload: dict[str, Any]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# checkpoint 样本 (issue 07)
+# checkpoint 样本
 # ---------------------------------------------------------------------------
 
 # 一轮完整的对话样本: 用户提问 -> 模型要调工具 -> 工具结果回填

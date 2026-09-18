@@ -1,4 +1,4 @@
-"""stream 包异常语义 (issue 05 / #4 事件状态机).
+"""stream 包异常语义 (#4 事件状态机).
 
 对齐 model/utils/errors.py 与 tool/utils/errors.py 的错误族组织 (纯 Exception
 基类):
@@ -22,4 +22,4 @@ class StreamError(Exception):
 
 
 class EventSequenceError(StreamError):
-    """事件序列不变量被破坏 (03-api.md §2 状态机约束, 面向开发者)."""
+    """事件序列不变量被破坏 (状态机约束, 面向开发者)."""

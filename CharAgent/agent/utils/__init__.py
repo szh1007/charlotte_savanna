@@ -11,8 +11,8 @@
 - messages.py  wire 消息构造与面向模型的指令文案 (assistant/tool 回填消息
                 构造 + 截断续写/精简指令) + count_tokens (单次响应 token 计量)
 - events.py    事件载荷构造 (tool_call / tool_result, 含成功摘要截断) +
-                终局出口 emit_terminal (从 LoopResult 派生恰好一个 final/error,
-                03-api.md §2 定案) + 终局 error 文案 (code 取 LoopOutcome 值)
+                终局出口 emit_terminal (从 LoopResult 派生恰好一个 final/error)
+                + 终局 error 文案 (code 取 LoopOutcome 值)
 
 模块内部 import 走具体模块路径 (agent.loop, agent.utils.types 等), 不绕包
 门面, 避免隐式循环依赖.

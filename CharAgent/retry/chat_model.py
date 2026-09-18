@@ -1,10 +1,10 @@
-"""RetryingChatModel (issue 06 / difficulties #13): ChatModel 协议的重试包装.
+"""RetryingChatModel (difficulties #13): ChatModel 协议的重试包装.
 
 一句话理解: 给模型套一层「自动再试」的壳 —— 上层 (agent loop / CLI / server)
 拿到的仍是一个标准 ChatModel, 完全不必知道重试的存在; 壳内部在瞬态失败时按
 RetryPolicy 退避重试, 重试彻底耗尽才把失败交出去.
 
-为什么用包装而不是改 loop (ADR-0001 + issue 05 的「只加不改」):
+为什么用包装而不是改 loop (「只加不改」):
 - ChatModel 是薄协议 SPI, 组合一层正是它的设计用途; loop 与 model 零改动,
   既有测试用例不受影响
 - 重试是「模型可用性」问题, 不是「循环控制」问题 —— 放错层会让 loop 同时背
@@ -16,15 +16,15 @@ RetryPolicy 退避重试, 重试彻底耗尽才把失败交出去.
 - **响应判据**: ``finish_reason=insufficient_system_resource`` (官方指引「服务端
   资源不足, 稍后重试」) 也算一次失败尝试 —— 注意那次响应**已经计费** (#13):
   被丢弃的用量随 on_retry 的记录单 (RetryAttempt.result) 交回调用方, 供
-  P1-11 token 计量记账. ``aborted`` 故意不重试 (语义含糊, 可能是用户侧主动
+  token 计量记账. ``aborted`` 故意不重试 (语义含糊, 可能是用户侧主动
   中断, 重试可能违背用户意图): 原样返回给 loop, 由它按既有契约上报
   SERVER_INTERRUPTED.
 
-重试对 loop 透明 (03-api.md §2.2 契约不变):
-- 异常路径耗尽 -> 异常上抛, loop 不吞也不发终局事件 (由 server 按 §4 降级)
+重试对 loop 透明 (契约不变):
+- 异常路径耗尽 -> 异常上抛, loop 不吞也不发终局事件 (由 server 降级)
 - 响应路径耗尽 -> 返回最后一个响应, loop 照旧判 SERVER_INTERRUPTED
 
-``retry_upstream_interrupted=False`` 关闭响应判据 (P1-11 预算硬上限 / P2 语义
+``retry_upstream_interrupted=False`` 关闭响应判据 (预算硬上限 / 语义
 缓存需要「不再烧一次」时用): 中断响应原样返回, 由上层决定.
 
 大白话版: 这是「包了一层自动重试的模型」——接口一模一样, 上层照常调用; 遇到
@@ -49,7 +49,7 @@ from CharAgent.retry.utils.types import RetryCallback
 
 
 class RetryingChatModel:
-    """ChatModel 协议的重试包装 (SPI 组合, ADR-0001 / difficulties #13).
+    """ChatModel 协议的重试包装 (SPI 组合, difficulties #13).
 
     除 ``generate`` / ``aclose`` 外不新增协议方法: 上层把它当普通 ChatModel 用.
 
@@ -61,8 +61,8 @@ class RetryingChatModel:
             (finish_reason=insufficient_system_resource) 也当瞬态重试,
             默认 True; 置 False 则原样返回 (由调用方决定是否重放).
         on_retry: 重试通知回调**序列** (可挂多个; 单回调写 ``[callback]``),
-            每次「决定再试」时按序列顺序依次调用 —— P1-11 token 计量 /
-            P2 观测的挂载点; 某个回调抛异常即中止其后的回调并向上抛.
+            每次「决定再试」时按序列顺序依次调用 —— token 计量 /
+            观测的挂载点; 某个回调抛异常即中止其后的回调并向上抛.
     """
 
     def __init__(

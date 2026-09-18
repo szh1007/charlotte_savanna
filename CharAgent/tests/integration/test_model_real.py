@@ -1,4 +1,4 @@
-"""真实 DeepSeek API 集成测试 (issue 01 + 02; marker: integration).
+"""真实 DeepSeek API 集成测试 (marker: integration).
 
 验证真实协议字段: 非流式 tool_calls 结构 / usage / finish_reason /
 reasoning_content 分离, SSE 流式 delta 累积, tools wire 格式被真实端点接受,
@@ -221,7 +221,7 @@ async def test_tools_wire_format_accepted() -> None:
 
 
 # ---------------------------------------------------------------------------
-# issue 02: openai SDK 适配器在真实端点上的行为验证 (与 httpx 适配器同配置)
+# openai SDK 适配器在真实端点上的行为验证 (与 httpx 适配器同配置)
 # ---------------------------------------------------------------------------
 
 

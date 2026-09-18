@@ -1,6 +1,6 @@
 """模型层纯函数单元测试: 协议字段解析 (不触网).
 
-覆盖 issue 01 检查项: tool_calls 结构 / reasoning 分离 / finish_reason 取值 /
+覆盖检查项: tool_calls 结构 / reasoning 分离 / finish_reason 取值 /
 usage 映射 / SSE delta 累积状态机 / 环境变量构建.
 网络侧行为见 test_model_client_httpx.py.
 """
@@ -355,7 +355,7 @@ def test_parse_completion_rejects_multimodal_content_array() -> None:
 
 
 # ---------------------------------------------------------------------------
-# SSE 流式 delta 累积 (issue 01: 流式 delta 累积为完整响应)
+# SSE 流式 delta 累积 (累积为完整响应)
 # ---------------------------------------------------------------------------
 
 

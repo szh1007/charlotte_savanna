@@ -1,4 +1,4 @@
-"""演示工具集 (P0-2): 验证 @tool 双引擎 + 供 P0-3 loop 联调 / P0-10 CLI 复用.
+"""演示工具集: 验证 @tool 双引擎 + 供 agent loop 联调 / CLI 复用.
 
 工具定义按生产 SOTA 写法 (OpenAI function calling 官方实践 / Pydantic AI 同款):
 - 工具名动词短语 snake_case; docstring 首段说明「何时用 / 不用 + 返回内容」
@@ -12,7 +12,7 @@
     6    manual 引擎 (教学对照, @tool(schema="manual")): 与 #5 同能力的
           query_order_status_manual —— 手写 typing 映射 + docstring Args 描述
           + 函数内手动校验, 对照「pydantic 自动约束 vs 手写映射 + 手写校验」.
-真实客服业务工具 (订单/物流/退款/FAQ/转人工) 属 P1-13 demo 层, 不在本包.
+真实客服业务工具 (订单/物流/退款/FAQ/转人工) 属业务 demo 层, 不在本包.
 """
 
 from __future__ import annotations
@@ -216,7 +216,7 @@ def count_text_stats(
 # 工具 5: 订单状态查询 (pydantic pattern 约束 + mock 数据)
 # ---------------------------------------------------------------------------
 
-# 演示 mock 数据 (固定订单表; 真实客服查询属 P1-13 demo 层接入数据源, 形态不变)
+# 演示 mock 数据 (固定订单表; 真实客服查询属业务 demo 层接入数据源, 形态不变)
 MOCK_ORDERS: dict[str, str] = {
     "20260701123456": "已发货, 预计 2026-07-05 送达 (承运: 顺丰 SF7890123456)",
     "20260702098765": "待发货, 预计 2026-07-08 送达",

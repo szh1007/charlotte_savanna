@@ -1,9 +1,7 @@
-"""stream 包: 流式事件总线与事件状态机 (issue 05, ADR-0007 扩展点之一).
+"""stream 包: 流式事件总线与事件状态机 (扩展点之一).
 
 设计依据 (CharAgent/docs):
 - difficulties #4 (流式事件状态机) / #11 (reasoning 增量单独成事件)
-- design/03-api.md §2 (SSE 事件协议, 事件字段清单与状态机契约的权威出处)
-- ADR-0005 (流式传输用 SSE) / ADR-0007 (事件总线是 P2 模块的挂载点之一)
 
 结构总览 (对齐 model / tool / agent 包惯例):
 - bus.py       EventBus 行为主体: seq 编号 + 四条状态机不变量 + 分发

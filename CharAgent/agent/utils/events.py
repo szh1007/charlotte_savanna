@@ -1,4 +1,4 @@
-"""事件载荷构造与终局语义 (issue 05, loop.py 拆出的纯函数/常量).
+"""事件载荷构造与终局语义 (loop.py 拆出的纯函数/常量).
 
 大白话版 (本文件 = 主循环的「话术本」):
 - 分工: 主循环只管「什么时候喊」, 本文件管「喊什么措辞」—— 改文案不用碰
@@ -7,23 +7,21 @@
   给摘要, 失败给「改一下就能用」的错误提示); 结束时报什么 (正常 → final
   「答完了」; 刹车 / 上游中断 / 被安全策略拦截 → error「出问题了」).
 - 一条硬规矩: 结束事件绝不撒谎 —— 机器人没给出答案时不许喊「答完了」.
-  真话是「被刹车拦下了」, 道歉话术 (「请稍后再试」) 是产品文案, 归 P1-8
-  server 层, 框架只陈述事实.
+  真话是「被刹车拦下了」, 道歉话术 (「请稍后再试」) 是产品文案, 归服务层,
+  框架只陈述事实.
 - 顺带保证一件事: 结束事件与返回值同源 (都从 LoopResult 读), 不会出现
   「返回给调用方的结果」和「推给前端的事件」各说各话.
 
 对齐 tool/utils/messages.py 与 agent/utils/messages.py 的拆分动机 —— 行为
 (AgentLoop 的 while 循环) 与「事件流里每个字段长什么样 / run 结束时发什么」
 分离:
-- tool_call_data / tool_result_data: 工具调用与结果 → 事件载荷 (字段清单见
-  design/03-api.md §2; 参数保真为原始 JSON 字符串不预解析 #10; 成功结果只带
-  截断摘要, 全文不进事件流)
+- tool_call_data / tool_result_data: 工具调用与结果 → 事件载荷 (参数保真为
+  原始 JSON 字符串不预解析 #10; 成功结果只带截断摘要, 全文不进事件流)
 - emit_terminal: run 的**单一终局出口** —— 从 LoopResult 派生恰好一个终局
   事件 (正常结束 final / 异常结束 error), 避免调用方各写一份判定
 - TERMINAL_ERROR_TEXT / terminal_error_code: 异常结束的 error 事件契约 ——
-  **走 error 而非 final** (03-api.md §2.2 定案: 没有答复的结束不该有终局
-  答复事件), code 取 LoopOutcome 值; 文案只陈述事实, 用户可见的降级话术归
-  P1-8 server 层
+  **走 error 而非 final** (没有答复的结束不该有终局答复事件), code 取
+  LoopOutcome 值; 文案只陈述事实, 用户可见的降级话术归服务层
 """
 
 from __future__ import annotations
@@ -42,9 +40,9 @@ from CharAgent.stream.utils.types import (
 )
 from CharAgent.tool import ToolExecution
 
-# 终局 error 事件的 code → 事实性说明 (非用户话术; 降级文案归 P1-8 server).
+# 终局 error 事件的 code → 事实性说明 (非用户话术; 降级文案归服务层).
 # code 取 LoopOutcome 值, 另加 content_filter —— 它在 loop 语义上属 FINISHED
-# (拦截语义归调用方 P1-6), 但既然输出被安全策略拦下, 事件层就不该把它当
+# (拦截语义归调用方), 但既然输出被安全策略拦下, 事件层就不该把它当
 # 可展示答复推给前端.
 TERMINAL_ERROR_TEXT: dict[str, str] = {
     LoopOutcome.MAX_TURNS.value: "已达最大轮数限制, 未能产出最终答复",
@@ -99,13 +97,13 @@ def tool_result_data(
 def terminal_error_code(
     outcome: LoopOutcome, finish_reason: FinishReason | None
 ) -> str | None:
-    """终局 error 事件的 code; None 表示正常结束 (发 final, 见 03-api.md §2.2).
+    """终局 error 事件的 code; None 表示正常结束 (发 final).
 
     判据是「run 是怎么结束的」而非「有没有正文」:
     - 非 FINISHED (guard 刹车 / 截断超限 / 上游中断) → error, code 取
       LoopOutcome 值 —— 这些结束都没有可用的答复
     - FINISHED 但被安全策略拦截 (content_filter) → error —— 即便模型已吐出
-      部分文本, 也不该作为可展示答复推给前端 (拦截语义归 P1-6 输出护栏)
+      部分文本, 也不该作为可展示答复推给前端 (拦截语义归输出护栏)
     - FINISHED 且正常作答 → None (发 final); 模型给空文本也属正常结束,
       final.content 为 null 由前端按空答复处理
     """
@@ -117,7 +115,7 @@ def terminal_error_code(
 
 
 async def emit_terminal(bus: EventBus, result: LoopResult) -> None:
-    """run 的单一终局出口: 从 LoopResult 派生**恰好一个**终局事件 (03-api.md §2).
+    """run 的单一终局出口: 从 LoopResult 派生**恰好一个**终局事件.
 
     正常结束 → final (content 为权威值, 前端收到即覆盖缓冲); 其余 → error
     (code + 事实性文案). 终局事件与 LoopResult 同源 (同一份 outcome / content /

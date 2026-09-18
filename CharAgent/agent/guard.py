@@ -1,4 +1,4 @@
-"""LoopGuard (issue 04 / difficulties #3): 循环的「刹车」, 防模型无限循环.
+"""LoopGuard (difficulties #3): 循环的「刹车」, 防模型无限循环.
 
 一句话理解: 模型可能永远决策「再调一次工具」, 把预算烧光也不停.
 LoopGuard 是刹车 —— 设好上限, 到点就不再发起下一次模型决策, 强制结束
@@ -28,8 +28,8 @@ AgentLoop.run 的循环顶部: guard.check_after_turn().
   是 AgentLoop 的外部行为.
 
 token 预算注意: 本类是「事后判定」—— 模型响应返回后按 usage 累计, 超了
-就拦住下一次调用. 「调用前先预估 token、不够就不发请求」属 P1-11 token
-计量 (retry.py / model.py), 不在本模块.
+就拦住下一次调用. 「调用前先预估 token、不够就不发请求」属 token 计量
+(retry.py / model.py), 不在本模块.
 
 本模块只放 LoopGuard 行为类; 零件在 utils/ 子包: 结束原因枚举 LoopOutcome
 在 utils/types.py, 配置错误 GuardConfigError 在 utils/errors.py. 截断续写

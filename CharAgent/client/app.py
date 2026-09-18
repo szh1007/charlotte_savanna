@@ -1,22 +1,22 @@
-"""CLI 入口: `python -m CharAgent.client` (issue 10, P0 整体验收线).
+"""CLI 入口: `python -m CharAgent.client` (P0 整体验收线).
 
 一句话理解: 这是「不依赖 server 也能把框架跑起来」的那扇门 —— 用户在终端敲一句
 话, agent 带着工具去查、去算, 过程实时打在屏幕上, 中途按 Ctrl-C 能打断, 再敲
 `/resume` (或直接说一句「继续」) 就从断点接着跑. P0 阶段的所有零件在这里第一次
 被装配成一台真的机器.
 
-为什么它算「验收线」而不是「顺手写个 demo」: 前面八个 issue 的产物一直被测试
-调用, 但**没有任何生产代码**把它们连起来 (issue 06 §9 记的就是这件事 —— `retry/`
-当时生产调用点为零, `AgentLoop(` 只出现在测试与 docstring 里). CLI 是第一个真实
-调用点: 它一旦跑通, 说明这些协议 (ChatModel / Tool / CheckpointSaver / EventSink)
-拼得起来, 而不是各自在自己的单测里自洽.
+为什么它算「验收线」而不是「顺手写个 demo」: 前面八个包的产物一直被测试调用,
+但**没有任何生产代码**把它们连起来 (`retry/` 当时生产调用点为零, `AgentLoop(`
+只出现在测试与 docstring 里). CLI 是第一个真实调用点: 它一旦跑通, 说明这些协议
+(ChatModel / Tool / CheckpointSaver / EventSink) 拼得起来, 而不是各自在自己的
+单测里自洽.
 
-三件事在这里各有一处落地 (对应 ticket 的五条验收):
+三件事在这里各有一处落地:
 1. **带工具问答端到端** —— `--question` 或交互模式, 走完整 loop + 六类事件实时打印
 2. **重试包装接线** —— `build_model` 里那一行 `RetryingChatModel(chat_model_from_env())`
-   (issue 06 指向的接线点); `--no-retry` 可关掉做对照
+   就是重试包一直缺的那个接线点; `--no-retry` 可关掉做对照
 3. **断点续跑 + 存储切换** —— Ctrl-C 打断 (kill switch) 与 `/resume`; `--backend`
-   三选一 (ADR-0002), loop 与模型一行不动
+   三选一, loop 与模型一行不动
 
 进程结构 (为什么不是「一次 asyncio.run 跑到底」):
 - REPL 是同步的 (要用 `input()`), 而会话是异步的 —— 于是本模块持有一个**常驻
@@ -100,7 +100,7 @@ _EPILOG = """\
      (/resume 走的是快照恢复那条路: 计数器接续、挂起点补做)
   3) 换快照存储:   python -m CharAgent.client --backend redis
      redis / postgres 需要本机服务在跑; 配 --thread-id 固定会话, 跨进程也能
-     用 --resume 接着跑 (内存后端进程一退档就没了, 这正是 ADR-0002 的差别)
+     用 --resume 接着跑 (内存后端进程一退档就没了 —— 存储介质不同, 语义也不同)
 """
 
 
@@ -130,7 +130,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--backend",
         choices=BACKEND_NAMES,
-        help="快照存储后端 (ADR-0002); 不给则听 CHARAGENT_CHECKPOINT_BACKEND 环境变量",
+        help="快照存储后端; 不给则听 CHARAGENT_CHECKPOINT_BACKEND 环境变量",
     )
     parser.add_argument(
         "--thread-id",
@@ -212,13 +212,13 @@ def parse_argv(argv: Sequence[str] | None = None) -> CliOptions:
 def build_model(options: CliOptions, writer: Callable[[str], Any]) -> ChatModel:
     """按配置造模型: httpx 裸调适配器 + (默认) 重试包装.
 
-    这是 issue 06 一直在等的接线下手处 —— `retry/` 交付后生产调用点为零, 而重试
+    这是重试包一直在等的接线下手处 —— `retry/` 交付后生产调用点为零, 而重试
     以**组合**方式挂在 ChatModel 协议层 (协议是 Protocol, 不要求继承), 于是
     loop 与 model 一行都不用改: 换个对象传进去就生效.
 
     重试发生时打一行提示 (on_retry 回调): 演示时能看见「限流了, 等 0.4 秒再试」
     —— 不打印的话, 用户只会觉得这次特别慢. 注意那次失败的响应**已经计费**
-    (issue 06 §4 的双计费口径), 所以提示里带上原因, 账目不含糊.
+    (重试链路的双计费口径), 所以提示里带上原因, 账目不含糊.
 
     Args:
         options: 启动选项 (模型名 / 是否重试).
@@ -279,7 +279,7 @@ class _KillSwitch:
     - 循环本身不受影响: 打断之后照常能跑下一个协程 —— 这正是「打断后可续跑」
       的前提 (上一轮已落盘的快照还在).
 
-    与 P1 的关系: P1-2 的取消接口 (POST runs/{id}/cancel) 用同一套 `task.cancel`
+    与 P1 的关系: 取消接口 (POST runs/{id}/cancel) 用同一套 `task.cancel`
     语义, 只是触发源从终端信号换成 HTTP 请求.
     """
 
@@ -354,8 +354,8 @@ def _report_interrupt(
 ) -> None:
     """被打断了: 说清「存到哪儿了」与「怎么接着跑」—— 这是演示的重点.
 
-    用词按词表 (`docs/CONTEXT.md`): **打断** 是 KillSwitch (机制),
-    **取消/中断** 归 Cancellation (对外契约), 两者刻意分开, 这里不能混用.
+    **打断** 是 KillSwitch (机制), **取消/中断** 归 Cancellation (对外契约),
+    两者刻意分开, 这里不能混用.
 
     两条接着跑的路都说清, 因为它们的保证不一样: 说一句「继续」走的是**上下文
     接续** (已完成的工作已收回对话历史, 模型自己接上), `/resume` 走的是**快照
@@ -375,8 +375,8 @@ def _report_interrupt(
 def _nothing_to_resume(session: ChatSession) -> str:
     """「这个会话没有可恢复的快照」的提示语 (两条路共用同一份).
 
-    刻意说清两种成因与出路 —— 内存后端在进程退出后不留档, 是 ADR-0002
-    「存储介质不同, 语义也不同」最常在演示里撞上的一次.
+    刻意说清两种成因与出路 —— 内存后端在进程退出后不留档, 是「存储介质不同,
+    语义也不同」最常在演示里撞上的一次.
     """
     return (
         f"[提示] 会话 {session.thread_id} 没有可恢复的快照 —— 要么这是全新会话, "
@@ -571,7 +571,7 @@ def main(
         argv: 命令行参数 (None 表示取 sys.argv[1:]; 测试直接传一个列表).
         model: 模型注入缝 (None 表示按配置造真的) —— 与全仓其他测试同一套做法:
             ChatModel 是薄协议, 塞个 MockLLM 进去就能离线跑通整条链路, 被测代码
-            一行不改 (issue 09 的 Seam 1). 真实 API 演示照旧走 None 这条路.
+            一行不改 (全仓测试共用的注入缝). 真实 API 演示照旧走 None 这条路.
         reader: 输入函数 (None 表示 `input`); 测试传一个「按脚本吐行」的可调用
             对象来驱动交互模式.
 

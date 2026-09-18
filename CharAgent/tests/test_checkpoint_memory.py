@@ -1,4 +1,4 @@
-"""checkpoint 内存实现测试 (issue 07 / ADR-0002 第一种语义).
+"""checkpoint 内存实现测试 (内存版语义).
 
 内存版是三实现里能力最全的一个 (能存、能取最新、能按编号取、能翻历史), 所以它
 的用例其实是「协议该有的行为」的基准 —— 另两个实现少做的那部分, 在各自的用例里
@@ -181,7 +181,7 @@ async def test_branch_parent_is_preserved():
 async def test_history_order_follows_created_at_not_insertion_order():
     """历史顺序看的是记录里的**时刻**, 不是「谁先被存进来」.
 
-    为什么特意钉住: 内存版与 Postgres 要能逐条对比 (ADR-0002 的双实现对比用例),
+    为什么特意钉住: 内存版与 Postgres 要能逐条对比 (双实现对比用例),
     而 Postgres 是按 created_at 排序的 —— 若内存版按插入顺序排, 两者在「乱序
     存入」时就会给出不同结果.
     """

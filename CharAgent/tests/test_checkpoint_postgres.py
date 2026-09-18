@@ -1,4 +1,4 @@
-"""checkpoint Postgres 实现测试 (issue 07 / ADR-0002 第三种语义).
+"""checkpoint Postgres 实现测试 (Postgres 版语义).
 
 打的是 `pg` 标记 (需本机 Postgres; 默认被 addopts 排除). 单跑:
 
@@ -180,7 +180,7 @@ async def test_json_columns_hold_progress_and_observation(
     """落库的形状: 身份字段成列, 进度与观察值各进一个 JSON 列 (v3 起).
 
     直接查库确认 (而不是只信读回来的对象): 「列存身份、JSON 存进度与观察值」
-    是 02-data-model.md §3 定的存储形态, 值得钉一次 —— 顺带保证两块没被写反.
+    是数据模型定的存储形态, 值得钉一次 —— 顺带保证两块没被写反.
     """
     frame = make_frame(pg_thread_id, 1)
     await pg_saver.save(frame)
@@ -273,7 +273,7 @@ async def test_deleting_a_frame_orphans_its_branches(pg_dsn, pg_saver, pg_thread
     await pg_saver.save(origin)
     await pg_saver.save(branch)
 
-    # saver 协议里没有删除 (清理策略属 P2-12), 所以直接一条 SQL 来触发外键行为
+    # saver 协议里没有删除 (清理策略属后续阶段), 所以直接一条 SQL 来触发外键行为
     await asyncio.to_thread(delete_frame, pg_dsn, origin.checkpoint_id)
 
     remaining = await pg_saver.load(branch.checkpoint_id)

@@ -1,4 +1,4 @@
-"""checkpoint Redis 实现测试 (issue 07 / ADR-0002 第二种语义, 两档模式).
+"""checkpoint Redis 实现测试 (Redis 版语义, 两档模式).
 
 默认用 tests/doubles.py 的 FakeRedisClient (实现本包用到的几条命令, 时钟可控,
 于是 TTL 到期不必真等). 与真实 Redis 的对照由本文件末尾标记 `redis` 的用例补验

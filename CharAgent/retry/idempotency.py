@@ -1,4 +1,4 @@
-"""幂等键与幂等存储 (issue 06 / difficulties #17, 关联 #13).
+"""幂等键与幂等存储 (difficulties #17, 关联 #13).
 
 一句话理解: 重试让「同一件事」可能被执行两次 —— 查询两次没关系, 退款两次
 就是事故. 幂等键就是给每件事发的**唯一凭证**: 动作执行前先拿凭证认领, 重复
@@ -12,9 +12,8 @@
    (IN_PROGRESS) → 完成 (COMPLETED, 带结果); 动作失败要 release 放行,
    否则该键永久卡在「在途」, 后续合法重试全被挡住.
 
-P0 的边界 (P1-4 补齐): 进程内 dict, **无 TTL / 无持久化 / 跨实例失效**,
-也没有 Saga 补偿 —— 生产形态是 Redis SETNX + TTL 续租 + owner 校验, 见
-roadmap P1-4.
+P0 的边界 (P1 补齐): 进程内 dict, **无 TTL / 无持久化 / 跨实例失效**,
+也没有 Saga 补偿 —— 生产形态是 Redis SETNX + TTL 续租 + owner 校验.
 
 大白话版: 幂等键 = 快递单号, 存储 = 单号台账. 同一单号来两次: 第一次登记
 「在办」并真的去办, 办完标「已办」并记结果; 第二次来直接告诉你「已办, 结果
@@ -80,7 +79,7 @@ class IdempotencyKey:
 
 
 class IdempotencyStore(Protocol):
-    """幂等记录存储协议 (SPI): P0 进程内实现, P1-4 补 Redis / PG 实现.
+    """幂等记录存储协议 (SPI): P0 进程内实现, P1 补 Redis / PG 实现.
 
     三个动作构成一次鉴权往返: 动作执行**前** claim (拿到才执行), 成功后
     complete (记结果), 失败后 release (放行合法重试).
@@ -112,9 +111,9 @@ class InMemoryIdempotencyStore:
 
     并发说明: 单事件循环内 dict 读改写之间没有 await, 天然原子 —— 同一 key
     的并发认领在进程内不会同时拿到执行权. **跨进程不适用** (多实例要靠
-    P1-4 的 Redis SETNX).
+    Redis SETNX).
 
-    边界 (P1-4 补齐): 无 TTL / 无持久化 (进程重启即遗忘) / 无 Saga 补偿.
+    边界 (P1 补齐): 无 TTL / 无持久化 (进程重启即遗忘) / 无 Saga 补偿.
     """
 
     def __init__(self) -> None:

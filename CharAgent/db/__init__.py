@@ -1,4 +1,4 @@
-"""db 包: 五实体的数据模型 + 表定义 + 仓储 (issue 08 / difficulties #12).
+"""db 包: 五实体的数据模型 + 表定义 + 仓储 (difficulties #12).
 
 目录叫 `db/` 而不是 `models/`: 与 `CharAgent/model/` (LLM 模型层) 名字太近, 两个
 都叫 model 会分不清谁是谁. 这里的东西全是数据库相关的, `db` 一眼到位.

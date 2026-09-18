@@ -5,8 +5,7 @@
 各子包自己也各有一份门面 (`CharAgent.checkpoint.__all__` 等), 本文件是它们的
 合集, 不新造 API.
 
-汇聚的九个包 (P0 的八个 + 后来补的 `prompt`; 职责与依赖方向见
-docs/DESIGN.md 的目录结构表):
+汇聚的九个包 (P0 的八个 + 后来补的 `prompt`; 职责见下表):
 
 | 包 | 一句话 |
 |----|--------|
@@ -28,16 +27,16 @@ docs/DESIGN.md 的目录结构表):
 2. **`client` 不入本文件** —— 它是**应用入口** (`python -m CharAgent.client`), 不是
    库 API: 没有人会 `from CharAgent import main`. 想跑演示直接敲那条命令.
 
-为什么现在才汇聚 (历史): 各包的门面一直是齐的, 根门面却从 P0-1 起只导出了
-model + tool, issue 05/06/07/08 四处都记着「agent / stream / hooks / retry /
-checkpoint / db 尚未顶层导出, 同批处理」—— 四轮都往后推, 一直没做. issue 10
-(P0 验收线) 把它一次补完, 并加了一条防漂移用例 (`tests/test_root_facade.py`:
-子包 __all__ 里的每个名字, 根门面都必须有).
+为什么现在才汇聚 (历史): 各包的门面一直是齐的, 根门面却长期只导出了
+model + tool —— 各处都记着「agent / stream / hooks / retry / checkpoint / db
+尚未顶层导出, 同批处理」, 几轮都往后推, 一直没做. 收尾时 (P0 验收线) 把它一次
+补完, 并加了一条防漂移用例 (`tests/test_root_facade.py`: 子包 __all__ 里的每个
+名字, 根门面都必须有).
 """
 
 from __future__ import annotations
 
-# --- agent: 手写 agent loop + 循环防护 (issue 04) -------------------------
+# --- agent: 手写 agent loop + 循环防护 ------------------------------------
 from CharAgent.agent import (
     AgentLoop,
     GuardConfigError,
@@ -49,7 +48,7 @@ from CharAgent.agent import (
     TurnRecord,
 )
 
-# --- checkpoint: 快照协议 + 三实现 + 断点续跑 (issue 07) -------------------
+# --- checkpoint: 快照协议 + 三实现 + 断点续跑 ------------------------------
 from CharAgent.checkpoint import (
     BACKEND_NAMES,
     DEFAULT_CODEC,
@@ -81,7 +80,7 @@ from CharAgent.checkpoint import (
     summarize,
 )
 
-# --- db: 五实体数据模型 + 表定义 + 仓储 (issue 08) -------------------------
+# --- db: 五实体数据模型 + 表定义 + 仓储 ------------------------------------
 from CharAgent.db import (
     ALL_TABLES,
     ALLOWED_TRANSITIONS,
@@ -129,7 +128,7 @@ from CharAgent.db import (
     visible_transcript,
 )
 
-# --- hooks: hook 注册表骨架 (issue 05, ADR-0007 扩展点) --------------------
+# --- hooks: hook 注册表骨架 (扩展点) ---------------------------------------
 from CharAgent.hooks import (
     HookConfigError,
     HookError,
@@ -140,7 +139,7 @@ from CharAgent.hooks import (
     ModelCallPhase,
 )
 
-# --- model: ChatModel 协议 + 双适配器 (issue 01/02) ------------------------
+# --- model: ChatModel 协议 + 双适配器 --------------------------------------
 from CharAgent.model import (
     ChatModel,
     FinishReason,
@@ -170,7 +169,7 @@ from CharAgent.prompt import (
     resolve_model_name,
 )
 
-# --- retry: 重试退避 + 幂等键 (issue 06) -----------------------------------
+# --- retry: 重试退避 + 幂等键 ----------------------------------------------
 from CharAgent.retry import (
     ClaimResult,
     ClaimStatus,
@@ -188,7 +187,7 @@ from CharAgent.retry import (
     retry_async,
 )
 
-# --- stream: 流式事件总线 (issue 05) ---------------------------------------
+# --- stream: 流式事件总线 --------------------------------------------------
 from CharAgent.stream import (
     TERMINAL_TYPES,
     TOOL_RESULT_SUMMARY_LIMIT,
@@ -200,7 +199,7 @@ from CharAgent.stream import (
     StreamEvent,
 )
 
-# --- tool: @tool 装饰器 + schema 生成 (issue 03) ---------------------------
+# --- tool: @tool 装饰器 + schema 生成 --------------------------------------
 # 注意: 装饰器 `tool` 刻意不在本文件导入 (会遮蔽子包 CharAgent.tool, 见模块 docstring)
 from CharAgent.tool import (
     Tool,

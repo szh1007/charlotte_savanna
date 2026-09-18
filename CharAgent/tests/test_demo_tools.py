@@ -1,6 +1,6 @@
-"""演示工具集冒烟测试 (issue 03): 6 个工具可注册、schema 有效、执行正确.
+"""演示工具集冒烟测试: 6 个工具可注册、schema 有效、执行正确.
 
-同时验证 issue 03 的核心教学对照:
+同时验证这批工具的核心教学对照:
 - #5 query_order_status (pydantic, Field(pattern) 约束进 schema → 模型填参即被约束)
   vs #6 query_order_status_manual (manual 引擎, 手写校验 raise 可操作错误 #2)
 - 双路径同能力工具输出一致 (用户对比学习点)

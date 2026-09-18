@@ -3,7 +3,7 @@
 关注点是「表定义有没有漏东西」—— 这些是**离线**能验的:
 - 表名都带 `charagent_` 前缀 (共库不撞名的前提)
 - 每张表、每一列都有注释 (库里的注释就是文档, 漏一个将来就得去翻代码)
-- 五个主键与设计文档一致 (含 tool_calls 的复合主键)
+- 五个主键与实体定义一致 (含 tool_calls 的复合主键)
 - 外键的删除动作 (CASCADE / SET NULL) 与设计一致
 - 索引齐全 (会话列表、历史翻页、按运行查调用)
 
@@ -76,7 +76,7 @@ def test_every_table_has_a_comment():
 
 
 def test_primary_keys_match_the_design():
-    """主键与设计文档一致 (重点是 tool_calls 的三列主键).
+    """主键与实体定义一致 (重点是 tool_calls 的三列主键).
 
     tool_calls 为什么必须三列: 真实上游每轮都从 `call_0` 重新编号 —— 单列在
     第二次调用就撞; 只加 `run_id` 只解决「跨运行」, **同一个 run 的多轮之间**
@@ -148,49 +148,6 @@ def test_expected_indexes_exist():
     }
     found = {index.name for table in ALL_TABLES for index in table.indexes}
     assert expected <= found, f"缺这些索引: {expected - found}"
-
-
-def test_design_doc_index_table_matches_the_code():
-    """设计文档里那张索引表与代码逐条一致 (文档漂移由测试兜住).
-
-    为什么值得测: 索引是**会被漏记**的那类东西 —— 加表时顺手加了个索引, 文档忘了
-    补; 或者反过来, 文档写着一个早删掉的索引. 两种漂移都不会让代码报错, 只会让
-    读文档的人按一份不存在的结构去设计查询.
-
-    这条用例把 `docs/design/02-data-model.md` 的「索引一览」表读出来, 与
-    `schema.py` 里的 Index 对象逐条比 (名字 / 表 / 列). 文档改了而代码没改 (或反之)
-    都会在这里红.
-    """
-    import re
-    from pathlib import Path
-
-    doc_path = (
-        Path(__file__).resolve().parents[1] / "docs" / "design" / "02-data-model.md"
-    )
-    doc = doc_path.read_text(encoding="utf-8")
-    # 取「索引一览」小节到下一个二级标题之间的那段
-    section = doc.split("### 索引一览")[1].split("\n## ")[0]
-    documented = {
-        name: (table, [column.strip() for column in columns.split("+")])
-        for name, table, columns in re.findall(
-            r"\| `([^`]+)` \| (\w+) \| ([^|]+) \|", section
-        )
-    }
-
-    in_code = {
-        index.name: (
-            table.name.removeprefix("charagent_"),
-            [column.name for column in index.columns],
-        )
-        for table in ALL_TABLES
-        for index in table.indexes
-    }
-
-    assert documented == in_code, (
-        "设计文档的索引表与代码不一致 —— "
-        f"只在文档里: {set(documented) - set(in_code)}; "
-        f"只在代码里: {set(in_code) - set(documented)}"
-    )
 
 
 def _ondelete(table, column_name: str) -> str | None:

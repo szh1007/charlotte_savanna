@@ -1,6 +1,6 @@
 """openai SDK 适配器单测: respx mock HTTP (SDK 底层走 httpx), 不触网.
 
-覆盖 issue 02 检查项: 非流式 / 流式经 SDK 全链路正确解析, 错误映射
+覆盖检查项: 非流式 / 流式经 SDK 全链路正确解析, 错误映射
 (SDK 异常层级 -> 与 httpx 适配器同语义的 ModelError, 429 / 5xx / 连接 /
 超时为瞬态可重试, 其余 4xx 永久). SDK 与 httpx 的一致性契约见
 test_model_contract.py.

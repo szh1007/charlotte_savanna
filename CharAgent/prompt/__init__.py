@@ -1,4 +1,4 @@
-"""prompt 包: 提示词的集中存放与按名加载 (difficulties #69 / P2-5 的落脚点).
+"""prompt 包: 提示词的集中存放与按名加载 (difficulties #69).
 
 一句话理解: 提示词从这里**按名字取**, 不写在代码里. 一个 `.prompt` 文件就是一段
 提示词, 组件调 `load_prompt("system", model_name=...)` 拿渲染好的正文.
@@ -10,8 +10,7 @@
 
 设计依据 (CharAgent/docs):
 - difficulties #69 Prompt Engineering (标 P0-P1): 提示词要能独立于代码演进
-- docs/design/05-roadmap.md 的 P2-5「版本化 prompt」—— 本包是它的落脚点: 届时
-  按版本取文件即可, 调用方签名不用变
+- 本包是「版本化 prompt」的落脚点: 届时按版本取文件即可, 调用方签名不用变
 
 结构总览:
 

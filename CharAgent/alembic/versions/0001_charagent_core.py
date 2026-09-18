@@ -4,7 +4,7 @@ Revision ID: 0001_core
 Revises:
 Create Date: 2026-09-14
 
-一句话说明: issue 08 (P0-7) 的首次迁移 —— 把五实体落成 Postgres 表, 从此 schema
+一句话说明: 数据层的首次迁移 —— 把五实体落成 Postgres 表, 从此 schema
 有了版本号 (`charagent_alembic_version` 表里记着当前跑到哪一版 ——
 带前缀的理由见 `alembic/env.py` 的 VERSION_TABLE).
 
@@ -19,7 +19,7 @@ db/schema.py 逐字一致 —— 两边不一致时 `--autogenerate` 每次都�
 这种与真实改动无关的差异, 那些噪音会淹掉真正的 schema 变更.
 
 `charagent_checkpoints` 曾用过 `CREATE TABLE IF NOT EXISTS` 的幂等写法 —— 那是为了
-兼容 P0-6 遗留的那张手写 SQL 建的表 (列是 TEXT、没有列注释). **2026-09-14 库已按
+兼容早期遗留的那张手写 SQL 建的表 (列是 TEXT、没有列注释). **2026-09-14 库已按
 本迁移重建 (建表时全部为空), 那个兼容层随之删掉**: 五张表现在写法完全一致
 (`op.create_table` + `comment=`, 注释是显式参数而不是另跑一串 `COMMENT ON`).
 

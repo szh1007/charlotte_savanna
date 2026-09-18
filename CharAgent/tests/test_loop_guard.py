@@ -1,4 +1,4 @@
-"""循环防护测试 (issue 04 / difficulties #3): 三种软限制 + kill switch.
+"""循环防护测试 (difficulties #3): 三种软限制 + kill switch.
 
 场景 → 断言:
 - max_turns: 模型永远要调工具时轮数用尽即停 (不无限循环); 已发出的工具

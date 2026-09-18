@@ -1,4 +1,4 @@
-"""retry 包: 重试 + 指数退避 + jitter + 幂等键 (issue 06 / difficulties #13).
+"""retry 包: 重试 + 指数退避 + jitter + 幂等键 (difficulties #13).
 
 一句话理解: 模型调用偶尔会因为「不是我们的错」的原因失败 (上游限流 429、
 服务端 5xx、网络超时), 这种失败重试一次往往就好了; 而参数错、模型名错这类
@@ -8,9 +8,8 @@
 设计依据 (CharAgent/docs):
 - difficulties #13: 只对瞬态错误重试 (429 / 5xx / 超时), 4xx 直接放弃;
   指数退避 + jitter 散开惊群; 重试会重复计费 token, 必须可挂钩 (不给假账)
-- CONTEXT.md 词条: RetryPolicy / IdempotencyKey
-- ADR-0001: ChatModel 是薄协议 SPI —— 重试以**组合**方式包装模型, 不改协议
-  不改 loop (issue 05 的「只加不改」同一思路)
+- ChatModel 是薄协议 SPI —— 重试以**组合**方式包装模型, 不改协议
+  不改 loop (「只加不改」)
 
 结构总览 (顶层 = 行为模块, 静态零件在 utils/):
 - policy.py        RetryPolicy: 退避序列 (指数 + jitter) / 三个上限的裁决

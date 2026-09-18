@@ -1,4 +1,4 @@
-"""client 会话装配测试 (issue 10): ChatSession 的三个动作 —— 问一句 / 接着跑 / 看存档.
+"""client 会话装配测试: ChatSession 的三个动作 —— 问一句 / 接着跑 / 看存档.
 
 场景 → 断言:
 - 问一句: 拿到 LoopResult, 会话历史收成「用户问 + 模型答」

@@ -1,4 +1,4 @@
-"""CheckpointSaver 协议: 存快照 / 取快照的「插座」(difficulties #5, ADR-0002).
+"""CheckpointSaver 协议: 存快照 / 取快照的「插座」(difficulties #5).
 
 一句话理解: 框架只规定两件事 —— **快照要能存下去、能按会话取回来**; 至于存到
 哪儿 (内存里的一个字典 / Redis 的一个键 / Postgres 的一张表), 由实现决定.
@@ -7,11 +7,11 @@
 电池 (内存, 一拔就没) 还是发电机 (Postgres, 断了电再来还有) 都行, 而用插头的
 电器 (agent loop) 完全不用改. 所以换存储 = 换一个 saver 对象, 不是改 loop.
 
-为什么是 Protocol 而不是基类 (与 model/protocol.py 的 ChatModel 同一取舍,
-ADR-0001): 只照形状检查, 不要求继承 —— 谁都可以写自己的 saver (比如公司内部的
-对象存储), 不必 import 本模块的基类.
+为什么是 Protocol 而不是基类 (与 model/protocol.py 的 ChatModel 同一取舍):
+只照形状检查, 不要求继承 —— 谁都可以写自己的 saver (比如公司内部的对象存储),
+不必 import 本模块的基类.
 
-三种实现的能力差异 (ADR-0002 的核心教学点, 用 capabilities 声明):
+三种实现的能力差异 (本包的核心教学点, 用 capabilities 声明):
 
 | 实现 | 存什么 | 有历史 | 会过期 | 适合 |
 |------|--------|--------|--------|------|

@@ -1,4 +1,4 @@
-"""Redis 版快照存储: 两档模式 —— 流式全历史 / 只留最新一帧 (ADR-0002 第二种语义).
+"""Redis 版快照存储: 两档模式 —— 流式全历史 / 只留最新一帧.
 
 一句话理解: Redis 有两个住法, 存的东西一样, 记性不一样.
 
@@ -20,7 +20,7 @@ langgraph-checkpoint-redis 里的 ShallowRedisSaver: 那种「只留最新」的
 两档都提供的保证: 每存一帧重新计 TTL (`ttl_seconds`, 不配则不过期); 键名前缀
 可配 (`key_prefix`); 存的都是**协议文本**, 换个进程换个语言照样读得懂.
 
-存储形态 (02-data-model.md §3):
+存储形态:
 - history: 键 `{前缀}:ckpt:{thread_id}` → Stream, 每行一个字段 `data=<整条 JSON>
 - latest:  键 `{前缀}:ckpt:latest:{thread_id}` → String
 

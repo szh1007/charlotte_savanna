@@ -1,4 +1,4 @@
-"""client 包静态零件: 启动选项 CliOptions (issue 10).
+"""client 包静态零件: 启动选项 CliOptions.
 
 一句话理解: 命令行上敲的那串参数, 解析完就装进 CliOptions 这一个对象; 后面
 (装配模型 / 挑存储 / 跑会话 / 画终端) 全都读它, 不再回头去看 argv.
@@ -32,7 +32,7 @@ class CliOptions:
     """一次 CLI 运行的启动选项 (解析 argv 的产物, 全程只读).
 
     attributes:
-        backend: 快照存储后端 (memory / redis / postgres, ADR-0002); None 表示
+        backend: 快照存储后端 (memory / redis / postgres); None 表示
             听环境变量 CHARAGENT_CHECKPOINT_BACKEND 的 (它也没有就用 memory). 这一项就是
             验收要求的「存储配置切换可演示」—— 换后端只改这一个值, loop 一行不动.
         thread_id: 会话编号 (快照按它分区; 同一个编号才能接着跑).
@@ -44,7 +44,7 @@ class CliOptions:
             走上游默认 (开启且 effort=high). 见 ChatModel.generate 的说明.
         max_turns: 轮数上限 (透传 LoopGuard, 防跑飞).
         max_tokens: 单次输出上限 (透传 generate); 设小可以稳定造出 length 截断,
-            用来演示截断处理路径 (issue 04 的 CONTINUE 续写).
+            用来演示截断处理路径 (CONTINUE 续写).
         use_retry: 是否给模型套重试包装 (RetryingChatModel). True 是默认:
             真实端点偶发 429 / 5xx 时能自动再试; False 用于对照演示「不重试会怎样」.
         color: 是否上 ANSI 颜色 (非 TTY / 重定向 / --plain 时关掉).

@@ -1,4 +1,4 @@
-"""tool schema 生成测试 (issue 03 / #70): pydantic + manual 双引擎.
+"""tool schema 生成测试 (#70): pydantic + manual 双引擎.
 
 - pydantic 引擎: Annotated[..., Field(...)] 的 description / pattern / gt 等约束
   进入 schema; 默认值参数不进 required; Literal/StrEnum 映射 enum; 嵌套

@@ -21,8 +21,6 @@
 | `project/rag_knowledge/` | 子项目 | 工业级 RAG 知识库问答（LangGraph 双图 + Milvus + 评估体系） |
 | `project/rag_text2sql/` | 子项目 | RAG Text2SQL 数据查询智能体（LangGraph + Qdrant/ES + MySQL 双库 + Vue） |
 | `app/charplot/` + `project/charplot/` | 子项目 | AI 闯关学习网站（双后端：Django 账号/闯关规则 + FastAPI AI 能力 + Vue 前端, LangGraph/DeepAgents/LangChain 三件套） |
-| `CharAgent/` | 子项目 | 从零手写的 agent runtime 框架（P0 已交付：模型/工具/loop/事件/重试/checkpoint/数据层/提示词 + CLI 演示），业务无关，无 Django |
-| `CharService/` | 子项目 | 企业级电商智能客服业务层（ADR-0008/0009）：minimall internal API + 内部网关 + 身份服务三层对接，12 个工具 + 审批/接管台 + Vue 前端；P1 垂直切片实施中 |
 | `demo/` | 自学教程 | 非业务代码，见 §1.1 |
 
 ---
@@ -162,30 +160,6 @@ charlotte_savanna/
 │   │   ├── tests/               #   FastAPI 侧测试（9 文件, Redis /15 隔离 + Fake LLM）
 │   │   ├── .env / .env.example  #   CHARPLOT_* 独立环境变量（不提交 / 模板）
 │   │   └── README.md            #   子项目文档
-├── CharAgent/                   # 从零手写的 agent runtime 框架（P0 已交付, 独立于 Django/FastAPI）
-│   ├── model/                   #   薄 ChatModel 协议 + httpx 裸调 / openai SDK 双适配器
-│   ├── tool/                    #   @tool 装饰器 + JSON schema 生成（pydantic / manual 双引擎）
-│   ├── agent/                   #   手写 agent loop（并行工具 / 错误自纠错 / 循环防护 / 截断处理）
-│   ├── stream/                  #   流式事件总线（六类事件 + seq + 四条状态机不变量）
-│   ├── hooks/                   #   hook 注册表骨架（五个触发点, 空注册零开销）
-│   ├── retry/                   #   重试退避 + jitter + 幂等键（包在 ChatModel 协议层）
-│   ├── checkpoint/              #   快照: 序列化协议 + 内存/Redis/Postgres 三实现 + 断点续跑
-│   ├── db/                      #   五实体 + 表定义（唯一来源）+ 仓储（与 alembic 共用）
-│   ├── prompt/                  #   提示词集中存放: templates/*.prompt + load_prompt() 按名加载
-│   ├── alembic/                 #   迁移（只追加；版本表 charagent_alembic_version）
-│   ├── client/                  #   命令行入口 python -m CharAgent.client（P0 验收线）
-│   ├── docs/                    #   DESIGN / CONTEXT(词表) / design/(01~06) / adr/(0001~0010) / difficulties/(70 难点)
-│   └── tests/                   #   分层测试（默认全替身 741 例 + integration/pg/redis/pg_db 四个 marker）
-├── CharService/                 # 企业级电商智能客服业务层（业务无关框架 CharAgent 的第一个真实使用方）
-│                               #   【规划中，目录尚未创建】—— issue 01 起实施，当前只有 .scratch/CharService/ 的规格
-│   ├── api/                     #   业务端点（审批台 / 接管台 / 工单）；通用运行时端点由 CharAgent/server router 工厂提供
-│   ├── channels/                #   模拟渠道网关（确定 user_id + 建立会话）
-│   ├── identity/                #   身份服务 :10072（RS256 签发委托 token，私钥仅在此）
-│   ├── gateway/                 #   内部 API 网关 :10071（验签 + 限流 + 双粒度审计 + 转发，agent 唯一入口）
-│   ├── tools/                   #   @tool 工具集（薄封装：参数校验 + 调网关 + 格式化，签名无 user_id）
-│   ├── frontend/                #   Vue 3 + Vite 前端 :10079（/chat + /admin）
-│   ├── docs/                    #   子项目文档
-│   └── tests/
 ├── templates/                   # 全局模板目录
 │   ├── minimall/                #   商城页面模板（base + partials）
 │   ├── charplot/                #   report_share.html（/r/{slug} 公开分享页）
@@ -202,9 +176,7 @@ charlotte_savanna/
 │   ├── rag_text2sql_backend.sh  #   启动 rag_text2sql 后端
 │   ├── rag_text2sql_frontend.sh #   启动 rag_text2sql 前端
 │   ├── charplot_backend.sh      #   启动 charplot FastAPI AI 能力端（8004; Django 侧随主项目 8000）
-│   ├── charplot_frontend.sh     #   启动 charplot 前端
-│   ├── charservice_backend.sh   #   启动 CharService（10070 + 内部网关 10071 + 身份服务 10072）【待建：issue 01】
-│   └── charservice_frontend.sh  #   启动 CharService 前端（10079）【待建：issue 01】
+│   └── charplot_frontend.sh     #   启动 charplot 前端
 ├── demo/                        # [Demo] 自学教程代码（非业务，忽略）
 │   ├── Base/                    #   Python 基础
 │   ├── LangChain_v1.3/          #   LangChain 1.3 教程
@@ -408,44 +380,7 @@ charlotte_savanna/
 
 > 业务链路已闭环（Issue 01~14, 2026-09-08 三侧契约核对零断链）。已实现：旅程创建 → 图谱落库 → 技能树 → 渐进出题（间隔复习混入）→ 闯关答题 → 复盘分享 → Dashboard + LLM 状态总结 + 知识库管理。启动与已知边界见 `project/charplot/README.md`。
 
-### 5.8 子项目 — CharAgent agent runtime 框架（`CharAgent/`）
-
-| 组件 | 状态 | 说明 |
-|------|------|------|
-| 模型层（`model/`） | ✅ | 薄 ChatModel 协议 + httpx 裸调 / openai SDK 双适配器 + reasoning 兼容分支 |
-| 工具层（`tool/`） | ✅ | @tool 装饰器 + JSON schema 双引擎（pydantic / manual）+ 可操作错误语义 |
-| 主循环（`agent/`） | ✅ | 手写 agent loop：并行工具 / 错误自纠错 / 循环防护三软限制 + kill switch / length 截断两策略 |
-| 事件与扩展点（`stream/` + `hooks/`） | ✅ | 六类事件 + seq + 四条状态机不变量；五个 hook 触发点（空注册零开销） |
-| 重试（`retry/`） | ✅ | 指数退避 + jitter + 三上限；`RetryingChatModel` 组合在协议层（loop 零改动） |
-| 快照（`checkpoint/`） | ✅ | JSON + 行李牌 + schema 版本迁移；内存 / Redis(流式历史) / Postgres 三实现；断点续跑 + time-travel |
-| 数据层（`db/` + `alembic/`） | ✅ | 五实体 + 状态机规则 + 仓储；表定义唯一来源；全部表名带 `charagent_` 前缀（与共用 PG 库里的其他子项目隔离） |
-| 提示词（`prompt/`） | ✅ | 提示词集中存放：`templates/*.prompt` + `load_prompt()` 按名加载（`string.Template` 占位符，规避字面 JSON 大括号）；框架机制文本（截断指令）刻意留原处 |
-| CLI（`client/`） | ✅ | `python -m CharAgent.client`：带工具问答 + 六类事件实时打印 + Ctrl-C 打断后续跑（说「继续」或 `/resume`）+ 快照后端三选一（P0 验收线） |
-| 测试（`tests/`） | ✅ | 默认全替身 741 例；四个 marker：integration / pg / redis / pg_db |
-| P1（框架侧） | ⬜ 未开工 | 通用运行时 HTTP 层（router 工厂）+ 安全护栏 / HITL / 限流 / 幂等 Saga / 降级 / RAG / 结构化输出 / 计量 / 日志指标（15 个 issue：8 个方案修订 + 1 个新增 P1-15 + 2 个已移交 CharService） |
-| P1（业务侧） | ⬜ 未开工 | **已外移至 `CharService/`** —— 原 P1-13 客服 demo 与 P1-14 前端整个移交，拆为 10 个垂直切片 |
-| P2 | ⬜ 未开工 | 8 个可插拔插件（memory / cost / observability / multiagent / mcp / skills / eval / context_engineering）+ event 表 + 文档 + 工程化；**11 个 issue 不受业务改造影响** |
-
-> P0 已验收（2026-09-15）：真实端点跑通带工具问答（含并行双工具）、Ctrl-C 中断续跑（`tool_call` 全程仅一次）、`--backend` 三后端切换。**启动**：`cd` 到仓库根后 `python -m CharAgent.client`（详见 §6.3）。设计与难点文档见 `CharAgent/docs/`（DESIGN / CONTEXT 词表 / design/01~06 / adr/0001~0010 / difficulties 70 个编号难点）。P0 未闭环、按归属推给 P1/P2 的条目见 `.scratch/CharAgent/P0-to-P1-P2.md`。
-
-> **2026-09-18 业务 demo 外移**：原 P1-13（客服 demo，只读直连 minimall MySQL）与 P1-14（前端）整个移交新子项目 `CharService/`，对接方式按 ADR-0008/0009 重构为企业形态；框架保持业务无关，P2 的 11 个插件不受影响。
-
-### 5.9 子项目 — CharService 电商智能客服业务层（`CharService/`）
-
-| 组件 | 状态 | 说明 |
-|------|------|------|
-| 模拟渠道（`channels/`） | ⬜ | 会话建立时绑定 `user_id`（模拟 App 已鉴权），身份由此确定 |
-| 身份服务（`identity/`） | ⬜ | RS256 签发委托 token（`sub`/`act`/`aud`/`tenant`/`exp`），私钥仅在此，**agent 无签发权** |
-| 内部网关（`gateway/`） | ⬜ | agent 访问业务系统的**唯一入口**：验签 + 限流 + 双粒度审计 + 转发 |
-| 工具集（`tools/`） | ⬜ | 12 个工具（8 个 L0 只读 / 1 个 L1 加购 / 1 个 L2 退款走审批 / 1 个 L2 取消走用户确认 / 1 个转人工），**签名无 `user_id`** |
-| 业务端点（`api/`） | ⬜ | 审批台 + 接管台 + 工单；通用运行时端点由 CharAgent 的 router 工厂提供 |
-| 退款 worker | ⬜ | 异步受理：推进退款单状态，同事务改余额 + 写流水 + 置状态。**代码在 `app/minimall/`，不在 CharService**（要同事务改 MySQL，放这里就得开业务库连接，违反 ADR-0008） |
-| 前端（`frontend/`） | ⬜ | Vue 3（:10079）双路由 /chat + /admin，含结构化确认卡片 |
-| minimall 改造 | ⬜ | 新增 `/api/minimall/internal/support/*`（按任务粒度）+ 退款能力（refund 表 / 余额流水 / 服务身份认证）；**不动既有 24 条买家端点** |
-
-> 三层对接设计见 `CharAgent/docs/adr/0008`（业务对接形态）与 `0009`（委托身份 + 写操作分级）。规格与 10 个垂直切片 issue 见 `.scratch/CharService/`。**启动**（`CharService/` 目录与脚本随 issue 01 创建）：`sh/charservice_backend.sh`（:10070，随脚本拉起网关 :10071 与身份服务 :10072）+ `sh/charservice_frontend.sh`（:10079）。
-
-### 5.10 Demo 目录（仅供学习参考，不计入业务/子项目）
+### 5.8 Demo 目录（仅供学习参考，不计入业务/子项目）
 
 | 目录 | 状态 | 说明 |
 |------|------|------|
@@ -456,11 +391,11 @@ charlotte_savanna/
 | `demo/FastAPI/` | ✅ 完成 | FastAPI 基础教程（3 个 demo） |
 | `demo/SUMMARY.md` | ✅ 完成 | LangChain/LangGraph/DeepAgents 知识点学习总结 |
 
-### 5.11 基础设施
+### 5.9 基础设施
 
 | 项目 | 状态 | 说明 |
 |------|------|------|
-| .env 管理 | ✅ | `.env.example` 提供模板（Django/OpenAI/DeepSeek/Tavily/LangSmith/MySQL/PG/Redis/Milvus/CHARPLOT_*/CHARAGENT_*） |
+| .env 管理 | ✅ | `.env.example` 提供模板（Django/OpenAI/DeepSeek/Tavily/LangSmith/MySQL/PG/Redis/Milvus/CHARPLOT_*） |
 | 数据库/缓存 | ✅ | MySQL + Redis（django-redis），配置环境变量化 |
 | 代码质量 | ✅ | Ruff + pre-commit 已接入 |
 | 依赖管理 | ✅ | `requirements.txt` 已生成（267 个包） |
@@ -510,10 +445,6 @@ charlotte_savanna/
 - **rag_text2sql 前端**：`sh/rag_text2sql_frontend.sh`（或 `cd project/rag_text2sql/frontend && npm run dev`, 127.0.0.1:8201）
 - **charplot 后端**：`sh/charplot_backend.sh`（或 `python -m project.charplot.api.server`, 127.0.0.1:8004, AI 能力端; Django 侧随主项目 8000 启动, 前置 MySQL/Redis/Milvus + modelscope 本地模型）
 - **charplot 前端**：`sh/charplot_frontend.sh`（或 `cd project/charplot/frontend && npm run dev`, 127.0.0.1:9004）
-- **CharAgent CLI**：在**仓库根**跑 `python -m CharAgent.client`（交互模式；`-q "问一句"` 一次性、`--backend redis|postgres` 换快照后端、`--history` 看存档、`--help` 看全部选项与三步演示脚本；无 sh 脚本 —— 它不常驻，不是服务）。**打断后续跑有两条路**：Ctrl-C 后已完成的工作会收回对话历史，直接说一句「继续」就接着跑（CLI 不做意图识别，判断交给模型）；`--resume` / `/resume` 走快照恢复（计数器接续、挂起点补做，框架级保证）
-- **CharAgent 测试**：`cd CharAgent && pytest`（默认全替身；`-m integration` 打真实端点、`-m pg` / `-m redis` / `-m pg_db` 连真服务）
-- **CharService 后端**【待建：issue 01】：`sh/charservice_backend.sh`（或 `python -m CharService.api.server`, 127.0.0.1:10070；随脚本一并拉起内部网关 :10071 与身份服务 :10072；前置 MySQL/Postgres/Redis/Milvus + minimall internal/support 端点）
-- **CharService 前端**【待建：issue 01】：`sh/charservice_frontend.sh`（或 `cd CharService/frontend && npm run dev`, 127.0.0.1:10079，首次需 `npm install`）
 - **进程状态**：`sh/_status_.sh`（查看各项目运行进程: PID/端口/内存/启动命令）
 - **LangGraph CLI**：`langgraph dev`（`langgraph.json` 配置了 graph 入口，指向 `demo/LangGraph_v1.2`）
 - **LangChain 脚本**：在对应 `demo/` 子目录下 `python <script>.py`（脚本内部 `load_dotenv()`）
@@ -531,7 +462,6 @@ cd project/menu/ui && npm install
 cd project/video_downloader/frontend && npm install
 cd project/rag_text2sql/frontend && npm install
 cd project/charplot/frontend && npm install
-cd CharService/frontend && npm install        # 待建：issue 01
 ```
 
 核心依赖：Django 6.0、DRF、LangChain/LangGraph 1.x、DeepAgents、FastAPI、PyMySQL、SQLAlchemy、django-redis、redis-py、ChromaDB、FAISS、RAGFlow SDK、Milvus、Qdrant、Elasticsearch、python-dotenv、Tavily、yt-dlp、ffmpeg

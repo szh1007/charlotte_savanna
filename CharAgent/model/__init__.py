@@ -1,19 +1,19 @@
 """模型层 (model 包): 薄 ChatModel 协议 + httpx 裸调 / openai SDK 双适配器.
 
 设计依据 (CharAgent/docs):
-- ADR-0001: ChatModel 薄协议 ``generate(messages, tools) -> ModelResponse``,
+- ChatModel 薄协议 ``generate(messages, tools) -> ModelResponse``,
   隔离「模型」与 runtime
-- ADR-0003: 双适配器并列 —— httpx 裸调看清协议细节, openai SDK 贴近生产实际,
-  两实现行为一致由契约测试约束 (issue 02)
+- 双适配器并列 —— httpx 裸调看清协议细节, openai SDK 贴近生产实际,
+  两实现行为一致由契约测试约束
 - #11: reasoning_content 与正文分离, 有 / 无推理字段两分支均可解析
 - #10: tool_calls 的 arguments 保持原始 JSON 字符串, 畸形 JSON 由工具执行层给
   可操作错误 (#2)
 - #68: temperature / top_p / seed 调用级可配置, seed 固定后同输入同输出
 
 messages 与 tools 使用 OpenAI 兼容 wire dict 直通 /chat/completions, 不引入中间
-消息模型, SDK 适配器与 MockLLM (issue 09) 复用同一格式.
+消息模型, SDK 适配器与 MockLLM 复用同一格式.
 
-对接边界 (官方有 / 本项目未实现, 详表见 docs/DESIGN.md §已知能力边界):
+对接边界 (官方有 / 本项目未实现):
 strict 模式(Beta) / user_id / response_format / tool_choice / logprobs / stop.
 扩展时以官方文档为准 —— DeepSeek 在 OpenAI 语义外有自有约定, 例如
 finish_reason 共六值、usage.reasoning_tokens 在 completion_tokens_details
@@ -27,7 +27,7 @@ finish_reason 共六值、usage.reasoning_tokens 在 completion_tokens_details
 - parse.py          响应解析纯函数 (非流式字段映射 + 错误体提取, 双适配器共用)
 - stream.py         流式 delta 累积状态机 (内容 / reasoning / tool_calls 分片)
 - utils/config.py   适配器共享配置: 默认端点 / 模型名 / provider 前缀剥离
-- utils/errors.py   异常语义: 瞬态 / 永久区分 (retryable, 供 P0-5 retry 判断)
+- utils/errors.py   异常语义: 瞬态 / 永久区分 (retryable, 供 retry 层判断)
 - utils/types.py    响应数据结构: FinishReason / ModelToolCall / Usage / ModelResponse
 """
 

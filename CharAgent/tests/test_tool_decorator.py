@@ -1,4 +1,4 @@
-"""@tool 装饰器行为测试 (issue 03): 注册语义 / 命名 / 描述 / 引擎切换.
+"""@tool 装饰器行为测试: 注册语义 / 命名 / 描述 / 引擎切换.
 
 - 裸 @tool 与 @tool(name=..., description=...) 两种形态
 - name 默认函数名, description 默认 docstring 首段 (可显式覆盖)

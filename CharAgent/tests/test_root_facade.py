@@ -1,10 +1,9 @@
-"""根门面导出测试 (issue 10): `CharAgent/__init__.py` 与各子包 __all__ 不许漂移.
+"""根门面导出测试: `CharAgent/__init__.py` 与各子包 __all__ 不许漂移.
 
-为什么值得一条防漂移用例: 根门面从 P0-1 起只导出了 model + tool, 而
-issue 05 / 06 / 07 / 08 **四处**都写着「agent / stream / hooks / retry /
-checkpoint / db 尚未顶层导出, 同批处理」—— 四轮都往后推, 一直没做 (issue 10
-一次补齐). 一条用例比四句待办更管用: 以后往子包 __all__ 里加了名字却忘了在根
-门面补上, 这里立刻红.
+为什么值得一条防漂移用例: 根门面早期只导出了 model + tool, 而
+「agent / stream / hooks / retry / checkpoint / db 尚未顶层导出, 同批处理」
+这句待办**四处**都写着 —— 四轮都往后推, 一直没做 (最后一次性补齐). 一条用例
+比四句待办更管用: 以后往子包 __all__ 里加了名字却忘了在根门面补上, 这里立刻红.
 
 两条刻意排除 (与根门面 docstring 写的是同两条):
 - `tool` (小写, @tool 装饰器) —— 与子包 `CharAgent.tool` 同名, 导出会遮蔽包属性

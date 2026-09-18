@@ -1,4 +1,4 @@
-"""CharAgent 测试共享 fixtures: 模型适配器实例 + 本地存储接入 (issue 07).
+"""CharAgent 测试共享 fixtures: 模型适配器实例 + 本地存储接入.
 
 两条原则:
 - **默认用例不依赖外部服务**: 模型走 respx 拦截 (chat_model), checkpoint 走内存版

@@ -1,7 +1,7 @@
 """工具层异常语义: 可操作错误 vs 配置错误 vs 意外异常 (difficulties #2).
 
 - ToolActionableError: 工具作者主动 raise, 消息面向模型 —— 必须说清「期望什么 /
-  实际怎样」, 由 P0-3 loop 错误自纠错回填模型 (不甩 422 让模型猜).
+  实际怎样」, 由 agent loop 错误自纠错回填模型 (不甩 422 让模型猜).
 - ToolConfigError: 工具注册期配置错误 (装饰器 / schema 引擎使用不当), 面向开发者.
 - 意外异常 (其他 Exception): 由 executor 包装为失败结果, 返回给模型的是通用文案
   (traceback 不外泄), 根因保存在 ToolExecution.exception 供日志 / 审计.

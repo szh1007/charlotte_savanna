@@ -1,4 +1,4 @@
-"""client 交互命令解析测试 (issue 10): `/resume` 那套斜杠命令的翻译规则.
+"""client 交互命令解析测试: `/resume` 那套斜杠命令的翻译规则.
 
 场景 → 断言:
 - 四条命令都认得 (resume / history / help / quit)

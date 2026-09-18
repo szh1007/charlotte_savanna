@@ -1,4 +1,4 @@
-"""client 进程入口测试 (issue 10): 参数解析 / 装配 / 两条运行路径 / Ctrl-C 打断.
+"""client 进程入口测试: 参数解析 / 装配 / 两条运行路径 / Ctrl-C 打断.
 
 场景 → 断言:
 - parse_argv: 默认值, 多次 -q 收集成元组, --no-thinking / --no-retry 的映射,
@@ -207,7 +207,7 @@ def test_truncation_continuation_is_stitched_into_the_answer(
 def test_reasoning_events_show_up_in_the_run_output(
     capsys: pytest.CaptureFixture,
 ) -> None:
-    """reasoning 端到端: 思维链单独成行, 不混进正文 (ticket 要求带 reasoning)."""
+    """reasoning 端到端: 思维链单独成行, 不混进正文 (验收要求带 reasoning)."""
     model = MockLLM.fixed(text_response("答案", reasoning="我先核对一下订单号"))
 
     main(["-q", "想想"], model=model)
@@ -220,7 +220,7 @@ def test_reasoning_events_show_up_in_the_run_output(
 def test_tool_failure_then_self_correction_ends_with_an_answer(
     capsys: pytest.CaptureFixture,
 ) -> None:
-    """工具失败 -> 可操作错误回填 -> 模型改对参数 -> 最终答复 (PRD 主路径 #2).
+    """工具失败 -> 可操作错误回填 -> 模型改对参数 -> 最终答复 (主路径之一).
 
     第一轮故意少给必填参数 `text`: 执行层回填的是「哪个字段缺了、期望什么」,
     模型据此在第二轮补齐后拿到结果.
@@ -496,10 +496,10 @@ def test_missing_api_key_exits_with_one_human_readable_line(
 def test_build_model_wraps_the_adapter_with_retry_by_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """默认装配 = 裸适配器外面套一层重试包装 —— issue 06 的接线点 (ticket 验收第 2 条).
+    """默认装配 = 裸适配器外面套一层重试包装 —— 重试的接线点 (关键验收之一).
 
     这条盯的是「接线」本身, 不真发请求: 只断言对象形状与内层是谁. 在它之前
-    `retry/` 没有任何生产调用点 (issue 06 §9 记的就是这件事).
+    `retry/` 没有任何生产调用点 (此前一直如此).
     """
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-charagent")
     monkeypatch.delenv("DEEPSEEK_MODEL_NAME", raising=False)
@@ -540,7 +540,7 @@ class _FlakyModel:
 def test_a_transient_failure_is_retried_during_a_real_run(
     capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """ticket 验收第 2 条的**端到端**证据: 重试真的在一次 CLI 运行里发生过.
+    """关键验收的**端到端**证据: 重试真的在一次 CLI 运行里发生过.
 
     为什么要单独一条: CLI 的端到端用例都注入 `model=` (ChatModel 薄协议那处缝),
     而 `main()` 是 `model if model is not None else build_model(...)` —— **注入时

@@ -43,7 +43,7 @@ def assistant_wire(response: ModelResponse) -> ModelMessage:
     无 tools 时 API 忽略该字段, 故无条件携带 (保真优先, 不按请求形态分支)。
 
     注意 reasoning 与 content 是两条通道: 此处只负责 wire 回填, 前端折叠
-    Thinking 区的展示走 reasoning 事件 (issue 05), 不混入 content 字段。
+    Thinking 区的展示走 reasoning 事件, 不混入 content 字段。
     """
     message: ModelMessage = {"role": "assistant", "content": response.content}
     if response.reasoning:

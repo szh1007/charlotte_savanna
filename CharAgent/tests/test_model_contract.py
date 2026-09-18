@@ -1,4 +1,4 @@
-"""双适配器契约测试 (issue 02 / #63): httpx 裸调 vs openai SDK.
+"""双适配器契约测试 (#63): httpx 裸调 vs openai SDK.
 
 对同一 mock wire 响应 (非流式 JSON / SSE 文本), 两适配器应产出等价的
 ModelResponse —— 语义字段 (content / reasoning / finish_reason / tool_calls /

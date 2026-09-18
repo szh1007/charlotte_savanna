@@ -1,6 +1,6 @@
 """httpx 适配器集成层测试: respx mock HTTP, 不触网.
 
-覆盖 issue 01 检查项: 请求 wire 格式 / 非流式解析 / SSE 流式 delta 累积 / 错误语义
+覆盖检查项: 请求 wire 格式 / 非流式解析 / SSE 流式 delta 累积 / 错误语义
 (非 2xx 映射为明确异常, 429/5xx 瞬态可重试, 其余 4xx 永久).
 """
 

@@ -1,7 +1,7 @@
 """工具执行包装: JSON 解析 → 参数校验 → 调用 → 结果 / 错误规范化 (主流程).
 
-供 P0-3 agent loop 消费: loop 拿到 ModelToolCall.arguments (JSON 字符串),
-调 execute_tool 得 ToolExecution (对应术语表 ToolResult, CONTEXT.md:31 ——
+供 agent loop 消费: loop 拿到 ModelToolCall.arguments (JSON 字符串),
+调 execute_tool 得 ToolExecution (对应 ToolResult ——
 回填模型的文本; 另携带 error/exception/duration_ms 供事件与日志), 依
 ok/content/error 回填 tool_result 消息.
 

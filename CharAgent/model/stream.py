@@ -1,4 +1,4 @@
-"""流式 chunk 累积: delta 增量拼装为完整响应 (issue 01 检查项: delta 累积).
+"""流式 chunk 累积: delta 增量拼装为完整响应 (delta 累积).
 
 SSE 线协议逐行解析在 client 侧完成, 本模块只处理已反序列化的
 chunk 对象 (SDK 端同样调用, 故不依赖 SSE 文本格式).

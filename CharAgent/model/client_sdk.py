@@ -1,10 +1,10 @@
-"""openai SDK 适配器: SDK 封装传输 / SSE 行解析 / JSON 反序列化 (ADR-0003, issue 02).
+"""openai SDK 适配器: SDK 封装传输 / SSE 行解析 / JSON 反序列化.
 
 教学对比 (与 client_httpx.py 并列, 同一 ChatModel 协议):
 - client_httpx.py: 手拼 /chat/completions 请求体, 手解 SSE 文本行,
   手调 json.loads, 自己把 wire JSON 解析为 ModelResponse
 - client_sdk.py:   参数传给 client.chat.completions.create, 传输 / SSE 解析 /
-  反序列化全由 SDK 完成 (内建重试已关, max_retries=0, 统一归 P0-5 retry 层);
+  反序列化全由 SDK 完成 (内建重试已关, max_retries=0, 统一归 retry 层);
   拿到响应 / chunk 对象后 model_dump() 还原为 wire 结构, 喂给与 client_httpx.py
   同一组解析纯函数 (parse / stream) —— 「SDK 帮你藏了什么」: 藏的是传输与
   序列化细节, 协议字段语义 (tool_calls / reasoning / usage) 不变.
@@ -77,7 +77,7 @@ def _map_api_error(exc: openai.APIError) -> ModelError:
 
 
 class OpenAIChatModel:
-    """openai SDK 适配器 (ADR-0003): 与 HttpXChatModel 同一协议, 同一行为契约.
+    """openai SDK 适配器: 与 HttpXChatModel 同一协议, 同一行为契约.
 
     教学定位: 展示 SDK 如何隐藏传输 / SSE 解析细节 —— 本类只负责传参与
     把 SDK 返回对象 model_dump() 回 wire 结构, 字段语义解析仍走 model 包
@@ -135,7 +135,7 @@ class OpenAIChatModel:
         self._max_tokens = max_tokens
         self._thinking = thinking
         self._reasoning_effort = reasoning_effort
-        # max_retries=0: 重试策略统一归 P0-5 retry 层 (与 client_httpx.py 一致),
+        # max_retries=0: 重试策略统一归 retry 层 (与 client_httpx.py 一致),
         # SDK 内建重试会绕过业务重试的退避 / 熔断 / 幂等设计
         self._client = openai.AsyncOpenAI(
             api_key=api_key, base_url=base_url, timeout=timeout, max_retries=0
@@ -245,7 +245,7 @@ class OpenAIChatModel:
 
         chunk.model_dump() 后喂给与 client_httpx._generate_stream 相同的
         apply_sse_chunk / build_stream_response —— 同一累积状态机约束
-        双适配器流式结果一致 (issue 02 契约).
+        双适配器流式结果一致 (契约).
         """
         accumulator = StreamAccumulator()
         try:

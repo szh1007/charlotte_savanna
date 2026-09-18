@@ -1,7 +1,5 @@
 # ② 稳定性/降级（#13-22）
 
-> 返回 [难点清单索引](../DESIGN.md#难点清单)
-
 | ID | 难点 | 详细细节 | 阶段 |
 |----|------|----------|------|
 | 13 | 模型重试 + 退避 + 幂等键 | • 只对瞬态错误重试（429 限流、5xx 服务端故障、网络超时）；4xx 客户端错误（如参数错）重试也没用，直接放弃 | P0 |
@@ -9,9 +7,9 @@
 | | | | • 幂等键：重试可能导致副作用重复执行，用幂等键去重（用唯一标识记录已执行过的请求，重复请求直接返回已有结果，详见 #17） | |
 | | | | • 重试会重复计费 token：幂等键防的是「副作用重复」，但 token 已经花出去了，重试本身就重复烧钱 | |
 | | | | • 降费手段：缓存模型响应、记录已消费 token、重试次数与总预算挂钩 | |
-| | | | • 落地（P0-5 实现）：策略在 `retry/policy.py` —— 退避 = `min(initial_delay * multiplier^(n-1), max_delay)` 再乘 `(1 - jitter * u)`（jitter=0 纯指数、1 即 full jitter，等待永不越过基准）；上限 = `max_attempts` / `max_elapsed_seconds`（预判：本次等待已会撞破预算就不等）/ `max_delay`；注入缝 `sleep` / `time_source` / `random_source`（测试零真实等待、断言精确，#61） | |
-| | | | • 落地（P0-5 实现）：重试在**模型调用层** —— `RetryingChatModel` 组合包装 ChatModel（ADR-0001 的 SPI 用法），loop 与 model 零改动；耗尽时最后一个异常原样上抛（traceback 保真），`CancelledError` 不重试不吞（kill switch 优先于重试，#3）；瞬态判据读异常自带的 `retryable` 标记，未声明的异常（工具错误 / 编程错误）一律不重试 | |
-| | | | • 落地（P0-5 实现）：**双计费不给假账** —— 「上游中断」（`insufficient_system_resource`，那次响应**已经计费**）也当瞬态重试（可在构造期关掉），被丢弃的用量随 `on_retry` 的 `RetryAttempt`（含原样响应，可读 usage）交回调用方挂预算（P1-11）；缓存响应属 P2 语义缓存。幂等键 P0 形态 = `IdempotencyKey`（生成 + 校验）+ 进程内 `IdempotencyStore`（claim/complete/release，Redis + TTL + Saga 属 P1-4） | |
+| | | | • 落地：策略在 `retry/policy.py` —— 退避 = `min(initial_delay * multiplier^(n-1), max_delay)` 再乘 `(1 - jitter * u)`（jitter=0 纯指数、1 即 full jitter，等待永不越过基准）；上限 = `max_attempts` / `max_elapsed_seconds`（预判：本次等待已会撞破预算就不等）/ `max_delay`；注入缝 `sleep` / `time_source` / `random_source`（测试零真实等待、断言精确，#61） | |
+| | | | • 落地：重试在**模型调用层** —— `RetryingChatModel` 组合包装 ChatModel（SPI 用法），loop 与 model 零改动；耗尽时最后一个异常原样上抛（traceback 保真），`CancelledError` 不重试不吞（kill switch 优先于重试，#3）；瞬态判据读异常自带的 `retryable` 标记，未声明的异常（工具错误 / 编程错误）一律不重试 | |
+| | | | • 落地：**双计费不给假账** —— 「上游中断」（`insufficient_system_resource`，那次响应**已经计费**）也当瞬态重试（可在构造期关掉），被丢弃的用量随 `on_retry` 的 `RetryAttempt`（含原样响应，可读 usage）交回调用方挂预算（token 计量）；缓存响应属 P2 语义缓存。幂等键 P0 形态 = `IdempotencyKey`（生成 + 校验）+ 进程内 `IdempotencyStore`（claim/complete/release，Redis + TTL + Saga 属后续阶段） | |
 | 14 | 熔断 + failover | • 熔断器三态：关闭（正常工作）/ 打开（熔断，快速失败）/ 半开（试探是否恢复） | P1 |
 | | | | • 供应商连续失败达到阈值就熔断，不再把请求打给已经挂掉的供应商，给它恢复时间 | |
 | | | | • failover：熔断时自动切换到备份模型，保证服务整体可用 | |

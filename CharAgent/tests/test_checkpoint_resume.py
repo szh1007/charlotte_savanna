@@ -1,4 +1,4 @@
-"""断点续跑 / time-travel / 挂起点恢复的集成测试 (issue 07, 核心验收面).
+"""断点续跑 / time-travel / 挂起点恢复的集成测试 (核心验收面).
 
 被测的是 agent loop 与 checkpoint 的接线 (agent/loop.py), 用内存版 saver (最省事
 的存储) + 脚本化模型 (不碰真 API). 五条主线:
@@ -188,7 +188,7 @@ async def test_frames_record_origin_and_per_step_cost():
 
 
 async def test_run_without_saver_writes_nothing():
-    """没配 saver: 一个字节都不落 (行为与 issue 04/05 完全一致)."""
+    """没配 saver: 一个字节都不落 (与未接 checkpoint 时行为一致)."""
     loop = AgentLoop(model=ScriptedModel([text_response("在的")]), tools=None)
 
     result = await loop.run([{"role": "user", "content": "在吗"}])

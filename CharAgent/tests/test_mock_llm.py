@@ -1,4 +1,4 @@
-"""MockLLM 三模式 + 录制回放的自测 (issue 09 / #61).
+"""MockLLM 三模式 + 录制回放的自测 (#61).
 
 为什么测试基建自己要有防线: 断言帮手与假模型写错, 会让一批用例「假装在测」
 (红不了, 也验不出东西). 本文件测的是「假大脑本身的行为边界」:
@@ -107,8 +107,8 @@ async def test_empty_script_is_allowed_until_called() -> None:
         await model.generate([USER_MSG])
 
 
-async def test_scripted_alias_keeps_issue04_name_and_call_shape() -> None:
-    """`ScriptedModel` 仍是 MockLLM 的别名 (issue 04 那批测试零改动)."""
+async def test_scripted_alias_keeps_legacy_name_and_call_shape() -> None:
+    """`ScriptedModel` 仍是 MockLLM 的别名 (早期那批测试零改动)."""
     model = ScriptedModel([text_response("旧名字照用")])
 
     assert ScriptedModel is MockLLM

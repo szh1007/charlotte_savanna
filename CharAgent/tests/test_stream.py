@@ -1,7 +1,7 @@
-"""stream 包单元测试 (issue 05 / #4): 事件类型 / seq 编号 / 状态机不变量.
+"""stream 包单元测试 (#4): 事件类型 / seq 编号 / 状态机不变量.
 
 场景 → 断言:
-- EventType 六类齐全 (与 03-api.md §2 的事件名一一对应)
+- EventType 六类齐全 (事件名与 API 契约一一对应)
 - seq: 每 run 从 1 起单调递增 (断点续拉的事件 id)
 - 状态机不变量 (违反即 EventSequenceError, 语义见 bus.EventBus docstring):
   1) tool_result 必须匹配一条未闭合 tool_call (按 tool_call_id 配对)
@@ -58,7 +58,7 @@ async def _open_and_close(bus: EventBus, call_id: str = "call_1") -> None:
 
 
 def test_event_types_cover_contract() -> None:
-    """六类事件与 03-api.md §2 事件名一致 (P1-7 另加 approval_required)."""
+    """六类事件与 API 契约的事件名一致 (P1 阶段另加 approval_required)."""
     assert [t.value for t in EventType] == [
         "thinking",
         "tool_call",

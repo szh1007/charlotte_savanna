@@ -97,8 +97,8 @@ class RunsRepository(PgRepository):
     async def get_by_request_id(self, request_id: str) -> Run | None:
         """按幂等键取已有运行 (没有则 None) —— 重复提交时用它直接返回老结果.
 
-        为什么单独一个方法而不是让调用方自己过滤: 这是幂等流程的入口 (P1-1 的
-        `POST /runs` 带 request_id 重复提交时走这条), 写成方法后「幂等键怎么查」
+        为什么单独一个方法而不是让调用方自己过滤: 这是幂等流程的入口 (带
+        request_id 重复提交 `POST /runs` 时走这条), 写成方法后「幂等键怎么查」
         只有一处实现.
         """
         statement = select(Run).where(runs.c.request_id == request_id)
@@ -115,7 +115,7 @@ class RunsRepository(PgRepository):
     ) -> bool:
         """原子地推进状态: 只有「当前确实是 from_status, 且迁移合法」才改得动.
 
-        这是状态推进的**唯一**推荐入口 (P1-2 的取消、P1-7 的审批恢复都该走它).
+        这是状态推进的**唯一**推荐入口 (取消与审批恢复都该走它).
 
         Args:
             run_id: 哪次运行.

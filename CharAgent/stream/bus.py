@@ -1,4 +1,4 @@
-"""EventBus: 流式事件状态机 + 分发 (issue 05 / #4, ADR-0007 事件总线).
+"""EventBus: 流式事件状态机 + 分发 (#4, 事件总线).
 
 一句话理解: agent loop 一边跑一边「报账」(emit), EventBus 负责三件事 ——
 给事件编上序号 (seq), 检查事件顺序是否合法 (状态机), 把事件交给出口
@@ -13,7 +13,7 @@
   顺序不许乱; 大喇叭把话同时传给门外观众 (sink = 前端) 与台下观察员
   (on_event hook = 日志 / 监控插件).
 - 编号有什么用: 断线重连时前端说「我听到第 5 声了, 从第 6 声接着给我」,
-  不用重听一遍 (seq 即 03-api.md §2 的 after_event_id).
+  不用重听一遍 (seq 即 after_event_id).
 - 本文件: 这套「编号 → 查顺序 → 分发」的实现, 入口是 EventBus.emit()
   (顺序为什么不能乱, 见下一段).
 
@@ -23,7 +23,7 @@ final 之后又来事件会让界面在给出答案后继续跳动. 这些顺序
 的配对约束 (#10: tool 消息必须紧跟带 tool_calls 的 assistant) 是同一条规则
 在两条通道上的体现; 在这里拦下, 属于框架自检 (违反即 EventSequenceError).
 
-四条不变量 (03-api.md §2 契约):
+四条不变量 (事件流契约):
 1. seq 每 run 从 1 起单调递增
 2. tool_result 必须匹配一条未闭合的 tool_call (按 tool_call_id 配对);
    同一 id 在**闭合前**不得重复开启 —— 注意只约束未闭合期间: 真实上游的
@@ -70,11 +70,11 @@ def _require_call_id(data: Mapping[str, Any]) -> str:
 
 
 class EventBus:
-    """一次 run 的事件总线: 编号 → 状态机校验 → 分发 (issue 05).
+    """一次 run 的事件总线: 编号 → 状态机校验 → 分发.
 
     生命周期与 run 绑定 (AgentLoop.run 内部 new 一个): seq 每 run 从 1 重来,
     状态机状态 (未闭合工具 / 是否已终局) 也逐 run 独立 —— 与 turns / tokens
-    的逐 run 独立语义一致 (issue 04 的 run 级状态隔离).
+    的逐 run 独立语义一致 (run 级状态隔离).
 
     attributes:
         (无公开属性; 状态经 seq / closed 只读查询)
@@ -120,8 +120,7 @@ class EventBus:
             event_type: 事件类型. 传字符串会归一为 EventType —— 保证
                 StreamEvent.type 恒为枚举 (否则 to_dict 的 .value 与状态机
                 的枚举比较都会退化).
-            **data: 业务载荷 (字段清单见 03-api.md §2), 会原样进入
-                StreamEvent.data.
+            **data: 业务载荷, 会原样进入 StreamEvent.data.
 
         Returns:
             StreamEvent: 已编号并分发完毕的事件 (调用方可直接取用).

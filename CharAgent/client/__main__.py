@@ -1,4 +1,4 @@
-"""`python -m CharAgent.client` 的模块入口 (issue 10).
+"""`python -m CharAgent.client` 的模块入口.
 
 为什么单独一个文件: `python -m 包名` 要求包里有个 `__main__.py` 当入口, 而
 `client/__init__.py` 的门面是给「import 进来用」的 (`from CharAgent.client import

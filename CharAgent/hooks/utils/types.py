@@ -1,4 +1,4 @@
-"""hooks 包静态零件: hook 点枚举与失败记录 (issue 05).
+"""hooks 包静态零件: hook 点枚举与失败记录.
 
 对齐 agent/utils/types.py 的组织惯例 —— 行为 (HookRegistry 的注册与分发)
 在 hooks/registry.py, 静态数据结构集中于此供 registry / 门面 / 消费方共享.
@@ -24,7 +24,7 @@ type HookFn = Callable[..., Awaitable[None] | None]
 
 
 class HookPoint(StrEnum):
-    """五个生命周期 hook 点 (ADR-0007 扩展点, P0 落地骨架; 空注册零开销).
+    """五个生命周期 hook 点 (扩展点, P0 落地骨架; 空注册零开销).
 
     触发时机与载荷见 registry.HookRegistry docstring. P2 模块 (memory / cost /
     observability) 经此挂载, 核心零 import P2.
@@ -53,8 +53,8 @@ class HookFailure:
     """被隔离的 hook 异常记录 (扩展点出错不拖垮核心, 但必须留痕不静默).
 
     hook 抛出的 Exception 由 HookRegistry 捕获后记入 registry.failures ——
-    调用方 (测试 / CLI / P1 server) 可检查; P1-12 结构化日志接上后由此转
-    logger. CancelledError 属 BaseException, 不入此记录 (直接向上传播,
+    调用方 (测试 / CLI / P1 server) 可检查; 结构化日志接上后由此转 logger.
+    CancelledError 属 BaseException, 不入此记录 (直接向上传播,
     插件不得挡住 kill switch).
     """
 

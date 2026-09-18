@@ -109,7 +109,7 @@ def _reflect(connection: Connection) -> MetaData:
 def test_upgrade_head_creates_every_table_on_an_empty_schema(migrated, _engine):
     """空库跑 `upgrade head`: 五张表齐全.
 
-    这是 issue 08 验收的第 2 条 (「alembic 首次迁移在空库可执行」) —— 从零建库
+    这是一条关键验收 (「alembic 首次迁移在空库可执行」) —— 从零建库
     是每个新环境的第一件事, 它在半路报错的话后面什么都做不了.
     """
     with _engine.connect() as connection:

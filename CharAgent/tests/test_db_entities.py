@@ -1,11 +1,11 @@
-"""实体与枚举的自检 (不需要数据库): 取值与设计文档逐条对齐.
+"""实体与枚举的自检 (不需要数据库): 取值与设计约定逐条对齐.
 
 关注点是**契约**: 状态机有哪几个取值、哪些算终态、agent loop 的结束原因怎么翻成
-状态. 这些一旦写错, 库里的值就跟文档对不上, 而数据库不会拦 (列是普通字符串).
+状态. 这些一旦写错, 库里的值就跟契约对不上, 而数据库不会拦 (列是普通字符串).
 
 为什么值得逐条钉住: 状态名是**跨版本契约** —— 前端按状态渲染、运维按状态排查、
-将来加的新状态会跟老数据混在一张表里. 改一个取值要同步 docs/CONTEXT.md 与
-docs/design/02-data-model.md §1, 这些用例就是提醒你「还有那两处要改」的那道闸.
+将来加的新状态会跟老数据混在一张表里. 改一个取值要同步实体定义与所有下游引用,
+这些用例就是提醒你「还有几处要改」的那道闸.
 """
 
 from __future__ import annotations
@@ -20,10 +20,10 @@ from CharAgent.db.entities import (
 
 
 def test_run_status_has_the_eight_documented_values():
-    """运行状态机八态 —— 与 issue 08 的原文与 docs/CONTEXT.md 一致.
+    """运行状态机八态 —— 与数据层状态机定义一致.
 
     `retrying` 是容易被漏掉的那一个: 它描述的是「上游失败正在退避重试」这个
-    **过程**状态 (P0-5 的重试发生在模型调用层, 同样要反映到运行状态上).
+    **过程**状态 (重试发生在模型调用层, 同样要反映到运行状态上).
     """
     assert [status.value for status in RunStatus] == [
         "created",
@@ -38,7 +38,7 @@ def test_run_status_has_the_eight_documented_values():
 
 
 def test_thread_status_values():
-    """会话状态三态 (02-data-model.md §1 Thread)."""
+    """会话状态三态 (Thread 实体定义)."""
     assert [status.value for status in ThreadStatus] == [
         "active",
         "closed",

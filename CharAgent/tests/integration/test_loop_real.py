@@ -2,7 +2,7 @@
 
 聚焦 scripted 测试的固有盲区: ScriptedModel 是 fake, 不校验 API wire 契约 ——
 「缺 reasoning_content 导致真实端点 400」这类问题在 unit 层永远测不出来
-(issue 04 提交时即如此, 2 轮以上工具路径无任何真实端点防线)。
+(loop 交付时即如此, 2 轮以上工具路径无任何真实端点防线)。
 
 关键契约 (DeepSeek 思考模式): 官方文档要求请求携带 tools 时, 后续**所有**请求
 须完整回传历史轮次的 reasoning_content (文档称缺失即 400), 且会被拼接进上下文。

@@ -1,4 +1,4 @@
-"""agent loop 核心路径测试 (issue 04 / #1 #10 #11 #62).
+"""agent loop 核心路径测试 (#1 #10 #11 #62).
 
 场景 → 断言 (不止最终答案, 还断言轨迹 #62):
 - 单工具调用: 调用 → tool 消息回填 → 模型二次决策正确, 全程轨迹断言
@@ -334,7 +334,7 @@ async def test_content_filter_terminates_without_retry() -> None:
     """finish_reason=content_filter: 按终止处理, 不重试也不进截断路径.
 
     loop 只负责终止循环并如实上报 finish_reason, 拦截语义 (是否对用户
-    展示 / 降级话术) 由调用方决定 (输出护栏属 P1-6)。
+    展示 / 降级话术) 由调用方决定 (输出护栏归上层)。
     """
     model = ScriptedModel(
         [text_response(None, finish_reason=FinishReason.CONTENT_FILTER)]
@@ -352,7 +352,7 @@ async def test_content_filter_terminates_without_retry() -> None:
 async def test_insufficient_system_resource_yields_interrupted_outcome() -> None:
     """finish_reason=insufficient_system_resource: 服务端中断, 半截内容不当答复.
 
-    官方语义是生成被打断 (瞬态), 重放决策归调用方 / P0-5 retry; 本层只如实
+    官方语义是生成被打断 (瞬态), 重放决策归调用方 / 重试层; 本层只如实
     上报 outcome 与 finish_reason, 且不把可能残缺的正文当最终答案返回.
     """
     model = ScriptedModel(

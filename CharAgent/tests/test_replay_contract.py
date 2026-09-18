@@ -1,4 +1,4 @@
-"""真实样本回放 + 三方契约 (issue 09 / #63).
+"""真实样本回放 + 三方契约 (#63).
 
 三条解析路径对**同一份真实 wire 响应**必须给出等价的 ModelResponse:
 
@@ -9,8 +9,8 @@
 | openai SDK | respx 拦截 → OpenAIChatModel → `model_dump` 回 wire 结构后同一套纯函数 |
 
 样本是真实 DeepSeek 录下来的 (tests/fixtures/llm/, 见 record_llm_samples.py):
-于是「解析层面对真实响应读得对不对」在**零网络**的前提下被回归 —— 这是 issue
-01 记下的「RUN_INTEGRATION 样本来源 (#61 录制回放)」真正落地的地方.
+于是「解析层面对真实响应读得对不对」在**零网络**的前提下被回归 —— 这正是
+「RUN_INTEGRATION 样本来源 (#61 录制回放)」真正落地的地方.
 
 契约判定沿用 `test_model_contract.assert_same_response` (语义字段全等, raw 允许
 规范化差异), 与合成样本那组用例同一把尺子.

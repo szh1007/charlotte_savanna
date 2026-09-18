@@ -1,7 +1,7 @@
-"""httpx 裸调适配器: 自己拼 POST /chat/completions, 解析响应与 SSE 流 (ADR-0003).
+"""httpx 裸调适配器: 自己拼 POST /chat/completions, 解析响应与 SSE 流.
 
 教学定位: 本类显式展示 SDK 隐藏的协议细节 (请求体 / tool_calls 结构 / delta 累积);
-行为与 openai SDK 适配器 (client_sdk.py) 等价, issue 02 契约测试约束.
+行为与 openai SDK 适配器 (client_sdk.py) 等价, 契约测试约束.
 
 - _resolve_payload: 组装请求体 (调用级参数优先于实例默认, None 不携带)
 - _post: 请求发送 + 错误语义映射 (超时/连接 -> 瞬态, 非 2xx -> ModelStatusError)
@@ -40,10 +40,10 @@ from CharAgent.model.utils.types import ModelMessage, ModelResponse, ToolSpec
 
 
 class HttpXChatModel:
-    """httpx 裸调实现: 自己拼 POST /chat/completions, 解析响应与 SSE 流 (ADR-0003).
+    """httpx 裸调实现: 自己拼 POST /chat/completions, 解析响应与 SSE 流.
 
     教学定位: 本类显式展示 SDK 隐藏的协议细节 (请求体 / tool_calls 结构 / delta 累积);
-    行为与 openai SDK 适配器等价 (issue 02 契约测试约束).
+    行为与 openai SDK 适配器等价 (契约测试约束).
     """
 
     def __init__(
@@ -67,7 +67,7 @@ class HttpXChatModel:
             base_url: API 根地址, 可含 /v1 路径 (如 https://host/v1),
                 统一拼接 /chat/completions.
             model: OpenAI 兼容模型名 (裸名, 无 provider 前缀).
-            timeout: 单次请求超时秒数, 默认 60 (P1-3 分层超时的 model 层).
+            timeout: 单次请求超时秒数, 默认 60 (分层超时的 model 层).
             temperature: 默认采样温度, 调用级可覆盖 (#68);
                 **思考模式下不生效** (上游忽略, 不报错).
             top_p: 默认核采样参数, 调用级可覆盖 (#68);

@@ -14,15 +14,14 @@
                       父帧 / 时刻) + 进度 + 观察值.
 - Suspension          卡住的地方: 为什么停下 + 还欠哪几条工具调用没做 (#25 HITL).
 
-进度与观察值为什么要分开 (issue 07 交付后按需重构, 对齐 LangGraph 的
-checkpoint / metadata 两分):
+进度与观察值为什么要分开 (对齐 LangGraph 的 checkpoint / metadata 两分):
 1. 恢复只需要进度 —— 观察值不进恢复路径, 少一处能读歪的地方
 2. 观察值能单独查/单独建索引 (Postgres 里它是单独一列): 「这个会话里哪些帧是从
    分叉产生的」这类调试问题一条 SQL 就能问
 
 为什么单独放一个文件: 三个存储实现 (内存 / Redis / Postgres) 与序列化协议都要
 用同一套形状 —— 形状定在这里, 谁都不许自己发明字段, 否则「换个存储就恢复不出
-同样的结果」, ADR-0002 的对比就无从谈起.
+同样的结果」, 三种存储之间的对比就无从谈起.
 
 不存什么 (有意取舍): 逐轮的 TurnRecord 与模型原始响应不存. 快照存的是「接着跑
 需要什么 + 这一步发生了什么」, 不是运行流水账 —— messages 里已经含有每一轮说了
@@ -91,7 +90,7 @@ def check_identifier(name: str, value: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class CheckpointCapabilities:
-    """一个存储实现「能做什么」的声明 (ADR-0002: 存储介质不同, 能力也不同).
+    """一个存储实现「能做什么」的声明 (存储介质不同, 能力也不同).
 
     attributes:
         history: 能不能翻出**历史**快照 (存了很多帧, 可按 id 取回、按时间列出).
@@ -130,8 +129,8 @@ class Suspension:
             用户看的文案).
         pending: 还欠结果的工具调用, 顺序即当初模型给出的顺序 (原样保留, 恢复
             时按这个顺序补做).
-        approval_id: 审批单号 (P1-7 的审批记录 id). P0 允许为 None —— 机制先备
-            好, 审批表与本字段的接线在 P1-7.
+        approval_id: 审批单号 (审批记录 id). P0 允许为 None —— 机制先备
+            好, 审批表与本字段的接线留待后续阶段.
     """
 
     reason: str
@@ -196,7 +195,7 @@ class CheckpointMetadata:
 
 @dataclass(slots=True)
 class Checkpoint:
-    """一条存档记录: 身份 + 位置 + 从哪来 + 进度 + 观察值 (字段表见 02-data-model §1).
+    """一条存档记录: 身份 + 位置 + 从哪来 + 进度 + 观察值 (字段见下面的 attributes).
 
     attributes:
         checkpoint_id: 本条存档的编号 (uuid4 hex, 全局唯一).

@@ -1,4 +1,4 @@
-"""checkpoint 序列化协议测试 (issue 07 / difficulties #5).
+"""checkpoint 序列化协议测试 (difficulties #5).
 
 四组关注点, 对应 serialization.py 的职责:
 1. 行李牌机制: datetime 之类装不进 JSON 的值怎么进出 (含注册自定义类型)
@@ -245,7 +245,7 @@ def test_body_roundtrips_state_and_metadata():
 
 
 def test_state_roundtrips_datetime_inside_tool_result():
-    """工具结果里的 datetime 也走行李牌 (设计文档 §3 点名的那类数据)."""
+    """工具结果里的 datetime 也走行李牌 (序列化协议点名的那类数据)."""
     codec = CheckpointCodec()
     moment = datetime(2026, 9, 13, 8, 30, tzinfo=UTC)
     state = make_state(

@@ -1,7 +1,4 @@
-"""hooks 包: hook 注册表骨架 (issue 05, ADR-0007 扩展点之一).
-
-设计依据 (CharAgent/docs): ADR-0007 (轻量扩展点: 事件总线 + hook + SPI) 与
-design/01-architecture.md §4.2 (五个 hook 点与 P2 消费者).
+"""hooks 包: hook 注册表骨架 (扩展点之一).
 
 大白话版 (这个包 = 给主循环装的插座):
 - 现实问题: 以后要加「记住用户偏好」「算钱」「记日志」这些功能, 不能让它们

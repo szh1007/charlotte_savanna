@@ -1,4 +1,4 @@
-"""模型重试包装测试 (issue 06 / difficulties #13): ChatModel 协议包装.
+"""模型重试包装测试 (difficulties #13): ChatModel 协议包装.
 
 场景 → 断言 (两层: respx 拦真实适配器跑错误语义, 最小替身验参数透传):
 - 429 后成功: 重试一次即返回; 请求体逐参数透传 (temperature / top_p / seed /
@@ -14,7 +14,7 @@
 - aclose 委托底层模型 (包装不改变生命周期语义)
 
 与 loop 的组合 (接线证据, 见第三段): 模型层重试对 loop 透明 —— 429 后成功仍
-以 final 收尾; 重试耗尽则异常上抛且**不发终局事件** (03-api.md §2.2 契约).
+以 final 收尾; 重试耗尽则异常上抛且**不发终局事件** (框架层异常契约).
 
 睡眠 / 时钟注入 (tests/doubles.py), 零真实等待 (#61).
 """
@@ -266,7 +266,7 @@ async def test_retries_upstream_interrupted_response(
     (record,) = attempts
     assert record.error is None
     assert "上游中断" in record.reason
-    # 被重试丢弃的那次用量随记录单交回调用方 (P1-11 据此记账, #13)
+    # 被重试丢弃的那次用量随记录单交回调用方 (据此记账, #13)
     interrupted = record.result
     assert isinstance(interrupted, ModelResponse)
     assert interrupted.usage is not None
@@ -293,7 +293,7 @@ async def test_aborted_response_is_not_retried(chat_model: HttpXChatModel) -> No
 async def test_upstream_interrupted_retry_can_be_disabled(
     chat_model: HttpXChatModel,
 ) -> None:
-    """关闭开关: 中断响应原样返回 (P1-11 预算 / P2 缓存要「不再烧一次」时用)."""
+    """关闭开关: 中断响应原样返回 (预算记账 / 缓存要「不再烧一次」时用)."""
     sleep = RecordingSleep()
     model = RetryingChatModel(
         chat_model, policy=_policy(sleep=sleep), retry_upstream_interrupted=False
@@ -390,7 +390,7 @@ async def test_loop_finishes_after_transient_failure(
 async def test_loop_propagates_when_retries_exhausted(
     chat_model: HttpXChatModel,
 ) -> None:
-    """重试耗尽: 异常上抛且**不发终局事件** (03-api.md §2.2 框架层异常契约)."""
+    """重试耗尽: 异常上抛且**不发终局事件** (框架层异常契约)."""
     events: list[StreamEvent] = []
     model = RetryingChatModel(chat_model, policy=_policy(max_attempts=2))
     loop = AgentLoop(model=model, event_sink=events.append)

@@ -6,7 +6,7 @@
 **为什么要一个独立的 schema**: 这是开发机的共享库 (本项目各子项目共用), 而
 用例要建表、要跑迁移、还要删表. 挤在 public 里会:
 - 与开发时手工建的表互相干扰
-- 让 `alembic upgrade` 撞上「表已存在」(本机 public 里那张 P0-6 的旧表就是这样)
+- 让 `alembic upgrade` 撞上「表已存在」(本机 public 里那张遗留的旧表就是这样)
 - 用例清理时误伤别人的数据
 
 于是每个用例在 `charagent_test` 这个 schema 里干活, 用完把表删干净 —— 开发库的
@@ -296,7 +296,7 @@ async def test_failed_transaction_leaves_nothing_behind(db: PgDatabase):
 async def test_conversation_and_transcript_reads_differ(db: PgDatabase):
     """两种读法各取所需: 会话历史只给一问一答, 全量记录连内部件一起给.
 
-    这是 issue 08 第 5 条验收在**库这一层**的样子: 同样一段数据, 接口拿到的与
+    这是消息分层验收在**库这一层**的样子: 同样一段数据, 接口拿到的与
     排查拿到的不是同一份.
     """
     messages = MessagesRepository(db)
@@ -695,7 +695,7 @@ async def test_thread_duplicate_id_is_rejected_with_a_readable_error(db: PgDatab
 async def test_get_run_by_request_id(db: PgDatabase):
     """幂等键是 `POST /runs` 的入口: 命中返回那条运行, 没命中返回 None.
 
-    这条是「同一个 request_id 重复提交直接返回已有结果」的查询侧 —— P1-1 接线时
+    这条是「同一个 request_id 重复提交直接返回已有结果」的查询侧 —— 上层接线时
     就靠它.
     """
     runs = RunsRepository(db)
@@ -752,7 +752,7 @@ async def test_empty_batches_are_noops(db: PgDatabase):
 async def test_engine_configuration_is_lazy_and_reusable(db: PgDatabase):
     """同一个 database 反复开事务没问题 (连接从池子里借还).
 
-    P0-6 那会儿是「一条连接 + 一把锁排队」, 换到 SQLAlchemy 之后由它自带的连接
+    早期是「一条连接 + 一把锁排队」, 换到 SQLAlchemy 之后由它自带的连接
     池负责 —— 这条用例确认反复开关事务不会把连接用坏.
     """
     for _ in range(5):

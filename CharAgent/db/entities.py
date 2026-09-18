@@ -5,8 +5,8 @@
 状态能怎么变, 全写在这里. 表长什么样在 schema.py, 这里写的是「怎么读写它」
 以及「哪些取值是合法的」.
 
-领域词表 (docs/CONTEXT.md) 与这里的关系: 词表讲的是**业务含义**, 这里讲的是
-**落到库里的形状**. 两边必须一一对应, 有出入就是有一处过时了.
+**业务含义**与**库里的形状**的关系: 前者是「这个词在业务上指什么」, 这里
+是「它**落到库里是什么样**」. 两边必须一一对应, 有出入就是有一处过时了.
 
 为什么用 StrEnum 而不是裸字符串: 状态名散落在代码里当字面量写, 拼错一个字母
 编译器不管、测试不报、库里悄悄多出一个谁也不认识的状态. 用枚举则:
@@ -15,10 +15,9 @@
 `StrEnum` 的成员**本身就是字符串**, 所以直接塞进 SQLAlchemy 的 String 列、
 直接 `== "running"` 比较都没问题 —— 既是枚举又不影响存库.
 
-**四个状态枚举的取值来源** (改任何一个都要同步 docs/CONTEXT.md 与
-docs/design/02-data-model.md §1, 测试 test_db_entities.py 会逐条对齐):
+**四个状态枚举的取值来源** (测试 test_db_entities.py 会逐条对齐):
 
-- ThreadStatus      会话状态: 见 02-data-model.md §1 Thread
+- ThreadStatus      会话状态: 与 Thread 实体的 status 字段一一对应
 - RunStatus         运行状态机 (#16): 8 态, 有合法迁移规则 (见 state.py)
 - MessageRole       发言者: 与 wire 消息的 role 取值一致 (user/assistant/tool/system)
 - ToolCallStatus    工具调用状态: 含 needs_approval (HITL 挂起 #25)
@@ -54,7 +53,7 @@ from CharAgent.db.schema import (
 
 
 class ThreadStatus(StrEnum):
-    """会话状态: 还能聊 / 已归档 / 已转人工 (02-data-model.md §1 Thread)."""
+    """会话状态: 还能聊 / 已归档 / 已转人工 (对应 Thread 实体的 status)."""
 
     ACTIVE = "active"  # 正常进行中
     CLOSED = "closed"  # 已结束归档 (用户手动关闭或长时间无活动)
@@ -117,7 +116,7 @@ class Base(DeclarativeBase):
     为什么要显式指过去 (而不是让 Base 自己新建一份 metadata): 表定义与迁移体系
     必须共用同一份 metadata —— alembic 的 autogenerate 拿它当「代码侧应该长什么
     样」的基准, 而快照存储 (checkpoint/postgres.py) 直接操作那几张 Table 对象.
-    若 Base 自建一份, 就会出现「同一个表名挂两份定义」, 那正是本 issue 要消灭
+    若 Base 自建一份, 就会出现「同一个表名挂两份定义」, 那正是本层要消灭
     的东西.
 
     用可读的约束名 (naming_convention, 见 schema.py): 数据库自动起的名字是随机
@@ -132,7 +131,7 @@ class Base(DeclarativeBase):
 
 
 class Thread(Base):
-    """会话 (02-data-model.md §1 Thread): 一段对话的容器, 也是数据隔离的单位.
+    """会话 (Thread): 一段对话的容器, 也是数据隔离的单位.
 
     为什么它是最外层的实体: 所有东西 (运行 / 消息 / 工具调用 / 快照) 都挂在
     一个会话下 —— 就像一棵树的根. 于是「删掉一个会话」= 删掉它名下的一切
@@ -159,7 +158,7 @@ class Thread(Base):
 
 
 class Run(Base):
-    """一次执行 (02-data-model.md §1 Run): 用户点一次「发送」到 agent 答完.
+    """一次执行 (Run): 用户点一次「发送」到 agent 答完.
 
     会话 (Thread) 是长期的, 运行 (Run) 是一次性的 —— 一段对话里可以有几十次
     运行, 每次都有自己独立的状态机、token 账、失败原因.
@@ -203,10 +202,10 @@ class Run(Base):
 
 
 class Message(Base):
-    """消息 (02-data-model.md §1 Message): 一问一答里的那一条.
+    """消息 (Message): 一问一答里的那一条.
 
-    **本表存的是「会话」, 不是「transcript」** —— 这条分层是 issue 08 第 5 条
-    验收的核心, 展开说:
+    **本表存的是「会话」, 不是「transcript」** —— 这条分层决定「前端看到什么」,
+    展开说:
 
     一次 agent 运行 (特别是带工具、带截断续写的) 产生的 wire 消息历史要比
     「一问一答」多得多: 里面有 system 续写指令、tool 回填结果、带 tool_calls 的
@@ -226,7 +225,7 @@ class Message(Base):
         message_id: 消息编号.
         thread_id: 属于哪段对话.
         run_id: 是哪次执行产生的; **NULL 表示不是 agent 跑出来的** —— 比如人工
-            客服接管后手动回的那条 (03-api.md §3.3 的 POST /reply).
+            客服接管后手动回的那条 (接管台的 POST /reply).
         role: 发言者, 见 MessageRole.
         content: 文本内容; assistant 的最终答复就在这里.
         reasoning: 思维链 (reasoning_content). 存它是两件事:
@@ -253,7 +252,7 @@ class Message(Base):
 
 
 class ToolCall(Base):
-    """一次工具调用 (02-data-model.md §1 ToolCall): 模型「我要去查一下」的那一下.
+    """一次工具调用 (ToolCall): 模型「我要去查一下」的那一下.
 
     它是「模型说的」与「实际做的」之间的桥: 参数是模型填的 (原样存, 不预解析),
     结果是工具返回的 (成功或可操作的失败原因). 高危动作 (退款) 会先停在这里
@@ -286,7 +285,7 @@ class ToolCall(Base):
 
 
 class CheckpointRow(Base):
-    """快照记录 (02-data-model.md §1 Checkpoint)—— **数据库视角的那一半**.
+    """快照记录 (CheckpointRow)—— **数据库视角的那一半**.
 
     一句话理解: 这是游戏存档在库里的那一行. 往哪儿存、怎么读回来由
     `checkpoint/postgres.py` 负责; 这里只描述「那一行长什么样」.
@@ -304,7 +303,7 @@ class CheckpointRow(Base):
 
     attributes:
         checkpoint_id / thread_id / run_id / turn_number / schema_version /
-        state / metadata / parent_id / created_at: 语义见 02-data-model.md §1 与
+        state / metadata / parent_id / created_at: 语义见
             checkpoint/utils/types.py 的 Checkpoint 数据类 (两边字段一一对应).
     """
 

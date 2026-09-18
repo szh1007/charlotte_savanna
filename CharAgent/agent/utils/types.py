@@ -1,4 +1,4 @@
-"""agent 包共享数据结构与枚举: AgentLoop 的输入输出类型 (issue 04).
+"""agent 包共享数据结构与枚举: AgentLoop 的输入输出类型.
 
 对齐 model/utils/types.py 的组织惯例 —— 行为 (AgentLoop.run 的循环语义)
 在 agent/loop.py, 类型定义集中于此供 loop / guard / 门面共享引用.
@@ -7,7 +7,7 @@
 - TruncationStrategy: length 截断的两种处理路径 (#10)
 - TurnRecord: 每轮结束时的消息历史完整快照 (供 checkpoint 落盘)
 - LoopState: AgentLoop 一次 run 的内存工作数据 (run 与其分支方法之间传递,
-  内部零件; 注意与词表的 RunState = 运行状态机不同, 见类 docstring)
+  内部零件; 注意与 RunState = 运行状态机不同, 见类 docstring)
 - LoopResult: run 的完整结果 (历史 + 结束原因 + 每轮快照)
 """
 
@@ -37,7 +37,7 @@ class LoopOutcome(StrEnum):
     TRUNCATION_LIMIT = "truncation_limit"  # 连续 length 截断超过重试上限
     # 服务端中断 (insufficient_system_resource / aborted): 生成被打断, 内容
     # 可能只是半截, 故不作最终答复返回. 资源不足属瞬态, 重放决策留给调用方
-    # (框架重试归 P0-5 retry 层)
+    # (框架重试归重试层)
     SERVER_INTERRUPTED = "server_interrupted"
 
 
@@ -64,9 +64,9 @@ class TruncationStrategy(StrEnum):
 class LoopState:
     """AgentLoop 一次 run 的内存工作数据 (内部零件, 不经门面导出).
 
-    名字为什么不叫 RunState: 词表 (docs/CONTEXT.md) 的 RunState 已被 P1-2 的
-    「运行状态机」(created / running / waiting_tool / ... / cancelled, 持久化
-    在 run 记录里, 有合法迁移规则) 占用. 两者完全不同 —— 本类只是**内存里的
+    名字为什么不叫 RunState: 这个名字已被「运行状态机」
+    (created / running / waiting_tool / ... / cancelled, 持久化在 run 记录里,
+    有合法迁移规则) 占用. 两者完全不同 —— 本类只是**内存里的
     可变数据袋** (没有任何迁移规则), run 结束时随 TurnRecord 快照被捕获;
     RunStatus 那种「状态 + 合法迁移 + 非法迁移拒绝」才是真正的状态机.
 

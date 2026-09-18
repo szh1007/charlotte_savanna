@@ -1,4 +1,4 @@
-"""HookRegistry: hook 注册表骨架 (issue 05 / ADR-0007 扩展点).
+"""HookRegistry: hook 注册表骨架 (扩展点).
 
 一句话理解: 核心在固定时机「喊一声」(fire), 注册过的插件函数被依次叫到,
 没注册就什么都不发生 —— 这是 P2 模块 (memory / cost / observability) 挂载
@@ -6,7 +6,7 @@
 
 为什么是「骨架」: P0 只落注册与分发机制 (本文件), 不实现任何插件. 空注册
 时 fire 立即返回 (一次 dict 查询 + 空列表判断), 不产生回调调用与参数拷贝,
-也不会在执行中挂起 —— 即 ADR-0007 要求的「空实现零成本」, P0/P1 验收不受
+也不会在执行中挂起 —— 即「空实现零成本」这一要求, P0/P1 验收不受
 P2 进度影响.
 
 大白话版:
@@ -40,7 +40,7 @@ P2 进度影响.
   run 传播 —— 扩展点是可选的, 插件出错不该让用户的任务失败. CancelledError
   不在此列 (BaseException), 直接传播 —— 插件不得挡住 kill switch (#3).
 - **载荷是活引用**: before_turn 拿到的 messages 就是 loop 的历史列表本体,
-  memory 插件据此注入记忆 (P2-3 挂载点); 想只读就自己拷贝.
+  memory 插件即在此挂载 (注入记忆); 想只读就自己拷贝.
 
 本模块只放 HookRegistry 行为类; 零件在 utils/ 子包: HookPoint / HookFn /
 HookFailure 在 utils/types.py, HookConfigError 在 utils/errors.py.
@@ -56,7 +56,7 @@ from CharAgent.hooks.utils.types import HookFailure, HookFn, HookPoint
 
 
 class HookRegistry:
-    """hook 点的注册与分发 (issue 05 / ADR-0007).
+    """hook 点的注册与分发.
 
     一个 registry 实例挂在一个 AgentLoop 上 (构造参数 hooks=); 同一实例可被
     多个 hook 点共享. 线程/协程安全说明: 注册在启动期完成, 运行期只读

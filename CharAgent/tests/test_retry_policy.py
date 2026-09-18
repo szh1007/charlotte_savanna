@@ -1,4 +1,4 @@
-"""重试策略测试 (issue 06 / difficulties #13): 退避序列 + 上限裁决 + 瞬态判据.
+"""重试策略测试 (difficulties #13): 退避序列 + 上限裁决 + 瞬态判据.
 
 场景 → 断言:
 - 指数退避: jitter=0 时退避序列 = initial_delay * multiplier^(n-1); 越过
@@ -56,7 +56,7 @@ def test_backoff_sequence_is_exponential_without_jitter() -> None:
 
 
 def test_backoff_is_capped_by_max_delay() -> None:
-    """单次退避封顶: 指数增长到 max_delay 后不再变长 (上限可控, ticket 第 2 条)."""
+    """单次退避封顶: 指数增长到 max_delay 后不再变长 (上限可控)."""
     policy = RetryPolicy(initial_delay=0.5, multiplier=2.0, max_delay=3.0, jitter=0.0)
 
     assert [policy.backoff(attempt) for attempt in (1, 2, 3, 4, 5)] == [

@@ -1,4 +1,4 @@
-"""模型层异常语义: 瞬态 / 永久区分, 供 retry (P0-5) 判断.
+"""模型层异常语义: 瞬态 / 永久区分, 供 retry 层判断.
 
 - 瞬态 (retryable=True): 429 / 5xx / 连接失败 / 超时
 - 永久 (retryable=False): 其余 4xx / 配置错误 / 响应畸形
@@ -24,7 +24,7 @@ class ModelConnectionError(ModelError):
 
 
 class ModelTimeoutError(ModelConnectionError):
-    """请求超时 (适配器 timeout 由构造参数配置, P1-3 分层超时的 model 层)."""
+    """请求超时 (适配器 timeout 由构造参数配置, 分层超时的 model 层)."""
 
 
 class ModelStatusError(ModelError):

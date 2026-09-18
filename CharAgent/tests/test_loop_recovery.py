@@ -1,11 +1,11 @@
-"""错误自纠错测试 (issue 04 / difficulties #2): 失败回填 → 模型二次调用修正.
+"""错误自纠错测试 (difficulties #2): 失败回填 → 模型二次调用修正.
 
 工具执行失败不是终点: execute_tool 的可操作错误 (说清「期望什么 / 实际
 怎样」) 作为 tool 消息回填模型, 模型看懂后换参数重试即可成功 —— 本组测试
 用脚本化模型编排「错 → 对」两轮调用, 并做轨迹断言 (#62): 模型第二次看到
 错误后确实换了参数.
 
-载体工具复用 tool.tools_demo (issue 03 演示工具集):
+载体工具复用 tool.tools_demo (演示工具集):
 - query_order_status_manual: manual 引擎 + 函数内 raise ToolActionableError
 - convert_length / query_order_status: pydantic 引擎 (校验失败文案路径)
 """

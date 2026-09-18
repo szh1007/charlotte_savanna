@@ -1,10 +1,10 @@
-"""MockLLM: 三模式 fake ChatModel (Seam 1, #61) + 真实样本录制回放 (issue 09).
+"""MockLLM: 三模式 fake ChatModel (Seam 1, #61) + 真实样本录制回放.
 
 **被测代码零改动**: MockLLM 实现 `CharAgent.model.protocol.ChatModel` 协议
 (薄协议, 不要求继承), AgentLoop / RetryingChatModel 拿到的仍是同一个
 `ChatModel` 类型 —— 测试里换掉的是「大脑」, 换法与真模型完全一样.
 
-三种模式 (api / 行为 / 用途, 对应 design/04-test-plan.md §2):
+三种模式 (api / 行为 / 用途):
 
 | 模式 | 构造 | 行为 | 用途 |
 |------|------|------|------|
@@ -12,10 +12,10 @@
 | 脚本化序列 | `MockLLM.scripted([...])` | 按调用次数依次弹, 弹空即报错 | 多轮 loop |
 | 录制回放 | `MockLLM.replay("name")` | 回放真实 API 录下的响应原文 | 协议级测试 |
 
-`ScriptedModel` 是 `MockLLM` 的别名 (issue 04 先行版的类名, 保留兼容: 那批
+`ScriptedModel` 是 `MockLLM` 的别名 (早期版本的类名, 保留兼容: 那批
 测试文件零改动); `MockLLM(script)` 与 `MockLLM.scripted(script)` 等价.
 
-**录制与回放**(与 issue 01 的约定一致: `ModelResponse.raw` 保留响应原文):
+**录制与回放**(与既有约定一致: `ModelResponse.raw` 保留响应原文):
 `RecordingChatModel(inner)` 包住真实适配器, 原样记下每次 generate 的请求与
 响应原文, `dump()` 落成 JSON 样本 (见 `tests/record_llm_samples.py`); 回放时
 用 model/parse.py 的 `parse_chat_completion` 把原文**重新解析**成
@@ -30,7 +30,7 @@
 大白话版: 这是「假大脑」—— 提前写好它每轮该回什么 (或直接用录下来的真话),
 测试就不用真调 API, 跑得快、结果稳定. 两个响应工厂 (text_response /
 tool_call_response) 都可带可选的 reasoning 与 usage, 好造出真实形态 (比如
-「边交代边调工具 + 带思维链」的工具轮), issue 05 的事件测试就靠它造各种剧本.
+「边交代边调工具 + 带思维链」的工具轮), 事件测试就靠它造各种剧本.
 """
 
 from __future__ import annotations
@@ -168,7 +168,7 @@ class LLMExchange:
 
 @dataclass(slots=True)
 class LLMSample:
-    """一份录制样本: 来源元信息 + 若干轮问答 (issue 09, 回放模式的数据源).
+    """一份录制样本: 来源元信息 + 若干轮问答 (回放模式的数据源).
 
     attributes:
         name: 样本名 (文件名去后缀).
@@ -286,7 +286,7 @@ def dump_sample(sample: LLMSample) -> Path:
 class RecordingChatModel:
     """录制包装: 包住真实 ChatModel, 每次 generate 记下 (请求, 响应原文).
 
-    用途只有录样本 (issue 09): 跑一次真实链路, 把上游响应原文存下来, 之后
+    用途只有录样本: 跑一次真实链路, 把上游响应原文存下来, 之后
     测试用 `MockLLM.replay()` 回放 —— 回放用例零网络零额度, 但走的是真样本.
 
     要求被包的适配器保留响应原文 (`ModelResponse.raw`; httpx 裸调与 openai
@@ -418,7 +418,7 @@ def _wire_snapshot(value: Any) -> Any:
 
 
 class MockLLM:
-    """三模式 fake ChatModel (Seam 1, issue 09 / #61).
+    """三模式 fake ChatModel (Seam 1, #61).
 
     attributes:
         mode: 当前模式 (MockMode).
@@ -620,5 +620,5 @@ def _brief(value: Any, *, limit: int = 400) -> str:
     return text if len(text) <= limit else text[:limit] + "..."
 
 
-# 兼容别名: issue 04 起的类名 (那批测试文件零改动, 见模块 docstring)
+# 兼容别名: 早期版本起的类名 (那批测试文件零改动, 见模块 docstring)
 ScriptedModel = MockLLM

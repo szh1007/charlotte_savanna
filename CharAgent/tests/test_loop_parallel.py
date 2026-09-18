@@ -1,4 +1,4 @@
-"""并行工具执行测试 (issue 04 / difficulties #1 #2): 并发 + 部分失败.
+"""并行工具执行测试 (difficulties #1 #2): 并发 + 部分失败.
 
 场景 → 断言:
 - 并发执行: 同一 assistant 消息的两个 tool_call 同时处于执行中 (门控同步

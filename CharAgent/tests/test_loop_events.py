@@ -1,18 +1,18 @@
-"""loop 事件接线测试 (issue 05 / #4 #11, 契约定稿于 03-api.md §2).
+"""loop 事件接线测试 (#4 #11, 契约定稿于终局事件规则).
 
 场景 → 断言:
 - 单工具 / 并行工具 run 的**完整事件序列** (核心验收 seam: 事件序列断言)
-- thinking 与 final 的文本边界 (03-api.md §2 定案): 非终止轮 (工具轮) 的助手
+- thinking 与 final 的文本边界 (已定案): 非终止轮 (工具轮) 的助手
   正文归 thinking (过程叙述, 不进最终答案), 终止轮正文才是 final
 - reasoning 旁路通道: 独立事件 + 不混入 content, 但 wire 历史仍回填
-  reasoning_content (#11 + issue 04 §1 修正后的契约: 两个「历史」要分清)
-- 终局事件选择规则 (03-api.md §2 定案): 正常结束 → final; guard 刹车
+  reasoning_content (#11 + 修正后的契约: 两个「历史」要分清)
+- 终局事件选择规则 (已定案): 正常结束 → final; guard 刹车
   (max_turns / token 预算 / wall-clock / 截断超限) 与 content_filter /
   上游中断 → error (code 取 LoopOutcome 值), 且**不发 final**
 - delta 与 final 的权威性: final.content 是权威值 (与 LoopResult.content
   一致); CONDENSE 丢弃的截断前缀不进 final
 - 工具失败 / 未知工具 → tool_result(status=error, 可操作错误文本 #2)
-- hooks 五个触发点的时机与载荷; before_turn 注入的消息被模型看到 (P2-3 挂载
+- hooks 五个触发点的时机与载荷; before_turn 注入的消息被模型看到 (插件挂载
   语义); 插件抛异常不影响 run 完成 (异常隔离)
 
 载体工具就地定义 (Seam 3); 模型为 ScriptedModel (Seam 1). 事件经 event_sink
@@ -272,14 +272,14 @@ async def test_reasoning_is_separate_channel_but_backfilled_in_history() -> None
     assert all(
         "核对参数" not in e.data.get("message", "") for e in sink.of(EventType.THINKING)
     )
-    # 但 wire 历史照旧回填 (issue 04 §1 修正后契约: 模型侧上下文与前端展示
+    # 但 wire 历史照旧回填 (修正后契约: 模型侧上下文与前端展示
     # 分属两条通道, 前者必须带 reasoning_content)
     assert result.messages[1]["reasoning_content"] == "先核对参数"
     assert result.messages[-1]["reasoning_content"] == "现在可以作答了"
 
 
 # ---------------------------------------------------------------------------
-# 终局事件选择规则 (03-api.md §2 定案)
+# 终局事件选择规则 (已定案)
 # ---------------------------------------------------------------------------
 
 
@@ -388,7 +388,7 @@ async def test_content_filter_emits_error() -> None:
 async def test_stop_with_empty_content_still_final() -> None:
     """模型正常结束但没吐正文: 仍发 final (content=null), 不是 error.
 
-    判据是「run 怎么结束的」而非「有没有正文」(03-api.md §2.2): 空答复属正常
+    判据是「run 怎么结束的」而非「有没有正文」: 空答复属正常
     结束, 前端按空答复处理; 只有异常结束 (刹车 / 中断 / 被拦截) 才走 error.
     """
     model = ScriptedModel([text_response(None)])
@@ -524,7 +524,7 @@ async def test_unknown_tool_in_tool_result_event() -> None:
 
 
 # ---------------------------------------------------------------------------
-# hooks 触发点 (ADR-0007 扩展点)
+# hooks 触发点 (扩展点)
 # ---------------------------------------------------------------------------
 
 
@@ -648,7 +648,7 @@ async def test_hook_exception_does_not_break_run() -> None:
 
 
 async def test_loop_runs_without_event_sink() -> None:
-    """不接 sink 与 hooks 时: loop 行为与 issue 04 一致 (回归保护)."""
+    """不接 sink 与 hooks 时: loop 行为与之前一致 (回归保护)."""
     model = ScriptedModel(
         [
             tool_call_response(make_tool_call("echo", '{"message": "hi"}')),

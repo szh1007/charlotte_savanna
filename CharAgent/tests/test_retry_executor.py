@@ -1,4 +1,4 @@
-"""通用重试驱动器测试 (issue 06 / difficulties #13): 异常路径 + 上限 + 回调.
+"""通用重试驱动器测试 (difficulties #13): 异常路径 + 上限 + 回调.
 
 场景 → 断言:
 - 首次成功: 不重试 / 不等待 / 不通知 (零开销路径)
@@ -191,7 +191,7 @@ async def test_retry_on_result_retries_unacceptable_result() -> None:
 
     模型场景: finish_reason=insufficient_system_resource (资源不足) 时官方
     指引「稍后重试」, 但那一次**已经计费** —— 原样结果随 RetryAttempt 交给
-    调用方, 供 P1-11 把烧掉的 token 记账 (#13).
+    调用方, 供上层把烧掉的 token 记账 (#13).
     """
     clock = FakeClock()
     sleep = RecordingSleep(clock)

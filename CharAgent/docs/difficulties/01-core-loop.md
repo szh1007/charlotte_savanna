@@ -1,7 +1,5 @@
 # ① 核心循环（#1-12）
 
-> 返回 [难点清单索引](../DESIGN.md#难点清单)
-
 | ID | 难点 | 详细细节 | 阶段 |
 |----|------|----------|------|
 | 1 | 并行工具调用 + 部分失败 | • 模型一次响应可同时发起多个工具调用（`tool_calls` 是一个数组），runtime 要并发执行它们而非串行等待，缩短总耗时 | P0 |
@@ -17,12 +15,12 @@
 | 4 | 流式事件状态机 | • 把 agent 运行过程抽象成四类事件：thinking（思考中）/ tool_call（发起工具调用）/ tool_result（工具返回）/ final（最终答案） | P0 |
 | | | | • runtime 边跑边产出事件，逐事件推给前端，用户能实时看到进度，而不是等全部跑完才一次性返回 | |
 | | | | • 事件流通过 SSE 协议传输（单向推送，见选型 0005） | |
-| | | | • 事件类型定为**六类**（P0-4 实现）：`thinking` / `tool_call` / `tool_result` / `reasoning` / `final` / `error` —— 四类主事件之外，`reasoning` 是**旁路通道**（任意非终局位置可发，不参与主序列也不改变状态），`error` 承担异常结束（没有答复就不该有终局答复事件） | |
+| | | | • 事件类型定为**六类**（已实现）：`thinking` / `tool_call` / `tool_result` / `reasoning` / `final` / `error` —— 四类主事件之外，`reasoning` 是**旁路通道**（任意非终局位置可发，不参与主序列也不改变状态），`error` 承担异常结束（没有答复就不该有终局答复事件） | |
 | | | | • 事件流是**状态机**而非日志：四条不变量在产出瞬间强校验 —— ① `seq` 每 run 从 1 单调递增（即前端 `after_event_id`）② `tool_result` 必须匹配未闭合的 `tool_call`（按 id 配对，同 id 不得开两次）③ 工具结果未回填完不得发终局事件 ④ 终局后不得再发任何事件；违反抛 `EventSequenceError`，不让乱序流进前端（这与 #10 的「`tool` 消息必须紧随带 `tool_calls` 的 `assistant`」是同一条规则在两条通道上的体现） | |
-| | | | • 终局事件**恰好一个**（loop 单一出口产出）：正常作答 → `final`（content 权威值）；guard 刹车（max_turns / token 预算 / wall-clock / 截断超限，此时 `LoopResult.content=None`）、上游中断、输出被拦截 → `error`（code 取 `LoopOutcome` 值 + 事实性说明）。**降级话术（模板回复 / 转人工）归 P1-8 server 层，框架不编造用户文案** | |
+| | | | • 终局事件**恰好一个**（loop 单一出口产出）：正常作答 → `final`（content 权威值）；guard 刹车（max_turns / token 预算 / wall-clock / 截断超限，此时 `LoopResult.content=None`）、上游中断、输出被拦截 → `error`（code 取 `LoopOutcome` 值 + 事实性说明）。**降级话术（模板回复 / 转人工）归 server 层，框架不编造用户文案** | |
 | | | | • `delta` 只作渐进预览、`final.content` 为权威值（前端收到即覆盖缓冲）：截断场景下（CONTINUE 跨轮拼合、CONDENSE 丢弃前缀）只累加会显示已作废内容 | |
 | | | | • 文本边界：**工具轮**的助手正文归 `thinking`（它会被 loop 的拼合链剔除，属过程叙述），终止轮正文才是 `final`；无叙述的工具轮不发 `thinking`（不产空事件）。**截断轮是例外**：它的正文是答案素材（CONTINUE 段会拼进 `final`、CONDENSE 段被丢弃）—— 发 `thinking` 要么与 `final` 重复展示、要么把已作废内容推给用户，故一律不发 | |
-| | | | • hook 注册表与事件总线是**两条不同通道**：`event_sink` 是事件出口（传输必须可靠，异常向上传播），`HookPoint.ON_EVENT` 是扩展点（插件异常被隔离留痕）；同一份事件喂两条通道，P2 观测无需自建出口（ADR-0007） | |
+| | | | • hook 注册表与事件总线是**两条不同通道**：`event_sink` 是事件出口（传输必须可靠，异常向上传播），`HookPoint.ON_EVENT` 是扩展点（插件异常被隔离留痕）；同一份事件喂两条通道，P2 观测无需自建出口 | |
 | 5 | checkpoint 断点续跑 | • 每个 Turn 结束后，把会话状态（消息列表、当前进度）序列化成快照持久化 | P0 |
 | | | | • 用 `thread_id` 分区，每个会话的状态独立存储，互不干扰 | |
 | | | | • 恢复时从最近的 checkpoint 继续，关键是记录「执行到哪一步了」，从而不重复执行已完成的动作 | |
@@ -30,7 +28,7 @@
 | | | | • 序列化选型：pickle（有安全风险、版本绑定）/ JSON（安全但类型丢失）/ msgpack（二进制紧凑） | |
 | | | | • 对象不可序列化：messages 里的 tool 对象、自定义 dataclass 塞不进 JSON 时，要注册自定义序列化器 | |
 | | | | • 向前兼容：checkpoint 格式升级后旧会话数据能读回（schema 版本号 + 迁移） | |
-| | | | • 实现（P0-6，`CharAgent/checkpoint/`）：每 Turn 结束 `AgentLoop(saver=..., thread_id=...)` 落一帧（完整历史 + 计数器 + 正文片段）；续跑 `await loop.resume(快照)` —— 以快照为起点、计数器接着数（轮数 / token 预算跨断点仍算数），已完成 Turn 的工具**不重跑**；快照停在「工具还没有结果」时先补做欠下的调用再继续（不重问模型一次，#25 的机制）。三实现的能力差异用 `saver.capabilities` 声明：内存有历史；Redis `mode="history"`（默认，Stream 流式流水账 + MAXLEN 裁剪 + TTL）有历史、`mode="latest"`（对齐 langgraph 的 ShallowRedisSaver）只留最新一帧（`load` / `history` 明确报能力错）；Postgres 一帧一行有全历史。每帧还记「观察值」（来源 loop/fork/suspension、本轮 token 与耗时、调了哪些工具），与「进度」（state）分成两块存 —— 回放调试靠它（`checkpoint/utils/history.py` 有现成的表格视图）。序列化 = JSON + 标签机制（`{"__charagent_type__": "datetime", ...}`，其余类型 `register_type` 注册）+ `schema_version` 逐级迁移（v1 裸消息列表 → v2 结构化 state；版本比当前新则拒读）。Postgres 用**同步驱动 + `asyncio.to_thread`**：psycopg 异步连接在 Windows 默认事件循环上不可用。 | |
+| | | | • 实现（`CharAgent/checkpoint/`）：每 Turn 结束 `AgentLoop(saver=..., thread_id=...)` 落一帧（完整历史 + 计数器 + 正文片段）；续跑 `await loop.resume(快照)` —— 以快照为起点、计数器接着数（轮数 / token 预算跨断点仍算数），已完成 Turn 的工具**不重跑**；快照停在「工具还没有结果」时先补做欠下的调用再继续（不重问模型一次，#25 的机制）。三实现的能力差异用 `saver.capabilities` 声明：内存有历史；Redis `mode="history"`（默认，Stream 流式流水账 + MAXLEN 裁剪 + TTL）有历史、`mode="latest"`（对齐 langgraph 的 ShallowRedisSaver）只留最新一帧（`load` / `history` 明确报能力错）；Postgres 一帧一行有全历史。每帧还记「观察值」（来源 loop/fork/suspension、本轮 token 与耗时、调了哪些工具），与「进度」（state）分成两块存 —— 回放调试靠它（`checkpoint/utils/history.py` 有现成的表格视图）。序列化 = JSON + 标签机制（`{"__charagent_type__": "datetime", ...}`，其余类型 `register_type` 注册）+ `schema_version` 逐级迁移（v1 裸消息列表 → v2 结构化 state；版本比当前新则拒读）。Postgres 用**同步驱动 + `asyncio.to_thread`**：psycopg 异步连接在 Windows 默认事件循环上不可用。 | |
 | 6 | 强制结构化输出 | • 用 `response_format` + `json_schema` 强制模型返回符合 schema 的 JSON，而不是自由文本，便于下游程序直接消费 | P1 |
 | | | | • 模型偶尔会返回不合法 JSON，需要校验；校验失败则带着校验错误信息重试 | |
 | | | | • 结构化输出 vs function calling 是两种拿到结构化数据的路径，要能说清各自适用场景（前者约束最终输出格式，后者约束工具参数） | |
@@ -58,8 +56,8 @@
 | 11 | 推理模型 reasoning 处理 | • 推理模型（DeepSeek R1 / o1）会先输出一段 reasoning_content（思维链），再输出最终答案，两者要分离处理 | P0 |
 | | | | • 流式场景下 reasoning 也是增量输出，要单独作为一类事件推给前端（区别于 #4 的 thinking / tool_call） | |
 | | | | • reasoning 的 token 计入成本和上下文窗口（**取 `usage.completion_tokens_details.reasoning_tokens`，不是顶层同名字段**）。**官方文档要求带 `tools` 的请求回填 wire 历史**（称缺失或为空即 400），且会被拼接进上下文；2026-09-11 实测 11 组条件（`deepseek-flash` / `deepseek-v4-pro` × 默认与 beta 端点 × httpx 裸调与官方 SDK 样例流程 × 流式与非流式 × 缺失 / 空串 / null / 部分回传四种回传形态）均未复现该 400；但不复现不等于契约不存在（官方措辞明确，触发条件可能更窄或按灰度放开），框架仍按文档执行以保留交错思考（模型跨工具调用复用推理链）。不带 `tools` 时 API 忽略该字段。原实测还覆盖 `deepseek-reasoner` / `deepseek-chat`，这两个模型名已于 2026-07-24 停用，结论不再有独立参考价值 | |
-| | | | • reasoning 与 content 分属**两条通道**：前端折叠展示（Thinking 区，见 03-api.md §2），不混入正文。两个「历史」要分清 —— 它进模型侧 wire 上下文，也存进 Message 记录（供重连重建） | |
-| | | | • 「历史膨胀」的治理靠 context compaction（P1-10），不靠丢弃 reasoning | |
+| | | | • reasoning 与 content 分属**两条通道**：前端折叠展示（Thinking 区），不混入正文。两个「历史」要分清 —— 它进模型侧 wire 上下文，也存进 Message 记录（供重连重建） | |
+| | | | • 「历史膨胀」的治理靠 context compaction（上下文压缩），不靠丢弃 reasoning | |
 | | | | • 非推理模型没有 reasoning_content 字段，模型层要兼容有无该字段的差异 | |
 | 12 | Agent 后端数据模型 | • 核心实体：thread（会话）/ run（一次执行）/ message（消息）/ tool_call（工具调用）/ checkpoint（快照）/ event（事件） | P2 |
 | | | | • 字段设计：id、tenant_id/user_id（多租户）、时间戳、状态、版本 | |

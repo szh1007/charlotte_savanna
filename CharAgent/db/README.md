@@ -1,7 +1,6 @@
 # CharAgent / db —— 数据模型与数据访问层
 
-> issue 08 (P0-7) 的交付说明与**维护手册**。设计背景见
-> [`docs/design/02-data-model.md`](../docs/design/02-data-model.md)。
+> 数据层的交付说明与**维护手册**。
 
 > 目录叫 `db/` 而不是 `models/`：与 `CharAgent/model/`（LLM 模型层 —— ChatModel 协议
 > 与双适配器）名字太近，两个都叫 model 会分不清谁是谁。这里的东西全是数据库相关
@@ -97,7 +96,7 @@ pytest -m pg_db
 |------|--------|--------|
 | **P1** | 幂等表 `idempotency_keys`（**仅此一张**） | 在 `schema.py` 里按同样风格加 `Table`（`charagent_` 前缀），自增 `0002_<slug>` 迁移 |
 
-> **2026-09-18**：原列在本行的 `tickets` / `escalations` / `approvals` / `audit_logs` **四张业务表已移出框架**（ADR-0008 分层剥离）—— 它们属 `CharService/`，走**它自己的 alembic 链与版本表**（`charservice_alembic_version`），表名 `charservice_` 前缀，与本文的追加流程无关。框架侧只留 `idempotency_keys`（请求幂等属运行时能力）。
+> **2026-09-18**：原列在本行的 `tickets` / `escalations` / `approvals` / `audit_logs` **四张业务表已移出框架**（分层剥离）—— 它们归业务侧独立维护，走自己的迁移链与版本表，与本文的追加流程无关。框架侧只留 `idempotency_keys`（请求幂等属运行时能力）。
 | **P2** | `events` 表（事件溯源 #12）、`memories` 表、`cost_entries` 表 | 自增下一号迁移 |
 
 两条约定：

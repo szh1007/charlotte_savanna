@@ -1,4 +1,4 @@
-"""finish_reason=length 截断处理测试 (issue 04 / difficulties #10).
+"""finish_reason=length 截断处理测试 (difficulties #10).
 
 截断语义: 模型输出被 token 上限截断, 内容不完整 —— 不能当正常答案返回.
 两种处理路径 (difficulties #10 原文: 要么续写、要么提示模型精简):

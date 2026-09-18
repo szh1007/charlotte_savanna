@@ -1,4 +1,4 @@
-"""client 终端渲染测试 (issue 10): 六类事件怎么画成一行字.
+"""client 终端渲染测试: 六类事件怎么画成一行字.
 
 场景 → 断言:
 - 六类事件各有一行版式, 标签是 `[thinking]` 这类方括号词 (可 grep)
@@ -9,7 +9,7 @@
 - final **只报怎么结束的**: 正文不在这一行里 (权威值在 LoopResult.content,
   两处都印会重复一遍答案)
 - 颜色开关: 关掉时不出现任何 ANSI 转义符; 打开时包在转义符里
-- 未知事件类型原样吐出而不是炸掉 (P1-7 会新增 approval_required)
+- 未知事件类型原样吐出而不是炸掉 (以后新增 approval_required 时)
 - format_result / format_answer 的取值口径
 
 被测对象是纯格式化 (无 IO): 事件对象就地构造, writer 只是收集列表.
@@ -169,7 +169,7 @@ def test_error_line_carries_code_and_message() -> None:
 
 
 def test_unknown_event_type_is_printed_raw_not_dropped() -> None:
-    """未知事件类型 (如 P1-7 的 approval_required) 原样吐出, 不 KeyError 也不丢."""
+    """未知事件类型 (如以后新增的 approval_required) 原样吐出, 不 KeyError 也不丢."""
     printer = EventPrinter(color=False)
     line = printer.format_event(
         StreamEvent(type=cast(EventType, "approval_required"), seq=1, data={"a": 1})

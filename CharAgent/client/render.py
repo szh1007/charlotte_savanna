@@ -1,4 +1,4 @@
-"""终端渲染: 把事件流与运行结果画成人能看懂的文本 (issue 10).
+"""终端渲染: 把事件流与运行结果画成人能看懂的文本.
 
 一句话理解: 事件流 (stream 包产出的六类事件) 是**给机器读**的结构化数据 ——
 类型 + 编号 + 载荷; 本文件负责把它翻成终端上一行行文字, 就像前端把同一份事件流
@@ -11,8 +11,8 @@
   是两条不同的通道 (见 stream/bus.py).
 - 本文件**不产生**事件, 也不改事件: 只读不改, 与测试里的 EventCollector 同型.
 
-一条容易踩的约定 (与 03-api.md §2.4 对齐): **final 事件只印一行摘要, 正文由
-调用方从 `LoopResult.content` 打印**. 理由: 文档定案 delta 只作渐进预览、
+一条容易踩的约定: **final 事件只印一行摘要, 正文由调用方从
+`LoopResult.content` 打印**. 理由: delta 只作渐进预览、
 `LoopResult.content` 才是权威值 (CONTINUE 截断续写时它是跨段拼合结果, 与
 消息历史里最后一条 assistant 的 content 不是一回事). 两处都印会重复一遍答案.
 
@@ -96,7 +96,7 @@ def _format_ms(value: float) -> str:
 
 
 class EventPrinter:
-    """事件出口 (EventSink 协议): 每来一个事件就往终端画一行 (issue 10).
+    """事件出口 (EventSink 协议): 每来一个事件就往终端画一行.
 
     注入方式与 P1 的 SSE 出口、测试里的收集器完全一样 —— 它就是一个同步回调:
     `AgentLoop(model=..., event_sink=EventPrinter())`. 六类事件各有各的版式,
@@ -124,7 +124,7 @@ class EventPrinter:
         """带颜色的方括号标签 (如 `[tool_call]`).
 
         未知事件类型不炸: 标签用类型取值原文 (``.get`` 的兜底), 颜色调暗 ——
-        P1-7 会新增 approval_required 事件, 那时若本文件还没跟上, 用户看到的
+        以后新增 approval_required 这类事件时, 若本文件还没跟上, 用户看到的
         是一行「[approval_required] {...}」而不是一个 KeyError.
         """
         text = f"[{_TAGS.get(event_type, str(event_type))}]"
@@ -134,8 +134,8 @@ class EventPrinter:
         """一个事件 -> 一行文本 (不直接输出, 好单测).
 
         分派用 match 而不是查表: 六类事件的版式各有各的取值, 摆在这里一眼能
-        对着 03-api.md §2 的载荷清单逐条核. 新增事件类型 (如 P1-7 的
-        approval_required) 时忘了加分支会走 `case _`, 原样吐出而不是静默丢掉.
+        对着各自的载荷逐条核. 新增事件类型 (如 approval_required) 时忘了加
+        分支会走 `case _`, 原样吐出而不是静默丢掉.
         """
         data = event.data
         match event.type:

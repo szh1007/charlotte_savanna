@@ -12,7 +12,7 @@ from typing import Any
 # OpenAI 兼容 wire 消息: {"role", "content"}, assistant 可带 tool_calls,
 # tool 回填消息带 tool_call_id
 type ModelMessage = dict[str, Any]
-# tools 参数: JSON Schema 描述的工具列表 (P0-2 的 @tool 装饰器产出), 直通协议
+# tools 参数: JSON Schema 描述的工具列表 (@tool 装饰器产出), 直通协议
 type ToolSpec = dict[str, Any]
 
 

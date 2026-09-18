@@ -2,7 +2,7 @@
 
 生产推荐路径: 签名参数 Annotated[T, Field(...)] 或唯一 BaseModel 形态,
 动态聚合为参数模型 (Field 保留 description/pattern/gt 等约束), schema 与
-executor 的运行时校验 (P0-3) 复用同一模型, 天然同源 (#10: schema 质量
+executor 的运行时校验复用同一模型, 天然同源 (#10: schema 质量
 直接决定模型填参正确率).
 
 本模块含 pydantic 产物专属后处理 (仅 pydantic model_json_schema 需要):

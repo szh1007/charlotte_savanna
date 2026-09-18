@@ -1,16 +1,16 @@
-"""ChatSession: 一次 CLI 会话 —— 把框架零件装配成一台能问答的机器 (issue 10).
+"""ChatSession: 一次 CLI 会话 —— 把框架零件装配成一台能问答的机器.
 
 一句话理解: 本文件是「接线」的那一页. 前面九个包各自造好了零件 (模型适配器、
 重试包装、工具集、agent loop、快照存储), 但零件之间谁跟谁连、按什么参数连,
-一直没有一个**生产调用点** —— 之前只有测试在组装它们 (issue 06 §9 记的就是
-这件事). ChatSession 就是那个调用点: 一次装配, 之后只问不管.
+一直没有一个**生产调用点** —— 之前只有测试在组装它们. ChatSession 就是那个
+调用点: 一次装配, 之后只问不管.
 
-装配图 (与 ADR-0001 / ADR-0002 的一致形状):
+装配图:
 
     ChatSession
       ├── model:  RetryingChatModel(chat_model_from_env())      <- 重试包在协议层
       │             └ 被包的是 httpx 裸调适配器 (或测试塞的替身)
-      ├── tools:  DEMO_TOOLS (P0-2 的演示工具集)
+      ├── tools:  DEMO_TOOLS (演示工具集)
       ├── saver:  checkpoint_saver_from_env() / build_saver()   <- 三后端可切换
       └── loop:   AgentLoop(model, tools, saver=..., thread_id=..., event_sink=...)
 
@@ -56,7 +56,7 @@ from CharAgent.tool.tools_demo import (
     query_order_status,
 )
 
-# CLI 默认开放的工具集 (P0-2 的演示工具集, 业务无关、无外部依赖、确定性输出).
+# CLI 默认开放的工具集 (演示工具集, 业务无关、无外部依赖、确定性输出).
 #
 # 为什么只注册五个: tools_demo 里有六个, 第六个 query_order_status_manual 与
 # query_order_status **同能力**(同一份 mock 数据、同样输出), 是 manual schema
@@ -72,7 +72,7 @@ DEMO_TOOLS: tuple[Tool, ...] = (
 
 
 class ChatSession:
-    """一次 CLI 会话: 一个 loop + 一个存储 + 一段不断变长的对话历史 (issue 10).
+    """一次 CLI 会话: 一个 loop + 一个存储 + 一段不断变长的对话历史.
 
     会话状态只有一份: `history` (wire 消息历史). 每问一句就把新问题接在它后面
     交给 loop, 跑完再把它换成 loop 返回的完整历史 —— 于是多轮对话自然连上
@@ -226,13 +226,13 @@ class ChatSession:
 
         「不重复已完成动作」在这里是**免费**得到的: 起点是快照里的消息历史,
         而已经执行过的工具结果就在那份历史里 —— loop 不会去重跑它们. 快照恰好
-        停在「工具调用还没有结果」的半路时 (人工审批挂起点, P1-7), loop 还会先
+        停在「工具调用还没有结果」的半路时 (人工审批挂起点), loop 还会先
         把那几条欠着的调用补做完再继续 (checkpoint/utils/pending.py).
 
         Returns:
             LoopResult | None: 本次续跑的结果; None 表示这个会话没有任何快照
-            (新会话, 或者内存后端在进程退出后把档丢了 —— 后者正是 ADR-0002
-            说的「存储介质不同, 语义也不同」).
+            (新会话, 或者内存后端在进程退出后把档丢了 —— 后者正是「存储介质
+            不同, 语义也不同」的情形).
 
         Raises:
             CheckpointError: 读取快照失败.

@@ -21,7 +21,7 @@ EventCollector 服务事件流断言与快照 (#4/#63).
   XADD/XRANGE/XREVRANGE/EXPIRE (history 模式的流), 手写替身零依赖且时钟完全
   可控 (TTL 到期不必真等); 与真 Redis 的差异见该类 docstring, 真实行为由标记
   `redis` 的用例 (需本机 Redis) 在本地补验.
-- `EventCollector`: 事件收集 sink (AgentLoop.event_sink 注入它, issue 09);
+- `EventCollector`: 事件收集 sink (AgentLoop.event_sink 注入它);
   事件序列快照与载荷断言的取数口. 它也是可调用的 (__call__ 即 sink 协议),
   只是注入方式与前三者不同 —— 前三者注入策略对象, 它注入事件出口.
 
@@ -80,7 +80,7 @@ class FixedRandom:
 
 
 class FakeRedisClient:
-    """Redis 客户端的假身: 只实现 checkpoint 用到的那几条命令 (issue 07).
+    """Redis 客户端的假身: 只实现 checkpoint 用到的那几条命令.
 
     支持的命令 (正好是本包用到的):
     - latest 模式: `set(name, value, ex=...)` / `get(name)`
@@ -250,7 +250,7 @@ class FakeRedisClient:
 
 
 class EventCollector:
-    """事件收集 sink: 把 EventBus 推出来的事件按顺序攒起来 (issue 09 / #4).
+    """事件收集 sink: 把 EventBus 推出来的事件按顺序攒起来 (#4).
 
     注入方式与 CLI / SSE 完全一样 (`AgentLoop(event_sink=collector)`) —— 同步
     回调, 事件的顺序与编号就是事件流本来的顺序, 不做任何加工.
