@@ -34,7 +34,8 @@
 | `project/rag_knowledge/` | 子项目 | 工业级 RAG 知识库问答（LangGraph 双图 + Milvus + 评估体系） |
 | `project/rag_text2sql/` | 子项目 | RAG Text2SQL 查询智能体（LangGraph + Qdrant/ES + MySQL 双库 + Vue） |
 | `app/charplot/` + `project/charplot/` | 子项目 | AI 闯关学习网站（双后端: Django 账号/闯关规则 + FastAPI AI 能力 + Vue, 三件套实践） |
-| `CharAgent/` | 子项目 | 从零手写的 agent runtime 框架（P0 已交付: 模型/工具/loop/事件/重试/checkpoint/数据层 + CLI 演示, 不依赖 Django 与 server） |
+| `CharAgent/` | 子项目 | 从零手写的 agent runtime 框架（P0 已交付: 模型/工具/loop/事件/重试/checkpoint/数据层 + CLI 演示, 业务无关, 不依赖 Django） |
+| `CharService/` | 子项目 | 企业级电商智能客服业务层（minimall internal API + 内部网关 + 身份服务三层对接, 13 工具集 + 审批/接管台 + Vue） |
 | `demo/` | 自学教程 | Python / LangChain / LangGraph / DeepAgents / FastAPI 教程 |
 
 ---
@@ -80,6 +81,7 @@ charlotte_savanna/
 │   ├── rag_text2sql/        # RAG Text2SQL 查询智能体（LangGraph + Qdrant/ES + MySQL 双库）
 │   └── charplot/            # CharPlot AI 能力端（FastAPI + LangGraph/DeepAgents/LangChain + Vue）
 ├── CharAgent/               # 从零手写的 agent runtime 框架（model/tool/agent/stream/hooks/retry/checkpoint/db + client）
+├── CharService/             # 企业级电商智能客服业务层（api/channels/identity/gateway/tools/frontend; 规划中, 待 issue 01 实施）
 ├── templates/
 │   ├── minimall/            # 商城页面模板（base + partials）
 │   ├── charplot/            # report_share.html（/r/{slug} 公开分享页）
@@ -88,7 +90,7 @@ charlotte_savanna/
 ├── demo/                    # 自学教程（非业务代码）
 │   └── SUMMARY.md           # 知识点学习总结
 ├── docs/                    # Agent 定义、triage 规范、学习笔记
-├── .scratch/                # 本地 Issue Tracker（Markdown，当前为空）
+├── .scratch/                # 本地 Issue Tracker（Markdown, 按 feature-slug 分目录: CharAgent / CharService / charplot）
 ├── requirements.txt         # Python 依赖
 ├── .env.example             # 环境变量模板
 └── CLAUDE.md                # 项目上下文与开发规范
@@ -180,7 +182,18 @@ charlotte_savanna/
 - **断点续跑**：每轮落一帧快照，内存 / Redis（流式历史）/ Postgres（全历史）三实现配置切换；恢复时已完成的工具**不会重跑**，从老快照恢复还能岔出新分支
 - **数据层**：五实体（Thread / Run / Message / ToolCall / Checkpoint）+ 状态机规则 + 仓储，alembic 统一迁移
 - **CLI 演示**：`python -m CharAgent.client` 带工具问答端到端，事件流实时打在终端；Ctrl-C 打断后**已完成的工作会收回对话历史**，直接说一句「继续」就接着跑（`/resume` 则走快照恢复：计数器接续），快照后端三选一（P0 验收线）
-- 设计与难点文档见 [`CharAgent/docs/`](CharAgent/docs/)（DESIGN / 术语表 CONTEXT / design 01~05 / 7 个 ADR / 70 个编号难点）
+- 设计与难点文档见 [`CharAgent/docs/`](CharAgent/docs/)（DESIGN / 术语表 CONTEXT / design 01~05 / 9 个 ADR / 70 个编号难点）
+
+### CharService — 企业级电商智能客服业务层（子项目）
+
+在 CharAgent 这个业务无关的框架上，构建一个**对标企业生产形态**的电商智能客服：**agent 不直连业务库、不持有业务凭证**，而是经内部网关调业务系统的 internal API。目的是把「agent 怎么对接已有业务系统」讲成有取舍的架构决策，而不只是「能跑通」。
+
+- **三层对接**（ADR-0008）：业务系统（minimall 新增 `/api/minimall/internal/support/*`，按任务粒度设计而非 1:1 映射 REST）+ 内部网关（agent 的**唯一入口**：验签 + 限流 + 双粒度审计 + 转发）+ 身份服务（RS256 签发委托 token）
+- **委托身份**（ADR-0009）：身份在渠道层确定、会话绑定；**工具签名里没有 `user_id`**（运行时注入）——prompt injection 诱导也无法越权查别人的单；agent 无 token 签发权（私钥只在身份服务，网关只持公钥）
+- **写操作三级**：L0 只读自由调用 / L1 可逆写（加购）直接执行 + 回显 / L2 终态或资金写走确认——**内部审批**（金额分层 + 角色分离：客服只能发起，主管/风控才能批）与**用户确认**（结构化 `confirm_token`，模型无法自己「确认」）是两条不同的挂起路径
+- **异步退款**：提交即返回 `refund_id`，后台 worker（**在 minimall 侧**，因为要同事务改 MySQL）推进状态，agent 不挂起等待
+- **双粒度审计**：工具调用（谁 / 代表谁 / 参数摘要）+ 数据访问（资源 ID + 敏感字段命中），合规上能回答「谁在什么时候看了谁的什么数据」
+- 规格与 10 个垂直切片 issue 见 [`.scratch/CharService/`](.scratch/CharService/)，对接设计见 [`CharAgent/docs/adr/0008`](CharAgent/docs/adr/0008-business-integration-topology.md)、[`0009`](CharAgent/docs/adr/0009-delegated-identity-and-write-tiers.md)
 
 ### demo — 自学教程（非业务）
 
@@ -221,8 +234,9 @@ cp .env.example .env               # 填入真实 API Key
 | rag_text2sql | `sh/rag_text2sql_backend.sh` | `sh/rag_text2sql_frontend.sh` |
 | charplot | Django 主项目 `python manage.py runserver`（8000）+ `sh/charplot_backend.sh`（AI 端 8004） | `sh/charplot_frontend.sh`（9004） |
 | CharAgent | 仓库根 `python -m CharAgent.client`（命令行演示, 非常驻服务, 无脚本） | 无（终端界面） |
+| CharService | `sh/charservice_backend.sh`（主服务 10070 + 内部网关 10071 + 身份服务 10072） | `sh/charservice_frontend.sh`（10079） |
 
-所有子项目后端/前端脚本均在 `sh/` 目录；前端脚本首次运行自动执行 `npm install`（deep_search / menu 对应 `ui/` 目录，其余为 `frontend/`）。Django 主项目依赖 MySQL + Redis；charplot 额外依赖 Milvus + modelscope 本地模型。
+所有子项目后端/前端脚本均在 `sh/` 目录；前端脚本首次运行自动执行 `npm install`（deep_search / menu 对应 `ui/` 目录，其余为 `frontend/`）。Django 主项目依赖 MySQL + Redis；charplot 额外依赖 Milvus + modelscope 本地模型；CharService 依赖 MySQL + Postgres + Redis + Milvus，并要求 minimall 的 `internal/support` 端点可用。
 
 ---
 
@@ -234,7 +248,7 @@ cp .env.example .env               # 填入真实 API Key
 - **LLM（Embedding）**：`CLOSEAI_*`
 - **数据库**：`MYSQL_*`（Django + demo）、`PGSQL_*`（PostgreSQL demo；CharAgent 的快照与数据层缺专用配置时回退用它们）
 - **缓存 / 向量**：`REDIS_URL`、`MILVUS_*`（`MILVUS_URL` / `MILVUS_DATABASE_NAME` / `MILVUS_COLLECTION_NAME`）
-- **子项目专用**：`MENU_*`（menu）、`DS_*`（deep_search）、`RK_*`（rag_knowledge）、`CHARPLOT_*`（charplot, 含 `CHARPLOT_MODELSCOPE_ROOT` 本地模型根与两端同值的 `CHARPLOT_INTERNAL_TOKEN`）、`CHARAGENT_*`（CharAgent：快照后端 `CHARAGENT_CHECKPOINT_*` + 数据层连接 `CHARAGENT_DB_*`）；video_downloader 独立 `.env`（`MEMBER_KEY` / `BILI_COOKIE` / `LLM_*` / `ASR_*`）；rag_text2sql 不依赖 `.env`（配置在子项目 `conf/*.yaml`，本地私有不提交）
+- **子项目专用**：`MENU_*`（menu）、`DS_*`（deep_search）、`RK_*`（rag_knowledge）、`CHARPLOT_*`（charplot, 含 `CHARPLOT_MODELSCOPE_ROOT` 本地模型根与两端同值的 `CHARPLOT_INTERNAL_TOKEN`）、`CHARAGENT_*`（CharAgent：快照后端 `CHARAGENT_CHECKPOINT_*` + 数据层连接 `CHARAGENT_DB_*`）、`CHARSERVICE_*`（CharService：内部网关/身份服务地址、委托 token 私钥路径与 TTL、退款审批金额阈值）；video_downloader 独立 `.env`（`MEMBER_KEY` / `BILI_COOKIE` / `LLM_*` / `ASR_*`）；rag_text2sql 不依赖 `.env`（配置在子项目 `conf/*.yaml`，本地私有不提交）
 - **Django**：`DJANGO_*`
 - **外部服务**：`TAVILY_API_KEY`、`LANGSMITH_*`
 
@@ -252,6 +266,8 @@ cp .env.example .env               # 填入真实 API Key
 | [project/rag_knowledge/README.md](project/rag_knowledge/README.md) | rag_knowledge 子项目文档 |
 | [project/rag_text2sql/README.md](project/rag_text2sql/README.md) | rag_text2sql 子项目文档 |
 | [project/charplot/README.md](project/charplot/README.md) | charplot 子项目文档（架构 / 流程 / 启动 / 已知问题） |
+| [CharAgent/docs/](CharAgent/docs/) | CharAgent 框架文档（DESIGN / 术语表 / design 01~06 / ADR 0001~0010 / 70 个编号难点） |
+| [.scratch/CharService/PRD.md](.scratch/CharService/PRD.md) | CharService 规格（三层对接 / 工具集 / 写操作分级 / 10 个垂直切片） |
 | [docs/](docs/) | Agent 定义、triage 规范、学习笔记 |
 
 ---

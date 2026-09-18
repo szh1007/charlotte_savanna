@@ -2,7 +2,7 @@
 
 > Status: ready-for-agent
 > Type: spec
-> 来源: `CharAgent/docs/`（DESIGN + CONTEXT + design/01-05 + adr/0001-0007 + difficulties/01-14）
+> 来源: `CharAgent/docs/`（DESIGN + CONTEXT + design/01-06 + adr/0001-0010 + difficulties/01-14）
 > 编制: 2026-08-18 | 关联决策: 13 轮设计访谈（已全部落盘为 ADR 与 design 文档）
 
 ---
@@ -13,7 +13,7 @@
 
 学习者（本项目的 owner）想**从零手写 agent loop**，把每一层暴露出来：模型调用、工具执行、结果回填、状态持久化、断点续跑、流式事件、重试/熔断/超时/幂等兜底、安全防护（注入/沙箱/HITL/脱敏/审计），并以一个**电商售后客服 demo** 自证框架可用。项目要覆盖 70 个编号难点（14 类），分 P0/P1/P2 三阶段实施，兼具学习价值与面试考点价值。
 
-当前状态（2026-09-16 更新）：**P0 已交付并验收** —— 八个框架包 + CLI（`client/`）全部落地，`python -m CharAgent.client` 跑通带工具问答 / Ctrl-C 中断续跑（说一句「继续」或 `/resume`）/ 快照后端三选一，`pytest tests/` 730 passed；P1 尚未开工。P0 未闭环、按归属推给 P1/P2 的条目见 `.scratch/CharAgent/issue10-P0-to-P1_P2.md`。
+当前状态（2026-09-16 更新）：**P0 已交付并验收** —— 八个框架包 + CLI（`client/`）全部落地，`python -m CharAgent.client` 跑通带工具问答 / Ctrl-C 中断续跑（说一句「继续」或 `/resume`）/ 快照后端三选一，`pytest tests/` 730 passed；P1 尚未开工。P0 未闭环、按归属推给 P1/P2 的条目见 `.scratch/CharAgent/P0-to-P1-P2.md`。
 
 ## 2. Solution
 
@@ -87,16 +87,16 @@
 
 ## 4. Implementation Decisions
 
-> 全部决策来源：`CharAgent/docs/adr/0001-0007` + `CharAgent/docs/design/01-05` + 13 轮设计访谈（2026-08-18）。此处为总纲，冲突时以 ADR/design 文档为准。
+> 全部决策来源：`CharAgent/docs/adr/0001-0010` + `CharAgent/docs/design/01-06` + 13 轮设计访谈（2026-08-18）；业务对接形态、委托身份、运行时通道另由 2026-09-18 的 ADR-0008/0009/0010 修订，业务规格见 `.scratch/CharService/PRD.md`。此处为总纲，冲突时以 ADR/design 文档为准。
 
 ### 4.1 架构分层
 
 | 层 | 位置 | 职责 | 阶段 |
 |----|------|------|------|
 | 框架层 | `CharAgent/` | 业务无关 runtime：model / tool / agent(loop) / stream / hooks / retry / checkpoint / db + client（命令行入口） / guard / ratelimit / lock / rag / logging | P0-P2 |
-| 服务层 | `server/` | FastAPI + REST + SSE + TaskQueue，RAG 检索与业务工具注册 | P1 |
-| Demo 层 | `demo/` | 电商售后客服：业务工具集 + Ticket/Escalation/Approval | P1 |
-| 前端 | `ui/`（Vue 3 + EventSource） | `/chat` 用户端 + `/admin` 审批/接管台 | P1 |
+| 服务层 | `CharAgent/server/` | **通用运行时** HTTP 层（REST + SSE + TaskQueue），以 router 工厂交付、由应用组装 | P1 |
+| 业务层 | `CharService/`（仓库根，独立子项目） | 电商售后客服：业务端点 + 工具集 + 内部网关 + 身份服务 + 前端。**2026-09-18 自框架包外移**（ADR-0008） | P1 |
+| 前端 | `CharService/frontend/`（Vue 3 + EventSource） | `/chat` 用户端 + `/admin` 审批/接管台；业务 UI 不进框架包 | P1 |
 | P2 插件 | `CharAgent/plugins/`（8 模块） | multiagent / mcp / skills / memory / cost / observability / eval / context_engineering | P2 |
 
 ### 4.2 核心协议与接口
@@ -124,7 +124,7 @@ Thread（thread_id/tenant_id/user_id/title/status/时间戳）→ Run（run_id/t
 
 - Postgres DDL：核心五表 + demo 业务表（tickets / escalations / approvals / audit_logs）+ 幂等表（idempotency_keys），**alembic 统一管理**（#5/#12）
 - event 表（事件溯源）P2 追加，不回溯改造（#12）
-- 存储分布：checkpoint 历史 + demo 表 → Postgres；checkpoint 快照 → Redis；订单 → MySQL 只读（独立查询层直连，**不 import Django ORM**，只读账号最小权限，演示 #24）；向量 → Milvus
+- 存储分布：checkpoint 历史 → Postgres；checkpoint 快照 → Redis；向量 → Milvus。**业务数据（订单 / 商品 / 退款单 / 余额流水）→ MySQL，且一律经内部网关访问 business system 的 internal API**（ADR-0008，agent 不直连库、不持业务凭证）；业务侧自有表（Ticket / Escalation / Approval / AuditLog）落 Postgres，属 `CharService/`
 
 ### 4.5 Milvus 设计
 
@@ -149,7 +149,7 @@ Thread（thread_id/tenant_id/user_id/title/status/时间戳）→ Run（run_id/t
 - 熔断 + failover + 分层超时（model 60s / tool 10-30s / run 总超时）（#14/#15）
 - 幂等 + Saga 补偿（退款/通知场景）、分布式锁（Redis SETNX + TTL 续租 + owner 校验）（#17/#21）
 - 限流：固定/滑动窗口 + 令牌桶/漏桶，per user / tenant / model（#22）
-- 安全：四层纵深护栏（输入/输出）、Prompt Injection 防护（#23）、工具沙箱/最小权限（只读账号 + SQL 白名单 #24）、SSRF（#30）、输出护栏 + 引用溯源（#29）
+- 安全：四层纵深护栏（输入/输出）、Prompt Injection 防护（#23）、工具沙箱/最小权限（**2026-09-18 修订为出站目标白名单 + 参数校验**；`user_id` 不进工具签名，#24）、SSRF（#30）、输出护栏 + 引用溯源（#29）
 - HITL：高危操作挂起持久化 → 审批恢复/拒绝回填/超时降级（默认 15 分钟）（#25）；PII 结构化脱敏（#26）；审计轨迹（#27）
 - 降级兜底：模板 / FAQ 匹配（Redis）/ workflow 路径 / 部分结果 / 转人工（#19）
 - 可观测：structlog JSON + request_id/trace_id/thread_id + 脱敏前置；Prometheus 文本指标最小集（#38/#39，P1）；Langfuse/Grafana/Loki P2 插件化
@@ -164,7 +164,7 @@ Thread（thread_id/tenant_id/user_id/title/status/时间戳）→ Run（run_id/t
 ### 4.9 阶段任务序列（Roadmap）
 
 - P0（8 任务）：model.py → tool.py → loop.py（并行/纠错/防护）→ stream.py+hooks.py → retry.py → checkpoint/ → models.py+alembic → tests/
-- P1（14 任务）：server（SSE+TaskQueue）→ 状态机/取消 → 熔断/超时 → 幂等/Saga/锁 → 限流 → 安全护栏 → HITL/脱敏/审计 → 降级 → RAG → 结构化输出/压缩 → token 计量 → 日志指标 → 客服 demo → 前端
+- P1（14 任务）：server（SSE+TaskQueue）→ 状态机/取消 → 熔断/超时 → 幂等/Saga/锁 → 限流 → 安全护栏 → HITL/脱敏/审计 → 降级 → RAG → 结构化输出/压缩 → token 计量 → 日志指标 → ~~客服 demo~~ → ~~前端~~。**末两项 2026-09-18 整个移交 `CharService/`**（拆为 10 个垂直切片，见 `.scratch/CharService/`）
 - P2（11 任务）：8 个插件模块 + event 表 + 规划文档 + 工程化（全部独立挂载）
 - 依赖顺序：P0-1/P0-2 并行 → P0-3 → P0-4/5/6 并行 → P0-7 依赖 P0-6；P1-1 依赖 P0 全量
 
@@ -210,7 +210,7 @@ E2E 的 SSE 事件序列断言是核心验收 seam：`thinking → tool_call →
 
 - **P2 具体实现**：spec 只定扩展点与挂载机制，8 个插件模块的内容实现属 P2 各任务范围
 - **demo/ 目录**（根仓库自学教程）：非业务代码，本项目不涉及
-- **minimall 业务改动**：仅复用其订单数据语义，以只读查询层访问，不 import Django ORM、不改 minimall 代码
+- **minimall 买家侧端点的改动**：只新增 `internal/support` 命名空间，既有 24 条买家端点不动。**（2026-09-18 修订：原为「不改 minimall 代码」，ADR-0008 后改为「不动买家端点、可新增 internal 端点与退款能力」—— 后者属 `CharService` 范围）**
 - **真实多实例部署 / 分布式 MQ**：TaskQueue 抽象预留，P1 仅进程内实现
 - **WebSocket**：明确否决（ADR-0005），双向交互走独立 REST 端点
 - **接入 LangChain / LangGraph / DeepAgents 实现框架**：本项目为手写实现，仅文档对比（#57）
@@ -220,9 +220,9 @@ E2E 的 SSE 事件序列断言是核心验收 seam：`thinking → tool_call →
 
 ## 7. Further Notes
 
-- **前置服务**（本机已具备）：Postgres（本机）、Redis（Docker）、Milvus（Docker）、MySQL（minimall 库，只读账号）；`.env` 按 `.env.example` 配置
+- **前置服务**（本机已具备）：Postgres（本机）、Redis（Docker）、Milvus（Docker）、MySQL（minimall 库）；`.env` 按 `.env.example` 配置。**业务侧另需** minimall 的 `internal/support` 端点 + 内部网关 + 身份服务（`CharService/`）
 - **依赖**：已登记 requirements.txt（新增 alembic / pytest / pytest-asyncio / respx）；Python 3.13 + 根 .venv 复用
 - **启动入口**：P0 `python -m CharAgent.client`；P1 `python -m server.main` + `npm run dev`
 - **测试运行**：`pytest tests/`（默认全 mock）；`RUN_INTEGRATION=1 pytest tests/integration/`；checkpoint Postgres 测试需本机 PG
-- **文档体系**：CharAgent/docs/DESIGN.md（总览+难点索引）/ CharAgent/docs/CONTEXT.md（术语表）/ CharAgent/docs/design/（01 架构、02 数据模型、03 API 协议、04 测试计划、05 路线图）/ CharAgent/docs/adr/（0001-0007）/ CharAgent/docs/difficulties/（14 类 70 编号）
+- **文档体系**：CharAgent/docs/DESIGN.md（总览+难点索引）/ CharAgent/docs/CONTEXT.md（术语表）/ CharAgent/docs/design/（01 架构、02 数据模型、03 API 协议、04 测试计划、05 路线图、06 边界与例外）/ CharAgent/docs/adr/（0001-0010）/ CharAgent/docs/difficulties/（14 类 70 编号）；业务侧见 `.scratch/CharService/PRD.md`
 - **实施起点**：P0-1（model.py ChatModel 协议 + 双适配器 + reasoning 兼容分支）→ P0-2（tool.py）并行，依赖顺序见 CharAgent/docs/design/05-roadmap.md §依赖顺序要点

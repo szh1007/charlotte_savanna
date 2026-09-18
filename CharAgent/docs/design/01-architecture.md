@@ -10,9 +10,9 @@
 | 层 | 职责 | 阶段 |
 |----|------|------|
 | 框架层 `CharAgent/` | 业务无关的 agent runtime（model / tool / agent / stream / checkpoint / guard / ratelimit / lock / rag） | P0-P2 |
-| 服务层 `server/` | FastAPI + SSE + TaskQueue，承载 RAG 检索与客服业务工具注册 | P1 |
-| Demo 层 `demo/` | 电商售后客服：Ticket / Escalation / HITL 审批，业务工具集 | P1 |
-| 前端 | Vue 3 + EventSource：`/chat` 用户端 + `/admin` 审批/接管台 | P1 |
+| 服务层 `CharAgent/server/` | **通用运行时** HTTP 层：FastAPI + SSE + TaskQueue，以 router 工厂交付、由应用组装 | P1 |
+| 业务层 `CharService/`（仓库根） | 电商售后客服：业务端点 + 工具集 + 内部网关 + 身份服务。**2026-09-18 自框架包外移**（ADR-0008） | P1 |
+| 前端 `CharService/frontend/` | Vue 3 + EventSource：`/chat` 用户端 + `/admin` 审批/接管台 | P1 |
 | P2 插件 `plugins/` | multiagent / mcp / skills / memory / cost / observability / eval / 上下文工程 | P2 |
 
 ## 2. 系统架构
@@ -47,10 +47,15 @@ flowchart TB
     end
 
     subgraph Storage["存储"]
-        PG[("Postgres<br/>checkpoint 历史 + demo 表")]
+        PG[("Postgres<br/>checkpoint 历史 + 业务表")]
         REDIS[("Redis (Docker)<br/>checkpoint 快照 + 缓存 + 分布式锁")]
         MILVUS[("Milvus (Docker)<br/>售后知识库向量")]
-        MYSQL[("MySQL (只读账号)<br/>minimall 订单/商品")]
+        MYSQL[("MySQL<br/>minimall 订单/商品")]
+    end
+
+    subgraph Biz["CharService 业务层 (ADR-0008)"]
+        GW["内部网关 :10071<br/>认证 + 限流 + 双粒度审计 + 转发"]
+        IDP["身份服务 :10072<br/>RS256 签发委托 token"]
     end
 
     Chat --> API
@@ -71,7 +76,9 @@ flowchart TB
     Checkpoint --> PG
     Checkpoint --> REDIS
     RAG --> MILVUS
-    Tool --> MYSQL
+    Tool --> GW
+    GW --> MYSQL
+    API --> IDP
     Tool --> PG
     RAG --> PG
     Stream --> SSE
@@ -182,25 +189,37 @@ while not done:
 | ChatModel 协议 | 薄协议，P0 仅 DeepSeek | 0001 |
 | Checkpoint | Redis + Postgres 双实现，配置切换 | 0002 |
 | LLM 接入 | httpx 裸调 + openai SDK 双适配器 | 0003 |
-| Demo 形态 | 通用框架 + 电商售后客服（minimall 只读 + PG 自有表） | 0004 |
+| Demo 形态 | 通用框架 + 电商售后客服（业务代码外移 `CharService/`） | 0004 + 0008 |
 | 流式 | SSE 单向推送 | 0005 |
 | 队列 | 进程内 asyncio 起步，TaskQueue 抽象预留 MQ | 0006 |
 | P2 形态 | 轻量扩展点（事件总线 + hook + SPI），配置注册 | 0007 |
 | 向量库 | 直接上 Milvus（本机 Docker），embedding 用 CloseAI `text-embedding-3-large` | 访谈决策（2026-08-18） |
 | 模型 | 单模型 deepseek-flash（推理模型，reasoning_content 真实存在） | 0003 补充 |
 | 数据访问层 | 五实体表定义 + ORM 实体 + 仓储统一走 SQLAlchemy，表定义唯一定义处 `db/schema.py`；**同步引擎 + `asyncio.to_thread`**（async 驱动在 Windows 默认事件循环上不可用） | issue 08（P0-7） |
-| demo 存储 | Ticket 等 demo 表落 Postgres（alembic），订单只读 MySQL（只读账号，演示 #24） | 0004 补充 |
+| 业务对接 | 三层：minimall `internal/support` API + 内部网关（唯一入口）+ 身份服务（签委托 token）；agent 不持业务凭证、不直连库 | 0008 |
+| 委托身份 | 会话绑定 `user_id`，工具签名无 `user_id`（运行时注入）；身份服务持私钥、网关持公钥，agent 无签发权 | 0009 |
+| 写操作分级 | L0 只读自由 / L1 可逆写直接执行 / L2 终态或资金写走确认（内部审批「金额分层 + 角色分离」与用户确认「`confirm_token`」两条路径） | 0009 |
+| 业务存储 | CharService 自有表（Ticket / Escalation / Approval / AuditLog）落 Postgres（alembic）；退款单 + 余额流水落 MySQL（minimall 侧新增，经 internal API 访问） | 0008/0009 |
 
 ## 6. P1 部署拓扑
 
 ```
-单机部署：
-├── FastAPI server（uvicorn，默认 8000）
+单机部署（业务侧见 .scratch/CharService/PRD.md）：
+├── CharService 主服务（uvicorn，:10070）—— 组装 CharAgent 的 runtime router
+│   ├── 通用运行时端点（会话 / run / SSE / 取消）+ 业务端点（审批台 / 接管台 / 工单）
 │   ├── SSE 端点（EventSource 消费）
 │   ├── TaskQueue（进程内 asyncio）
-│   └── 工具注册：订单查询（只读 MySQL）/ 物流 / 退款审批（HITL）/ FAQ / 知识库检索（Milvus）/ 转人工
-├── Postgres（本机）: checkpoint 历史 + tickets / escalations / approvals / audit_logs
+│   └── 工具注册：商品/订单/物流/FAQ 只读 + 加购（L1）+ 退款（L2 审批）+ 取消（L2 确认）+ 转人工
+├── 内部网关（:10071）: 验委托 token + 限流 + 双粒度审计 + 转发
+├── 身份服务（:10072）: RS256 签发委托 token（私钥仅在此）
+├── 退款后台 worker: 推进退款单状态（同事务改余额 + 写流水 + 置状态）
+├── Postgres（本机）: checkpoint 历史（charagent_ 前缀的表，框架自有迁移链）
+│                                    + CharService 自有表（charservice_ 前缀：tickets / escalations /
+│                                      approvals / audit_logs，**独立迁移链 + 独立版本表**，同库不同链）
 ├── Redis（Docker）: checkpoint 快照 + 分布式锁 + 幂等键
 ├── Milvus（Docker）: 售后知识库（售后政策 / 退换货规则 / 常见问题）
-└── Vue 前端（npm run dev）: /chat + /admin
+├── MySQL: minimall 订单/商品/退款单/余额流水（**经网关访问 internal/support API**）
+└── Vue 前端（:10079）: /chat + /admin
 ```
+
+> agent 工具层不知道 MySQL 地址、不持有业务凭证——它只能调网关。这是「限流与审计不可绕过」的实现基础。

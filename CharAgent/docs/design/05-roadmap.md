@@ -20,30 +20,34 @@
 
 验收（P0 整体验收线，归 issue 10）：CLI `python -m CharAgent.client` 跑通带工具问答；checkpoint 中断续跑演示；`pytest tests/` 全绿。
 > 现状（2026-09-15，issue 10 交付后）：**三项全部达成**。真实端点实测：带工具问答（含并行双工具）通过、`[tool_call]` 全程仅一次的中断续跑通过、`--backend` 三后端切换通过；`pytest tests/` 710 passed。
-> P0 阶段遗留（不阻断验收、按归属推给后续阶段）见 `.scratch/CharAgent/issue10-P0-to-P1_P2.md`。
+> P0 阶段遗留（不阻断验收、按归属推给后续阶段）见 `.scratch/CharAgent/P0-to-P1-P2.md`。
 
-## P1：可靠性加固 + 安全 + RAG + 客服 demo
+## P1：可靠性加固 + 安全 + RAG（业务 demo 已外移）
 
-目标：客服 demo 端到端（提问→检索→回复→转人工）；SSE 流式；高危操作审批。**交付物：server + 前端 + demo 全链路闭环。**
+目标：SSE 流式；状态机/取消；熔断超时；幂等/Saga/锁；护栏；HITL 审批；审计；降级；RAG 全部可测。**交付物：框架侧通用运行时 HTTP 层（router 工厂）+ 各能力模块。**
+
+> **2026-09-18 变更**：原「客服 demo + 前端」两项**整个移交仓库根的新子项目 `CharService/`**（ADR-0008 分层剥离 —— 业务 UI 与业务工具不属于业务无关的框架包）。业务端到端验收由 `.scratch/CharService/issues/01~10` 承担。本表 P1-1/5/6/7/13/14 已按 ADR-0008/0009 修订。
 
 | # | 任务 | 落点文件 | 难点 |
 |---|------|---------|------|
-| P1-1 | FastAPI server：REST + SSE + TaskQueue（进程内 asyncio FIFO + 并发状态锁）+ 取消 + 长任务异步化 | `server/` | #20, ADR-0006 |
+| P1-1 | FastAPI **通用运行时**层：REST + SSE + TaskQueue（进程内 asyncio FIFO + 并发状态锁）+ 取消 + 长任务异步化；**以 router 工厂交付**，业务端点归 `CharService/`；会话创建支持绑定 `user_id`/`tenant_id` | `server/` | #20, ADR-0006 |
 | P1-2 | 运行状态机 + 流式中断/取消（asyncio cancel 语义 + 资源释放 + 幂等键留痕）；状态机规则与落库入口见 `db/state.py` + `repositories/runs.py` | `agent/` + `server/` | #16, #18, #65 |
-| P1-3 | 熔断 + failover、分层超时（model 60s / tool 10-30s / run 总超时）、工具取消（**工具侧超时 P0 没写**，见 issue10 交接文档 §4.1） | 新建 `circuit.py`（`agent/guard.py` 是 LoopGuard 的软限制，不是熔断器） | #14, #15 |
-| P1-4 | 幂等 + Saga 补偿（退款/通知场景）、分布式锁（Redis SETNX + TTL 续租 + owner 校验）；`IdempotencyStore` 协议与 InMemory 实现已在 P0 交付 | `retry/` + 新建 `lock/` | #17, #21 |
-| P1-5 | 限流（固定/滑动窗口 + 令牌桶/漏桶，per user / tenant / model） | 新建 `ratelimit/` | #22, #68 |
-| P1-6 | 安全：输入/输出护栏（四层纵深）、Prompt Injection 防护、工具沙箱/最小权限（订单查询只读账号 + SQL 白名单）、SSRF 防护、输出护栏 + 引用溯源 | `guard.py` + demo 工具 | #23, #24, #29, #30 |
-| P1-7 | HITL 高危操作审批（挂起持久化 → 审批恢复 / 拒绝回填 / 超时降级）、敏感信息脱敏（PII 结构化脱敏）、审计轨迹 | `guard.py` + `server/` | #25, #26, #27 |
-| P1-8 | 业务降级兜底（模板 / FAQ 匹配 / workflow 路径 / 部分结果 / 转人工） | `server/` + demo | #19 |
+| P1-3 | 熔断 + failover、分层超时（model 60s / tool 10-30s / run 总超时）、工具取消（**工具侧超时 P0 没写**，见 `design/06-boundaries.md` §6.1）；另增**通用下游依赖熔断**（作用于被配置的依赖，上报通用码 `DEPENDENCY_DOWN`） | 新建 `circuit.py`（`agent/guard.py` 是 LoopGuard 的软限制，不是熔断器） | #14, #15 |
+| P1-4 | 幂等 + **Saga 原语**（正向链 + 逆序补偿 + 补偿幂等，用假三步流程测试）、分布式锁（Redis SETNX + TTL 续租 + owner 校验）；`IdempotencyStore` 协议与 InMemory 实现已在 P0 交付 | `retry/` + 新建 `lock/` | #17, #21 |
+| P1-5 | 限流（固定/滑动窗口 + 令牌桶/漏桶，per user / tenant / model **+ per tool**）；**部署位置在网关侧**（ADR-0008：agent 进程内可被绕过） | 新建 `ratelimit/`（调用方是 `CharService/gateway/`） | #22, #68 |
+| P1-6 | 安全：输入/输出护栏（四层纵深）、Prompt Injection 防护、工具沙箱/最小权限（**出站目标白名单 + 参数校验**，ADR-0008）、**越权身份不可构造**（`user_id` 不在工具签名，ADR-0009）、SSRF 防护、输出护栏 + 引用溯源 | `guard.py` | #23, #24, #29, #30 |
+| P1-7 | HITL **机制层**（挂起持久化 → 恢复 / 拒绝回填 / 超时降级）、**两条挂起路径不耦合**（内部审批 / 用户确认）、挂起记录带 initiator、审批鉴权可注入（默认放行）、PII 脱敏、审计**工具调用粒度**。**策略移出**：金额分层 / 角色名单 / `confirm_token` 校验归 `CharService/` | `guard.py` + `server/` | #25, #26, #27 |
+| P1-8 | 降级**分类与映射层**：错误码语义边界 + `LoopOutcome → code` 映射 + `TERMINAL_ERROR_TEXT` + 降级策略 SPI。**出口移出**：模板 / FAQ / 转人工建议归 `CharService/` | `server/` | #19 |
 | P1-9 | RAG：文档摄取（pypdf + 清洗 + 元数据 + chunk）、Milvus 检索（metadata 过滤 + 引用溯源）、语义缓存 SPI 预留 | `rag/` | #45, #46, #47 |
 | P1-10 | 结构化输出（response_format + json_schema + 校验重试）、上下文压缩（摘要 + 截断，不破坏 tool 结构；P0 已有 length 截断的 CONTINUE / CONDENSE 两条路径） | `agent/` + `model/` | #6, #7 |
 | P1-11 | Token 计量（请求前预估 + usage 回填 + 预算挂钩；**重试双计费的账**：被丢弃的用量在 `RetryAttempt.result` 里） | `retry/` / `model/` | #35 |
 | P1-12 | 结构化日志（structlog JSON + request_id/trace_id/thread_id 贯穿 + 脱敏前置）+ 指标最小集（Prometheus 文本格式） | 新建 `logging/` + 核心层配置（observability 插件属 P2） | #38, #39 |
-| P1-13 | 客服 demo：业务工具集（订单查询 / 物流 / 退款审批 / FAQ / 知识库检索 / 转人工）、Ticket/Escalation/Approval 表、转人工接管流程（表迁移按 `CharAgent/db/README.md` 的追加流程） | `demo/` | #19, #25 |
-| P1-14 | 前端：Vue 3 + EventSource（`/chat` 用户端 + `/admin` 审批/接管台）、事件渐进渲染（事件序列参照 `client/render.py` 与 P0 的事件快照） | `ui/` | #4 |
+| P1-13 | ~~客服 demo：业务工具集、Ticket/Escalation/Approval 表、转人工接管流程~~ **已整体移交 `CharService/`**（issues 01~10） | ~~`demo/`~~ → `CharService/` | #19, #25 |
+| P1-14 | ~~前端：Vue 3 + EventSource 双路由~~ **已整体移交 `CharService/frontend/`**（并扩展确认卡片与审批台角色区分） | ~~`ui/`~~ → `CharService/frontend/` | #4 |
+| P1-15 | **运行时上下文注入 + 挂起信号通道**（ADR-0010）：`Injected()` 标记 + `ToolContext` + schema 跳过 + `execute_tool(context=)` + `run(context=)`；工具返回 `Suspension` → loop 落帧停下；状态机补「等待内部审批」态；`RunsRepository.list_by_status` | `tool/` + `agent/` + `db/` | — |
 
-验收：客服 demo 端到端跑通；SSE 流式输出；退款审批全流程（挂起→审批→恢复）；转人工接管；降级路径验证。
+验收（框架侧）：SSE 流式输出；状态机/取消（含两种等待态）；熔断超时；幂等/Saga 原语/锁；护栏（含越权身份不可构造）；**运行时上下文注入与挂起信号通道**（ADR-0010）；HITL 四条路径（恢复 / 拒绝 / 超时 / 用户确认）；审计**工具调用粒度**；降级**分类与映射**。
+> 业务端到端验收（客服 demo 跑通 / 退款审批全流程 / 转人工接管）改由 `.scratch/CharService/PRD.md` §4.8 的 10 个切片承担。
 
 ## P2：记忆 / 成本 / 可观测 / 多 agent / 能力扩展 / 评估 / 工程化（插件化）
 

@@ -256,7 +256,7 @@ libpq 关键字形式。已删（与 P0-6「不给没人调的接口」同一条
 ### 7. 遗留（不属本 issue）
 
 - 运行状态机的**推进者**（谁在什么时候把 running 改成 waiting_tool）→ P1-2；本 issue 交付的是规则与安全落库入口（`try_transition` 用带条件的 UPDATE 做乐观锁）。
-- demo 业务表（tickets / escalations / approvals / audit_logs）与幂等表 → P1 迁移（`db/README.md` 写了追加流程）。
+- ~~demo 业务表（tickets / escalations / approvals / audit_logs）与幂等表 → P1 迁移~~ —— **2026-09-18 修订**：四张业务表**已移出框架**（ADR-0008 分层剥离），属 `CharService/` 自有迁移链；框架侧 P1 只追加幂等表 `idempotency_keys`（`db/README.md` 写了追加流程）。
 - `events` 表（事件溯源 #12）→ P2 迁移。
 - 连接池参数调优 / 无状态水平扩展 → P2-10。
 

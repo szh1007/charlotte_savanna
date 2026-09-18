@@ -109,7 +109,7 @@ ticket 第 3 条要求「之前遗漏的所有属于 P0 的问题都需要闭环
 
 ### 9. 遗留（不属本 issue）
 
-**全部逐条列进 [../issue10-P0-to-P1_P2.md](../issue10-P0-to-P1_P2.md)**（ticket 第 4 条要求），要点：
+**全部逐条列进 [../P0-to-P1-P2.md](../P0-to-P1-P2.md)**（ticket 第 4 条要求），要点：
 
 - **P1**：token 级流式（唯一要动 P0 协议的地方 —— 给 `ChatModel.generate` 加 delta 回调）· HITL 触发与审批（P0 只有「能存能读能恢复」的机制）· **工具超时**（P1-3 必补：现在工具不过外部服务所以没写）· 限流 / 熔断 / 幂等存储 / 分布式锁 / 安全护栏 / 降级 / RAG / 结构化输出 / token 计量 / 日志指标 / 客服 demo / 前端
 - **P2**：`events` 表 · 清理策略与合规删除 · 连接池调优 · 8 个插件 · 语义缓存 · 非确定性统计 · trace 回放
@@ -276,8 +276,8 @@ Ctrl-C」挂到事件循环上）—— 打断位置因此是确定的，不靠 
 - `-m "pg or pg_db"` → 51 passed；`ruff check` + `format --check` + `pre-commit` 全绿
 - 真机回归两条：`/resume` 路径（`test_interrupt_then_resume_does_not_rerun_completed_tools`）
   与新增的口语路径都实测跑通
-- 边界（软保证 / 直线假设 / 与 §4.8 的关系）记在
-  `.scratch/CharAgent/issue10-P0-to-P1_P2.md` §4.7
+- 边界（软保证 / 直线假设 / 与「不重复粒度是 Turn」那条的关系）记在
+  `CharAgent/docs/design/06-boundaries.md` §6.7
 
 #### G. 临时加的身份说明（用户要求，2026-09-16）
 
@@ -326,7 +326,7 @@ system prompt 里，模型照着念）；不写的话会话历史第一条就是
 `python -m CharAgent.client --help` 正常；全量 **730 passed**（与改名前一致）；`-m "pg or pg_db"`
 51 passed；`ruff check` + `format --check` 全绿。全仓 `cli` 残留扫描只剩上表三类。
 
-**历史记录的处理**：本文档与 issue 06 / 08、`PRD.md`、`issue10-P0-to-P1_P2.md` 里的旧路径**已按新名
+**历史记录的处理**：本文档与 issue 06 / 08、`PRD.md`、`P0-to-P1-P2.md` 里的旧路径**已按新名
 订正**（读者照着找得到文件），改名这件事本身记在本节，不散落在各处的历史叙述里。
 
 #### I. 补上「重试在 CLI 里真的发生过」的端到端证据（用户复核，2026-09-16）

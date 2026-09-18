@@ -95,7 +95,9 @@ pytest -m pg_db
 
 | 阶段 | 加什么 | 怎么加 |
 |------|--------|--------|
-| **P1** | demo 业务表：`tickets` / `escalations` / `approvals` / `audit_logs`；幂等表 `idempotency_keys` | 在 `schema.py` 里按同样风格加 `Table`（`charagent_` 前缀），自增 `0002_<slug>` 迁移 |
+| **P1** | 幂等表 `idempotency_keys`（**仅此一张**） | 在 `schema.py` 里按同样风格加 `Table`（`charagent_` 前缀），自增 `0002_<slug>` 迁移 |
+
+> **2026-09-18**：原列在本行的 `tickets` / `escalations` / `approvals` / `audit_logs` **四张业务表已移出框架**（ADR-0008 分层剥离）—— 它们属 `CharService/`，走**它自己的 alembic 链与版本表**（`charservice_alembic_version`），表名 `charservice_` 前缀，与本文的追加流程无关。框架侧只留 `idempotency_keys`（请求幂等属运行时能力）。
 | **P2** | `events` 表（事件溯源 #12）、`memories` 表、`cost_entries` 表 | 自增下一号迁移 |
 
 两条约定：

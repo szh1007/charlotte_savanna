@@ -1,7 +1,7 @@
 # 02 数据模型
 
 > 核心实体（thread / run / message / tool_call / checkpoint）**P0 一次定死**（含 schema 版本号，向前兼容 #5）；event 表（事件溯源）P2 追加，见 §5。
-> 存储分布：checkpoint 历史 + demo 业务表 → Postgres（alembic 管理）；checkpoint 快照 → Redis（默认一条 Stream 记全历史，也可配成只留最新一帧）；订单 → MySQL 只读；向量 → Milvus。
+> 存储分布：checkpoint 历史 → Postgres（`charagent_` 前缀，框架自有迁移链）；checkpoint 快照 → Redis（默认一条 Stream 记全历史，也可配成只留最新一帧）；业务数据（订单 / 商品 / 退款单 / 余额流水）→ MySQL，**经内部网关访问 business system 的 internal API**（ADR-0008，agent 不直连库）；业务侧自有表（tickets / escalations / approvals / audit_logs）→ Postgres，属 `CharService/` 的**独立迁移链**（2026-09-18）；向量 → Milvus。
 
 ## 1. 核心实体定义（P0 定死）
 
@@ -118,16 +118,12 @@
 --
 -- 身份列一律 VARCHAR(128) 而非 TEXT（早前那张 checkpoints 表用的是 TEXT，行为一致但不统一）
 
--- demo 业务表（P1）
-tickets:            ticket_id, thread_id FK, user_id, category, status(open/auto_resolved/escalated/closed),
-                    priority, created_at, resolved_at
-escalations:        escalation_id, ticket_id FK, thread_id FK, reason, assigned_agent, status,
-                    created_at, resolved_at
-approvals:          approval_id, run_id FK, tool_call_id FK, operation(退款/赔付/通知), amount,
-                    context(jsonb, 审批上下文 #25), status(pending/approved/rejected/timeout),
-                    requested_at, decided_by, decided_at
-audit_logs:         log_id, tenant_id, thread_id, run_id, actor, action, target, detail(jsonb), created_at
-                    -- 每次工具调用/数据访问留痕（#27），脱敏后写入
+-- 业务表（2026-09-18 移出，属 CharService/，不再是框架契约）
+--   tickets / escalations / approvals / audit_logs 四张表落 CharService 自有的
+--   Postgres 迁移链（版本表 charsERVICE_alembic_version），表名带 charsERVICE_ 前缀。
+--   框架侧不再建它们。原 approvals 表还曾把业务对象写进字段枚举
+--   （operation(退款/赔付/通知)）—— 那正是策略漂进框架的典型，一并移走。
+--   挂起状态本身存在 checkpoint 的 state.suspension 里，不需要框架建审批表。
 
 -- 基础设施（P1）
 idempotency_keys:   request_id PK, run_id FK, status, created_at, expires_at   -- #13/#17

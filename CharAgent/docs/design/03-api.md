@@ -4,20 +4,21 @@
 
 ## 1. REST 端点
 
+> **2026-09-18 拆分**（ADR-0008 决策 9 分层剥离）：框架只交付**通用运行时端点**（会话 / run / SSE / 取消 / 挂起控制面 / healthz），以 router 工厂形式由应用组装；**业务端点**（审批台 / 接管台 / 工单 / 转人工）移入 `CharService/`，见 `.scratch/CharService/PRD.md`。
+
 | 方法 | 路径 | 说明 | 关联难点 |
 |------|------|------|---------|
 | POST | `/api/v1/threads` | 创建会话（body: `{tenant_id, user_id, title?}`）→ `{thread_id}` | #12 |
-| GET | `/api/v1/threads/{thread_id}/messages` | 拉取会话历史（断线重连/人工接管用） | #16 |
+| GET | `/api/v1/threads/{thread_id}/messages` | 拉取会话历史（断线重连用；**只含一问一答**，工具轨迹走管理端端点） | #16 |
 | POST | `/api/v1/threads/{thread_id}/runs` | 发起一次执行（body: `{content, request_id?}`）→ `{run_id}`。长任务 HTTP 立即返回，进度走 SSE（#20） | #20 |
 | GET | `/api/v1/threads/{thread_id}/runs/{run_id}/events` | **SSE 事件流**（§2），从 `after_event_id` 断点续拉 | #4 |
 | POST | `/api/v1/runs/{run_id}/cancel` | 取消执行（kill switch，#18） | #18 |
-| GET | `/api/v1/approvals?status=pending` | 审批台列表（管理端） | #25 |
-| POST | `/api/v1/approvals/{approval_id}/approve` | 批准挂起操作 → 从挂起 checkpoint 恢复 run | #25 |
-| POST | `/api/v1/approvals/{approval_id}/reject` | 拒绝 → 失败原因回填模型继续推理 | #25 |
-| POST | `/api/v1/threads/{thread_id}/escalate` | 转人工（body: `{reason}`）→ 创建 ticket + escalation | #19 |
-| POST | `/api/v1/threads/{thread_id}/reply` | 人工客服回复（接管后，写 assistant 消息） | #19 |
-| GET | `/api/v1/tickets?status=...` | 工单列表/详情 | #19 |
+| GET | `/api/v1/runs?status=<等待态>` | **列挂起 run** → `[{run_id, thread_id, suspension:{kind,reason,payload}}]`（ADR-0010） | #25 |
+| POST | `/api/v1/runs/{run_id}/resume` | **恢复挂起 run**：从挂起 checkpoint 恢复执行（不重跑）。批准与拒绝都走它，语义差异由应用决定 | #25 |
+| GET | `/api/v1/runs/{run_id}/transcript` | **管理端轨迹**：含 thinking / tool_call / tool_result 的完整历史（接管台用） | #19 |
 | GET | `/healthz` | 健康检查（依赖探活：PG/Redis/Milvus/MySQL） | #64 |
+
+**移到 `CharService/` 的端点**（不再是框架契约）：`GET /approvals`、`POST /approvals/{id}/approve|reject`、`POST /threads/{id}/escalate`、`POST /threads/{id}/reply`、`GET /tickets` —— 它们是客服业务，不是运行时能力。
 
 幂等：所有 POST 接受 `request_id`（幂等键，#13/#17）——重复请求返回已有结果。键的框架层校验
 已落地（P0，`retry/idempotency.py`）：长度 1~255、字符集 `[A-Za-z0-9._:-]`、首字符为字母或
@@ -160,23 +161,25 @@ client                     server
 ### 3.2 HITL 审批（#25）
 
 ```text
-  |<-- approval_required ----|   run 挂起，checkpoint 落盘（挂起点持久化）
-  (管理端) -- GET approvals ->|   审批台轮询/刷新
-  (管理端) -- POST approve --->|
-  |<-- tool_result ----------|   从挂起 checkpoint 恢复，继续执行
+  工具返回 Suspension → |<-- approval_required ----|   run 挂起，checkpoint 落盘（挂起点持久化）
+  (管理端) -- GET /runs?status=... -->|   列挂起（应用侧审批台轮询/刷新）
+  (管理端) -- POST /runs/{id}/resume ->|
+                       |<-- tool_result ----------|   从挂起 checkpoint 恢复，继续执行
 ```
 
-审批超时（未定时间，默认 15 分钟）→ 自动拒绝，失败原因回填模型走降级（#25 超时处理）。
+- **挂号与放行是两个端点**：应用先查 `GET /runs?status=` 拿到 `suspension` 载荷（含 kind / reason / payload），批准时调 `POST /runs/{id}/resume`。**拒绝也调 resume**——「拒绝时怎么把原因回填」由应用决定，框架不区分。
+- 审批超时（默认值可配；框架不写死业务时限）→ 自动拒绝，失败原因回填模型走降级（#25 超时处理）。
+- **业务端点不在此**：审批台的业务视图、角色校验、SoD 规则都在 `CharService/`。
 
-### 3.3 转人工（#19）
+### 3.3 转人工（#19）—— **业务端点，已移入 `CharService/`**
 
 ```text
   用户: "我要投诉，转人工"
   agent: 确认意图 → 无自动方案 → 建议转人工
-  (用户确认) -- POST escalate -->
+  (用户确认) -- POST escalate -->    ← CharService 的业务端点，不在框架契约里
   server: 创建 ticket + escalation，run 状态 closed，SSE 发 final(转人工提示)
-  人工: -- GET messages --> 查看完整历史
-  人工: -- POST reply ------> 写 assistant 消息（可见于历史）
+  人工: -- GET /runs/{id}/transcript -->   查看完整历史（含工具轨迹，框架端点）
+  人工: -- POST reply ---------------->   写 assistant 消息（CharService 业务端点）
 ```
 
 ### 3.4 取消（#18）
@@ -189,19 +192,22 @@ client                     server
 
 ## 4. 错误码与降级（#19）
 
-| code | 含义 | 降级路径 |
-|------|------|---------|
-| `LLM_DOWN` | 模型调用失败（熔断打开） | 模板回复 + 转人工建议 |
-| `LLM_TIMEOUT` | 模型超时 | 返回已算部分结果或模板回复 |
-| `RAG_DOWN` | Milvus/embedding 故障 | FAQ 规则匹配（Redis 精确/相似命中） |
+> **2026-09-18 归位**：**码与语义边界归框架，降级出口归应用**。右列的「模板回复 / FAQ 匹配 / 转人工建议」是产品策略（[issue 05 §3](../../../.scratch/CharAgent/issues/05-P0-4-stream-events-hooks.md) 早已定过），随 demo 外移归 `CharService/`；框架侧交付的是分类、映射与可注册的降级策略 SPI（[issue 18](../../../.scratch/CharAgent/issues/18-P1-8-degradation.md)）。
+
+| code | 含义（语义边界） | 降级出口（应用侧） |
+|------|-----------------|------------------|
+| `LLM_DOWN` | 模型调用失败：**重试耗尽后仍失败 / 熔断打开** | 模板回复 + 转人工建议 |
+| `LLM_TIMEOUT` | 模型超时（单请求超过配置时限） | 返回已算部分结果或模板回复 |
+| `RAG_DOWN` | 检索依赖故障（向量库 / embedding） | FAQ 规则匹配 |
 | `TOOL_ERROR` | 工具全部失败且自纠错无效 | workflow 兜底路径 / 转人工 |
 | `RATE_LIMITED` | 限流（#22） | 排队或 429 + 重试提示 |
+| `DEPENDENCY_DOWN` | **下游依赖不可用**（通用码；2026-09-18 由 `GATEWAY_DOWN` 改名——框架不该知道「网关」这个业务拓扑） | 只读仍可用、写操作明确拒绝并建议转人工 |
 | `CANCELLED` | 用户取消 | 无（正常收尾） |
 | `BUDGET_EXCEEDED` | 预算硬上限（#34，P2） | 拒绝 + 提示 |
 
-> 本表是 **API 级**错误码（面向用户的服务降级决策，由 server 层产出）。框架层 `error` 事件
-> （§2.2）用的是「结束原因」码（`LoopOutcome` 值 + `content_filter`），说明 run 为什么停；
-> server 收到后可据此再按本表补一条面向用户的降级回执（如 `MAX_TURNS` → 模板回复 + 转人工建议）。
+> 本表是 **API 级**错误码（面向用户的服务降级决策）。框架层 `error` 事件（§2.2）用的是
+> 「结束原因」码（`LoopOutcome` 值 + `content_filter`），说明 run 为什么停；框架提供
+> **`LoopOutcome → 本表 code` 的映射**，应用据此选降级路径（映射本身不含话术）。
 
 > 框架层重试（`retry/` 的 `RetryingChatModel`）发生在**模型调用层**：本表的 `LLM_DOWN` /
 > `LLM_TIMEOUT` 是**重试耗尽后**的结果，不是第一次失败就上报。被重试丢弃的已计费尝试
