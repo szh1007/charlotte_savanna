@@ -78,3 +78,6 @@ output/
 *.safetensors
 *.onnx
 *.bin
+
+# --- 自用提示词 ---
+dev.prompt
