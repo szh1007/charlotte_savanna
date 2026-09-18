@@ -31,8 +31,10 @@ urlpatterns = [
     path("admin/", admin.site.urls),
     path("minimall/", include("app.minimall.urls_html")),
     path("api/minimall/", include("app.minimall.urls_api")),
-    path("api/charplot/", include("app.charplot.urls_api")),
+    # CharApp 助手专用内部端点 (X-Internal-Token)
+    path("api/minimall/agent/", include("app.minimall.urls_agent")),
     # CharPlot 公开分享页: /r/{slug}, 未登录可访问
+    path("api/charplot/", include("app.charplot.urls_api")),
     path("", include("app.charplot.urls_html")),
 ]
 

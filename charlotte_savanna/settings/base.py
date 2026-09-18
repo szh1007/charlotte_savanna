@@ -88,7 +88,10 @@ DATABASES = {
 # ---------------------------------------------------------------------------
 # FastAPI 调 Django 内部端点 (图谱落库/失败标记) 用共享 token, 与前端会话隔离.
 # 未配置时内部端点拒绝一切请求 (fail closed, 见 app/charplot/permissions.py).
+# CHARAPP_INTERNAL_TOKEN 供 CharApp 助手服务调 minimall agent 端点
+# (见 app/minimall/views_agent.py, 同样 fail closed).
 CHARPLOT_INTERNAL_TOKEN = os.environ.get("CHARPLOT_INTERNAL_TOKEN", "")
+CHARAPP_INTERNAL_TOKEN = os.environ.get("CHARAPP_INTERNAL_TOKEN", "")
 
 # ---------------------------------------------------------------------------
 # 密码验证

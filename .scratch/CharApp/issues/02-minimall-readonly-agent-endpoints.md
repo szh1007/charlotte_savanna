@@ -1,6 +1,6 @@
 # 02 · 商城侧：9 个只读接口
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Type:** task
 
@@ -51,16 +51,37 @@
 
 ## 验收
 
-- [ ] 9 个接口全部可用，返回真实数据
-- [ ] 无令牌 → 拒绝
-- [ ] 错误令牌 → 拒绝
-- [ ] **未配置令牌环境变量 → 全部拒绝**（这条最容易漏，必须单独测）
-- [ ] 用户隔离：用买家 A 的身份取不到买家 B 的订单/购物车/地址
-- [ ] **不走缓存**：改掉某个商品库存后，立刻请求详情能读到新值（这条证明直查库生效）
-- [ ] 商城现有测试全绿（38 个）
+- [x] 9 个接口全部可用，返回真实数据
+- [x] 无令牌 → 拒绝
+- [x] 错误令牌 → 拒绝
+- [x] **未配置令牌环境变量 → 全部拒绝**（这条最容易漏，必须单独测）
+- [x] 用户隔离：用买家 A 的身份取不到买家 B 的订单/购物车/地址
+- [x] **不走缓存**：改掉某个商品库存后，立刻请求详情能读到新值（这条证明直查库生效）
+- [x] 商城现有测试全绿（38 个 → 实跑 68 个全绿，含新增 30 个）
 
 ## 备注
 
 - 归属校验的写法参照商城现有接口（用 queryset 过滤 + `get_object_or_404`），保持一致
 - 页码参数现在是没有防御的（非数字会 500）—— **本 issue 不要顺手修它**，那不是这里的事
 - 9 个接口里前 4 个是公开数据（不需要用户身份），后 5 个需要。不要把公开接口也强制要求 `X-User-Id`
+
+---
+
+## 实现记录
+
+### 计划外但必须做的（实现中发现）
+
+- **`secrets.compare_digest` 的 str 版只接受 ASCII**：请求头由 WSGI 按 latin-1 解码，`X-Internal-Token` 里带任意 ≥0x80 字节时它会抛 `TypeError` —— 于是"错误令牌 → 拒绝"退化成 500（未捕获异常 + 日志噪音）。已改为先 `.encode("utf-8", "surrogateescape")` 转 bytes 再比较（仍恒定时间），并补了回归测试。
+  **`app/charplot/permissions.py` 的同名类有一模一样的缺陷，本 issue 按"精准修改"未动它** —— 归 charplot 侧另处理。
+- **路由 include 排在 `api/minimall/` 之前**：不是 Django 强制（不匹配会回溯到下一条 pattern），纯粹让"助手内部端点"在根路由里一眼可见。
+
+### 明确不在本 issue 处理
+
+- 网页接口里裸 `int(page)` 的无防御（非数字 500）：ticket 点名不动。新端点用 `Paginator.get_page`，不把同类缺陷带进来。
+- `IsInternalService` 与 charplot 的同名类目前是两份实现（令牌取自不同 settings，无法直接复用）。抽公共模块要跨 app，等第三处需求出现再说。
+- `X-User-Id` 是裸传的用户 ID（拿到令牌即可冒充任意买家）：已知取舍，生产化路径记在 `../PRD.md` §4.10。
+
+### 产物
+
+新增 4 个：`app/minimall/views_agent.py` · `app/minimall/urls_agent.py` · `app/minimall/serializers_agent.py` · `app/minimall/tests/test_agent_api.py`
+修改 4 个：`app/minimall/permissions.py` · `charlotte_savanna/urls.py` · `charlotte_savanna/settings/base.py` · `.env.example`

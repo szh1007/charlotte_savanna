@@ -100,7 +100,7 @@ Django session → user_id → X-User-Id → RunContext.payload["user_id"] → �
 
 **两条必须落实的规则**：
 
-- **`X-Internal-Token` fail closed**：未配置 `MINIMALL_INTERNAL_TOKEN` 环境变量时拒绝所有请求（复用 `charplot` 已建立的模式）。用 `secrets.compare_digest` 比较。
+- **`X-Internal-Token` fail closed**：未配置 `CHARAPP_INTERNAL_TOKEN` 环境变量时拒绝所有请求（复用 `charplot` 已建立的模式）。用 `secrets.compare_digest` 比较。
 - **全部直查 DB，不经 Redis 缓存**。理由：`products/<slug>/` 的缓存 TTL 为 600s ±20%，agent 若据此回答"还剩 3 件"可能是 12 分钟前的数据，而 agent 的回答会被用户当作事实。新增 `serializers_agent.py` 显式声明这是**面向 agent 的契约**（含 `stock`），而非用户面接口的镜像。
 
 **不动的部分**：L1a **一个模型都不改**。`RefundRequest`、`ship_order` 端点、`pay_order` 的加锁修复全部推后到 L2（归因性：一次只动一层）。
@@ -145,13 +145,13 @@ CharApp/
 | 层 | 验收项 |
 |----|--------|
 | 框架 | `pytest` 703 用例全绿；新增 ToolProvider 契约测试 + 第二业务冒烟测试（§6.1） |
-| minimall | 新增 `tests/test_agent_api.py`：无 token → 403；错 token → 403；无 `MINIMALL_INTERNAL_TOKEN` → 全拒；用户隔离（A 的 id 取不到 B 的数据）；改库存后立即反映（证明未走缓存） |
+| minimall | 新增 `tests/test_agent_api.py`：无 token → 403；错 token → 403；无 `CHARAPP_INTERNAL_TOKEN` → 全拒；用户隔离（A 的 id 取不到 B 的数据）；改库存后立即反映（证明未走缓存） |
 | CharApp | 工具单测（respx mock HTTP）；`EcomToolProvider` 契约（9 个工具、**schema 里不含 `user_id`**）；CLI 端到端冒烟（mock LLM 驱动一次查商品） |
 | 人工 | CLI 跑通两条真实问答 |
 
 ### 3.5 工程侧
 
-- 根 `.env.example` 加 `MINIMALL_INTERNAL_TOKEN` 与 `CHARAPP_*` 段
+- 根 `.env.example` 加 `CHARAPP_INTERNAL_TOKEN` 与 `CHARAPP_*` 段
 - `sh/charapp_cli.sh` 启动脚本（沿用项目 `sh/` 惯例）
 - 更新根 `CLAUDE.md`（新增 `CharAgent/` `CharApp/` 两类顶层目录的约定）与 `README.md`
 
