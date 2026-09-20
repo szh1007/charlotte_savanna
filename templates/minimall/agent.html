@@ -1,0 +1,327 @@
+{% extends "minimall/base.html" %}
+{% comment %}
+  客服页面 (CharApp issue 06): 原生 JS + fetch 读流 + `eventsource-parser`, 与商城
+  前端同一套零构建风格 (库走 CDN, 与 base 模板里的 htmx / Alpine 同一个来源).
+
+  一条链路: 这里发一句话 → POST /minimall/agent/chat/ (Django BFF, 带登录 cookie
+  与 CSRF 令牌) → CharApp 服务 → 一堆 SSE 帧原路返回 → 下面按事件类型渲染.
+
+  为什么不用 `EventSource` (它本来能白送帧解析): 它只能发 GET、也带不了自定义头,
+  于是认证只能靠 cookie、问句只能进 URL —— 而这个端点有副作用 (真跑模型真花钱),
+  按语义就不该是 GET, 问句进 URL 还会落进访问日志. 换 POST + fetch 之后由 Django
+  的 CSRF 中间件接管跨站防护.
+
+  帧解析**不手写**: 交给 `eventsource-parser` 的 `EventSourceParserStream` —— 那是
+  一段有细节的活 (按空行切帧、跨 chunk 的半个帧、**一个汉字被 TCP 切成两半**时的
+  增量解码), 别人已经写对并维护着了. 页面这边只剩胶水: 发什么样的请求、把六类事件
+  画成什么样子. 这个项目的重点在后端流式 (框架的 SSE 层 + BFF 的透传), 前端不值得
+  自己造一遍解析器.
+{% endcomment %}
+
+{% block title %}智能客服 - minimall{% endblock %}
+
+{% block extra_head %}
+<style>
+  .agent-page { max-width: 880px; margin: 0 auto; }
+  .agent-card { background: #fff; border-radius: 12px; overflow: hidden; display: flex; flex-direction: column; height: calc(100vh - 64px - 48px); min-height: 480px; }
+  .agent-head { padding: 18px 24px; border-bottom: 1px solid #f0f2f5; display: flex; align-items: center; gap: 12px; }
+  .agent-head h2 { font-size: 17px; color: #333; }
+  .agent-head p { font-size: 13px; color: #adb5bd; margin-top: 4px; }
+  .agent-head .agent-session { margin-left: auto; font-size: 12px; color: #adb5bd; background: #f8f9fa; padding: 5px 10px; border-radius: 8px; white-space: nowrap; }
+  .agent-chat { flex: 1; overflow-y: auto; padding: 20px 24px; background: #fafbfc; }
+  .agent-hint { color: #adb5bd; font-size: 14px; line-height: 2.2; }
+  .agent-example { background: #fff; border: 1px solid #e9ecef; color: #555; border-radius: 16px; padding: 6px 14px; font-size: 13px; cursor: pointer; margin-right: 8px; transition: all .2s; font-family: inherit; }
+  .agent-example:hover { border-color: #ff6b6b; color: #ff6b6b; }
+  .agent-turn { margin-bottom: 22px; }
+  .agent-q { text-align: right; }
+  .agent-q span { display: inline-block; background: linear-gradient(135deg, #ff6b6b, #ee5a5a); color: #fff; padding: 10px 16px; border-radius: 12px 12px 2px 12px; font-size: 15px; max-width: 78%; text-align: left; word-break: break-word; }
+  .agent-a { margin-top: 12px; font-size: 15px; line-height: 1.8; color: #333; }
+  .agent-steps { border-left: 2px solid #f0f2f5; padding-left: 12px; margin-bottom: 10px; }
+  .agent-step { font-size: 13px; color: #868e96; padding: 3px 0; word-break: break-word; }
+  .agent-step-label { display: inline-block; min-width: 44px; color: #adb5bd; font-weight: 600; margin-right: 8px; }
+  .agent-step.agent-error, .agent-step.agent-error .agent-step-label { color: #e03131; }
+  .agent-reasoning { margin: 8px 0; font-size: 13px; color: #868e96; }
+  .agent-reasoning summary { cursor: pointer; color: #adb5bd; outline: none; }
+  .agent-reasoning-text { white-space: pre-wrap; padding: 8px 0 0 4px; line-height: 1.7; }
+  .agent-body { white-space: pre-wrap; word-break: break-word; }
+  .agent-waiting { color: #adb5bd; font-size: 14px; }
+  .agent-input { display: flex; gap: 12px; padding: 16px 24px; border-top: 1px solid #f0f2f5; background: #fff; }
+  .agent-input input { flex: 1; padding: 12px 16px; border: 1.5px solid #d0d5dd; border-radius: 10px; font-size: 15px; outline: none; transition: all .2s; font-family: inherit; }
+  .agent-input input:focus { border-color: #ff6b6b; box-shadow: 0 0 0 3px rgba(255,107,107,.1); }
+  .agent-input input:disabled { background: #f8f9fa; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="agent-page">
+  <div class="agent-card">
+    <div class="agent-head">
+      <div>
+        <h2>智能客服</h2>
+        <p>问我商品、订单、余额的事 —— 查的是商城的真实数据。</p>
+      </div>
+      <span class="agent-session" id="session-tag"></span>
+    </div>
+
+    <div class="agent-chat" id="chat">
+      <div class="agent-hint" id="hint">
+        试试这样问：<br>
+        <button type="button" class="agent-example">我最近的订单到哪了</button>
+        <button type="button" class="agent-example">有什么 2000 块以下的手机推荐吗</button>
+        <button type="button" class="agent-example">我余额还有多少</button>
+      </div>
+    </div>
+
+    <form class="agent-input" id="ask-form">
+      <input type="text" id="ask-input" autocomplete="off" placeholder="说一句话，比如「我最近的订单到哪了」">
+      <button type="submit" class="btn btn-primary" id="ask-send">发送</button>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_script %}
+<script type="module">
+// 版号钉死 (与 base 模板里的 htmx / Alpine 同一个纪律): CDN 上出了新版本不该悄悄
+// 换掉页面行为. 这个库只做一件事 —— 把 fetch 的字节流解析成一个个事件.
+import { EventSourceParserStream } from 'https://unpkg.com/eventsource-parser@3.1.1/dist/stream.js';
+
+const chat = document.getElementById('chat');
+const hint = document.getElementById('hint');
+const form = document.getElementById('ask-form');
+const input = document.getElementById('ask-input');
+const send = document.getElementById('ask-send');
+
+// 会话编号的第三段 (thread_id = minimall:{user_id}:{这一段}).
+// 每个标签页一个: 同一买家开两个标签页 = 两段互不相干的对话 (用户故事 25).
+// 浏览器刷新 = 新的标签页生命周期 = 新对话 —— L1b 不做历史消息接口,
+// 这条是已知边界 (见 ticket 06 备注).
+const conversationId = newConversationId();
+document.getElementById('session-tag').textContent = '会话 ' + conversationId.slice(0, 8);
+
+let turn = null;          // 当前这一轮在页面上的那块 DOM (渲染函数都要用它)
+let finished = true;      // 没有正在跑的问答 (空闲)
+let sawTerminal = false;  // 这一轮见过终局事件没有 (final / error)
+
+function newConversationId() {
+  // crypto.randomUUID 只在安全上下文里有 (https / localhost); 退路是时间戳 + 随机
+  if (window.crypto && window.crypto.randomUUID) return window.crypto.randomUUID();
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+}
+
+function el(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  // 一律 textContent: 事件里的正文来自模型, 用 innerHTML 就等于把它吐的 HTML
+  // 当场执行 (工具摘要里带一段 <script> 就够了)
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+function toBottom() {
+  chat.scrollTop = chat.scrollHeight;
+}
+
+// 一次问答在页面上占一块: 问句 + 过程 (步骤 / 思考) + 答复正文
+function startTurn(question) {
+  if (hint) hint.remove();
+  const root = el('div', 'agent-turn');
+  const q = el('div', 'agent-q');
+  q.appendChild(el('span', null, question));
+  const answer = el('div', 'agent-a');
+  const steps = el('div', 'agent-steps');
+  const body = el('div', 'agent-body');
+  const waiting = el('div', 'agent-waiting', '正在查…');
+  body.appendChild(waiting);
+  answer.appendChild(steps);
+  answer.appendChild(body);
+  root.appendChild(q);
+  root.appendChild(answer);
+  chat.appendChild(root);
+  toBottom();
+  // 往步骤区加一行 (thinking / tool_call / tool_result / 错误都走它)
+  function addStep(label, text, className) {
+    const step = el('div', 'agent-step' + (className ? ' ' + className : ''));
+    step.appendChild(el('span', 'agent-step-label', label));
+    if (text) step.appendChild(el('span', null, text));
+    steps.appendChild(step);
+    toBottom();
+    return step;
+  }
+  return {
+    addStep: addStep,
+    body: body,
+    // 思考过程按轮次收: 同一轮再来一条就覆盖 (事件里带的是那一轮的全文, 不是增量)
+    reasoning: new Map(),
+    calls: new Map(),
+    waiting: waiting,
+  };
+}
+
+function openReasoningBox() {
+  if (!turn.reasoningBox) {
+    const box = el('details', 'agent-reasoning');
+    box.appendChild(el('summary', null, '思考过程'));
+    const text = el('div', 'agent-reasoning-text');
+    box.appendChild(text);
+    turn.reasoningBox = box;
+    turn.reasoningText = text;
+    turn.body.parentNode.insertBefore(box, turn.body);
+  }
+}
+
+function finish(content) {
+  const text = (content || '').trim();
+  turn.body.textContent = text || '(这次没有拿到答复)';
+}
+
+function failAnswer(message) {
+  turn.waiting.remove();
+  turn.addStep('出错', message, 'agent-error');
+}
+
+function end() {
+  finished = true;
+  input.disabled = false;
+  send.disabled = false;
+  input.focus();
+}
+
+// 六类事件各怎么渲染. 左边那些名字是**跨进程契约** (框架 `EventType` 全集),
+// 少写一个的表现是「那种事件静默消失」; 服务端以后新增类型也不会把这里搞崩
+// (认不出来的类型直接忽略).
+const RENDERERS = {
+  thinking: function (data) {
+    turn.addStep('思路', data.message);
+  },
+  tool_call: function (data) {
+    // 记下来, 结果回来时原地补全这一行 (工具名与顺序都看得见)
+    turn.calls.set(data.tool_call_id, turn.addStep('查询', '正在查 ' + data.tool_name));
+  },
+  tool_result: function (data) {
+    const step = turn.calls.get(data.tool_call_id);
+    const text = data.status === 'ok'
+      ? (data.summary || '查到了')
+      : ('没查到: ' + (data.error || '查询失败'));
+    if (step) {
+      step.lastChild.textContent = text;
+    } else {
+      turn.addStep('查询', text, data.status === 'ok' ? null : 'agent-error');
+    }
+  },
+  reasoning: function (data) {
+    // 心理活动 ≠ 答复正文: 收在一个默认折叠的框里, 想看的人自己展开
+    openReasoningBox();
+    turn.reasoning.set(data.turn, data.delta || '');
+    turn.reasoningText.textContent = Array.from(turn.reasoning.values()).join('\n\n');
+    toBottom();
+  },
+  final: function (data) {
+    turn.waiting.remove();
+    finish(data && data.content);
+  },
+  error: function (data) {
+    const message = (data && data.error && data.error.message) || '客服这边出了点问题.';
+    failAnswer(message);
+  },
+};
+
+function handle(name, raw) {
+  if (name === 'final' || name === 'error') sawTerminal = true;
+  const render = RENDERERS[name];
+  if (!render) return;
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch (err) {
+    return;  // 帧不合契约: 宁可少显示一条, 也别把整段渲染卡死
+  }
+  render(data);
+}
+
+// 读响应体: 字节流 → UTF-8 文本 → 一个接一个的事件. 两件事都交给现成的:
+// `TextDecoderStream` 管增量解码 (半个汉字留在下一块继续解), `EventSourceParserStream`
+// 管切帧与字段解析 —— 这类协议细节不该由页面自己写 (见文件头那段说明).
+async function readEvents(body) {
+  const events = body
+    .pipeThrough(new TextDecoderStream())
+    .pipeThrough(new EventSourceParserStream());
+  for await (const event of events) {
+    handle(event.event, event.data);
+  }
+}
+
+function csrfToken() {
+  // 与商城其它写操作同一个来源 (base 模板末尾那个 {% csrf_token %} 输入框)
+  const field = document.querySelector('[name=csrfmiddlewaretoken]');
+  return field ? field.value : '';
+}
+
+async function errorMessage(response) {
+  // 服务端把**用户话术**放在 `error.message` 里; 不是 JSON 的话 (Django 自己的
+  // 403 / 500 页面) 就用兜底那句
+  try {
+    const body = await response.json();
+    if (body && body.error && body.error.message) return body.error.message;
+  } catch (err) { /* 不是 JSON */ }
+  return '这次没能问出去, 刷新页面再试一次.';
+}
+
+async function ask(question) {
+  finished = false;
+  sawTerminal = false;
+  input.disabled = true;
+  send.disabled = true;
+  turn = startTurn(question);
+
+  try {
+    const response = await fetch('/minimall/agent/chat/', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        // 这个头是「跨站页面伪造不出来」的那一半 (另一半在服务端的 CSRF 中间件)
+        'X-CSRFToken': csrfToken(),
+      },
+      body: JSON.stringify({ message: question, conversation_id: conversationId }),
+    });
+
+    if (!response.ok) {
+      failAnswer(await errorMessage(response));
+      return;
+    }
+    // 不是事件流 = 没接到客服那条流: 最常见的是登录过期被重定向到登录页
+    // (fetch 会自己跟着 302 走, 于是这里看到的是一个 200 的 HTML 页面)
+    const contentType = response.headers.get('content-type') || '';
+    if (!contentType.includes('text/event-stream')) {
+      failAnswer('登录可能已过期, 刷新页面后再问一次.');
+      return;
+    }
+
+    await readEvents(response.body);
+    if (!sawTerminal) failAnswer('回答中途断开了, 请重新问一次.');
+  } catch (err) {
+    if (!sawTerminal) failAnswer('没能连上客服, 检查网络后再试一次.');
+  } finally {
+    end();   // 三条出口 (正常答完 / 说清失败 / 抛异常) 都要把输入框放开
+  }
+}
+
+form.addEventListener('submit', function (event) {
+  event.preventDefault();
+  const question = input.value.trim();
+  if (!question || !finished) return;
+  input.value = '';
+  ask(question);
+});
+
+document.querySelectorAll('.agent-example').forEach(function (button) {
+  button.addEventListener('click', function () {
+    if (!finished) return;
+    input.value = button.textContent.trim();
+    form.dispatchEvent(new Event('submit', { cancelable: true }));
+  });
+});
+
+input.focus();
+</script>
+{% endblock %}

@@ -49,6 +49,19 @@ CONVERSATION_PREFIX = "minimall"
 # 另一边还是老数字. CLI 的 `--max-turns` 缺省值也读它.
 DEFAULT_MAX_TURNS = 10
 
+# 一次运行的另外两道刹车 (框架的 LoopGuard 支持, 之前只配了轮数):
+#
+#   - token 预算: 客服问答 6 万 token 绰绰有余. 不设的后果是**一次跑飞就烧一波**
+#     —— 轮数上限拦不住"某一轮本身就很贵"(超长输入 / 模型话痨).
+#   - 墙钟预算: 90 秒. 为什么是 90 而不是 BFF 那边的 120 (它等上游的最大耐心):
+#     这里先到, 用户看到的是「这次查得太久超时了」这句能听懂的话; 让 BFF 先到的话,
+#     他看到的是一句「回答中途断开了」—— 同一件事, 后者更像是我们挂了.
+#
+# 两条都是**两个入口共用**的字段默认值 (HTTP 与命令行一起受约束): 烧的是同一份
+# API 账单, 没有理由只拦浏览器那一侧; 命令行要放开就把字段显式传 None.
+DEFAULT_MAX_TOTAL_TOKENS = 60_000
+DEFAULT_MAX_DURATION_SECONDS = 90.0
+
 # 业务提示词: 目录 + 名字 + 版本. 盘上的位置是 `{目录}/{名字}/{版本}.prompt`
 # (PLAN §3.3 的布局), 而框架取正文的规则是「{目录}/{名字}.prompt」—— 所以下面拼
 # 的时候把版本接在名字后面, 目录层级因此是**落库方式**的一部分, 而不是文件名里的
@@ -132,6 +145,8 @@ class MinimallService:
             `CHARAPP_THINKING` 读, 命令行入口从 `--no-thinking` 读 (两边都不填时
             语义相同: 让上游自己决定).
         max_turns: 轮数上限 (防跑飞).
+        max_total_tokens: 单次运行的 token 预算; None 表示不限.
+        max_duration_seconds: 单次运行的墙钟预算 (秒); None 表示不限.
 
     三个零件都是**进程级**的, 所以谁建谁关: 建它的人在进程退出时调 `aclose()`
     (server 那侧); CLI 只有一次会话, 它沿用既有收尾 (`ChatSession.aclose()` 关的
@@ -144,6 +159,8 @@ class MinimallService:
     model_name: str | None = None
     thinking: bool | None = None
     max_turns: int = DEFAULT_MAX_TURNS
+    max_total_tokens: int | None = DEFAULT_MAX_TOTAL_TOKENS
+    max_duration_seconds: float | None = DEFAULT_MAX_DURATION_SECONDS
 
     async def session_for(
         self, context: RunContext, *, event_sink: EventSink
@@ -175,7 +192,13 @@ class MinimallService:
             thread_id=context.thread_id,
             model_name=self.model_name,
             event_sink=event_sink,
-            guard=LoopGuard(max_turns=self.max_turns),
+            # 三道刹车一起上: 轮数 / token / 墙钟 —— 只配轮数拦不住"某一轮本身
+            # 就很贵"那种跑飞 (见上面两个常量的注释)
+            guard=LoopGuard(
+                max_turns=self.max_turns,
+                max_total_tokens=self.max_total_tokens,
+                max_duration_seconds=self.max_duration_seconds,
+            ),
             thinking=self.thinking,
             # 业务提示词在业务自己的目录里, 框架目录里不留业务的东西 (PRD §4.8).
             # 名字里带版本: 读不到就是启动期错误 (PromptNotFoundError), 不会悄悄退回
@@ -199,6 +222,8 @@ class MinimallService:
 
 __all__ = [
     "CONVERSATION_PREFIX",
+    "DEFAULT_MAX_DURATION_SECONDS",
+    "DEFAULT_MAX_TOTAL_TOKENS",
     "DEFAULT_MAX_TURNS",
     "PROMPT_DIR",
     "PROMPT_NAME",

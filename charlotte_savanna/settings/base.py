@@ -93,6 +93,11 @@ DATABASES = {
 CHARPLOT_INTERNAL_TOKEN = os.environ.get("CHARPLOT_INTERNAL_TOKEN", "")
 CHARAPP_INTERNAL_TOKEN = os.environ.get("CHARAPP_INTERNAL_TOKEN", "")
 
+# Django 转发层 (BFF) 打 CharApp 客服服务的地址: 用户面端点 /minimall/agent/chat/
+# 收到浏览器的问句后转发到这里 (见 app/minimall/views_bff.py). 默认值是助手服务
+# 本机监听的默认地址 (CHARAPP_SERVER_HOST/PORT 那一对的客户端视角).
+CHARAPP_SERVER_URL = os.environ.get("CHARAPP_SERVER_URL", "http://127.0.0.1:1007")
+
 # ---------------------------------------------------------------------------
 # 密码验证
 # ---------------------------------------------------------------------------

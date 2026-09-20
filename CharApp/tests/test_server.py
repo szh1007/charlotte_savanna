@@ -35,7 +35,7 @@ from conftest import AGENT_BASE_URL, BUYER_ID, PROFILE, TOKEN, agent_url, mock_a
 
 from CharAgent.checkpoint import InMemoryCheckpointSaver
 from CharAgent.checkpoint import config as checkpoint_config
-from CharAgent.model.utils.types import ModelMessage, ModelResponse
+from CharAgent.model.utils.types import ModelMessage, ModelResponse, Usage
 from CharAgent.server import RUN_ID_HEADER
 from CharAgent.tests.mock_llm import (
     MockLLM,
@@ -275,6 +275,70 @@ async def test_turning_thinking_off_reaches_the_model(mall, client) -> None:
 
     assert response.status_code == 200
     assert model.calls[0]["thinking"] is False, "开关没落到 generate 的参数上"
+
+
+async def test_a_run_that_blows_its_token_budget_is_stopped(mall, client) -> None:
+    """一次运行烧超 token 预算 → 刹车 (终局是 `token_budget` 的 error, 不是 final).
+
+    守的是「刹车真接上了」: 三个上限 (轮数 / token / 墙钟) 要穿过 `ChatSession` 才
+    到 `AgentLoop` 里的 `LoopGuard`, 中间漏传一环的表现就是**配了没用** —— 照样一次
+    跑飞烧一波钱, 而且测试全绿 (与上面那条 thinking 用例同一类静默失效).
+    """
+    allow_app(mall)
+    mock_all(mall)
+    # 每轮都报一个远超预算的用量: 跑完第一轮就该被拦下
+    model = MockLLM.fixed(
+        tool_call_response(
+            make_tool_call("get_my_profile"),
+            usage=Usage(input_tokens=5_000, output_tokens=5_000),
+        )
+    )
+    app = create_minimall_app(
+        MinimallService(
+            client=client,
+            model=model,
+            saver=InMemoryCheckpointSaver(),
+            max_total_tokens=1_000,  # 比上面那条用量小一个数量级
+        ),
+        ServerConfig(host=DEFAULT_SERVER_HOST, port=DEFAULT_SERVER_PORT, token=TOKEN),
+    )
+
+    response = await ask(app, "我余额还有多少")
+
+    assert response.status_code == 200
+    errors = [event for event in parse_sse(response.text) if event["event"] == "error"]
+    assert errors, "预算都超了还没刹车 —— 上限没接到 LoopGuard 上"
+    assert errors[-1]["data"]["error"]["code"] == "token_budget"
+
+
+async def test_a_run_that_outlives_its_wall_clock_budget_is_stopped(
+    mall, client
+) -> None:
+    """一次运行超过墙钟预算 → 刹车 (终局是 `time_limit` 的 error).
+
+    与 token 那条同一个理由 (上限得真接到 `LoopGuard` 上), 但更难造: 不能真等 90 秒.
+    办法是把预算调到 1 微秒 —— 第一轮跑完必然早超了 (判据是 `elapsed >= 预算`,
+    而第一轮至少有一次模型调用与一次工具执行), 于是这条用例稳定命中, 不用 sleep.
+    """
+    allow_app(mall)
+    mock_all(mall)
+    model = MockLLM.fixed(tool_call_response(make_tool_call("get_my_profile")))
+    app = create_minimall_app(
+        MinimallService(
+            client=client,
+            model=model,
+            saver=InMemoryCheckpointSaver(),
+            max_duration_seconds=1e-6,  # 比"第一轮跑完"小得多, 见 docstring
+        ),
+        ServerConfig(host=DEFAULT_SERVER_HOST, port=DEFAULT_SERVER_PORT, token=TOKEN),
+    )
+
+    response = await ask(app, "我余额还有多少")
+
+    assert response.status_code == 200
+    errors = [event for event in parse_sse(response.text) if event["event"] == "error"]
+    assert errors, "墙钟早就超了还没刹车 —— 上限没接到 LoopGuard 上"
+    assert errors[-1]["data"]["error"]["code"] == "time_limit"
 
 
 async def test_a_question_comes_back_as_an_sse_stream(mall, client) -> None:

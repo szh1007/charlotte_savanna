@@ -91,6 +91,7 @@
     table th { background: #f8f9fa; font-weight: 600; font-size: 14px; color: #666; }
     .page-title { font-size: 22px; font-weight: 700; padding-left: 16px; border-left: 4px solid #ff6b6b; color: #333; letter-spacing: 0.5px; }
   </style>
+  {% block extra_head %}{% endblock %}
 </head>
 <body x-data="app()" @toast.window="toast = $event.detail; setTimeout(() => toast = null, 2000)">
   <nav>
@@ -101,6 +102,17 @@
       </form>
     </div>
     <div class="nav-links">
+      {% comment %}
+        智能客服入口: 放在导航栏而不是某一页里 —— 用户故事 23 要的是「一边看商品页
+        一边问」, 所以每个用 base 模板的页面都能看到它. 未登录点进来会被 BFF 的
+        LoginRequiredMixin 送去登录页.
+      {% endcomment %}
+      <a href="/minimall/agent/" title="智能客服" style="display:inline-flex;align-items:center;gap:6px;font-size:14px;">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 8.4 8.4 0 0 1-3.5-.8L3 21l1.9-5A8.4 8.4 0 0 1 12 3a8.4 8.4 0 0 1 9 8.5z"/>
+        </svg>
+        客服
+      </a>
       <a href="/minimall/cart/" title="购物车" style="position:relative;display:inline-flex;align-items:center;"
          @cart-updated.window="refreshCartCount()">
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -206,6 +218,7 @@
     }
     function notifyCartUpdated() { window.dispatchEvent(new CustomEvent('cart-updated')); }
   </script>
+  {% block extra_script %}{% endblock %}
   {% csrf_token %}
 </body>
 </html>

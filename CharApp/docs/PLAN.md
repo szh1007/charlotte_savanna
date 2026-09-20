@@ -166,7 +166,7 @@ CharApp/
 
 1. `CharAgent/server/`：FastAPI，SSE 推送（消费 `stream/` 事件总线）+ `POST runs/{id}/cancel` + 会话接口
 2. `app/minimall/views_bff.py`：`/api/minimall/agent/chat/`（session 认证 → 取 `user_id` → 转发 CharApp → SSE 透传回浏览器）
-3. `templates/minimall/` 客服页面 + 商品页入口链接（原生 JS + `EventSource`）
+3. `templates/minimall/` 客服页面 + 商品页入口链接（原生 JS + `fetch` 读 SSE 流；原计划写的是 `EventSource`，2026-09-21 改掉，理由见 `adr/0002`）
 4. `thread_id = f"minimall:{user_id}:{conversation_id}"` —— 框架 checkpoint 按此分区，多用户会话天然隔离
 
 ## 5. L2–L4 概要

@@ -31,6 +31,9 @@ urlpatterns = [
     path("admin/", admin.site.urls),
     path("minimall/", include("app.minimall.urls_html")),
     path("api/minimall/", include("app.minimall.urls_api")),
+    # CharApp 客服页面 + 转发端点 (登录 cookie)
+    # 与内部端点前缀 /api/minimall/agent/ 刻意分开 —— 两套认证是两回事
+    path("minimall/agent/", include("app.minimall.urls_bff")),
     # CharApp 助手专用内部端点 (X-Internal-Token)
     path("api/minimall/agent/", include("app.minimall.urls_agent")),
     # CharPlot 公开分享页: /r/{slug}, 未登录可访问
