@@ -128,6 +128,9 @@ LOGIN_REDIRECT_URL = "/minimall/"
 # 静态文件 & 媒体
 # ---------------------------------------------------------------------------
 STATIC_URL = "static/"
+# 根级 static/ 与 templates/ 对称: 放跨 app 的共享静态资源 (目前只有第三方库副本,
+# 见 static/vendor/ 下的说明)
+STATICFILES_DIRS = [BASE_DIR / "static"]
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR
 

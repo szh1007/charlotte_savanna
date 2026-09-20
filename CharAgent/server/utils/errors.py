@@ -11,6 +11,7 @@
 | ServerConfigError | 业务 (任一回调) | 503 | 配置缺失 / 服务没就绪 (如令牌没配) |
 | InvalidRequestError | 框架 | 400 | 请求体不成形 (不是 JSON / 缺 message) |
 | ThreadBusyError | 框架 | 409 | 同一会话已有一次运行在跑 (不并发写) |
+| RunNotFoundError | 框架 | 404 | 取消时这次运行已不在册 (跑完了 / 不存在 / 不是你的) |
 
 三条纪律:
 
@@ -119,5 +120,29 @@ class ThreadBusyError(ServerError):
         *,
         code: str = "thread_busy",
         status_code: int = 409,
+    ) -> None:
+        super().__init__(message, code=code, status_code=status_code)
+
+
+class RunNotFoundError(ServerError):
+    """取消时这次运行已经不在册 —— 框架自己抛 (见 app.cancel_run).
+
+    **三种情况共用这一个错误**, 因为本层分不出来, 也不该分: 登记表只记「在跑的」,
+    跑完即出册, 于是「已经跑完了」「压根没这个编号」「这段会话里没有它」(即别人的
+    运行) 在取消的那一刻是同一件事 —— 都是「这次运行不在了」. 给客户端一个**明确**
+    的回答就够了 (404 + 机器读的码), 而它该做什么也很清楚: 什么都不用做, 那次运行
+    本来就已经不在跑了.
+
+    为什么把「别人的运行」也并进来而不回 403: 403 会确认「这个编号真实存在过」,
+    那是一条白送的情报 (可以拿它枚举别人的运行). 想区分的是日志, 不是响应 ——
+    与 ServerAuthError 同一条纪律.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "run_not_found",
+        status_code: int = 404,
     ) -> None:
         super().__init__(message, code=code, status_code=status_code)

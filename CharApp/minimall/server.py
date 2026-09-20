@@ -14,6 +14,10 @@ HTTP + SSE 那一层, 业务只接两个插座: 认证解析 (认下这次请求
       ├─ 4. 装配会话: 这个会话编号第一次出现时调一次 (之后复用, 历史连得上)
       └─ 5. 跑 + 推 SSE (框架负责)
 
+用户按「停止」时走的是框架的另一个端点 (`POST /runs/{id}/cancel`): 认证 / 取身份 /
+拼对话走的是**同一个插座** (`MinimallContexts`) —— 所以「只能取消自己那段会话里的
+运行」不需要业务这边写一行 (判据是会话编号里含买家, 见 `service.thread_id_for`).
+
 **身份与令牌**: 两个头都是 Django 转发来的 —— 浏览器 ↔ Django 是唯一真正验证
 「你是谁」的地方, 这里只是同一信任域内的转发 (PRD §4.10 的三层信任模型; 为什么
 敢信裸的 `X-User-Id` 见 `CharApp/docs/adr/0001-...`). 所以本进程不查库、不认
@@ -258,7 +262,11 @@ def create_minimall_app(service: MinimallService, config: ServerConfig) -> FastA
         config: 监听地址 / 端口 / 校验令牌.
 
     Returns:
-        FastAPI: 装好的应用 (框架占 `POST /runs` 一个端点).
+        FastAPI: 装好的应用 (框架占 `POST /runs` 与 `POST /runs/{id}/cancel` 两个端点).
+
+    Note:
+        取消端点**不需要业务这边多写一行**: 它复用同一个 `MinimallContexts` 认人
+        (见 `CharAgent/server/app.py` 的取消契约), 本函数交出去的还是那两个插座.
     """
     return create_app(
         context_provider=MinimallContexts(token=config.token),
@@ -328,7 +336,11 @@ def main() -> int:
         logger.error("启动失败: %s: %s", type(exc).__name__, exc)
         return 1
 
-    logger.info("客服服务启动中: http://%s:%d (POST /runs)", config.host, config.port)
+    logger.info(
+        "客服服务启动中: http://%s:%d (POST /runs 与 POST /runs/{id}/cancel)",
+        config.host,
+        config.port,
+    )
     try:
         asyncio.run(_serve(create_minimall_app(service, config), service, config))
     except KeyboardInterrupt:

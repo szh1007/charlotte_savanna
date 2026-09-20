@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -187,6 +188,22 @@ async def ask(
         return await client.post(
             "/runs",
             json={"message": message},
+            headers=headers(thread=thread, user=user, token=token),
+        )
+
+
+async def cancel(
+    server: ToyServer,
+    run_id: str,
+    *,
+    thread: str = "toy:chat-1",
+    user: str = "alice",
+    token: str = TOKEN,
+) -> httpx.Response:
+    """打一次 POST /runs/{id}/cancel (默认是那个能取消得动的身份)."""
+    async with client_for(server) as client:
+        return await client.post(
+            f"/runs/{run_id}/cancel",
             headers=headers(thread=thread, user=user, token=token),
         )
 
@@ -522,8 +539,8 @@ async def test_a_run_failure_ends_the_stream_with_one_terminal_error() -> None:
 async def test_a_cancelled_run_ends_with_cancelled() -> None:
     """取消一次运行: 事件流以 error(code=cancelled) 收尾, 且恰好一个终局事件.
 
-    本片不暴露取消端点 (那是 07), 但契约得先立起来 —— 所以这条用例直接拿登记表
-    里的任务句柄取消 (07 的端点将来就是这一下), 断言客户端看到什么.
+    触发走的是**真的那一条路** (POST /runs/{id}/cancel), 不是直接摸任务句柄 ——
+    客户端看到的东西由边界决定, 而边界就是那个端点.
     """
     gate = asyncio.Event()  # 一直不开: 这次运行会一直等模型
     server = serve(model=MockLLM.fixed(gated(gate, text_response("好的"))))
@@ -531,10 +548,8 @@ async def test_a_cancelled_run_ends_with_cancelled() -> None:
     pending = asyncio.create_task(ask(server, "在吗"))
     await wait_until(lambda: bool(server.run_registry.run_ids))
     [run_id] = server.run_registry.run_ids
-    handle = server.run_registry.get(run_id)
-    assert handle is not None and handle.thread_id == "toy:chat-1"
 
-    handle.task.cancel()
+    assert (await cancel(server, run_id)).status_code == 200
     response = await pending
 
     events = parse_sse(response.text)
@@ -544,3 +559,198 @@ async def test_a_cancelled_run_ends_with_cancelled() -> None:
     assert server.session_registry.busy_threads == frozenset(), (
         "取消之后会话要放开 (不然「继续」这句会被 409 拒掉)"
     )
+
+
+# ---------------------------------------------------------------------------
+# 取消端点 (07): 谁按得动它, 以及按不动的时候回什么
+# ---------------------------------------------------------------------------
+
+
+async def test_a_cancel_request_stops_a_running_run_promptly() -> None:
+    """按一下停止: 运行真的停下, 而且**立刻就停** (不是等这一轮跑完).
+
+    即时性对齐 `test_loop_guard.py` 那条 kill switch 用例的断言方式 (那里是
+    「工具在睡 30 秒」, 这里是「模型一直不回」)—— 两处都是「等它自然结束要很久,
+    而取消必须远快于那个很久」. 2 秒是宽裕的调度余量, 真机上是毫秒级.
+    """
+    gate = asyncio.Event()
+    server = serve(model=MockLLM.fixed(gated(gate, text_response("好的"))))
+
+    pending = asyncio.create_task(ask(server, "在吗"))
+    await wait_until(lambda: bool(server.run_registry.run_ids))
+    [run_id] = server.run_registry.run_ids
+
+    started = time.perf_counter()
+    response = await cancel(server, run_id)
+    streamed = await pending
+
+    assert response.status_code == 200
+    assert response.json()["run_id"] == run_id
+    assert time.perf_counter() - started < 2
+    assert streamed.status_code == 200, "流早就开出去了, 取消不改状态码"
+    assert parse_sse(streamed.text)[-1]["data"]["error"]["code"] == "cancelled"
+
+
+async def test_cancelling_a_run_that_already_ended_is_not_a_crash() -> None:
+    """取消一个已经跑完的运行: 明确的 404 + 一个机器读的码, 不是 500.
+
+    正常跑完的运行**已经出册了** (出册挂在任务的收尾回调上, 见 runs.py), 所以本层
+    手上确实什么都没有 —— 这时能给的只有「这次运行不在了」这一句事实.
+    """
+    server = serve(model=MockLLM.fixed(text_response("好的")))
+    finished = await ask(server, "在吗")
+
+    response = await cancel(server, finished.headers["x-run-id"])
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "run_not_found"
+    assert "Traceback" not in response.text
+
+
+async def test_an_unknown_run_answers_exactly_like_a_finished_one() -> None:
+    """不存在的运行与已结束的运行**给同一个回答** (不区分是刻意的).
+
+    两条理由: 一是本层真的分不出来 (登记表只记在跑的), 二是分出来也没好处 ——
+    「这个 run_id 存在过」本身就是一条情报, 而没有哪个正常客户端需要它. 于是两种情况
+    从状态码到响应体逐字节相同, 想区分的是**日志**.
+    """
+    server = serve(model=MockLLM.fixed(text_response("好的")))
+    finished = await ask(server, "在吗")
+
+    over = await cancel(server, finished.headers["x-run-id"])
+    unknown = await cancel(server, "0" * 32)
+
+    assert over.status_code == unknown.status_code == 404
+    assert over.json()["error"]["code"] == unknown.json()["error"]["code"]
+    # 说明文字里唯一的差别是**回显的那个编号** (调用方自己给的, 不是新情报)
+    assert over.json()["error"]["message"].replace(
+        finished.headers["x-run-id"], "<run>"
+    ) == unknown.json()["error"]["message"].replace("0" * 32, "<run>")
+
+
+async def test_a_run_belonging_to_another_conversation_cannot_be_cancelled() -> None:
+    """别人的运行取消不了 —— **判据是身份, 不是参数**.
+
+    运行属于哪段会话是登记时记下的 (`RunHandle.thread_id`), 而「你是谁」由业务那
+    个插座认出来; 两者对不上就当它不存在. 这里还断言被拒之后**对方的运行照跑**
+    (拒绝不是「取消了但没告诉你」).
+    """
+    gate = asyncio.Event()
+    server = serve(model=MockLLM.fixed(gated(gate, text_response("好的"))))
+
+    alice = asyncio.create_task(ask(server, "在吗", thread="toy:alice", user="alice"))
+    await wait_until(lambda: bool(server.run_registry.run_ids))
+    [run_id] = server.run_registry.run_ids
+
+    refused = await cancel(server, run_id, thread="toy:bob", user="bob")
+
+    assert refused.status_code == 404
+    assert refused.json()["error"]["code"] == "run_not_found"
+    assert server.run_registry.run_ids == (run_id,), "别人的运行还在跑"
+
+    gate.set()
+    assert (await alice).status_code == 200
+
+
+async def test_the_cancel_endpoint_asks_the_business_who_is_calling() -> None:
+    """认证不过: 401, 而且**一次都不碰**运行 (不认识的人不该有任何影响力).
+
+    取消端点复用的是 `/runs` 那道门 (同一个 ContextProvider) —— 这不是省事, 是
+    同一片资源本来就该有同一道门禁; 于是「令牌错」在这里的表现与那里逐字相同.
+    """
+    gate = asyncio.Event()
+    server = serve(model=MockLLM.fixed(gated(gate, text_response("好的"))))
+
+    pending = asyncio.create_task(ask(server, "在吗"))
+    await wait_until(lambda: bool(server.run_registry.run_ids))
+    [run_id] = server.run_registry.run_ids
+
+    response = await cancel(server, run_id, token="wrong-token")
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "unauthorized"
+    assert server.run_registry.run_ids == (run_id,), "没认下来的请求不该动到运行"
+
+    gate.set()
+    await pending
+
+
+async def test_cancelling_one_run_leaves_the_others_alone() -> None:
+    """取消的是**那一次**运行, 不是这个进程里的运行 (别人的照跑)."""
+    gate = asyncio.Event()
+    server = serve(model=MockLLM.fixed(gated(gate, text_response("好的"))))
+
+    alice = asyncio.create_task(ask(server, "在吗", thread="toy:alice", user="alice"))
+    bob = asyncio.create_task(ask(server, "在吗", thread="toy:bob", user="bob"))
+    await wait_until(lambda: len(server.run_registry.run_ids) == 2)
+    handles = {
+        handle.thread_id: handle
+        for handle in (server.run_registry.get(r) for r in server.run_registry.run_ids)
+    }
+
+    assert (
+        await cancel(server, handles["toy:alice"].run_id, thread="toy:alice")
+    ).status_code == 200
+    gate.set()
+
+    stopped = parse_sse((await alice).text)
+    assert stopped[-1]["data"]["error"]["code"] == "cancelled"
+    events = parse_sse((await bob).text)
+    assert [event["event"] for event in terminal_events(events)] == ["final"]
+    assert events[-1]["data"]["content"] == "好的"
+    assert server.run_registry.run_ids == ()
+
+
+async def test_a_question_after_a_cancel_continues_instead_of_redoing() -> None:
+    """停下来的那次运行, 已经做完的事留在历史里 —— 接着说一句就接着走.
+
+    这是取消的**下半句**: 停不是把这次对话作废 (那是「重来」), 而是「先别往下查了」.
+    框架靠 `ChatSession._reclaim_progress` 把快照里已完成的工作收回历史 (只做加法),
+    所以用户说的「继续」就是一次普通提问, 模型自己看着历史接上.
+
+    两条断言各管一半: 「工具没被重跑」证明没有从头再来, 「历史里有 tool 消息」证明
+    模型真看得到做过什么 —— 后者才是前者的原因 (光不重跑也可能是模型恰好没调).
+
+    模型按**本轮历史**现算 (拍一段固定脚本的话, 被取消那一步照样会被弹掉, 于是取消
+    恰好落在哪一步就成了运气 —— 与 `badge_dialogue` 同一条理由).
+    """
+    ran: list[str] = []
+    gate = asyncio.Event()
+
+    @tool
+    async def tally() -> str:
+        """在账本上记一笔, 返回账本上一共几笔."""
+        ran.append("tally")
+        return str(len(ran))
+
+    async def dialogue(messages: list[ModelMessage]) -> ModelResponse:
+        if messages[-1]["content"] == "继续":
+            return text_response("接着答")
+        if not any(message["role"] == "tool" for message in messages):
+            return tool_call_response(make_tool_call("tally"))
+        await gate.wait()  # 第一句的第二轮: 停在这儿等客户端按停止
+        return text_response("不会走到这里")
+
+    model = MockLLM.fixed(dialogue)
+    server = serve(model=model, tools_for=lambda context: (tally,))
+
+    pending = asyncio.create_task(ask(server, "记一笔"))
+    # 等到第二次模型调用**已经开始**: 那一刻第一轮的快照已经落盘 (工具结果在档里),
+    # 取消之后才收得回来 —— 否则这条用例测的是「取消得比落盘慢」, 不是「接着走」
+    await wait_until(lambda: len(model.calls) == 2)
+    await wait_until(lambda: bool(server.run_registry.run_ids))
+    [run_id] = server.run_registry.run_ids
+
+    assert (await cancel(server, run_id)).status_code == 200
+    assert parse_sse((await pending).text)[-1]["data"]["error"]["code"] == "cancelled"
+
+    continued = await ask(server, "继续")
+
+    assert continued.status_code == 200
+    assert parse_sse(continued.text)[-1]["data"]["content"] == "接着答"
+    assert ran == ["tally"], "已完成的那一步不该重做"
+    seen = model.calls[-1]["messages"]
+    assert any(message["role"] == "tool" for message in seen), (
+        "取消前那次工具调用要留在历史里 (否则模型只能从头再查一遍)"
+    )
+    assert seen[-1]["content"] == "继续"

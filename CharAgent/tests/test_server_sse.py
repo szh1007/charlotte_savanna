@@ -172,3 +172,6 @@ async def test_closing_the_stream_stops_the_run() -> None:
 
     assert task.cancelled(), "没人听的运行要被叫停"
     assert task.done(), "而且要在生成器收尾之前真的停下来"
+    # 对齐 test_loop_guard.py 那条 kill switch 用例的断言方式: 收完尾之后不该有
+    # 任务留在后台 (取消传播干净). all_tasks 只列没结束的, 所以这里该是空的.
+    assert [t for t in asyncio.all_tasks() if t is not asyncio.current_task()] == []

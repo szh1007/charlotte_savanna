@@ -24,7 +24,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
 
@@ -525,6 +525,134 @@ async def test_one_buyers_two_tabs_are_two_conversations(
     ], "每个标签页一段对话 (第三次问 tab-1 复用, 所以只有三条)"
     assert app.state.session_registry.busy_threads == frozenset(), "跑完了就该全放开"
     assert DEFAULT_CONVERSATION_ID == "web", "缺省那一段是转发层在用的, 改它要同步文档"
+
+
+async def wait_until(predicate: Callable[[], bool], *, timeout: float = 2.0) -> None:
+    """等一个条件成立 (轮询 + 超时) —— 与框架 `test_server_app.py` 那份同一个写法.
+
+    「等到某件事发生」在事件循环里没有现成原语, 而取消的用例**必须**等: 取消的前提
+    是那次运行真的已经跑起来了 (否则手上没有 run_id).
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while not predicate():
+        assert loop.time() < deadline, "等待超时: 条件一直没成立"
+        await asyncio.sleep(0)
+
+
+async def cancel(app: Any, run_id: str, **header_kwargs: Any) -> httpx.Response:
+    """打一次取消请求 (`POST /runs/{id}/cancel`); 头与 `ask` 同源, 不另配一套."""
+    async with talking_to(app) as http:
+        return await http.post(
+            f"/runs/{run_id}/cancel", headers=headers(**header_kwargs)
+        )
+
+
+def stalled(gate: asyncio.Event, answer: ModelResponse) -> Callable:
+    """一段「闸门不开就不作答」的模型步骤 (让运行停在半路, 好被取消)."""
+
+    async def step(messages: list[ModelMessage]) -> ModelResponse:
+        await gate.wait()
+        return answer
+
+    return step
+
+
+# ---------------------------------------------------------------------------
+# 取消 (07): 业务侧一行新代码都没有, 端点就已经受同一道门保护
+# ---------------------------------------------------------------------------
+
+
+async def test_a_cancel_request_stops_the_run_through_the_service_headers(
+    mall, client
+) -> None:
+    """取消一次运行: 走的就是业务自己的那两个头 (令牌 + 买家 + 对话编号).
+
+    这条用例本身就是「04 的接缝设计对了」的证据: `create_minimall_app` 只交出两个
+    插座, 而框架的取消端点照样认得出「这是谁的哪段会话」—— 靠的是同一个
+    `MinimallContexts`. 接缝要是错了 (比如取消只认 run_id), 这里连门都进不来.
+
+    停止的**权威信号**是事件流上那个终局事件 (取消是协作式的, 落在下一个 await):
+    所以断言的是「流以 cancelled 收尾」, 而不是「响应体里写着已停止」.
+    """
+    allow_app(mall)
+    mock_all(mall)
+    gate = asyncio.Event()
+    app = serving(MockLLM.fixed(stalled(gate, text_response("迟到的答复"))), client)
+
+    pending = asyncio.create_task(ask(app, "我余额还有多少"))
+    await wait_until(lambda: bool(app.state.run_registry.run_ids))
+    [run_id] = app.state.run_registry.run_ids
+
+    response = await cancel(app, run_id)
+
+    assert response.status_code == 200
+    assert response.json()["run_id"] == run_id
+    events = parse_sse((await pending).text)
+    assert [event["event"] for event in terminal_events(events)] == ["error"]
+    assert events[-1]["data"]["error"]["code"] == "cancelled"
+    assert "迟到的答复" not in as_text(events), "停下的运行不该再吐出答复"
+    assert app.state.run_registry.run_ids == (), "取消之后要出册"
+    assert app.state.session_registry.busy_threads == frozenset(), (
+        "会话要放开 —— 不然用户接不上下一句 (「继续」会被 409 拒掉)"
+    )
+
+
+async def test_only_the_conversation_that_started_it_can_cancel_it(
+    mall, client
+) -> None:
+    """取消的判据是**会话编号** (里面含买家), 不是 run_id 本身.
+
+    三种「不是他那一段」都试一遍 (另一个买家 / 同一个买家的另一个标签页 / 没带令牌),
+    每次都要原封不动 —— 运行照跑, 而它本人照样取消得动.
+    """
+    allow_app(mall)
+    mock_all(mall)
+    gate = asyncio.Event()
+    app = serving(MockLLM.fixed(stalled(gate, text_response("答完了"))), client)
+
+    pending = asyncio.create_task(
+        ask(app, "我余额还有多少", buyer=3, conversation="tab-1")
+    )
+    await wait_until(lambda: bool(app.state.run_registry.run_ids))
+    [run_id] = app.state.run_registry.run_ids
+
+    for note, header_kwargs in (
+        ("另一个买家", {"buyer": 4, "conversation": "tab-1"}),
+        ("同一个买家的另一个标签页", {"buyer": 3, "conversation": "tab-2"}),
+    ):
+        refused = await cancel(app, run_id, **header_kwargs)
+
+        assert refused.status_code == 404, note
+        assert app.state.run_registry.run_ids == (run_id,), f"{note}: 不该动到运行"
+
+    assert (await cancel(app, run_id, buyer=3, conversation="tab-1")).status_code == 200
+    assert parse_sse((await pending).text)[-1]["data"]["error"]["code"] == "cancelled"
+
+
+async def test_a_cancel_request_without_a_token_is_refused(mall, client) -> None:
+    """没带令牌: 401 —— 取消端点进的是**同一道门**, 不是另一套认证.
+
+    这条与 `test_a_missing_token_and_a_wrong_token_look_the_same` 是同一件事的另
+    一个入口: 同一次运行, 换个端点来敲, 门禁的表现应当逐字相同 (连响应体都一样).
+    """
+    allow_app(mall)
+    mock_all(mall)
+    gate = asyncio.Event()
+    app = serving(MockLLM.fixed(stalled(gate, text_response("答完了"))), client)
+
+    pending = asyncio.create_task(ask(app, "我余额还有多少"))
+    await wait_until(lambda: bool(app.state.run_registry.run_ids))
+    [run_id] = app.state.run_registry.run_ids
+
+    response = await cancel(app, run_id, token=None)
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "unauthorized"
+    assert app.state.run_registry.run_ids == (run_id,), "没认下来的请求不该动到运行"
+
+    gate.set()
+    await pending
 
 
 # ---------------------------------------------------------------------------

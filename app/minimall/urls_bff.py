@@ -20,11 +20,12 @@ Note:
 
 from django.urls import path
 
-from .views_bff import AgentChatView, AgentPageView
+from .views_bff import AgentCancelView, AgentChatView, AgentPageView
 
 app_name = "minimall_bff"
 
 urlpatterns = [
     path("", AgentPageView.as_view(), name="page"),
     path("chat/", AgentChatView.as_view(), name="chat"),
+    path("cancel/", AgentCancelView.as_view(), name="cancel"),
 ]

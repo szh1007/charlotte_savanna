@@ -46,6 +46,7 @@ RUNS_URL = f"{AGENT_URL}/runs"
 
 CHAT_URL = "/minimall/agent/chat/"
 PAGE_URL = "/minimall/agent/"
+CANCEL_URL = "/minimall/agent/cancel/"
 
 BUYER_NAME = "bff_buyer"
 OTHER_NAME = "bff_other"
@@ -54,10 +55,14 @@ OTHER_NAME = "bff_other"
 TAB_ONE = "6f1c2c1e-1a2b-4c3d-8e9f-0a1b2c3d4e5f"
 TAB_TWO = "2b7d9a10-aaaa-4bbb-8ccc-111222333444"
 
+# 一次运行的编号 (框架 `new_run_id()` 发的就是 32 位十六进制), 取消要用它
+RUN_ID = "9f3a1c2b4d5e6f7081a2b3c4d5e6f708"
+CANCEL_UPSTREAM = f"{AGENT_URL}/runs/{RUN_ID}/cancel"
+
 
 def _frame(seq: int, event: str, **payload) -> str:
     """一帧 SSE (形状与 05 服务一致)."""
-    data = {"type": event, "seq": seq, **payload, "run_id": "run-20260920"}
+    data = {"type": event, "seq": seq, **payload, "run_id": RUN_ID}
     body = json.dumps(data, ensure_ascii=False)
     return f"id: {seq}\nevent: {event}\ndata: {body}\n\n"
 
@@ -65,17 +70,29 @@ def _frame(seq: int, event: str, **payload) -> str:
 def _sse(
     *frames: str, status: int = 200, content_type: str = "text/event-stream"
 ) -> httpx.Response:
-    """假 CharApp 的响应 (一段流)."""
+    """假 CharApp 的响应 (一段流): 帧 + 那个 `X-Run-Id` 头.
+
+    头一并给上 (真服务也是两样都给): 取消要用的编号就来自这里, 缺了它前端按不动
+    停止按钮 —— 那种失败不该由一条"只测帧"的用例替我们瞒过去.
+    """
     return httpx.Response(
         status,
         content="".join(frames).encode("utf-8"),
-        headers={"content-type": f"{content_type}; charset=utf-8"},
+        headers={
+            "content-type": f"{content_type}; charset=utf-8",
+            "X-Run-Id": RUN_ID,
+        },
     )
 
 
 def _question(message: str = "你好", conversation_id: str = TAB_ONE) -> str:
     """一份请求体 (页面发出来的形状) —— 自己造客户端的用例也用它, 别各抄一份."""
     return json.dumps({"message": message, "conversation_id": conversation_id})
+
+
+def _cancellation(run_id: str = RUN_ID, conversation_id: str = TAB_ONE) -> str:
+    """一份取消请求体 (页面按停止时发出来的形状)."""
+    return json.dumps({"run_id": run_id, "conversation_id": conversation_id})
 
 
 def _body(response) -> str:
@@ -133,6 +150,18 @@ class BffTestBase(TestCase):
     def ask(self, payload: dict | None = None) -> str:
         """打一次 BFF 端点并收干响应体 (顺带把上游请求发出去)."""
         return _body(self.post_question(payload))
+
+    def mock_cancel(self, response: httpx.Response) -> respx.Route:
+        """把助手服务的取消端点拦下来, 让它回指定的响应."""
+        return respx.post(CANCEL_UPSTREAM).mock(return_value=response)
+
+    def post_cancel(self, payload: dict | None = None, **kwargs):
+        """按页面的样子打一次取消端点 (POST + JSON)."""
+        body = {"run_id": RUN_ID, "conversation_id": TAB_ONE}
+        body.update(payload or {})
+        return self.client.post(
+            CANCEL_URL, data=json.dumps(body), content_type="application/json", **kwargs
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -228,6 +257,20 @@ class BffForwardingTest(BffTestBase):
 
         self.assertEqual(body, "".join(frames))
         self.assertEqual(_events(body), ["thinking", "final"])
+
+    def test_the_browser_gets_the_run_id_from_the_upstream(self):
+        """响应头里带上这次运行的编号 —— 页面上按「停止」时唯一能指名道姓的东西.
+
+        没有它的后果很具体: 停止按钮无从下手 (取消接口要一个 run_id). 上游**总是**
+        带这个头 (框架把它放在响应头而不是第一个事件里, 客户端不必等一个开场事件),
+        所以这里断言的是「原样转给了浏览器」这一件事.
+        """
+        with respx.mock:
+            self.mock_agent(_frame(1, "final", content="好的."))
+            r = self.post_question()
+            _body(r)
+
+        self.assertEqual(r.headers.get("X-Run-Id"), RUN_ID)
 
     def test_the_browser_gets_an_event_stream(self):
         """响应是 text/event-stream 且不许缓存 (前端与中间层都按它认)."""
@@ -548,6 +591,156 @@ class BffInputTest(BffTestBase):
 
 
 # ---------------------------------------------------------------------------
+# 取消: 转发 + 身份 + 编号的形状 (issue 07)
+# ---------------------------------------------------------------------------
+
+
+class BffCancelTest(BffTestBase):
+    """按「停止」的那条短链路 —— 它只转达结果, 收尾仍然发生在 SSE 那条流上."""
+
+    def test_the_cancel_forwards_the_run_and_the_service_headers(self):
+        """转发到 `/runs/{id}/cancel`, 三个头一个不少.
+
+        少了 `X-Conversation-Id` 的表现**不是"慢一点"**: 助手服务会按缺省那段会话
+        去比对, 于是每一次取消都被当成「不是你的运行」—— 用户点了停止, 页面却什么都
+        没发生. 转发层与助手服务之间的这条契约, 由这条用例钉住.
+        """
+        with respx.mock:
+            route = self.mock_cancel(
+                httpx.Response(200, json={"run_id": RUN_ID, "status": "cancelling"})
+            )
+            r = self.post_cancel()
+
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(json.loads(r.content)["run_id"], RUN_ID)
+        request = route.calls[0].request
+        self.assertEqual(request.method, "POST")
+        self.assertEqual(request.headers["X-Internal-Token"], TOKEN)
+        self.assertEqual(request.headers["X-User-Id"], str(self.buyer.pk))
+        self.assertEqual(request.headers["X-Conversation-Id"], TAB_ONE)
+
+    def test_the_cancel_identity_comes_from_the_session_not_from_the_body(self):
+        """**守卫测试**: 请求体里塞别人的 user_id → 仍然以自己的身份转发.
+
+        取消是能**让别人花钱**的动作, 所以这条守卫比 chat 那条更要紧: 身份只要能被
+        参数影响一次, 「不能取消别人的运行」就只剩助手服务那一层在守了.
+        """
+        with respx.mock:
+            route = self.mock_cancel(httpx.Response(200, json={"run_id": RUN_ID}))
+            self.post_cancel({"user_id": str(self.other.pk)})
+
+        self.assertEqual(
+            route.calls[0].request.headers["X-User-Id"], str(self.buyer.pk)
+        )
+
+    def test_a_malformed_run_id_never_reaches_the_service(self):
+        """编号的形状不对 → 400, 而且一个请求都不发出去.
+
+        它要被拼进 URL 的**路径**, 所以形状不对的后果不是"查不到", 而是"这次请求去
+        了别的地方" —— 一个带 `/` 或 `..` 的编号能把一个攥着内部令牌与身份头的请求指
+        到同一台机器上的另一个端点去. 卡形状 (框架发的就是 32 位十六进制) 比事后转义
+        牢, 而且这里拒掉不影响任何人: 合法的编号只可能来自我们自己那条流.
+        """
+        bad = [
+            "",
+            "not-a-run-id",
+            "../../admin/",  # 想改道
+            RUN_ID[:-1],  # 31 位
+            RUN_ID + "9",  # 33 位
+            RUN_ID.upper(),  # 大写不是框架发的形状
+            RUN_ID[:-1] + "/",  # 长度对, 字符不对
+        ]
+        with respx.mock:
+            route = self.mock_cancel(httpx.Response(200, json={}))
+
+            for value in bad:
+                with self.subTest(run_id=value):
+                    r = self.post_cancel({"run_id": value})
+                    self.assertEqual(r.status_code, 400)
+                    self.assertEqual(
+                        json.loads(r.content)["error"]["code"], "invalid_run_id"
+                    )
+
+        self.assertFalse(route.called)
+
+    def test_cancelling_a_run_that_is_already_over_is_not_an_error(self):
+        """上游 404 (这次运行已经不在了) → BFF 也回 404 + 一句「已经结束了」.
+
+        这是每次都可能遇到的一次**正常竞争**: 用户按停止的那一瞬, 它刚好答完. 所以
+        不能塌成「客服暂时联系不上」—— 那会让用户以为出了故障, 去重试一件根本不需要
+        重试的事. 页面据此不打扰用户 (那一轮的终局事件本来也已经到了).
+        """
+        with respx.mock:
+            self.mock_cancel(
+                httpx.Response(
+                    404, json={"error": {"code": "run_not_found", "message": "不在册"}}
+                )
+            )
+            r = self.post_cancel()
+
+        self.assertEqual(r.status_code, 404)
+        body = json.loads(r.content)
+        self.assertEqual(body["error"]["code"], "run_not_found")
+        self.assertEqual(body["error"]["message"], "这次回答已经结束了.")
+        self.assertNotIn("不在册", body["error"]["message"])
+
+    def test_a_404_without_the_expected_code_is_a_failure_not_a_race(self):
+        """404 但不是那个码 → **502** (那是对面没有这条路由, 不是"刚好答完了").
+
+        分辨这两者不是吹毛求疵: 页面把所有 404 都当成正常竞争 (静默忽略), 所以一个
+        不带 `run_not_found` 的 404 (版本不齐 / 地址打错 / 路由被删) 会被当成"这次
+        答完了" —— 停止按钮从此按不动, 而且一句解释都没有. 接线故障就该报出来.
+        """
+        with respx.mock:
+            self.mock_cancel(
+                httpx.Response(404, json={"detail": "Not Found"})  # FastAPI 自己的 404
+            )
+            r = self.post_cancel()
+
+        self.assertEqual(r.status_code, 502)
+        body = json.loads(r.content)
+        self.assertEqual(body["error"]["code"], "agent_unavailable")
+        self.assertNotEqual(body["error"]["code"], "run_not_found")
+
+    def test_an_unreachable_service_is_reported(self):
+        """助手服务没起来 → 502 + 一句人话 (与 chat 那条同一个口径)."""
+        with respx.mock:
+            respx.post(CANCEL_UPSTREAM).mock(
+                side_effect=httpx.ConnectError("connection refused")
+            )
+            r = self.post_cancel()
+
+        self.assertEqual(r.status_code, 502)
+        self.assertEqual(json.loads(r.content)["error"]["code"], "agent_unavailable")
+
+    def test_an_unconfigured_token_fails_before_calling_out(self):
+        """本机没配令牌 (fail closed): 一个请求都不发, 码与 chat 那条一致."""
+        with respx.mock:
+            route = self.mock_cancel(httpx.Response(200, json={}))
+            with override_settings(CHARAPP_INTERNAL_TOKEN=""):
+                r = self.post_cancel()
+
+        self.assertEqual(r.status_code, 503)
+        self.assertEqual(json.loads(r.content)["error"]["code"], "agent_unavailable")
+        self.assertFalse(route.called)
+
+    def test_a_get_cannot_cancel(self):
+        """
+        GET 一律 405: 取消也有副作用 (它让一次运行停下并作废),
+        不做成能随手重放的 GET.
+        """
+        with respx.mock:
+            route = self.mock_cancel(httpx.Response(200, json={}))
+            r = self.client.get(
+                CANCEL_URL, {"run_id": RUN_ID, "conversation_id": TAB_ONE}
+            )
+
+        self.assertEqual(r.status_code, 405)
+        self.assertEqual(json.loads(r.content)["error"]["code"], "method_not_allowed")
+        self.assertFalse(route.called)
+
+
+# ---------------------------------------------------------------------------
 # CSRF: 换 POST 换来的一层显式防护
 # ---------------------------------------------------------------------------
 
@@ -574,6 +767,24 @@ class BffCsrfTest(BffTestBase):
             r = client.post(
                 CHAT_URL,
                 data=_question(),
+                content_type="application/json",
+            )
+
+        self.assertEqual(r.status_code, 403)
+        self.assertFalse(route.called, "被 CSRF 拦下的请求绝不该打到下游")
+
+    def test_a_cancel_without_the_csrf_token_is_refused(self):
+        """取消端点同样受 CSRF 保护 (它是 POST, 中间件才管得着).
+
+        一条伪造的取消请求的代价是「把别人的回答掐掉」—— 比伪造一次提问更便宜, 也
+        更隐蔽 (页面上只会显示"已取消"). 同一个令牌, 同一层防护.
+        """
+        client = self.csrf_client()
+        with respx.mock:
+            route = self.mock_cancel(httpx.Response(200, json={}))
+            r = client.post(
+                CANCEL_URL,
+                data=_cancellation(),
                 content_type="application/json",
             )
 
@@ -676,6 +887,38 @@ class AgentPageTest(BffTestBase):
         self.assertIn("new TextDecoderStream()", compact)
         self.assertIn("new EventSourceParserStream()", compact)
         self.assertNotIn("getReader()", compact)
+
+    def test_the_stop_button_is_wired_to_the_cancel_endpoint(self):
+        """停止按钮: 只在跑的时候露出来, 按下去打的是取消端点, 并且带上那个编号.
+
+        前端能被 Django 测试够到的那一半就是这些接线 (另一半在浏览器里真按一次).
+        三条一起守, 因为缺哪一条这个按钮都只是块装饰:
+        - 页面上有它, 而且默认藏着 (没在跑的时候不该有个能按的"停止");
+        - 它发的是 POST + CSRF (与提问同一条纪律);
+        - 请求体里带 `run_id` 与 `conversation_id` —— 少一个都取消不掉.
+        """
+        compact = " ".join(self.client.get(PAGE_URL).content.decode("utf-8").split())
+
+        self.assertIn('id="ask-stop"', compact)
+        self.assertIn("stop.hidden = !runId", compact)
+        self.assertIn("'/minimall/agent/cancel/'", compact)
+        self.assertIn(
+            "JSON.stringify({ run_id: runId, conversation_id: conversationId })",
+            compact,
+        )
+        self.assertIn("stop.addEventListener('click', stopAsking)", compact)
+
+    def test_the_run_id_only_shows_the_button_it_does_not_fake_it(self):
+        """拿不到运行编号时不给停止按钮 —— 宁可不显示, 也不放一个按不动的按钮.
+
+        编号是响应头给的 (`X-Run-Id`); 它要是被哪一层吞了, 按下去只会发一个空
+        `run_id` 出去、被前端自己的校验挡下 —— 用户看到的是"点了没反应". 与其演这一下,
+        不如一开始就别给.
+        """
+        compact = " ".join(self.client.get(PAGE_URL).content.decode("utf-8").split())
+
+        self.assertIn("runId = response.headers.get('X-Run-Id')", compact)
+        self.assertIn("if (finished || !runId || stopping) return", compact)
 
     def test_the_entry_is_in_the_navigation_on_a_product_page(self):
         """用户故事 23: 一边看商品页一边问 —— 入口在导航栏, 不在某一页里."""

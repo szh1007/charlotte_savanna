@@ -1,10 +1,16 @@
 {% extends "minimall/base.html" %}
+{% load static %}
 {% comment %}
   客服页面 (CharApp issue 06): 原生 JS + fetch 读流 + `eventsource-parser`, 与商城
   前端同一套零构建风格 (库走 CDN, 与 base 模板里的 htmx / Alpine 同一个来源).
 
   一条链路: 这里发一句话 → POST /minimall/agent/chat/ (Django BFF, 带登录 cookie
   与 CSRF 令牌) → CharApp 服务 → 一堆 SSE 帧原路返回 → 下面按事件类型渲染.
+
+  按「停止」走的是另一条短链路: POST /minimall/agent/cancel/ (带 run_id 与 CSRF) →
+  BFF 转发 → 那次运行被取消. 页面**不拿那个响应宣布结果** —— 停下来的证据是服务端补
+  的终局事件 (error / cancelled), 它顺着上面那条正在读的流回来, 与答完走同一条收尾
+  路径 (所以"停下之后说一句继续"和平时没两样).
 
   为什么不用 `EventSource` (它本来能白送帧解析): 它只能发 GET、也带不了自定义头,
   于是认证只能靠 cookie、问句只能进 URL —— 而这个端点有副作用 (真跑模型真花钱),
@@ -16,6 +22,17 @@
   增量解码), 别人已经写对并维护着了. 页面这边只剩胶水: 发什么样的请求、把六类事件
   画成什么样子. 这个项目的重点在后端流式 (框架的 SSE 层 + BFF 的透传), 前端不值得
   自己造一遍解析器.
+
+  但这个库**不走 CDN, 用的是仓库里的本地副本** (static/vendor/eventsource-parser/).
+  商城别的页面 (htmx / Alpine) 走 CDN 没问题 —— 它们属于渐进增强, 加载失败顶多少点
+  交互; 这里不是: 解析层一挂, 整个 `<script type="module">` 一行都不执行 (import
+  失败 = 模块求值失败), 连下面那段「拦住表单提交」也一起没了, 表单于是退回浏览器
+  原生提交, 地址栏被刷成 `/agent/?` —— 用户看到的是「按了发送没反应」. 核心链路上
+  挂一个可能断的外部依赖, 代价不对等.
+
+  模块之外还有一小段普通脚本兜底 (见 `extra_script` 第一段): 万一连本地文件都没能
+  加载上, 它至少挡住那次原生提交, 并在页面上说清「没加载完整」, 不让故障退化成那个
+  静默的问号.
 {% endcomment %}
 
 {% block title %}智能客服 - minimall{% endblock %}
@@ -49,6 +66,10 @@
   .agent-input input { flex: 1; padding: 12px 16px; border: 1.5px solid #d0d5dd; border-radius: 10px; font-size: 15px; outline: none; transition: all .2s; font-family: inherit; }
   .agent-input input:focus { border-color: #ff6b6b; box-shadow: 0 0 0 3px rgba(255,107,107,.1); }
   .agent-input input:disabled { background: #f8f9fa; }
+  /* 停止按钮与发送同一档大小, 但**不用主色**: 它是打断, 不该看着像"再来一次" */
+  .btn-stop { background: #fff; color: #868e96; border: 1.5px solid #d0d5dd; padding: 10px 18px; }
+  .btn-stop:hover { border-color: #ff6b6b; color: #ff6b6b; }
+  .btn-stop:disabled { border-color: #e9ecef; color: #ced4da; }
 </style>
 {% endblock %}
 
@@ -74,6 +95,7 @@
 
     <form class="agent-input" id="ask-form">
       <input type="text" id="ask-input" autocomplete="off" placeholder="说一句话，比如「我最近的订单到哪了」">
+      <button type="button" class="btn btn-stop" id="ask-stop" hidden>停止</button>
       <button type="submit" class="btn btn-primary" id="ask-send">发送</button>
     </form>
   </div>
@@ -81,16 +103,41 @@
 {% endblock %}
 
 {% block extra_script %}
+<script>
+// 兜底. 这一小段是**普通脚本**, 不是 module —— 它的全部意义就在于不受 module 加载
+// 成败的影响: 下面那个模块只要有一个 import 失败就一行都不执行, 表单随之退回浏览器
+// 原生提交 (GET 到当前 URL, 没有字段, 地址栏只剩一个 `?`), 而这件事没有任何报错,
+// 用户只会觉得"按了没反应". 这里就做两件事: 挡住那次提交, 把状态说在页面上.
+// 模块跑到最后一行会把 window.agentReady 置真, 从那时起这段让路.
+(function () {
+  var form = document.getElementById('ask-form');
+  if (!form) return;
+  form.addEventListener('submit', function (event) {
+    if (window.agentReady) return;   // 模块接上了, 交给它处理
+    event.preventDefault();
+    var hint = document.getElementById('hint');
+    if (hint) hint.remove();
+    var line = document.createElement('div');
+    line.className = 'agent-step agent-error';
+    line.textContent = '页面没能加载完整, 按 Ctrl+F5 强制刷新后再试一次.';
+    document.getElementById('chat').appendChild(line);
+    document.getElementById('ask-input').disabled = true;
+    document.getElementById('ask-send').disabled = true;
+  });
+})();
+</script>
 <script type="module">
-// 版号钉死 (与 base 模板里的 htmx / Alpine 同一个纪律): CDN 上出了新版本不该悄悄
+// 版号钉死 (与 base 模板里的 htmx / Alpine 同一个纪律): 库里出了新版本不该悄悄
 // 换掉页面行为. 这个库只做一件事 —— 把 fetch 的字节流解析成一个个事件.
-import { EventSourceParserStream } from 'https://unpkg.com/eventsource-parser@3.1.1/dist/stream.js';
+// 副本的来源与更新方式见 static/vendor/eventsource-parser/README.md.
+import { EventSourceParserStream } from '{% static "vendor/eventsource-parser/stream.js" %}';
 
 const chat = document.getElementById('chat');
 const hint = document.getElementById('hint');
 const form = document.getElementById('ask-form');
 const input = document.getElementById('ask-input');
 const send = document.getElementById('ask-send');
+const stop = document.getElementById('ask-stop');
 
 // 会话编号的第三段 (thread_id = minimall:{user_id}:{这一段}).
 // 每个标签页一个: 同一买家开两个标签页 = 两段互不相干的对话 (用户故事 25).
@@ -102,6 +149,8 @@ document.getElementById('session-tag').textContent = '会话 ' + conversationId.
 let turn = null;          // 当前这一轮在页面上的那块 DOM (渲染函数都要用它)
 let finished = true;      // 没有正在跑的问答 (空闲)
 let sawTerminal = false;  // 这一轮见过终局事件没有 (final / error)
+let runId = null;         // 本轮运行的编号 (响应头里给的; 按「停止」要用它)
+let stopping = false;     // 已经按过停止, 正在等那条流收尾
 
 function newConversationId() {
   // crypto.randomUUID 只在安全上下文里有 (https / localhost); 退路是时间戳 + 随机
@@ -182,9 +231,57 @@ function failAnswer(message) {
 
 function end() {
   finished = true;
+  stopping = false;
+  runId = null;
+  stop.hidden = true;
+  stop.disabled = false;
+  stop.textContent = '停止';
   input.disabled = false;
   send.disabled = false;
   input.focus();
+}
+
+// 按「停止」: 发一个取消请求, 然后**什么都不做** —— 真正让它停下来的证据是服务端
+// 补的那个终局事件 (error / cancelled), 它顺着那条已经在读的 SSE 流回来, 由
+// readEvents 那条路收尾. 所以这里只负责把意图送到, 不负责宣布结果.
+async function stopAsking() {
+  if (finished || !runId || stopping) return;
+  const asking = turn;   // 这次停止是为哪一轮发的 (下面回来时页面可能已经换了一轮)
+  stopping = true;
+  stop.disabled = true;
+  stop.textContent = '正在停止…';
+
+  let problem = '';
+  try {
+    const response = await fetch('/minimall/agent/cancel/', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRFToken': csrfToken(),
+      },
+      body: JSON.stringify({ run_id: runId, conversation_id: conversationId }),
+    });
+    // 404 = 按下去的那一瞬它刚好答完了 (正常竞争, 不是故障): 那一轮的终局事件本来
+    // 也已经到了, 别拿这个去打扰用户. 别的失败才是真出了问题.
+    if (!response.ok && response.status !== 404) {
+      problem = await errorMessage(response);
+    }
+  } catch (err) {
+    problem = '没能发出停止请求, 检查网络后再试一次.';
+  }
+
+  // 这一轮可能已经结束了 (取消真的生效了, 或者它自己答完了), 甚至用户已经问了下
+  // 一句 —— 那时的失败是老消息, 写上去只会让人以为**新**的那一轮出了问题
+  if (!problem || finished || turn !== asking) return;
+
+  failAnswer(problem);
+  // **没停成, 就把按钮放回去**: 这一轮还在跑, 而用户接下来唯一能做的事就是再按
+  // 一次. 留着 disabled + 「正在停止…」的话, 他最需要这个按钮的时候它正好死着.
+  // (取消其实生效了、只是响应没回来也不怕: 那一轮的终局事件照样会到, end() 会收尾;
+  // 再按一次最多换来一个 404, 而 404 是静默的.)
+  stopping = false;
+  stop.disabled = false;
+  stop.textContent = '停止';
 }
 
 // 六类事件各怎么渲染. 左边那些名字是**跨进程契约** (框架 `EventType` 全集),
@@ -227,7 +324,6 @@ const RENDERERS = {
 };
 
 function handle(name, raw) {
-  if (name === 'final' || name === 'error') sawTerminal = true;
   const render = RENDERERS[name];
   if (!render) return;
   let data;
@@ -236,6 +332,10 @@ function handle(name, raw) {
   } catch (err) {
     return;  // 帧不合契约: 宁可少显示一条, 也别把整段渲染卡死
   }
+  // 这一行要在**解析成功之后**: 终局帧解析不了的话, 这一轮其实没被收尾 (下面那个
+  // 的「正在查…」还挂着), 那时就不该记成"见过终局" —— 让 ask() 尾部那句兜底去说
+  // 「回答中途断开了」, 比让页面永远转下去强
+  if (name === 'final' || name === 'error') sawTerminal = true;
   render(data);
 }
 
@@ -268,6 +368,8 @@ async function errorMessage(response) {
 }
 
 async function ask(question) {
+  // 停止按钮那三个状态不用在这里复位: 每轮结束都走 end() (它在 finally 里),
+  // 而能走到这里就说明上一轮已经结束了
   finished = false;
   sawTerminal = false;
   input.disabled = true;
@@ -296,6 +398,10 @@ async function ask(question) {
       failAnswer('登录可能已过期, 刷新页面后再问一次.');
       return;
     }
+    // 运行编号随响应头一起到 (它比第一个事件还早, 所以"模型还在想"的时候也停得掉).
+    // 拿不到就不显示停止按钮 —— 没有编号的停止请求按不了, 摆着只会骗人.
+    runId = response.headers.get('X-Run-Id');
+    stop.hidden = !runId;
 
     await readEvents(response.body);
     if (!sawTerminal) failAnswer('回答中途断开了, 请重新问一次.');
@@ -314,6 +420,8 @@ form.addEventListener('submit', function (event) {
   ask(question);
 });
 
+stop.addEventListener('click', stopAsking);
+
 document.querySelectorAll('.agent-example').forEach(function (button) {
   button.addEventListener('click', function () {
     if (!finished) return;
@@ -323,5 +431,10 @@ document.querySelectorAll('.agent-example').forEach(function (button) {
 });
 
 input.focus();
+
+// 模块整个跑完了才置真: 上面任何一行抛错 (或开头那个 import 失败), 这个标记就落不
+// 下去, 表单那条路继续由上面那段兜底脚本守着. 放在末尾而不是 import 之后 —— 兜底要
+// 防的是「模块没跑起来」, 跑了一半不算跑起来.
+window.agentReady = true;
 </script>
 {% endblock %}

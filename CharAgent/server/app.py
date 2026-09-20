@@ -25,11 +25,29 @@
 响应体是 SSE 帧 (见 sse.py 的字段映射). 响应**不会**中途静默断掉: 正常结束有
 final, 失败与取消有本层补的 error (见 runs.py), 之后流才收线.
 
-取消的契约 (触发端点归 07, 语义在这里定死): 一次运行被取消时, 本层补一个
-`error` 事件, 载荷为 `{"error": {"code": "cancelled", "message": <事实性说明>}}`
-—— 形状与 loop 自己发的终局 error 完全一致, 客户端一套解析吃两边; 之后不再有
-任何事件 (终局事件恰好一个). 触发源有两个 (显式取消请求 / 客户端断连), 事件流
-里长得一样.
+取消的契约: 一次运行被取消时, 本层补一个 `error` 事件, 载荷为
+`{"error": {"code": "cancelled", "message": <事实性说明>}}` —— 形状与 loop 自己发的
+终局 error 完全一致, 客户端一套解析吃两边; 之后不再有任何事件 (终局事件恰好一个).
+触发源有两个 (显式取消请求 / 客户端断连), 事件流里长得一样.
+
+触发取消的端点长这样::
+
+    POST /runs/{run_id}/cancel
+      ├─ 1. ContextProvider.provide(request)   <- 与 POST /runs **同一道门**
+      ├─ 2. 查在册: 跑完了 / 没这个编号 / 不是这段会话 → 一律 404 (见 RunNotFoundError)
+      └─ 3. task.cancel() → 200 {"run_id", "status": "cancelling"}
+
+三件事在这里定死, 客户端按它写:
+
+- **身份由业务认, 判据是「这次运行算不算他那段会话」.** 取消端点复用第一个插座
+  (同一个 ContextProvider), 于是令牌 / 身份 / 会话编号的规则与 `/runs` 一字不差;
+  比对的是登记时记下的 `RunHandle.thread_id`, 请求里**没有任何参数**能影响它 ——
+  这就是「不能取消别人的运行」的全部实现.
+- **200 只说「请求收到了」.** 取消是协作式的 (落在下一个 await), 真正停下来的权威
+  信号是那条事件流上的终局事件 —— 客户端等的是它, 而不是这个响应.
+- **三种「不在册」共用一个回答** (404 + `run_not_found`): 本层分不出来 (跑完即
+  出册), 也不该分 (403 会确认「这个编号真实存在过」). 理由与那条纪律同源, 见
+  RunNotFoundError.
 
 三条边界:
 
@@ -44,6 +62,7 @@ final, 失败与取消有本层补的 error (见 runs.py), 之后流才收线.
 from __future__ import annotations
 
 import asyncio
+import logging
 from functools import partial
 
 from fastapi import FastAPI, Request
@@ -59,7 +78,11 @@ from CharAgent.server.runs import (
 )
 from CharAgent.server.sessions import SessionEntry, SessionRegistry
 from CharAgent.server.sse import sse_stream
-from CharAgent.server.utils.errors import InvalidRequestError, ServerError
+from CharAgent.server.utils.errors import (
+    InvalidRequestError,
+    RunNotFoundError,
+    ServerError,
+)
 from CharAgent.server.utils.types import (
     MESSAGE_FIELD,
     RUN_ID_HEADER,
@@ -70,6 +93,10 @@ from CharAgent.server.utils.types import (
 
 # 事件流不该被任何一层缓存 (中间代理缓存 SSE 会把它变成"跑完才到")
 SSE_HEADERS = {"cache-control": "no-cache"}
+
+# 同一棵日志树 (`runs.py` 那条说明适用): 框架只在自己**没有调用方可以上抛**的
+# 那几个点上说话, 这里之所以算一个, 是因为越界的取消请求不该悄悄过去 (见 cancel_run).
+logger = logging.getLogger("charagent.server")
 
 
 def create_app(
@@ -89,7 +116,7 @@ def create_app(
 
     Returns:
         FastAPI: 装好的应用. 业务可以再往上加自己的路由与中间件 (框架只占
-        `POST /runs` 一个端点).
+        `POST /runs` 与 `POST /runs/{run_id}/cancel` 两个端点).
     """
     registry = SessionRegistry(session_provider)
     runs = RunRegistry()
@@ -146,7 +173,71 @@ def create_app(
             headers={RUN_ID_HEADER: run_id, **SSE_HEADERS},
         )
 
+    @app.post("/runs/{run_id}/cancel")
+    async def cancel_run(run_id: str, request: Request) -> JSONResponse:
+        """停一次正在跑的运行 (显式取消 —— 与「客户端断连」那条路并肩的另一条).
+
+        为什么要有这个端点 (断连不是已经能停了吗): 用户点「停止」是一个**明确的
+        意图**, 得有一个明确的地方接住它. 断连是「人走了」的副作用 (浏览器关标签页
+        也会触发), 拿它当唯一入口等于让停止变成一件要靠猜的事 (见 ticket 07 备注).
+
+        四步, 顺序有意:
+
+        1. **先认证** —— 与 `POST /runs` 同一个插座. 取消是有影响力的动作 (它能
+           让别人的钱白花), 不认识的人一个字都不该看到.
+        2. **再查在册** —— 不在 / 已结束 → 404; 这里**不做**任何「猜一个让他取消」
+           的好心兜底.
+        3. **对身份** —— 这次运行登记时算的是哪段会话 (`RunHandle.thread_id`) 与
+           这次请求认出来的那段会话必须是同一个. 判据只有这一个, 请求体里没有
+           任何字段能影响它 —— 「不能取消别人的运行」就是这么兑现的.
+        4. **`task.cancel()`** —— 取消就是这一下 (与客户端 Ctrl-C 走的同一套语义,
+           见 `client/app.py` 的 KillSwitch). 之后不再等: 运行怎么收尾是它自己的
+           事, 客户端等的是**事件流上的终局事件**, 不是这个响应.
+
+        Returns:
+            JSONResponse: 200 + `{"run_id", "status": "cancelling"}` —— 只声明
+            「请求收到了」, 不声明「已经停了」(那是事件流说了算的).
+
+        Raises:
+            ServerAuthError: 业务那个插座没认下这次请求 (框架翻成 401).
+            RunNotFoundError: 不在册 / 已结束 / 不属于这段会话 (框架翻成 404).
+        """
+        context = await context_provider.provide(request)
+        handle = runs.get(run_id)
+        if handle is not None and handle.thread_id != context.thread_id:
+            # 这里**认得出**是越界 (另外两种「不在册」认不出, 见 _not_running_message):
+            # 一次跨会话的取消尝试值得留一笔 —— 它是这一层唯一一条安全信号, 而
+            # 401 (令牌不对) 与它完全不是一回事, 不该混在一条日志里.
+            logger.warning(
+                "取消被拒: 运行 %s 属于会话 %r, 而这次请求的身份是 %r",
+                run_id,
+                handle.thread_id,
+                context.thread_id,
+            )
+            raise RunNotFoundError(_not_running_message(run_id))
+        if handle is None or handle.task.done():
+            # 任务的收尾回调是「稍后」跑的 (call_soon), 所以出册比任务结束晚一瞬 ——
+            # 这一小段窗口里表里还有它, 却已经停稳了: 只认「还在跑的」, 别去 cancel
+            # 一个已经结束的任务 (那一下什么也不会发生, 但回一个 200 就成了假话).
+            raise RunNotFoundError(_not_running_message(run_id))
+
+        handle.task.cancel()
+        return JSONResponse({"run_id": run_id, "status": "cancelling"})
+
     return app
+
+
+def _not_running_message(run_id: str) -> str:
+    """「这次运行不在册」那一句事实 —— 三种情况**共用同一条文本**.
+
+    刻意合成一个函数 (而不是各处写一句差不多的话): 三种情况的响应体只有回显的编号
+    不同, 其余逐字相同 —— 这是**契约** (见 RunNotFoundError), 而契约由构造保证比
+    由「记得写一样」保证牢.
+    """
+    return (
+        f"运行 {run_id!r} 不在册: 它可能已经结束, 可能不属于这次请求的那段会话, "
+        f"也可能压根没有这个编号 —— 本层刻意不区分这三种"
+    )
 
 
 async def read_message(request: Request) -> str:

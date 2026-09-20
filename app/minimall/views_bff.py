@@ -11,6 +11,19 @@
       ├─ 3. 转发: POST CharApp /runs, 带 X-Internal-Token + X-User-Id
       └─ 4. 透传: 上游的 SSE 帧逐条写回浏览器 (错误帧换成人话)
 
+按「停止」时走的是另一条短链路 (07)::
+
+    POST /minimall/agent/cancel/  {"run_id": ..., "conversation_id": ...}
+      ├─ 1. 认证与取身份: 同上 (同一个 session, 同一个 CSRF)
+      ├─ 2. 转发: POST CharApp /runs/{run_id}/cancel (同样三个头)
+      └─ 3. 回一个状态码 —— 运行停下来的信号仍在那条 SSE 流上 (终局事件), 不在这个
+            响应里; 所以这里**只**转达「请求收到了 / 已经被拒了」.
+
+`run_id` 从哪来: 上一条 Chat 响应的 `X-Run-Id` 头 (框架给的, 本层原样带给浏览器).
+它是页面上按「停止」时唯一能指名道姓的东西 —— 而它**能且只能**取消自己那段会话里
+的运行: 判据在助手服务那侧 (会话编号里含买家, 见 `CharApp/minimall/service.py`),
+本层只负责把它原样转过去.
+
 **为什么是 POST** (2026-09-21 从 GET 改过来, 见 `CharApp/docs/adr/0002`): 这个端点
 **有副作用** —— 它真跑一次模型、真花钱、真往会话里写东西. 按 HTTP 的语义, 有副作用的
 操作本来就不该用 GET, 而上一版用 GET 是被前端 `EventSource` 逼的 (它只能发 GET、也
@@ -77,7 +90,16 @@ HEADER_CONVERSATION_ID = "X-Conversation-Id"
 
 # 助手服务占的端点与它认的请求体字段 (框架 `CharAgent/server/` 的 HTTP 契约)
 RUNS_PATH = "/runs"
+CANCEL_PATH = "/runs/{run_id}/cancel"
 MESSAGE_FIELD = "message"
+
+# 运行编号: 响应头上带出去 (`X-Run-Id`), 取消时从请求体里收回来. 形状是框架
+# `new_run_id()` 发的那个 (uuid4 的 hex), 这里按**传输契约**再声明一遍 —— 它要进
+# URL 的路径, 不合形状的一律挡在门外 (见 `valid_run_id`).
+RUN_ID_HEADER = "X-Run-Id"
+RUN_ID_FIELD = "run_id"
+RUN_ID_LENGTH = 32
+_HEX_DIGITS = frozenset("0123456789abcdef")
 
 # 浏览器打进来的那两个字段 (页面按它发, 这里按它认)
 CONVERSATION_FIELD = "conversation_id"
@@ -98,6 +120,11 @@ MAX_THREAD_ID_LENGTH = 128
 # 可能半天没有事件, 那是正常的安静, 不是故障.
 UPSTREAM_TIMEOUT = httpx.Timeout(connect=5.0, read=120.0, write=10.0, pool=5.0)
 
+# 取消请求的超时 (秒): 比上面短得多, 因为那边**立刻**就答 —— 它只把任务标记成
+# 取消 (`task.cancel()`), 不等运行收尾 (权威信号在那条 SSE 流上). 十秒还没回,
+# 说明出事的不是「这次运行」而是那条链路, 早点告诉用户比继续等强.
+CANCEL_TIMEOUT = httpx.Timeout(connect=5.0, read=10.0, write=5.0, pool=5.0)
+
 # 错误日志里最多带多少字符的上游正文 (够定位, 不把整页 HTML 塞进日志)
 _DETAIL_LIMIT = 200
 
@@ -107,6 +134,10 @@ TERMINAL_EVENTS = frozenset({"final", "error"})
 # 本层自己补的两个错误码 (框架不会发这两个)
 UNAVAILABLE_CODE = "agent_unavailable"
 INTERRUPTED_CODE = "stream_interrupted"
+
+# 上游「这次运行不在了」那个码 (框架 `RunNotFoundError` 的默认码). 取消那条路上它
+# 是唯一一个**能原样转给浏览器**的失败 —— 别的 404 都是接线问题, 见 `forward_cancel`.
+RUN_NOT_FOUND_CODE = "run_not_found"
 
 # 错误码 → 用户看得懂的一句话.
 #
@@ -127,6 +158,7 @@ ERROR_COPY: dict[str, str] = {
     # not_configured / invalid_request) 都说明**我们这边**没配对, 用户无从下手,
     # 所以走兜底话术, 码保留给日志与 devtools 看.
     "thread_busy": "上一句我还在答呢, 等这条答完再问下一句吧.",
+    RUN_NOT_FOUND_CODE: "这次回答已经结束了.",  # 按停止时它正好答完 —— 不是故障
     UNAVAILABLE_CODE: "客服暂时联系不上, 请稍后再试.",
     INTERRUPTED_CODE: "回答中途断开了, 请重新问一次.",
     # 请求本身不合法 (本层判的, 轮不到上游). 这几条理论上只有前端出 bug 才会走到,
@@ -135,6 +167,7 @@ ERROR_COPY: dict[str, str] = {
     "invalid_message": "这句话是空的, 说点什么再发吧.",
     "message_too_long": "这句话太长了, 我一次读不完 —— 拆短一点再问吧.",
     "invalid_conversation_id": "这次对话的连接坏了, 刷新页面再问一次.",
+    "invalid_run_id": "这次没能停下来, 刷新页面再看看.",
     "method_not_allowed": "这条请求的方式不对, 刷新页面再问一次.",
 }
 
@@ -383,6 +416,66 @@ def question_from_request(request, user_id: int) -> Question:
     return Question(message=message, conversation_id=conversation_id)
 
 
+def valid_run_id(value: str) -> bool:
+    """这个运行编号能不能原样拼进 URL 的路径.
+
+    为什么**必须**卡: 它要去的地方是 `{基地址}/runs/{run_id}/cancel` —— 一个带
+    `/`、`?`、`#` 或者 `..` 的编号能把这次请求指到同一台机器上的**另一个端点**去
+    (它手上还攥着内部令牌与 X-User-Id). 卡形状比事后转义牢: 框架发的编号就是
+    32 位十六进制 (`new_run_id` 的 uuid4.hex), 别的形状只可能是伪造的.
+    """
+    return len(value) == RUN_ID_LENGTH and all(char in _HEX_DIGITS for char in value)
+
+
+@dataclass(frozen=True, slots=True)
+class Cancellation:
+    """浏览器要停的那次运行 (BFF 从请求体里只认这两样)."""
+
+    run_id: str
+    conversation_id: str
+
+
+def cancellation_from_request(request, user_id: int) -> Cancellation:
+    """请求体 → 一次取消; 哪里不合契约就抛 `RefusedError` (400).
+
+    与 `question_from_request` 同一套做法 (同一份"给开发者的理由进日志"的规矩),
+    只是认的字段不同: 取消没有问句, 只有一个"哪一次运行".
+
+    Raises:
+        RefusedError: 正文不是 JSON 对象 / 缺字段 / 编号形状不对 / 会话编号不合法.
+    """
+    try:
+        payload = json.loads(request.body)
+    except ValueError as exc:
+        logger.warning("买家 %s: 取消请求体不是合法 JSON: %s", user_id, exc)
+        raise RefusedError(400, "invalid_request") from exc
+    if not isinstance(payload, dict):
+        logger.warning("买家 %s: 取消请求体应为 JSON 对象", user_id)
+        raise RefusedError(400, "invalid_request")
+
+    raw = payload.get(RUN_ID_FIELD)
+    run_id = raw.strip() if isinstance(raw, str) else ""
+    if not valid_run_id(run_id):
+        # 日志里只留**长度与前 40 个字符**: 这个值可能是伪造的 (比如塞了一整条路径
+        # 或一大坨垃圾), 整段照抄进日志既没用又脏 (与"问句不进日志"同一个道理);
+        # 而长度本身就是排查要看的第一样东西 (笔误 vs 塞了一整页)
+        logger.warning(
+            "买家 %s: 运行编号形状不对 (长度 %d): %r",
+            user_id,
+            len(run_id),
+            run_id[:40],
+        )
+        raise RefusedError(400, "invalid_run_id")
+
+    raw = payload.get(CONVERSATION_FIELD)
+    conversation_id = raw.strip() if isinstance(raw, str) else ""
+    if not valid_conversation_id(conversation_id, user_id):
+        logger.warning("买家 %s: 会话编号不合法: %r", user_id, raw)
+        raise RefusedError(400, "invalid_conversation_id")
+
+    return Cancellation(run_id=run_id, conversation_id=conversation_id)
+
+
 def _refusal(status: int, code: str) -> JsonResponse:
     """回一个错误响应 (形状与框架的 error 响应一致: `{"error": {...}}`).
 
@@ -403,6 +496,40 @@ def _refusal(status: int, code: str) -> JsonResponse:
 def _runs_url() -> str:
     """上游端点地址 (基地址写在 settings 里, 部署期可换)."""
     return f"{settings.CHARAPP_SERVER_URL.rstrip('/')}{RUNS_PATH}"
+
+
+def _internal_token(who: str, action: str) -> str:
+    """取内部令牌; 没配就**一个请求都不发** (与商城侧同一条纪律: fail closed).
+
+    说清是哪个变量没配, 而不是让人对着「客服暂时联系不上」去猜 CharApp 为什么没起来.
+    `action` 只说这次要做什么 (转发 / 取消), 用来把那行日志写得像人话.
+
+    Raises:
+        RefusedError: 令牌没配 (503 + `agent_unavailable`).
+    """
+    token = settings.CHARAPP_INTERNAL_TOKEN
+    if not token:
+        logger.error(
+            "%s: CHARAPP_INTERNAL_TOKEN 未配置, %s无处可去 (与商城侧 settings 同值)",
+            who,
+            action,
+        )
+        raise RefusedError(503, UNAVAILABLE_CODE)
+    return token
+
+
+def _service_headers(token: str, user_id: int, conversation_id: str) -> dict[str, str]:
+    """打助手服务时那三个头 (**一个 wire 契约, 只有这一处拼**).
+
+    分开写两份的代价很具体: 少带 `X-Conversation-Id` 时, 助手服务会按缺省的那一段
+    会话去比对 —— 于是「取消自己的运行」这件事**每次都失败**, 而且报的是「不是你的
+    运行」. 这种错在代码里看不出来, 只能靠"只写一份"来防.
+    """
+    return {
+        HEADER_TOKEN: token,
+        HEADER_USER_ID: str(user_id),
+        HEADER_CONVERSATION_ID: conversation_id,
+    }
 
 
 def _who_for(user_id: int, conversation_id: str) -> str:
@@ -473,21 +600,9 @@ def open_upstream(user_id: int, question: Question) -> Upstream:
         本机服务, 建连接的开销可以忽略.
     """
     who = _who_for(user_id, question.conversation_id)
-    token = settings.CHARAPP_INTERNAL_TOKEN
-    if not token:
-        # 与商城侧同一条纪律 (fail closed): 没配就一个请求都不发. 说清是哪个变量
-        # 没配, 而不是让人对着「客服暂时联系不上」去猜 CharApp 为什么没起来.
-        logger.error(
-            "%s: CHARAPP_INTERNAL_TOKEN 未配置, 转发无处可去 (与商城侧 settings 同值)",
-            who,
-        )
-        raise RefusedError(503, UNAVAILABLE_CODE)
-
-    headers = {
-        HEADER_TOKEN: token,
-        HEADER_USER_ID: str(user_id),
-        HEADER_CONVERSATION_ID: question.conversation_id,
-    }
+    headers = _service_headers(
+        _internal_token(who, "转发"), user_id, question.conversation_id
+    )
     stack = contextlib.ExitStack()
     try:
         client = stack.enter_context(httpx.Client(timeout=UPSTREAM_TIMEOUT))
@@ -573,6 +688,64 @@ def relay(upstream: Upstream) -> Iterator[bytes]:
         yield error_frame(INTERRUPTED_CODE, seq=last_seq + 1)
 
 
+def _cancel_url(run_id: str) -> str:
+    """取消端点地址 (编号已经过 `valid_run_id`, 拼进路径是安全的)."""
+    path = CANCEL_PATH.format(run_id=run_id)
+    return f"{settings.CHARAPP_SERVER_URL.rstrip('/')}{path}"
+
+
+def forward_cancel(user_id: int, cancellation: Cancellation) -> None:
+    """把取消请求转给助手服务; 它拒绝就抛 `RefusedError` (原样带上它的码).
+
+    与 `open_upstream` 同一套分法, 但简单得多 —— 这里没有流要透传, 就是一次普通的
+    请求/响应:
+
+    | 情况 | 状态 | 码 |
+    |------|------|----|
+    | 本机没配令牌 (我们自己的问题) | 503 | `agent_unavailable` |
+    | 连不上 / 超时 | 502 | `agent_unavailable` |
+    | 上游说这次运行不在了 | **404** | `run_not_found` |
+    | 别的非 200 (含**不带那个码**的 404) | 502 | 上游给的那个码 |
+
+    上游的 404 之所以**照原样转给浏览器** (而不是也塌成 502): 它是唯一一个对用户
+    有意义的答案 —— 「你按停止的时候它刚好答完了」不是故障, 而是每次都可能遇到的一次
+    正常竞争; 页面据此**不打扰用户** (那一轮的终局事件本来也到了). 别的一律当故障,
+    因为那些 (401 / 503) 都说明我们这边没配好, 用户做什么都没用.
+
+    Note:
+        「404 才转 404」这一条要求那个 404 带的是**那个码** (`run_not_found`): 一个
+        不带它的 404 说明对面根本没有这条路由 (版本不齐 / 地址打错), 那是接线故障.
+        不这么分的话, 这种故障会被页面当成"正常竞争"静默吞掉 —— 停止按钮从此按不动,
+        而且一句解释都没有, 比报错还难查.
+    """
+    who = _who_for(user_id, cancellation.conversation_id)
+    headers = _service_headers(
+        _internal_token(who, "取消"), user_id, cancellation.conversation_id
+    )
+    try:
+        with httpx.Client(timeout=CANCEL_TIMEOUT) as client:
+            response = client.post(_cancel_url(cancellation.run_id), headers=headers)
+    except (httpx.HTTPError, httpx.InvalidURL) as exc:
+        # `InvalidURL` 不是 `HTTPError` (基地址写错就够), 但它同样属于"这条链路根本
+        # 没走通", 该回同一句话, 而不是让它冒成一个 500
+        logger.error("%s: 取消请求发不出去: %s: %s", who, type(exc).__name__, exc)
+        raise RefusedError(502, UNAVAILABLE_CODE) from exc
+
+    if response.status_code == 200:
+        return
+    code = _refusal_code(response)
+    logger.warning(
+        "%s: 客服服务拒绝了这次取消 (运行 %s): HTTP %d %s",
+        who,
+        cancellation.run_id,
+        response.status_code,
+        _detail(response),
+    )
+    if response.status_code == 404 and code == RUN_NOT_FOUND_CODE:
+        raise RefusedError(404, code)
+    raise RefusedError(502, code)
+
+
 # ---------------------------------------------------------------------------
 # 视图
 # ---------------------------------------------------------------------------
@@ -611,14 +784,19 @@ class AgentChatView(LoginRequiredMixin, View):
             # 回真状态码 + 用户话术, 浏览器读得到
             return _refusal(refused.status, refused.code)
 
+        headers = {
+            # 缓存 SSE 的中间层会把它变成「跑完才到」; 后者是 nginx 的对应开关
+            "cache-control": "no-cache",
+            "x-accel-buffering": "no",
+        }
+        # 本次运行的编号带给浏览器: 它是页面上按「停止」时唯一能指名道姓的东西.
+        # 上游**总是**带这个头 (框架 `create_app`), 所以"没有"只可能是中间层把它吞了
+        # —— 那时不给这个头 (页面上就不显示停止按钮), 而不是塞个空值骗前端.
+        if run_id := upstream.response.headers.get(RUN_ID_HEADER):
+            headers[RUN_ID_HEADER] = run_id
+
         return StreamingHttpResponse(
-            upstream,
-            content_type="text/event-stream",
-            headers={
-                # 缓存 SSE 的中间层会把它变成「跑完才到」; 后者是 nginx 的对应开关
-                "cache-control": "no-cache",
-                "x-accel-buffering": "no",
-            },
+            upstream, content_type="text/event-stream", headers=headers
         )
 
     def http_method_not_allowed(self, request, *args, **kwargs) -> HttpResponse:
@@ -628,5 +806,41 @@ class AgentChatView(LoginRequiredMixin, View):
         一个链接/一张图片就能触发的 GET), 值得写明白, 免得以后有人"顺手"补一个
         `def get` 上去.
         """
+        logger.warning("BFF 端点收到 %s (只认 POST): %s", request.method, request.path)
+        return _refusal(405, "method_not_allowed")
+
+
+class AgentCancelView(LoginRequiredMixin, View):
+    """BFF 端点: 停一次正在跑的回答 (POST) —— 与 `AgentChatView` 同一套前置.
+
+    Note:
+        「停好了」这件事**不在这里**: 那一轮的 SSE 流仍由 `AgentChatView` 那条路读,
+        服务端补的终局事件 (`error` / `cancelled`) 会顺着它回到页面. 所以本端点的
+        响应只是「取消请求收到了 / 已经被拒了」, 页面不该拿它当收尾信号.
+
+        **取消是协作式的, 而且只对只读的这一步安全.** 它打断的是那次运行**正在等的
+        那个 await**, 不是已经发出去的东西 —— 一个已经打到商城服务器的请求不会因为
+        我们这边不等了而回滚. L1b 的工具全是只读查询, 所以怎么取消都不会留下半截
+        状态; 到了能改数据的阶段 (加购 / 下单 / 支付), 这里要按
+        `CharAgent/docs/DESIGN.md` 的 #17/#18 重想: 副作用要带幂等键, 取消时要走
+        补偿, 而不是「不等了就算停」. 这条不是待办, 是**前提变了就得回来改**的标记.
+    """
+
+    def post(self, request):
+        # 身份仍然只从 session 取 (与 chat 同一行代码同一个理由): 请求体里塞别人的
+        # user_id 也改不了这次转发带的是谁 —— 而"能不能取消别人的运行"正是在助手
+        # 服务那侧按这个身份判的 (会话编号里含买家)
+        buyer_id = request.user.pk
+        try:
+            cancellation = cancellation_from_request(request, buyer_id)
+            forward_cancel(buyer_id, cancellation)
+        except RefusedError as refused:
+            return _refusal(refused.status, refused.code)
+        # 这个 body 是**本层自己的话**, 不是转发上游的: 它说的是「请求收到了」, 而
+        # 上游那个 `status` 字段只在它自己那侧有意义 (页面只看状态码, 不看这里)
+        return JsonResponse({"run_id": cancellation.run_id, "status": "cancelling"})
+
+    def http_method_not_allowed(self, request, *args, **kwargs) -> HttpResponse:
+        """同 `AgentChatView`: 取消是一个有副作用的动作, 不做成 GET."""
         logger.warning("BFF 端点收到 %s (只认 POST): %s", request.method, request.path)
         return _refusal(405, "method_not_allowed")
