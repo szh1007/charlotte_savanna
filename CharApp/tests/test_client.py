@@ -133,7 +133,7 @@ async def test_the_base_url_does_not_swallow_the_last_segment(mall) -> None:
     """base_url 不以 `/` 结尾时也要拼对 —— 否则 httpx 会吃掉最后一段路径.
 
     这条盯的是一个很容易漏的拼接细节: 使用者把
-    CHARAPP_MINIMALL_BASE_URL 写成 `.../agent` (没带尾斜杠) 是极常见的,
+    CHARAPP_BASE_URL 写成 `.../agent` (没带尾斜杠) 是极常见的,
     而那时的失败形态是「所有请求都打到 /api/minimall/ 上去」—— 表现为一堆 404,
     排查起来离真正的原因很远.
     """
@@ -187,7 +187,7 @@ async def test_a_404_on_a_collection_endpoint_is_a_failure(
 
     为什么这是要紧的一条: 商城侧「空」一律是 200 + 空数组, 所以这些端点上的 404
     只可能来自别处 —— 未知买家 (views_agent._resolve_buyer 对不存在的买家返回 404)
-    或 `CHARAPP_MINIMALL_BASE_URL` 配错。若把它当「没有」, 助手就会对买家说
+    或 `CHARAPP_BASE_URL` 配错。若把它当「没有」, 助手就会对买家说
     「你的购物车是空的」, 而事实是**压根没查到** —— 正好踩中提示词里「不编造」
     那条禁则.
     """

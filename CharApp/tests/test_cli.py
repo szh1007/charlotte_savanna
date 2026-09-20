@@ -18,10 +18,15 @@ from __future__ import annotations
 import httpx
 import pytest
 from conftest import AGENT_BASE_URL, BUYER_ID, agent_url, mock_all
-from mock_llm import MockLLM, make_tool_call, text_response, tool_call_response
-from trace_assertions import trace_of
 
 from CharAgent.checkpoint import config as checkpoint_config
+from CharAgent.tests.mock_llm import (
+    MockLLM,
+    make_tool_call,
+    text_response,
+    tool_call_response,
+)
+from CharAgent.tests.trace_assertions import trace_of
 from CharApp.minimall import cli
 from CharApp.minimall.config import ENV_BASE_URL, ENV_TOKEN
 
@@ -176,7 +181,7 @@ def test_two_questions_stay_connected(mall, capsys) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 身份: 从命令行参数来 (第二阶段换成转发头, 换的是 build_context 一个函数体)
+# 身份: 从命令行参数来 (同一处装配在 HTTP 入口那边改成读转发头, 见 test_server.py)
 # ---------------------------------------------------------------------------
 
 

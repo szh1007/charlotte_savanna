@@ -1,0 +1,671 @@
+"""服务进程: 一次问答真的能通过 HTTP 拿到完整事件流 (PRD §4.9 的 L1b 第一片).
+
+被测的是**接线** —— 从 HTTP 请求头一路走到商城的 HTTP 请求:
+
+    令牌 + X-User-Id → RunContext → 工具 (身份进闭包) → 模型决策 → 工具执行
+        → 商城接口 → 数据回填 → 答复 → SSE 事件流
+
+扮演商城的是 respx, 扮演模型的是框架的 MockLLM, 业务代码一行不改; 传输用 httpx
+的 ASGI transport (不起服务、不占端口), 整套测试离线可跑 —— 与 `test_cli.py` 同一
+套替身、同一套写法.
+
+**同一件事为什么在两页各断一次**: 命令行与 HTTP 是同一段业务的两个入口, 差别只在
+两头 (身份从哪来 / 话怎么说出去). 所以两页都有「问余额」「多轮接得上」这类用例,
+但断言的对象不同: 那页断的是终端的输出, 这页断的是 SSE 帧与状态码. 而中间那段装配
+是同一份代码 —— 有一条用例从两个入口各打一次, 断言落点是同一个函数
+(`test_both_entries_go_through_the_same_assembly`), 免得它哪天漂成两份.
+
+真商城 + 真模型上跑过的那一次不在这里 (测试替代不了它), 结论记在 issue 05 的
+「实际开发情况」.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import json
+from collections.abc import AsyncIterator
+from pathlib import Path
+from typing import Any
+
+import httpx
+import pytest
+import respx
+from conftest import AGENT_BASE_URL, BUYER_ID, PROFILE, TOKEN, agent_url, mock_all
+
+from CharAgent.checkpoint import InMemoryCheckpointSaver
+from CharAgent.checkpoint import config as checkpoint_config
+from CharAgent.model.utils.types import ModelMessage, ModelResponse
+from CharAgent.server import RUN_ID_HEADER
+from CharAgent.tests.mock_llm import (
+    MockLLM,
+    make_tool_call,
+    text_response,
+    tool_call_response,
+)
+from CharAgent.tests.trace_assertions import trace_of
+from CharApp.minimall import cli
+from CharApp.minimall.client import HEADER_TOKEN, HEADER_USER_ID, MinimallClient
+from CharApp.minimall.config import (
+    DEFAULT_SERVER_HOST,
+    DEFAULT_SERVER_PORT,
+    ENV_BASE_URL,
+    ENV_SERVER_HOST,
+    ENV_SERVER_PORT,
+    ENV_THINKING,
+    ENV_TOKEN,
+    MinimallConfigError,
+    ServerConfig,
+    server_config_from_env,
+    thinking_from_env,
+)
+from CharApp.minimall.server import (
+    DEFAULT_CONVERSATION_ID,
+    HEADER_CONVERSATION_ID,
+    build_service,
+    create_minimall_app,
+    logger,
+)
+from CharApp.minimall.service import MinimallService, build_context
+
+# 测试里给这个服务起的名字: respx 放行这个 host 上的请求 (交给 ASGI app),
+# 其余照旧拦给假商城
+APP_HOST = "http://charapp"
+
+# 仓库根 `.env.example` (CharApp/tests -> CharApp -> 仓库根)
+ENV_TEMPLATE = Path(__file__).resolve().parents[2] / ".env.example"
+
+
+# ---------------------------------------------------------------------------
+# 替身与装配
+# ---------------------------------------------------------------------------
+
+
+def allow_app(mall: respx.MockRouter) -> None:
+    """放行打向本服务的请求 (别被 respx 拦下).
+
+    为什么必须显式放行: respx 在全局补丁 httpx「传输该怎么选」, 于是同一套测试里
+    两个客户端都会被它经手 —— 打假商城的走注册好的 mock 路由, 打本服务的那条得
+    有一条「别拦, 交给 ASGI app」的规则 (`assert_all_mocked` 默认会拦下没注册的
+    URL, 表现是打服务时报一句「not mocked」).
+    """
+    mall.route(host="charapp").pass_through()
+
+
+def serving(model: Any, client: Any) -> Any:
+    """起一个客服服务 (ASGI app): 假商城客户端 + 假模型 + 内存快照.
+
+    与生产同一条装配线上来的: `create_minimall_app` + 一份 `MinimallService`,
+    差别只在零件是替身、快照在后端列表里挑了内存那份.
+    """
+    return create_minimall_app(
+        MinimallService(client=client, model=model, saver=InMemoryCheckpointSaver()),
+        ServerConfig(host=DEFAULT_SERVER_HOST, port=DEFAULT_SERVER_PORT, token=TOKEN),
+    )
+
+
+@contextlib.asynccontextmanager
+async def talking_to(app: Any) -> AsyncIterator[httpx.AsyncClient]:
+    """直接打 app 的客户端 (ASGI 传输: 不起服务, 不占端口)."""
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url=APP_HOST
+    ) as client:
+        yield client
+
+
+def headers(
+    *,
+    buyer: int | str | None = BUYER_ID,
+    token: str | None = TOKEN,
+    conversation: str | None = None,
+) -> dict[str, str]:
+    """业务自己那套头 (框架一个都不认识: 认证与身份都是业务的事).
+
+    值一律 ASCII: HTTP 头的字节按 ASCII 编 (框架的 server 用例踩过这一条), 中文
+    身份塞进头里会在客户端就炸掉 —— 这类值该放请求体 (UTF-8).
+    """
+    values: dict[str, str] = {}
+    if token is not None:
+        values[HEADER_TOKEN] = token
+    if buyer is not None:
+        values[HEADER_USER_ID] = str(buyer)
+    if conversation is not None:
+        values[HEADER_CONVERSATION_ID] = conversation
+    return values
+
+
+async def ask(app: Any, message: str, **header_kwargs: Any) -> httpx.Response:
+    """打一次 POST /runs 并等这次运行跑完 (响应体里就是整条事件流)."""
+    async with talking_to(app) as http:
+        return await http.post(
+            "/runs", json={"message": message}, headers=headers(**header_kwargs)
+        )
+
+
+def ask_here(app: Any, message: str, **header_kwargs: Any) -> httpx.Response:
+    """同步地问一句 (给同步用例用: 自己开一个循环, 跑完就关)."""
+    return asyncio.run(ask(app, message, **header_kwargs))
+
+
+# ---------------------------------------------------------------------------
+# 事件流的读法 (SSE 帧 → 事件字典)
+# ---------------------------------------------------------------------------
+
+
+def parse_sse(body: str) -> list[dict[str, Any]]:
+    """SSE 正文 → 逐事件: {"id": 序号, "event": 类型, "data": 载荷}.
+
+    只解析本层产出的形状 (三行一帧 + 空行分隔), 不做通用 SSE 解析 —— 与框架
+    `test_server_app.py` 那份同一个读法 (06 的前端按同一份契约读).
+    """
+    events: list[dict[str, Any]] = []
+    for block in body.strip().split("\n\n"):
+        if not block.strip():
+            continue
+        lines = dict(line.split(": ", 1) for line in block.splitlines())
+        events.append(
+            {
+                "id": int(lines["id"]),
+                "event": lines["event"],
+                "data": json.loads(lines["data"]),
+            }
+        )
+    return events
+
+
+def terminal_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """终局事件 (final / error) —— 一条流里恰好一个."""
+    return [event for event in events if event["event"] in ("final", "error")]
+
+
+def as_text(events: Any) -> str:
+    """整条流序列化成一段文本 (「里面有没有某个值」这类断言用它)."""
+    return json.dumps(events, ensure_ascii=False)
+
+
+# ---------------------------------------------------------------------------
+# 假模型: 先查余额, 再把结果说进答复
+# ---------------------------------------------------------------------------
+
+
+async def balance_dialogue(messages: list[ModelMessage]) -> ModelResponse:
+    """假模型: 先查余额, 拿到结果后把余额原样说进答复.
+
+    为什么用「每次调用现算」的对话函数 (配合 `MockLLM.fixed`) 而不是固定脚本:
+    并发用例里两个运行的模型调用会交错, 谁先谁后不确定 —— 脚本是按调用顺序发牌的,
+    发到谁手上全看调度; 而这个函数只看「本次请求的历史里有没有工具结果」, 于是每个
+    运行都能各自走完自己的「先查再答」, 各流里的数据只可能来自各自那次工具调用.
+    """
+    results = [message for message in messages if message.get("role") == "tool"]
+    if not results:
+        return tool_call_response(make_tool_call("get_my_profile"))
+    balance = json.loads(results[-1]["content"])["balance"]
+    return text_response(f"你的余额是 {balance} 元.")
+
+
+@pytest.fixture
+def assemblies(monkeypatch) -> list[str]:
+    """记下每一次会话装配 (被装配过的 thread_id), 装配本身照原样走.
+
+    这是几条用例共用的证据口: 「会话按编号复用」「不同编号各建一个」「两个入口
+    装配落在同一处」都从这份记录上看. 做法是把 `MinimallService.session_for`
+    换成记账的替身 —— 替换的是**记账动作**, 不是装配逻辑.
+    """
+    recorded: list[str] = []
+    original = MinimallService.session_for
+
+    async def spy(self, context, *, event_sink):
+        recorded.append(context.thread_id)
+        return await original(self, context, event_sink=event_sink)
+
+    monkeypatch.setattr(MinimallService, "session_for", spy)
+    return recorded
+
+
+@pytest.fixture
+def service_env(monkeypatch) -> None:
+    """钉住生产接线 (`build_service`) 要读的三个变量: 令牌 / 模型 Key / 快照后端.
+
+    模型 Key 只是**建对象**要的最小值 (不真调 API), 所以给个假值就够.
+    """
+    monkeypatch.setenv(ENV_TOKEN, TOKEN)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-not-used")
+    monkeypatch.setenv(checkpoint_config.ENV_BACKEND, "memory")
+
+
+@pytest.fixture
+def cli_env(monkeypatch) -> None:
+    """钉住命令行那半边要读的环境 (与 `test_cli.py` 的 `mall_env` 同一套理由).
+
+    地址不钉会去连本机 8000 的真 Django; 快照后端不钉可能去连真 Redis / Postgres
+    (开发者完全可能按框架文档把 `.env` 里的后端换掉) —— 那这两条用例就不再是
+    「离线」的.
+    """
+    monkeypatch.setenv(ENV_TOKEN, TOKEN)
+    monkeypatch.setenv(ENV_BASE_URL, AGENT_BASE_URL)
+    monkeypatch.setenv(checkpoint_config.ENV_BACKEND, "memory")
+
+
+# ---------------------------------------------------------------------------
+# 一次问答走通 (验收第一条)
+# ---------------------------------------------------------------------------
+
+
+async def test_turning_thinking_off_reaches_the_model(mall, client) -> None:
+    """关掉思考模式: 这次请求里带的就是 `thinking=False` (开关真的落到 generate 上).
+
+    为什么值得一条用例: `MinimallService.thinking` 要穿过 `ChatSession` → `AgentLoop`
+    才到模型, 中间任何一环漏传, 表现都是「开关解析了、存下了、但没生效」——这种静默
+    失效命令行那侧踩过一次 (见 `service.py` 里那段注释)。
+    """
+    allow_app(mall)
+    mock_all(mall)
+    model = MockLLM.fixed(balance_dialogue)
+    app = create_minimall_app(
+        MinimallService(
+            client=client,
+            model=model,
+            saver=InMemoryCheckpointSaver(),
+            thinking=False,
+        ),
+        ServerConfig(host=DEFAULT_SERVER_HOST, port=DEFAULT_SERVER_PORT, token=TOKEN),
+    )
+
+    response = await ask(app, "我余额还有多少")
+
+    assert response.status_code == 200
+    assert model.calls[0]["thinking"] is False, "开关没落到 generate 的参数上"
+
+
+async def test_a_question_comes_back_as_an_sse_stream(mall, client) -> None:
+    """问一句「我余额还有多少」→ SSE 流; 终局事件里是**真实商城的余额**.
+
+    这一条把三个契约一次钉住: 传输是 SSE (media type + 帧格式), 事件序列完整
+    (seq 连续、终局恰好一个、每个事件带 run_id), 以及数据是真的 (余额来自假商城
+    那份样本, 不是模型编的 —— 工具确实跑了, 身份确实带到了商城那侧).
+    """
+    allow_app(mall)
+    routes = mock_all(mall)
+    app = serving(MockLLM.fixed(balance_dialogue), client)
+
+    response = await ask(app, "我余额还有多少")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    run_id = response.headers[RUN_ID_HEADER]
+    events = parse_sse(response.text)
+
+    # 序号连续 (SSE 的 id 字段就是事件流的 seq), 终局事件恰好一个
+    assert [event["id"] for event in events] == list(range(1, len(events) + 1))
+    assert len(terminal_events(events)) == 1
+    assert terminal_events(events)[0]["event"] == "final"
+    # 每个事件都带本次运行的编号 (跨 run 定位靠 run_id + seq 的组合)
+    assert {event["data"]["run_id"] for event in events} == {run_id}
+
+    # 工具真的跑过: 调用与结果都在流里
+    calls = [
+        event["data"]["tool_name"] for event in events if event["event"] == "tool_call"
+    ]
+    assert calls == ["get_my_profile"]
+    assert routes["profile/"].called, "工具没打到商城 —— 答复里的余额就是编的了"
+    assert routes["profile/"].calls[0].request.headers[HEADER_USER_ID] == str(BUYER_ID)
+
+    # 终局事件是权威答复: 里面有商城返回的那个余额
+    final = terminal_events(events)[0]["data"]
+    assert final["content"] is not None and PROFILE["balance"] in final["content"]
+
+
+# ---------------------------------------------------------------------------
+# 认证与身份 (验收第二、三条)
+# ---------------------------------------------------------------------------
+
+
+async def test_a_missing_token_and_a_wrong_token_look_the_same(mall, client) -> None:
+    """令牌没带 / 带错了: 都拒绝, 而且**两句话逐字相同** (不泄漏是哪种错).
+
+    与商城侧 fail closed 同一套口径: 认不出来就拒绝, 且不告诉调用方「你是令牌错还是
+    没带令牌」—— 想区分的是日志, 不是响应.
+    """
+    allow_app(mall)
+    mock_all(mall)
+    app = serving(MockLLM.fixed(balance_dialogue), client)
+
+    missing = await ask(app, "我余额还有多少", token=None)
+    wrong = await ask(app, "我余额还有多少", token="not-the-token")
+
+    for response in (missing, wrong):
+        assert response.status_code == 401
+        assert response.json() == {
+            "error": {"code": "unauthorized", "message": "认证失败"}
+        }
+    assert missing.json() == wrong.json(), "两种失败在响应上必须分不出来"
+
+
+async def test_a_request_without_a_buyer_is_refused_explicitly(mall, client) -> None:
+    """缺身份 (或身份不成形): **明确拒绝**, 不是「查不到数据」.
+
+    身份是装配期的输入 —— 它缺了就是这次请求不完整, 不该伪装成一次业务结果
+    (「商城没有这笔数据」会让转发方去找商城的麻烦, 而真正的问题在自己这儿).
+    拒绝时连商城一个请求都不该发出去.
+    """
+    allow_app(mall)
+    routes = mock_all(mall)
+    app = serving(MockLLM.fixed(balance_dialogue), client)
+
+    missing = await ask(app, "我余额还有多少", buyer=None)
+    malformed = await ask(app, "我余额还有多少", buyer="abc")
+
+    for response in (missing, malformed):
+        assert response.status_code == 401
+        assert response.json()["error"]["code"] == "invalid_identity"
+        assert "X-User-Id" in response.json()["error"]["message"], (
+            "拒绝的理由要说清是「缺身份」, 转发方才知道该补什么"
+        )
+    assert not routes["profile/"].called, "身份不明时不该拿任何人的数据去查商城"
+    assert "余额" not in missing.text, "别把装配期的错伪装成业务结果"
+
+
+# ---------------------------------------------------------------------------
+# 会话: 同一段对话连得上, 不同买家不串台 (验收第四、五条)
+# ---------------------------------------------------------------------------
+
+
+async def test_the_second_question_on_the_same_conversation_sees_the_first(
+    mall, client, assemblies
+) -> None:
+    """同一段对话连问两句: 第二句看得到第一句 (会话按 thread_id 长驻).
+
+    这是 HTTP 上最容易做错的一条 —— 每个请求新建一个会话的话, 第二轮就看不到第一
+    轮说过什么 (对话历史在会话对象的内存里). 两条证据一起看: 会话**只装配了一次**
+    (复用而不是重建), 以及模型第二次收到的请求里确实带着第一句与它的答复.
+    """
+    allow_app(mall)
+    mock_all(mall)
+    model = MockLLM.fixed(balance_dialogue)
+    app = serving(model, client)
+
+    first = await ask(app, "我余额还有多少")
+    second = await ask(app, "刚才那个数是多少来着")
+
+    assert first.status_code == second.status_code == 200
+    assert assemblies == [f"minimall:{BUYER_ID}:{DEFAULT_CONVERSATION_ID}"], (
+        "同一段对话的第二次提问不该再装配一个新会话"
+    )
+    # 第 3 次模型调用 = 第二句的第一次决策 (前两次是「查 → 答」)
+    seen = [str(message.get("content") or "") for message in trace_of(model).seen(3)]
+    assert any(PROFILE["balance"] in text for text in seen), (
+        "第二句的请求里没有第一句的答复 —— 会话没复用"
+    )
+    assert any(message.get("role") == "tool" for message in trace_of(model).seen(3)), (
+        "第一轮的工具结果也不在历史里"
+    )
+
+
+async def test_two_buyers_at_once_each_get_their_own_data(mall, client) -> None:
+    """两个买家并发: 各自拿各自的数据, 不串 (会话按 thread_id 分区).
+
+    假商城对两个买家回**不同**的余额 (靠请求头认人), 于是「哪条流里是哪个数字」
+    就能证明身份没有串台 —— 如果身份在某一环丢了或被覆盖, 这里会立刻看见两个人
+    读到同一个余额.
+
+    为什么还要断言「另一个买家的数字不在我的流里」: 只断言「我的数字在」的话,
+    两条流都被回填了同一个余额也能过.
+    """
+    allow_app(mall)
+    mall.get(agent_url("profile/"), headers__contains={HEADER_USER_ID: "3"}).mock(
+        return_value=httpx.Response(200, json={**PROFILE, "balance": "300.00"})
+    )
+    mall.get(agent_url("profile/"), headers__contains={HEADER_USER_ID: "4"}).mock(
+        return_value=httpx.Response(200, json={**PROFILE, "id": 4, "balance": "400.00"})
+    )
+    app = serving(MockLLM.fixed(balance_dialogue), client)
+
+    mine, theirs = await asyncio.gather(
+        ask(app, "我余额还有多少", buyer=3),
+        ask(app, "我余额还有多少", buyer=4),
+    )
+
+    assert "300.00" in as_text(parse_sse(mine.text))
+    assert "400.00" not in as_text(parse_sse(mine.text)), "别串到别人的余额"
+    assert "400.00" in as_text(parse_sse(theirs.text))
+    assert "300.00" not in as_text(parse_sse(theirs.text))
+
+
+async def test_one_buyers_two_tabs_are_two_conversations(
+    mall, client, assemblies
+) -> None:
+    """同一买家两个标签页: 各聊各的 (会话编号的第三段把它们分开).
+
+    06 的客服页面会给每个标签页发一个 `X-Conversation-Id`, 服务端**一行不用改**:
+    它进的就是 `thread_id` 的第三段. 没带这个头时兜默认值, 于是「一个买家一段
+    对话」是缺省行为 —— curl 打进来 (验收第一条那种打法) 不必编一个对话 ID.
+    """
+    allow_app(mall)
+    mock_all(mall)
+    app = serving(MockLLM.fixed(balance_dialogue), client)
+
+    answers = [
+        await ask(app, "我余额还有多少"),
+        await ask(app, "我余额还有多少", conversation="tab-1"),
+        await ask(app, "我余额还有多少", conversation="tab-2"),
+        await ask(app, "我余额还有多少", conversation="tab-1"),
+    ]
+
+    for response in answers:
+        assert response.status_code == 200
+        assert "final" in {event["event"] for event in parse_sse(response.text)}
+    assert assemblies == [
+        f"minimall:{BUYER_ID}:{DEFAULT_CONVERSATION_ID}",  # 没带头 → 缺省那一段
+        f"minimall:{BUYER_ID}:tab-1",
+        f"minimall:{BUYER_ID}:tab-2",
+    ], "每个标签页一段对话 (第三次问 tab-1 复用, 所以只有三条)"
+    assert app.state.session_registry.busy_threads == frozenset(), "跑完了就该全放开"
+    assert DEFAULT_CONVERSATION_ID == "web", "缺省那一段是转发层在用的, 改它要同步文档"
+
+
+# ---------------------------------------------------------------------------
+# 装配只有一处 (验收: 可断言的证据)
+# ---------------------------------------------------------------------------
+
+
+def test_both_entries_go_through_the_same_assembly(mall, cli_env, assemblies) -> None:
+    """两个入口的会话装配落在**同一个函数**上, 不是两份长得像的代码.
+
+    做法: 从两个入口各问一句 —— 命令行那半直接调 `cli.main`, HTTP 那半打 ASGI
+    app —— 两边都在同一份记账替身上留下痕迹, 就说明中间那段装配确实只有一处;
+    哪天谁抄了一份走, 这里会少一条记录.
+
+    (抄一份的代价这个项目已经付过一次: 交互层当初被抄走, 抄完就开始漂.)
+
+    为什么这条是**同步**用例: `cli.main` 自己建常驻事件循环 (`KillSwitch` 那一套),
+    在别人已经跑着的循环里调它会被 asyncio 拦下 ("another loop is running") ——
+    与 `test_cli.py` 那批用例同一个理由, 测试不必也不该插手它的事件循环. HTTP 那
+    半自己开一个循环跑 (`ask_here`), 两边各跑各的.
+    """
+    allow_app(mall)
+    mock_all(mall)
+    mall_client = MinimallClient(base_url=AGENT_BASE_URL, token=TOKEN)
+    app = serving(MockLLM.fixed(balance_dialogue), mall_client)
+
+    code = cli.main(
+        ["--user-id", str(BUYER_ID), "-q", "我余额还有多少"],
+        model=MockLLM.fixed(balance_dialogue),
+    )
+    response = ask_here(app, "我余额还有多少")
+
+    assert code == 0 and response.status_code == 200
+    assert assemblies == [
+        f"minimall:{BUYER_ID}:cli",  # 命令行: 命令行参数 → 上下文
+        f"minimall:{BUYER_ID}:{DEFAULT_CONVERSATION_ID}",  # HTTP: 转发头 → 上下文
+    ], "两个入口的装配必须都经过 MinimallService.session_for"
+
+
+# ---------------------------------------------------------------------------
+# 收尾与配置
+# ---------------------------------------------------------------------------
+
+
+async def test_closing_the_service_closes_the_process_level_parts(mall, client) -> None:
+    """收尾: 谁建谁关 —— 关掉服务就把商城连接池一起关了.
+
+    为什么不在会话上收尾: 会话与别的会话**共用**这三件进程级资源, 而
+    `ChatSession.aclose()` 会把模型与存储一起关掉 —— 关一个会话等于顺手关了别人的.
+    所以收尾落在服务这一层, 一条进程关一次.
+    """
+    allow_app(mall)
+    mock_all(mall)
+    service = MinimallService(
+        client=client,
+        model=MockLLM.fixed(text_response("好的")),
+        saver=InMemoryCheckpointSaver(),
+    )
+
+    await service.aclose()
+
+    with pytest.raises(RuntimeError, match="closed"):
+        await client.get_profile(user_id=BUYER_ID)
+
+
+async def test_a_service_without_a_configured_token_refuses_everything(
+    mall, client
+) -> None:
+    """服务端没配令牌 (空串): 一律拒绝 —— 不给「忘了配就放行」留口子.
+
+    与商城侧 `IsInternalService` 同一条 (fail closed). 生产里根本走不到这里
+    (`build_service` 在建零件时就抛, 见下一条), 这一条守的是「万一有别的路径把它
+    空着送进来, 请求层也不会放行」. 打的令牌是**对的**那个值, 区别只在服务端手里
+    没有期望值可比.
+    """
+    allow_app(mall)
+    mock_all(mall)
+    app = create_minimall_app(
+        MinimallService(
+            client=client,
+            model=MockLLM.fixed(balance_dialogue),
+            saver=InMemoryCheckpointSaver(),
+        ),
+        ServerConfig(host=DEFAULT_SERVER_HOST, port=DEFAULT_SERVER_PORT, token=""),
+    )
+
+    response = await ask(app, "我余额还有多少", token=TOKEN)
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "unauthorized"
+
+
+def test_build_service_wires_the_process_level_parts(
+    mall, client, service_env, monkeypatch
+) -> None:
+    """生产接线: 环境变量 → 三件零件 → 能装配出会话 → 能收尾.
+
+    为什么单独测这一小段: 上面所有 app 用例都是把 `MinimallService` 直接注进去的,
+    生产那条路 (env → `build_service` → `create_minimall_app` → uvicorn) 接错了,
+    那些用例一条都不会红. 这里不碰商城也不碰模型 (只建对象), 断的是「接线」.
+    """
+    monkeypatch.setenv(ENV_THINKING, "no")  # 顺手断「思考模式开关也接上了」
+    service = build_service(writer=logger.info)
+
+    context = build_context(BUYER_ID, "web")
+    session = asyncio.run(service.session_for(context, event_sink=lambda event: None))
+
+    assert isinstance(service.client, MinimallClient)
+    assert session.thread_id == context.thread_id
+    assert len(session.tool_names) == 9, "零件接全了: 工具从上下文里装了出来"
+    assert service.thinking is False, "env 里的思考模式开关没接到零件上"
+    asyncio.run(service.aclose())
+
+
+def test_the_process_reports_a_missing_token_in_one_line(monkeypatch, capsys) -> None:
+    """令牌没配: 进程入口报一句人话 + 退出码 1 (**不是** traceback), 也不占端口.
+
+    这一条断的是「启动期错误被翻成人话」这条路 —— 会抛的是同一批错误 (共用
+    `STARTUP_ERRORS`), 该说的也是同一句话.
+
+    为什么先把 handler 清掉: 日志口是 `_configure_logging` 挂的, 而它挂上就不再
+    换 —— 上一个用例挂的那个指着当时的 stderr, `capsys` 抓不到. 清一次, 让
+    `main` 重新挂一个指向当前 stderr 的.
+    """
+    from CharApp.minimall import server as server_module
+
+    server_module.logger.handlers.clear()
+    # 空值 = 没配: dotenv 不覆盖已存在的键, 所以真 .env 里那个值不会把它填回来
+    monkeypatch.setenv(ENV_TOKEN, "")
+
+    assert server_module.main() == 1
+    assert "启动失败" in capsys.readouterr().err
+
+
+def test_the_server_config_comes_from_the_env(monkeypatch) -> None:
+    """监听地址与端口从 `CHARAPP_SERVER_*` 读; 没配就用本机 1007."""
+    monkeypatch.setenv(ENV_TOKEN, TOKEN)
+    monkeypatch.setenv(ENV_SERVER_HOST, "0.0.0.0")
+    monkeypatch.setenv(ENV_SERVER_PORT, "9105")
+
+    config = server_config_from_env()
+
+    assert (config.host, config.port) == ("0.0.0.0", 9105)
+    assert config.token == TOKEN, "校验令牌与打商城用的是同一个值"
+
+
+def test_the_server_config_requires_a_token(monkeypatch) -> None:
+    """令牌没配 → 启动期错误 (进程起不来), 而不是先跑起来再逐个请求拒绝."""
+    monkeypatch.delenv(ENV_TOKEN, raising=False)
+
+    with pytest.raises(MinimallConfigError, match=ENV_TOKEN):
+        server_config_from_env()
+
+
+def test_the_thinking_switch_is_three_state(monkeypatch) -> None:
+    """思考模式是**三态**: 不填 = 不传 (上游默认开启) / 开 / 关 —— 空值不等于关.
+
+    「不填」必须与「填了 false」区分开: 前者是让上游自己决定 (今天的行为),
+    后者是明确关掉. 混成一态的话, 不填就从「上游默认」变成「我们替上游决定」.
+    """
+    monkeypatch.delenv(ENV_THINKING, raising=False)
+    assert thinking_from_env() is None, "不填 = 不传该参数"
+
+    for value in ("false", "0", "no", "off", " FALSE "):
+        monkeypatch.setenv(ENV_THINKING, value)
+        assert thinking_from_env() is False, f"{value!r} 应读成「关」"
+
+    for value in ("true", "1", "yes", "on", "ON"):
+        monkeypatch.setenv(ENV_THINKING, value)
+        assert thinking_from_env() is True, f"{value!r} 应读成「开」"
+
+    # 写错了当场报启动期错误, 而不是替使用者猜一个方向 (它决定 token 与延迟)
+    monkeypatch.setenv(ENV_THINKING, "flase")
+    with pytest.raises(MinimallConfigError, match=ENV_THINKING):
+        thinking_from_env()
+
+
+def test_the_server_config_falls_back_and_rejects_a_bad_port(monkeypatch) -> None:
+    """没配就用默认值; 端口写成非数字当场报启动期错误 (别丢给 uvicorn 猜)."""
+    monkeypatch.setenv(ENV_TOKEN, TOKEN)
+    monkeypatch.delenv(ENV_SERVER_HOST, raising=False)
+    monkeypatch.delenv(ENV_SERVER_PORT, raising=False)
+
+    config = server_config_from_env()
+
+    assert (config.host, config.port) == (DEFAULT_SERVER_HOST, DEFAULT_SERVER_PORT)
+
+    monkeypatch.setenv(ENV_SERVER_PORT, "不是我")
+    with pytest.raises(MinimallConfigError, match=ENV_SERVER_PORT):
+        server_config_from_env()
+
+
+def test_the_template_lists_every_variable_the_business_reads() -> None:
+    """模板里写明了业务读的每个变量名 (使用者唯一能照抄的清单).
+
+    与框架的 `test_env_template.py` 同一条理由: 真 `.env` 不提交, 模板缺一个名字,
+    使用者就只能翻源码. 名字从配置模块的常量取 (而不是在源码里搜字符串).
+    """
+    text = ENV_TEMPLATE.read_text(encoding="utf-8")
+
+    for name in (
+        ENV_TOKEN,
+        ENV_BASE_URL,
+        ENV_SERVER_HOST,
+        ENV_SERVER_PORT,
+        ENV_THINKING,
+    ):
+        assert name in text, f".env.example 缺少 {name}"

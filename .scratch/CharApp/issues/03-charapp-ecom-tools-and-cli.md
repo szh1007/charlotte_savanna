@@ -113,13 +113,13 @@
 
 ### 计划外但必须做的（实现中发现）
 
-- **`.env` / `.env.example` 补 `CHARAPP_MINIMALL_BASE_URL`**：商城地址得可配（默认本机 8000），
+- **`.env` / `.env.example` 补 `CHARAPP_BASE_URL`**：商城地址得可配（默认本机 8000），
   否则换端口/换机器要改代码。
 - **`CharApp/pytest.ini`**：业务侧从零建测试目录，需要 `pythonpath = .. ../CharAgent/tests` ——
   第二项是**复用框架的测试替身**（MockLLM / 轨迹断言），业务侧不抄一份"假大脑"（PRD §5 接缝一）。
 - **`CharApp/minimall/config.py`**：环境变量 → 客户端 的翻译层，与 `checkpoint/config.py`、
   `db/config.py` 同一套做法（变量名声明成常量，不在业务代码里散着搜字符串）。
-- **`sh/charapp_minimall_cli.sh`**：PLAN §3.5 要的启动脚本，沿用 `sh/` 惯例（其余子项目都有一个）。
+- **`sh/charapp_client.sh`**（当时叫 `sh/charapp_minimall_cli.sh`）：PLAN §3.5 要的启动脚本，沿用 `sh/` 惯例（其余子项目都有一个）。
 
 ### 代码评审发现并修掉的两处（都不是测试能自己抓出来的）
 
@@ -132,7 +132,7 @@
 **二、所有 404 都被当成"查无此物"。** 商城侧只有两个端点会用 404 表达"没有这个东西"
 （`products/<slug>/` 与 `orders/<order_no>/`）；其余端点的"空"一律是 200 + 空数组。
 于是另外 7 个端点上的 404 只有两种来源：**未知买家**（`views_agent._resolve_buyer` 对不存在的
-买家返回 404）或 **`CHARAPP_MINIMALL_BASE_URL` 配错**（打到了别的路由，拿到 HTML 404 页）。
+买家返回 404）或 **`CHARAPP_BASE_URL` 配错**（打到了别的路由，拿到 HTML 404 页）。
 旧写法把这两种都翻成"你的购物车是空的""商城当前没有可用的分类"—— **助手对买家说了假话**，
 正好踩中提示词里"不编造"那条禁则。
 
@@ -181,7 +181,7 @@
 |----|----|--------|
 | 包 `CharApp/ecom_cs/` | `CharApp/minimall/` | import 路径、docstring、`CONTEXT.md`、PLAN、`app/minimall/serializers_agent.py` 的消费方注记 |
 | `EcomToolProvider` / `EcomConfigError` / `EcomCliOptions` | `MinimallToolProvider` / `MinimallConfigError` / `MinimallCliOptions` | 与既有的 `MinimallClient` / `MinimallError` 并成一族 |
-| `sh/charapp_cli.sh` | `sh/charapp_minimall_cli.sh` | 顺带修了用法注释（`--user-id` 是 flag 不是位置参数） |
+| `sh/charapp_cli.sh` | `sh/charapp_client.sh`（当时叫 `charapp_minimall_cli.sh`） | 顺带修了用法注释（`--user-id` 是 flag 不是位置参数） |
 | 会话编号前缀 `ecom:` | `minimall:` | `thread_id = minimall:2:cli`（PRD §4.11）。**代价**：`ecom:*` 分区下已存的快照取不到了 —— 开发期的内存/Redis 档，重新问一句即可 |
 | `prompt/service.prompt` | `prompt/system/v1.prompt` | 名字按**它在 wire 上的角色**取（它进的就是会话历史第一条 `role: system`），落盘按 PLAN §3.3 的 `{名字}/{版本}` 分目录 |
 
@@ -210,7 +210,7 @@
 
 新增 15 个：
 `pytest.ini` · `minimall/{__init__,config,client,tools,provider,cli}.py` · `minimall/prompt/system/v1.prompt` ·
-`tests/{conftest,test_client,test_tools,test_provider,test_prompt,test_cli}.py` · `sh/charapp_minimall_cli.sh`
+`tests/{conftest,test_client,test_tools,test_provider,test_prompt,test_cli}.py` · `sh/charapp_client.sh`
 
 修改 2 个：根 `.env.example`（换掉 1 行注释 + 加 1 行）· 根 `.env`（+2 行，不提交）
 

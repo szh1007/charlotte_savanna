@@ -10,9 +10,10 @@
 「诱导模型去查别人的订单」这条攻击路径因此根本不存在 (PRD §4.2). 有一条测试
 专门遍历 9 个工具的 schema 断言里面搜不到身份 (见 `tests/test_provider.py`).
 
-第二阶段 (网页版) 从哪里变: **本文件一行不改**。届时 `user_id` 由 Django 从
-session 里取出、经请求头转发过来, 变的只是「谁往 payload 里放这个值」——
-那一段在 `cli.py` 里, 是唯一一处 (PRD §4.2 的最后一段)。
+第二阶段 (网页版) 从哪里变: **本文件一行不改** —— 2026-09-20 兑现了. `user_id`
+如今由 Django 从 session 里取出、经请求头转发过来, 变的只是「谁往 payload 里放
+这个值」, 而那一段是 `service.build_context` 的**参数**: 命令行传 argv, 服务进程
+传请求头 (PRD §4.2 的最后一段)。
 """
 
 from __future__ import annotations
@@ -36,14 +37,15 @@ def buyer_id(context: RunContext) -> int:
 
     Raises:
         MinimallConfigError: 载荷里没有买家身份, 或它不是个整数。这是**装配代码**
-            的错误 (命令行入口忘了填 payload), 不是买家的错误 —— 所以当场说清,
+            的错误 (入口忘了填 payload), 不是买家的错误 —— 所以当场说清,
             而不是让它变成一个「查不到数据」的假象。
     """
     raw = context.payload.get(PAYLOAD_USER_ID)
     if raw is None:
         raise MinimallConfigError(
             f"运行上下文 {context.thread_id!r} 的载荷里没有 {PAYLOAD_USER_ID}: "
-            f"装配时忘了往里放买家身份 (见 CharApp/minimall/cli.py 的装配那一段)"
+            f"装配时忘了往里放买家身份 "
+            f"(见 CharApp/minimall/service.py 的 build_context)"
         )
     try:
         return int(raw)

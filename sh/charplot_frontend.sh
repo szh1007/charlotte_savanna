@@ -1,7 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
-# CharPlot 前端 (project/charplot/frontend), 端口 9004
+# CharPlot 前端 (project/charplot/frontend)
+# 本地端口: 9004
 
 CHARLOTTE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 

@@ -16,7 +16,7 @@ from __future__ import annotations
 import pytest
 
 from CharAgent.prompt import PromptNotFoundError, load_prompt
-from CharApp.minimall.cli import PROMPT_DIR, PROMPT_NAME, PROMPT_VERSION
+from CharApp.minimall.service import PROMPT_DIR, PROMPT_NAME, PROMPT_VERSION
 
 # 当前声明的这一版在盘上的位置 (好几条用例都要它, 只算一次)
 CURRENT_PROMPT = PROMPT_DIR / PROMPT_NAME / f"{PROMPT_VERSION}.prompt"

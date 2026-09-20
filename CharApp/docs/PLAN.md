@@ -26,7 +26,7 @@
                                                     ↑ X-Internal-Token
                                                     │ X-User-Id
                                          ┌──────────┴──────────┐
-                                         │ CharApp 服务 :8005   │
+                                         │ CharApp 服务 :1007   │
                                          │ (FastAPI + SSE)     │
                                          └──────────┬──────────┘
                                                     │ 进程内调用
@@ -159,7 +159,7 @@ CharApp/
 ### 3.5 工程侧
 
 - 根 `.env.example` 加 `CHARAPP_INTERNAL_TOKEN` 与 `CHARAPP_*` 段
-- `sh/charapp_minimall_cli.sh` 启动脚本（沿用项目 `sh/` 惯例）
+- `sh/charapp_client.sh` 启动脚本（沿用项目 `sh/` 惯例）
 - 更新根 `CLAUDE.md`（新增 `CharAgent/` `CharApp/` 两类顶层目录的约定）与 `README.md`
 
 ## 4. L1b 概要

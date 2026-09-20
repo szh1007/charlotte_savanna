@@ -28,7 +28,7 @@ from typing import Any, Literal
 
 import httpx
 
-# 商城 Django 开发服务器的默认地址 (内部端点前缀; 由 CHARAPP_MINIMALL_BASE_URL 覆盖)
+# 商城 Django 开发服务器的默认地址 (内部端点前缀; 由 CHARAPP_BASE_URL 覆盖)
 DEFAULT_BASE_URL = "http://127.0.0.1:8000/api/minimall/agent/"
 
 # 单次请求超时 (秒): 商城是本机服务, 10 秒还没回来说明它出问题了 ——
@@ -164,7 +164,7 @@ class MinimallClient:
             1. 集合类端点 (购物车 / 订单列表 / 地址 / 分类 / 精选) 的 404。商城侧
                「空」一律是 200 + 空数组 (见 `serializers_agent.build_cart_payload`),
                所以这些端点上的 404 只可能来自别处 —— 未知买家 (`views_agent.
-               _resolve_buyer` 对不存在的买家返回 404) 或 `CHARAPP_MINIMALL_BASE_URL`
+               _resolve_buyer` 对不存在的买家返回 404) 或 `CHARAPP_BASE_URL`
                配错打到了别的路由。
             2. 响应的 `Content-Type` 不是 JSON。DRF 的 404 体是 `{"detail": ...}`;
                打错地方时拿到的是 Django 那张 HTML 404 页。
@@ -184,7 +184,7 @@ class MinimallClient:
             if not by_identifier:
                 raise MinimallError(
                     f"{path} 返回 404, 但这个端点用 200 + 空数组表示「空」—— "
-                    f"多半是买家身份无效或 CHARAPP_MINIMALL_BASE_URL 配错了: "
+                    f"多半是买家身份无效或 CHARAPP_BASE_URL 配错了: "
                     f"{_detail(response)}",
                     status=404,
                 )

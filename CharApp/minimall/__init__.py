@@ -5,7 +5,7 @@
 
 装配线 (四步, 每一步归谁一眼看清)::
 
-    CliOptions ──build_context──> RunContext(thread_id, payload={user_id})
+    买家身份 ──build_context──> RunContext(thread_id, payload={user_id})
                                      │  await provider.provide(context)
                                      ▼
                                 tuple[Tool, ...]  (9 个只读工具, 身份已在闭包里)
@@ -13,15 +13,20 @@
                                      ▼
                                 AgentLoop          (框架只认「一串工具」)
 
+买家身份从哪来由**入口**决定: 命令行解析 argv (`cli.py`), 服务进程读 Django 转发的
+请求头 (`server.py`); 两者都把它交给 `service.build_context` (唯一一处).
+
 结构总览:
 
 | 文件 | 管什么 |
 |------|--------|
 | `client.py`   | 商城内部端点的异步客户端 (9 个方法 = 9 个只读端点) |
-| `config.py`   | 环境变量 → 客户端 (地址与共享令牌) |
+| `config.py`   | 环境变量 → 客户端 / 服务进程配置 (地址 / 令牌 / 监听) |
 | `tools.py`    | 9 个只读工具 + `build_tools` (身份在这里进闭包) |
 | `provider.py` | `MinimallToolProvider`: 上下文 → 这次运行的工具集 |
-| `cli.py`      | 命令行入口 (薄: 解析参数 / 装配 / 读输入 / 打结果) |
+| `service.py`  | 两入口共用的装配: 身份 → 上下文 → 会话 (CLI 与 server 同一份) |
+| `cli.py`      | 命令行入口 (薄: 解析参数 / 读输入 / 打结果) |
+| `server.py`   | 服务进程入口 (薄: 认证解析 / 转交装配 / 进程生命周期) |
 | `prompt/`     | 客服系统提示词 (业务提示词放业务目录, 框架目录里不留) |
 
 边界 (PRD §4.2 / §4.3 定的两条):

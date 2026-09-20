@@ -1,6 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
+# 本地端口: 8001
+
 CHARLOTTE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 PROJECT_ROOT="$CHARLOTTE_ROOT/project/menu"

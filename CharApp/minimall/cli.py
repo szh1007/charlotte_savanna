@@ -8,20 +8,20 @@
 Django 转发、前端渲染、跨进程错误传播五个新变量。命令行用最少的变量把
 「框架 → 工具 → 商城接口 → 数据库」这条链路先验证一遍, 网页版到时候只加传输层。
 
-这个入口刻意是**薄的** —— 业务真正独有的只有中间那几行, 别的一律复用框架:
+这个入口刻意是**薄的** —— 本文件只留「终端特有的那一半」, 装配在 `service.py`
+里 (与 HTTP 入口共用同一份):
 
-| 本文件做的 (业务独有) | 复用框架的 |
+| 本文件做的 (入口独有) | 复用框架的 |
 |---|---|
 | 解析参数 (含「以谁的身份」) | 会话 `ChatSession` (提示词与目录是它的参数) |
-| 把参数装成运行上下文 | 模型装配 `build_model` (含重试包装) |
-| 装工具 (`provider.provide`) | 快照后端选择 `build_saver_for` |
-| 提示符 / 开场白 / 帮助 / 告别, | 交互循环 `InteractiveRepl` + 渲染 `EventPrinter` |
-| 四个钩子见 `ServiceRepl` | 结果与打断怎么报 `report_result` / `report_interrupt` |
+| 提示符 / 开场白 / 帮助 / 告别, | 装配与模型/快照怎么建 (`service.MinimallService`) |
+| 四个钩子见 `ServiceRepl` | 交互循环 `InteractiveRepl` + 渲染 `EventPrinter` |
+| 失败怎么翻成退出码 | 结果与打断怎么报 `report_result` / `report_interrupt` |
 | | Ctrl-C 打断 `KillSwitch` + 启动杂活 `load_root_env` |
 
-**身份从哪来只有一处** (`build_context`): 现在读命令行参数, 第二阶段换成从
-Django 转发的请求头取 (PRD §4.2), 改的就是那一个函数体, 别处一行不动 ——
-这也是它被写成独立函数而不是内联进装配的原因。
+**身份从哪来只有一处** (`service.build_context`): 本入口传命令行参数, HTTP 入口
+传 Django 转发的请求头 (PRD §4.2). 取到之后的一切 —— 工具、闭包、提示词、快照
+分区 —— 两个入口走的是同一段代码。
 
 **交互层为什么是子类而不是抄一份**: 2026-09-19 之前这一页确实抄了框架的交互循环,
 抄完当场开始漂 (丢了一句快照帧数提示). 现在接缝落在「措辞」上 —— `ServiceRepl`
@@ -37,16 +37,9 @@ import contextlib
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
-from CharAgent.agent import (
-    GuardConfigError,
-    LoopConfigError,
-    LoopGuard,
-    LoopOutcome,
-    RunContext,
-)
+from CharAgent.agent import LoopOutcome
 from CharAgent.checkpoint import BACKEND_NAMES, CheckpointError
 from CharAgent.client import (
     ChatSession,
@@ -54,7 +47,6 @@ from CharAgent.client import (
     EventPrinter,
     InteractiveRepl,
     KillSwitch,
-    build_model,
     build_saver_for,
     load_root_env,
     report_interrupt,
@@ -63,37 +55,14 @@ from CharAgent.client import (
 )
 from CharAgent.model import ModelError
 from CharAgent.model.protocol import ChatModel
-from CharAgent.prompt import PromptError
-from CharApp.minimall.config import MinimallConfigError, client_from_env
-from CharApp.minimall.provider import PAYLOAD_USER_ID, MinimallToolProvider
-
-# 会话编号的第一段 (PRD §4.11: `业务:买家ID:对话ID`) —— 快照按它分区, 于是
-# 多用户隔离是免费得到的: 换一个买家就是换一个分区, 谁也读不到谁的档.
-CONVERSATION_PREFIX = "minimall"
-
-# 业务提示词: 目录 + 名字 + 版本. 盘上的位置是 `{目录}/{名字}/{版本}.prompt`
-# (PLAN §3.3 的布局), 而框架取正文的规则是「{目录}/{名字}.prompt」—— 所以下面拼
-# 的时候把版本接在名字后面, 目录层级因此是**落库方式**的一部分, 而不是文件名里的
-# 一个装饰: 换一版是加一个文件, 旧的还在.
-#
-# 它为什么是 system 而不是别的名字: 这段正文最终进的就是会话历史的第一条
-# `role: system` 消息 (见 `ChatSession`), 按**它在 wire 上的角色**命名, 比按业务
-# 叫法命名更难搞错 —— 一个业务可以有若干份提示词 (客服 / 摘要 / 分类…), 但
-# system 只有一条.
-PROMPT_DIR = Path(__file__).resolve().parent / "prompt"
-PROMPT_NAME = "system"
-PROMPT_VERSION = "v1"
-
-# 启动期可能抛出的配置类错误 (命令敲错了 / 环境没配好 / 提示词不在), 都不是
-# 「运行中出问题」—— 报一句人话就退出, 不打印 traceback. 六者没有共同祖先
-# (业务 / 模型 / 快照 / agent / 提示词 各一族), 只能列成元组.
-_STARTUP_ERRORS: tuple[type[Exception], ...] = (
-    MinimallConfigError,
-    ModelError,
-    CheckpointError,
-    LoopConfigError,
-    GuardConfigError,
-    PromptError,
+from CharApp.minimall.config import client_from_env
+from CharApp.minimall.service import (
+    DEFAULT_MAX_TURNS,
+    STARTUP_ERRORS,
+    MinimallService,
+    build_context,
+    build_model_for,
+    thread_id_for,
 )
 
 _EPILOG = """\
@@ -120,8 +89,8 @@ class MinimallCliOptions:
     """一次客服 CLI 运行的启动选项 (解析 argv 的产物, 全程只读).
 
     attributes:
-        user_id: **以哪个买家的身份对话** —— 第一阶段从命令行来, 第二阶段换成
-            Django 转发的请求头 (见 `build_context`).
+        user_id: **以哪个买家的身份对话** —— 本入口从命令行来, HTTP 入口换成
+            Django 转发的请求头 (两边都交给 `service.build_context`).
         conversation_id: 会话编号的第三段; 同一买家换一个就是一段新对话 (快照
             按会话编号分区, 于是「两台设备各聊各的」是免费的).
         questions: 非交互模式下依次要问的问题; 空元组表示进交互模式.
@@ -139,7 +108,7 @@ class MinimallCliOptions:
     backend: str | None = None
     model_name: str | None = None
     thinking: bool | None = None
-    max_turns: int = 10
+    max_turns: int = DEFAULT_MAX_TURNS
     use_retry: bool = True
     color: bool = True
 
@@ -152,10 +121,10 @@ class MinimallCliOptions:
     def thread_id(self) -> str:
         """会话编号: `业务:买家ID:对话ID` (PRD §4.11).
 
-        带上买家 ID 之后, 「多用户各看各的」不需要任何额外设计 —— 快照本来就按
-        会话编号分区, 分区键里已经含了身份.
+        规则本身在 `service.thread_id_for` —— 这里只是把它按选项算一遍 (HTTP
+        入口算的是同一件事, 用同一个函数), 免得横幅、装配、快照各拼一遍.
         """
-        return f"{CONVERSATION_PREFIX}:{self.user_id}:{self.conversation_id}"
+        return thread_id_for(self.user_id, self.conversation_id)
 
     def framework_options(self) -> CliOptions:
         """挑出交给框架的**工厂**的那几个开关 (模型 / 快照 / 颜色).
@@ -163,8 +132,8 @@ class MinimallCliOptions:
         为什么借框架的 `CliOptions` 而不是自己再定义一遍: `build_model` 与
         `build_saver_for` 收的就是它 —— 业务这几个字段的语义与框架完全相同,
         各写一份迟早会对不上. 它们只读 `model_name` / `use_retry` / `backend`,
-        所以这里只填读得到的; 会话编号与轮数走另一条路 (`build_context` 与
-        `build_session` 直接交给 `ChatSession`), 不从这里绕.
+        所以这里只填读得到的; 会话编号与轮数走另一条路 (`service.build_context`
+        与 `MinimallService.session_for` 直接交给 `ChatSession`), 不从这里绕.
         """
         return CliOptions(
             backend=self.backend,
@@ -219,8 +188,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-turns",
         type=int,
-        default=10,
-        help="一次运行最多几轮模型决策 (LoopGuard), 默认 10",
+        default=DEFAULT_MAX_TURNS,
+        help=f"一次运行最多几轮模型决策 (LoopGuard), 默认 {DEFAULT_MAX_TURNS}",
     )
     parser.add_argument(
         "--no-retry",
@@ -257,23 +226,27 @@ def parse_argv(argv: list[str] | None = None) -> MinimallCliOptions:
 # ---------------------------------------------------------------------------
 
 
-def build_context(options: MinimallCliOptions) -> RunContext:
-    """启动参数 → 运行上下文; **买家身份从哪来, 全项目只有这一处**.
+def service_for(
+    options: MinimallCliOptions, model: ChatModel, client: Any
+) -> MinimallService:
+    """命令行选项 → 一份装配好的零件 (进程级那三件 + 运行时开关).
 
-    现在是「读命令行参数」. 第二阶段 (网页版) 换成「从 Django 转发的请求头取」
-    (PRD §4.2): 那时这个函数多收一个参数 (转发的 user_id), 函数体换掉来源那一
-    行, 而 `provider.provide(context)` 之后的一切 —— 工具、闭包、schema ——
-    一行不改. 这就是「身份绕开参数表」那条设计能在两个阶段之间原样搬运的原因.
+    本入口与 HTTP 入口的差别到这一页为止: 向上是「那几个开关从哪来」(这里解析
+    argv, server 读 .env), 向下是**同一段装配** (`MinimallService.session_for`).
+    所以这里只做一件事 —— 把 CLI 的选项翻译成共用装配的参数.
 
-    Args:
-        options: 启动选项 (含 --user-id).
-
-    Returns:
-        RunContext: 会话编号 + 装着买家身份的载荷 (框架不解释这个载荷).
+    为什么 `thinking` / `max_turns` 要逐个显式传: 它们**不是**模型工厂的参数
+    (`build_model` 只管模型名与重试), 而是会话运行时的参数 —— 漏掉一个的表现是
+    「命令行开关解析了、存下了、但没生效」, 这种静默失效最难发现 (`thinking` 就是
+    这么漏过一次, 由代码评审抓出来的).
     """
-    return RunContext(
-        thread_id=options.thread_id,
-        payload={PAYLOAD_USER_ID: options.user_id},
+    return MinimallService(
+        client=client,
+        model=model,
+        saver=build_saver_for(options.framework_options()),
+        model_name=options.model_name,
+        thinking=options.thinking,
+        max_turns=options.max_turns,
     )
 
 
@@ -283,41 +256,16 @@ async def build_session(
     client: Any,
     printer: EventPrinter,
 ) -> ChatSession:
-    """把零件装成一台能问答的机器: 上下文 → 工具 → 会话.
+    """把零件装成一台能问答的机器 (装配本身在 `service.py`, 这里只补 CLI 特有的几项).
 
-    顺序如实反映依赖: 先拿上下文换工具 (提供者是异步的), 再把工具交给会话 ——
-    框架的 `ChatSession` 至今不知道 `RunContext` 存在 (见 `agent/provider.py`).
-
-    为什么 `thinking` / `max_turns` 在这里逐个显式传: 它们**不是**模型工厂的参数
-    (`build_model` 只管模型名与重试), 而是会话运行时的参数 —— 框架自己的 CLI 也是
-    传给 `ChatSession` 的. 漏掉一个的表现是「命令行开关解析了、存下了、但没生效」,
-    这种静默失效最难发现 (`thinking` 就是这么漏过一次, 由代码评审抓出来的).
+    身份走 `service.build_context` (本入口传的是命令行参数), 装配走
+    `MinimallService.session_for` —— HTTP 入口走的是同一个函数, 有一条测试从两个
+    入口各打一次来钉住这件事.
     """
-    context = build_context(options)
-    tools = await MinimallToolProvider(client).provide(context)
-    framework = options.framework_options()
-    return ChatSession(
-        model,
-        saver=build_saver_for(framework),
-        tools=tools,
-        thread_id=context.thread_id,
-        model_name=options.model_name,
-        event_sink=printer,
-        guard=LoopGuard(max_turns=options.max_turns),
-        thinking=options.thinking,
-        # 业务提示词在业务自己的目录里, 框架目录里不留业务的东西 (PRD §4.8).
-        # 名字里带版本: 读不到就是启动期错误 (PromptNotFoundError), 不会悄悄退回
-        # 上一版 —— 评估结论要能归因到具体一版, 静默降级会让跑分张冠李戴.
-        prompt_name=f"{PROMPT_NAME}/{PROMPT_VERSION}",
-        prompt_dir=PROMPT_DIR,
+    context = build_context(options.user_id, options.conversation_id)
+    return await service_for(options, model, client).session_for(
+        context, event_sink=printer
     )
-
-
-def build_model_for(
-    options: MinimallCliOptions, writer: Callable[[str], Any]
-) -> ChatModel:
-    """按配置造模型 (借框架的装配: 裸适配器 + 默认套一层重试包装)."""
-    return build_model(options.framework_options(), writer)
 
 
 # ---------------------------------------------------------------------------
@@ -446,13 +394,15 @@ def main(
         session = runner.run(
             build_session(
                 options,
-                model if model is not None else build_model_for(options, writer),
+                model
+                if model is not None
+                else build_model_for(options.framework_options(), writer),
                 client,
                 printer,
             )
         )
         return _dispatch(runner, session, options, reader or input, writer)
-    except _STARTUP_ERRORS as exc:
+    except STARTUP_ERRORS as exc:
         # 配置类错误 (缺令牌 / 缺 API Key / 提示词不在): 报一句人话就退出,
         # traceback 对使用者没有信息量
         writer(f"启动失败: {type(exc).__name__}: {exc}")

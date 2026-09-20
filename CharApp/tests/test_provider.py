@@ -56,7 +56,7 @@ GUARD_BUYER_ID = 987654
 def context_for(
     user_id: Any = BUYER_ID, *, thread: str = "minimall:3:cli"
 ) -> RunContext:
-    """造一个运行上下文 (与 `cli.build_context` 造的是同一个形状)."""
+    """造一个运行上下文 (与 `service.build_context` 造的是同一个形状)."""
     return RunContext(thread_id=thread, payload={PAYLOAD_USER_ID: user_id})
 
 
