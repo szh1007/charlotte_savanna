@@ -424,6 +424,7 @@ def test_the_business_scan_covers_the_framework_packages() -> None:
         "model",
         "prompt",
         "retry",
+        "server",
         "stream",
         "tool",
     } <= scanned, f"扫描漏了这些包: {scanned}"

@@ -52,6 +52,21 @@ dependencies = [
     "sqlalchemy>=2.0",
 ]
 
+[project.optional-dependencies]
+# server (HTTP + SSE 服务层) 是**可选**的, 理由与上面那句「零框架依赖」同源:
+# 框架的核心 (loop / 工具 / 事件流 / 快照) 一个 web 框架都不需要, 而 server 层要
+# fastapi. 把它做成硬依赖, 等于让只想用 agent loop 的人先装一个 web 框架; 做成
+# extra, 「不装 web 框架也能用这个框架」就成了一句能兑现的话 —— 根门面因此也
+# 不导出 server 的名字 (见 CharAgent/__init__.py 的三条排除).
+#
+#   pip install "charagent[server]"
+#
+# 为什么**不列 uvicorn**: 框架从不 import 它 (create_app 只交出一个 ASGI app,
+# 怎么跑是业务/部署的事). 装什么是导入谁 —— 这条口径与上面八项一致.
+server = [
+    "fastapi>=0.139",
+]
+
 [tool.setuptools.packages.find]
 # 从**上一级**开始找包: 本文件与包目录 (CharAgent/) 同级, 而 import 名是
 # `CharAgent.xxx` —— 起点必须是它的父目录 (仓库根) 才对得上.

@@ -19,13 +19,19 @@
 | `db` | 五实体数据模型 + 表定义 + alembic 迁移 + 仓储 |
 | `prompt` | 提示词集中存放与按名加载 (`templates/*.prompt` + `load_prompt`) |
 
-两条刻意的排除 (不是漏了):
+三条刻意的排除 (不是漏了, 理由各不同):
 
 1. **`tool` (小写, 那个 @tool 装饰器) 不在顶层导出** —— 它与子包
    `CharAgent.tool` 同名, 导出会遮蔽包属性, 于是 `from CharAgent.tool import
    tool` 成了唯一写法. 其余名字没有这个冲突.
 2. **`client` 不入本文件** —— 它是**应用入口** (`python -m CharAgent.client`), 不是
    库 API: 没有人会 `from CharAgent import main`. 想跑演示直接敲那条命令.
+3. **`server` 也不入本文件** —— 它是框架的 HTTP + SSE 服务层 (**可选依赖组**
+   `charagent[server]`, 要 web 栈). 门面的承诺是「装了这个包就能用」, 而本框架
+   的立身之本是零 web 依赖: 把 fastapi 变成 import `CharAgent` 的硬要求, 等于
+   让只想用 agent loop 的人先装一个 web 框架. 要用 HTTP 的写
+   `from CharAgent.server import create_app` 并装上那个 extra —— 这条纪律由用例
+   守着 (`tests/test_root_facade.py` 起子进程验「import 根门面不会拖上 web 栈」).
 
 为什么现在才汇聚 (历史): 各包的门面一直是齐的, 根门面却长期只导出了
 model + tool —— 各处都记着「agent / stream / hooks / retry / checkpoint / db
