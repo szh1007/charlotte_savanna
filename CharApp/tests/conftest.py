@@ -252,7 +252,7 @@ def mall() -> Iterator[respx.MockRouter]:
     两条开关的取舍:
     - `assert_all_mocked` 保持默认的 True —— 没注册的请求直接报错, 于是「路径
       拼错了」当场就红, 而不是悄悄连出去.
-    - `assert_all_called` 关掉 —— `mock_all` 会把 9 个端点一次铺满 (端到端用例
+    - `assert_all_called` 关掉 —— `mock_all` 会把 17 个端点一次铺满 (端到端用例
       需要「模型想调哪个都有得调」), 而每个用例只用到其中一两个.
     """
     with respx.mock(assert_all_called=False) as router:

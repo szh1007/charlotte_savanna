@@ -28,8 +28,13 @@ class IsInternalService(BasePermission):
     """
 
     def has_permission(self, request, view):
-        token = request.META.get("HTTP_X_INTERNAL_TOKEN", "")
         expected = getattr(settings, "CHARPLOT_INTERNAL_TOKEN", "")
         if not expected:
             return False
-        return secrets.compare_digest(token, expected)
+        # 头值由 WSGI 按 latin-1 解码, 可能含非 ASCII 字符; str 版 compare_digest
+        # 只接受 ASCII, 碰到这类请求会抛 TypeError (500). 转 bytes 再比, 既恒定
+        # 时间又不会因请求内容崩溃.
+        token = request.META.get("HTTP_X_INTERNAL_TOKEN", "")
+        return secrets.compare_digest(
+            token.encode("utf-8", "surrogateescape"), expected.encode("utf-8")
+        )

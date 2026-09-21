@@ -167,7 +167,7 @@ def thread_id_for(user_id: int, conversation_id: str) -> str:
 def build_context(user_id: int, conversation_id: str) -> RunContext:
     """买家身份 → 运行上下文; **买家身份从哪来, 全项目只有这一处**.
 
-    CLI 从命令行参数取 (`--user-id`), 第二阶段的服务从 Django 转发的请求头取
+    CLI 从命令行参数取 (`--user-id`), 服务进程从 Django 转发的请求头取
     (`X-User-Id`) —— 两个入口各自只有一行「从哪取」, 取到之后走的是这里 (PRD
     §4.2). 框架不解释载荷里是什么, 只认 `thread_id`; 而 `provider.provide` 之后
     的一切 (工具、闭包、schema) 与身份来自哪儿完全无关.

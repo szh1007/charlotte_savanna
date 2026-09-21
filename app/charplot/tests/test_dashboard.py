@@ -406,6 +406,11 @@ class StatusSummaryInputApiTests(TestCase):
         resp = self.client.get(self._url(), HTTP_X_INTERNAL_TOKEN="wrong")
         self.assertEqual(resp.status_code, 403)
 
+    def test_non_ascii_token_forbidden_not_500(self):
+        """带非 ASCII 字节的错误令牌是 403, 不是 500 (权限类曾抛 TypeError)."""
+        resp = self.client.get(self._url(), HTTP_X_INTERNAL_TOKEN="tok" + chr(233))
+        self.assertEqual(resp.status_code, 403)
+
     def test_user_not_found_404(self):
         resp = self.client.get(
             "/api/charplot/users/99999/status-summary-input/",

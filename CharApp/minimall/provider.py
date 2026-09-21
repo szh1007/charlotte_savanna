@@ -1,19 +1,20 @@
-"""工具提供者: 把「这一次运行代表谁」翻译成「交出哪 9 个工具」.
+"""工具提供者: 把「这一次运行代表谁」翻译成「交出哪 17 个工具」.
 
 一句话理解: 这是插在框架插座 (`CharAgent/agent/provider.py` 的 `ToolProvider`)
 上的那个东西。框架只认形状 —— `async def provide(上下文) -> 工具列表`; 本类负责
-业务的那一半: 从上下文里取出买家 ID, 再把 9 个只读工具装到那个买家身上。
+业务的那一半: 从上下文里取出买家 ID, 再把 17 个工具 (9 只读 + 8 写) 装到那个
+买家身上。
 
 为什么身份走「上下文 → 闭包」而不是走工具参数 (这是全项目最要紧的一条):
 工具的**参数表会被序列化成文本发给模型看**, 身份一旦成了参数, 模型就看得见,
 也可能被诱导填别人的值。放进 `RunContext.payload` 之后它从头到尾不露面 ——
 「诱导模型去查别人的订单」这条攻击路径因此根本不存在 (PRD §4.2). 有一条测试
-专门遍历 9 个工具的 schema 断言里面搜不到身份 (见 `tests/test_provider.py`).
+专门遍历 17 个工具的 schema 断言里面搜不到身份 (见 `tests/test_provider.py`).
 
-第二阶段 (网页版) 从哪里变: **本文件一行不改** —— 2026-09-20 兑现了. `user_id`
+网页版从哪里接进来: **本文件一行不改** (2026-09-20 起两个入口都在跑). `user_id`
 如今由 Django 从 session 里取出、经请求头转发过来, 变的只是「谁往 payload 里放
 这个值」, 而那一段是 `service.build_context` 的**参数**: 命令行传 argv, 服务进程
-传请求头 (PRD §4.2 的最后一段)。
+传请求头 (PRD §4.2 的最后一段) —— 两个入口各自取身份, 互不取代。
 """
 
 from __future__ import annotations
@@ -56,7 +57,7 @@ def buyer_id(context: RunContext) -> int:
 
 
 class MinimallToolProvider:
-    """电商客服的工具提供者: 给定上下文, 交出这个买家的 9 个只读工具。
+    """电商客服的工具提供者: 给定上下文, 交出这个买家的 17 个工具。
 
     形状上是结构化协议 (有 `provide` 就算), 不继承任何基类 —— 与框架的
     `ChatModel` / `ToolProvider` 同一套做法, 业务不 import 基类。
@@ -74,13 +75,13 @@ class MinimallToolProvider:
         self._client = client
 
     async def provide(self, context: RunContext) -> Sequence[Tool]:
-        """按上下文里的买家身份装出这次运行的 9 个只读工具。
+        """按上下文里的买家身份装出这次运行的 17 个工具。
 
         Args:
             context: 装配代码填好的运行上下文 (payload 里有 `user_id`)。
 
         Returns:
-            Sequence[Tool]: 9 个只读工具, 身份已裹进各自的闭包。
+            Sequence[Tool]: 17 个工具 (9 只读 + 8 写), 身份已裹进各自的闭包。
 
         Raises:
             MinimallConfigError: 载荷里没有买家身份 (见 `buyer_id`)。

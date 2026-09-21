@@ -635,8 +635,8 @@ def build_tools(client: MinimallClient, user_id: int) -> tuple[Tool, ...]:
 
     Args:
         client: 商城客户端 (连接池与令牌在它手里)。
-        user_id: 当前买家, 命令行取自 `--user-id` (第二阶段换成 Django 转发的
-            请求头, 换的是「从哪取」那一小段, 本函数一行不改)。
+        user_id: 当前买家, 命令行取自 `--user-id`, 服务进程取自 Django 转发的
+            请求头 —— 换的只是「从哪取」那一小段, 本函数一行不改。
 
     Returns:
         tuple[Tool, ...]: 正好 17 个工具 (9 只读 + 8 写).

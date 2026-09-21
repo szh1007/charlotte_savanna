@@ -158,8 +158,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--user-id",
         type=int,
         required=True,
-        help="以哪个买家的身份对话 (商城里的 User ID); 第二阶段这条会被 "
-        "Django 转发的请求头取代",
+        help="以哪个买家的身份对话 (商城里的 User ID); 这是命令行入口的身份来源, "
+        "网页版走另一个入口 (身份从 Django 转发的请求头来), 两者互不取代",
     )
     parser.add_argument(
         "--conversation-id",

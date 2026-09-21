@@ -106,7 +106,7 @@ async def test_a_provider_is_anything_with_the_right_shape(
 async def test_identity_never_appears_in_any_tool_schema(
     client: MinimallClient,
 ) -> None:
-    """**本文件的核心**: 9 个工具的参数表里没有身份, 一个都没有.
+    """**本文件的核心**: 17 个工具的参数表里没有身份, 一个都没有.
 
     做法是两层: 先逐个钉死每个工具**应该**有哪些参数 (多一个都不行), 再把整份
     schema 序列化成文本搜一遍买家 ID —— 后者兜住「参数名不叫 user_id 但值漏了」
