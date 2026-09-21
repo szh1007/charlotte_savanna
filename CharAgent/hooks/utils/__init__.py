@@ -2,10 +2,10 @@
 
 对齐 model/utils 与 tool/utils 惯例 —— 顶层 (registry.py) 放行为模块, 静态
 支撑按主题收进子包:
-- types.py   HookPoint (五个 hook 点枚举) / HookFn (hook 函数形态) /
-             HookFailure (被隔离的插件异常记录) / ModelCallPhase
-             (ON_MODEL_CALL 的两个 phase: before / after)
-- errors.py  异常语义: HookError 基类 + HookConfigError (注册参数错误)
+- types.py   HookPoint (六个 hook 点枚举) / Decision (拦截点的裁决: 放行 /
+             拒绝 + 原因) / HookFn (hook 函数形态) / HookFailure (被隔离的
+             插件异常记录) / ModelCallPhase (ON_MODEL_CALL 的两个 phase)
+- errors.py  异常语义: HookError 基类 + HookConfigError (注册 / 裁决参数错误)
 
 模块内部 import 走具体模块路径 (hooks.registry, hooks.utils.types), 不绕包
 门面, 避免隐式循环依赖.

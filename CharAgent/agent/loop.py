@@ -69,7 +69,9 @@
 2. 事件流 (EventBus → event_sink): 推给前端的渐进展示 —— 每轮模型响应产
    reasoning 事件, 工具轮产 thinking + tool_call + tool_result, 收尾产恰好
    一个终局事件 (正常 final / 异常 error)
-3. hook (HookRegistry): 五个生命周期触发点 (扩展点), 空注册零开销
+3. hook (HookRegistry): 六个生命周期触发点 (扩展点), 空注册零开销.
+   其中 before_tool_execute 是**裁决类**点: 插件在那里可以拒绝 —— 被拒的
+   工具不执行, 拒绝原因当作一条工具失败回填 (走的就是下面的错误回填通道)
 
 存档线 (依然是「只加不改」):
 - 配了 saver + thread_id 时, 每 Turn 结束把进度落成一帧快照 (历史 + 计数器),
@@ -93,8 +95,8 @@
 - 直播线 (event_sink): 主循环每干一件事就「喊一嗓子」—— 我要去查什么、查
   回来什么、最后答什么. 这些话经 EventBus 编号后推给前端, 用户就能边跑边
   看到进度, 而不是干等一分钟才蹦出一整段答案.
-- 插座线 (hooks): 在 5 个固定时机顺手看一眼有没有插件要搭把手 (记记忆 /
-  算钱 / 记日志), 没插就直接跳过, 不拖慢速度.
+- 插座线 (hooks): 在 6 个固定时机顺手看一眼有没有插件要搭把手 (记记忆 /
+  算钱 / 记日志 / 拦下一个工具调用), 没插就直接跳过, 不拖慢速度.
 - 两条线都是「只加不改」: 不接出口、不插插件时, 主循环行为与之前
   完全一致 (既有 233 个用例原样通过).
 """
@@ -184,7 +186,7 @@ class AgentLoop:
             error), 供 SSE 推送 / CLI 打印 / 测试收集. 每个 run 独立编号
             (seq 从 1 起), 终局事件恰好一个.
             None 表示不接出口 (事件仍会触发 hooks 的 on_event).
-        hooks: hook 注册表 (扩展点), 五个触发点与载荷见
+        hooks: hook 注册表 (扩展点), 六个触发点与载荷见
             HookRegistry docstring; 空注册零开销. None 表示无扩展点 (内部用
             空注册表, 触发点不必逐处判空).
         saver: 快照存储 (checkpoint/ 的三实现之一). 给了它, 每 Turn
@@ -262,8 +264,13 @@ class AgentLoop:
     # 工具执行
     # ------------------------------------------------------------------
 
-    async def _execute_one(self, call: ModelToolCall) -> ToolExecution:
-        """执行单个工具调用: 查表 → execute_tool; 未知工具给可操作错误 (#2)."""
+    async def _execute_one(self, call: ModelToolCall, *, turn: int) -> ToolExecution:
+        """执行单个工具调用: 查表 → 请插件裁决 → execute_tool (#2).
+
+        未知工具 (模型幻觉) 直接给可操作错误, **不进裁决点** —— 那道门是给
+        「真实存在但这次不许跑」的工具准备的, 一个不存在的工具本来就不会执行,
+        没有可拦的东西 (拦截插件因此总能拿到 tool 对象, 不必判空).
+        """
         tool = self._tool_map.get(call.name)
         if tool is None:
             available = ", ".join(self.tool_names) or "(未注册任何工具)"
@@ -272,10 +279,21 @@ class AgentLoop:
                 ok=False,
                 error=f"不存在工具 {call.name!r}; 可用工具: {available}",
             )
+        # 拦截点: 请挂在 before_tool_execute 上的插件表态. 这是**框架自己的能力**
+        # (工具执行前的挂载点), 与「为某个业务破例改主循环」是两回事 —— 本文件
+        # 至今没有、以后也不该有一行业务判断 (业务词扫描用例守着这条线). 空注册
+        # 时 decide 立即返回放行, 与从前逐字一样.
+        decision = await self._hooks.decide(
+            HookPoint.BEFORE_TOOL_EXECUTE, turn=turn, call=call, tool=tool
+        )
+        if not decision.allowed:
+            # 被拒 = 这次工具调用失败, 走现成的「工具错误」通道回填 (拒绝原因是
+            # Decision 的不变量: 拒绝必有原因, 见 hooks/utils/types.py)
+            return ToolExecution(tool_name=call.name, ok=False, error=decision.reason)
         return await execute_tool(tool, arguments=call.arguments)
 
     async def _execute_parallel(
-        self, calls: Sequence[ModelToolCall]
+        self, calls: Sequence[ModelToolCall], *, turn: int
     ) -> list[ToolExecution]:
         """并行执行同一 assistant 消息的全部 tool_call (#1).
 
@@ -285,7 +303,7 @@ class AgentLoop:
         await 点抛 CancelledError 传播, 不会把取消吞成普通失败.
         """
         outcomes = await asyncio.gather(
-            *(self._execute_one(call) for call in calls),
+            *(self._execute_one(call, turn=turn) for call in calls),
             return_exceptions=True,
         )
         executions: list[ToolExecution] = []
@@ -568,7 +586,9 @@ class AgentLoop:
                 EventType.TOOL_CALL, **tool_call_data(call, turn=state.turn_count)
             )
 
-        executions = await self._execute_parallel(response.tool_calls)
+        executions = await self._execute_parallel(
+            response.tool_calls, turn=state.turn_count
+        )
         for call, execution in zip(response.tool_calls, executions, strict=True):
             state.history.append(tool_wire(call.id, execution))
             # 结果事件按**调用顺序**(非完成顺序)产出: 并发下事件序列确定,
@@ -764,7 +784,7 @@ class AgentLoop:
             # 事件与工具轮同序: 先全部声明「要调什么」, 再执行 (并行语义 #1)
             await bus.emit(EventType.TOOL_CALL, **tool_call_data(call, turn=turn))
 
-        executions = await self._execute_parallel(pending)
+        executions = await self._execute_parallel(pending, turn=turn)
         for call, execution in zip(pending, executions, strict=True):
             state.history.append(tool_wire(call.id, execution))
             await bus.emit(

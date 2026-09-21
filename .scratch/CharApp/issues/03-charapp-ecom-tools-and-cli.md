@@ -217,3 +217,11 @@
 框架侧（第 1+2 条的连带改动，2026-09-19）：`CharAgent/client/app.py`（上浮 + 四个钩子 +
 文档）、`CharAgent/client/__init__.py`（门面导出）、`CharAgent/tests/test_client_app.py`
 （跟着改名）。**`agent/loop.py` 一行未动** —— 与 issue 01 同一条约束。
+
+---
+
+> **口径修订 2026-09-21（issue 08 回指）**：本文件那句「`agent/loop.py` 一行未动」说的是
+> **业务接入点** —— 换业务只换装配参数，主循环一行不用改（本 issue 正是这条的实证）。
+> issue 08 为框架**自己**加了一个「工具执行前的拦截点」（框架能力），因此按预期动了
+> `_execute_one`。判据没变：`agent/loop.py` 里至今没有一行业务判断（业务词扫描用例绿）。
+> 分辨这两件事的完整说法见 `08-framework-before-tool-execute.md` 的「实际开发情况」第一节。

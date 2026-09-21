@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 from mock_llm import MockLLM, make_tool_call, text_response, tool_call_response
 from trace_assertions import trace_of
@@ -38,6 +39,12 @@ FRAMEWORK_ROOT = Path(__file__).resolve().parents[1]
 # 一个都没有 (2026-09-18 实测) —— 像「订单」这种被框架演示工具
 # (tools_demo.query_order_status) 用到的词反而不能进词表, 那会让用例一上来就红.
 BUSINESS_WORDS = ("minimall", "ecom", "商品", "购物车", "收货地址", "买家", "商城")
+
+# 业务打在工具上的注解键 (见 test_the_framework_never_mentions_annotation_keys).
+# 与上面那份词表是两回事: `writes` 本身不是业务词, 它是**业务的注解词汇** ——
+# 业务用它标「这个工具会改数据」, 护栏插件靠它认人, 而框架一个都不许认识
+# (框架一旦认了某个键名, 换个业务就得改框架; 与 payload 同一条纪律).
+ANNOTATION_WORDS = ("writes",)
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +129,37 @@ class ShopProvider:
             return f"用户 {user_id} 的余额: 100.00"
 
         return [*SHOP_TOOLS, my_balance]
+
+
+# --- 业务 C: 给工具打了些「框架没听说过」的标记 ------------------------------
+
+
+class MarkedProvider:
+    """业务 C 的工具提供者: 注解的键与值全由业务自己定.
+
+    其中 `回调` 那个值是一个函数 —— 它**不可能**序列化进 JSON. 于是这条用例
+    顺手守住第二件事: 注解若在哪儿被读去拼 wire (模型的 tools 参数 / 工具结果 /
+    历史), 会当场炸.
+    """
+
+    def __init__(self) -> None:
+        self.marks: dict[str, Any] = {"租户": "甲", "回调": lambda: None}
+        self.made: list[Tool] = []
+
+    async def provide(self, context: RunContext) -> list[Tool]:
+        """交出一个带怪注解的工具 (框架不该因此有任何反应)."""
+
+        @tool(annotations=dict(self.marks))
+        async def ping(note: str) -> str:
+            """记一声招呼.
+
+            Args:
+                note: 招呼内容.
+            """
+            return f"招呼: {note}"
+
+        self.made.append(ping)
+        return [ping]
 
 
 # ---------------------------------------------------------------------------
@@ -213,6 +251,40 @@ async def test_the_framework_never_reads_inside_the_payload(tmp_path: Path) -> N
 # ---------------------------------------------------------------------------
 # 工具提供者
 # ---------------------------------------------------------------------------
+
+
+async def test_the_framework_never_reads_inside_the_annotations(tmp_path: Path) -> None:
+    """工具的注解与运行载荷同一条纪律: 框架只认「有一块标记」, 不认里面有什么.
+
+    做法: 给工具打上一批**框架没听说过**的键, 其中一个值干脆是个函数 (进不了
+    JSON), 然后用同一套装配代码跑完一次问答. 框架若在哪儿读过、序列化过注解
+    (拼给模型的 tools 参数、工具结果、历史), 这里会当场炸.
+    """
+    toy_dir = write_prompt(tmp_path / "marked", "marked", "你是玩具助手 C.")
+    provider = MarkedProvider()
+    model = MockLLM.scripted(
+        [
+            tool_call_response(make_tool_call("ping", '{"note": "你好"}')),
+            text_response("招呼记下了"),
+        ]
+    )
+
+    session, result = await assemble(
+        model,
+        provider,
+        RunContext(thread_id="marked:chat-1"),
+        prompt_name="marked",
+        prompt_dir=toy_dir,
+        question="跟甲打个招呼",
+    )
+
+    # 业务自己打的标记原样在 (框架一个键都没动)
+    [ping] = provider.made
+    assert ping.annotations == provider.marks
+    # 而模型那一侧什么都没有: 请求里的 tools 与 wire 历史上都不带注解
+    assert "租户" not in json.dumps(model.calls[0]["tools"], ensure_ascii=False)
+    assert "租户" not in json.dumps(session.history, ensure_ascii=False)
+    assert result.content == "招呼记下了"
 
 
 async def test_a_provider_is_anything_with_the_right_shape() -> None:
@@ -382,13 +454,11 @@ def _framework_source_files() -> list[Path]:
     )
 
 
-def test_the_framework_never_mentions_the_business() -> None:
-    """框架的源码与提示词里不出现业务词 —— 「框架不认识业务」这句话的证据.
+def _scan_for_words(words: tuple[str, ...]) -> list[str]:
+    """扫框架源码, 返回「哪个文件里出现了哪个词」(空列表 = 干净).
 
-    为什么值得一条用例: 这条规矩只靠自觉守不住 —— 顺手写一句
-    `if business == "商城"` 就能省不少事, 而且当下跑得通. 扫源码是最便宜的
-    防线: 假业务都在 tests/ 里, 真业务在 CharApp/, 两边都不该在框架的源码里
-    留下名字.
+    扫空 (一个文件都没扫到) 当场报错: 用例的说服力全在「扫到了该扫的东西」上,
+    静默通过是最坏的结果 (见 test_the_business_scan_covers_the_framework_packages).
     """
     files = _framework_source_files()
     assert files, "一个框架源码文件都没扫到, 说明路径找错了 (用例本身失效)"
@@ -398,11 +468,32 @@ def test_the_framework_never_mentions_the_business() -> None:
         text = path.read_text(encoding="utf-8")
         offenders.extend(
             f"{path.relative_to(FRAMEWORK_ROOT)} 里的 {word!r}"
-            for word in BUSINESS_WORDS
+            for word in words
             if word in text
         )
+    return offenders
 
-    assert offenders == [], f"框架源码里出现了业务词: {offenders}"
+
+def test_the_framework_never_mentions_annotation_keys() -> None:
+    """注解里的业务键名, 框架源码里一个都不该出现 —— 「只透传不解释」的证据.
+
+    与业务词那条同款做法 (扫源码), 守的却是另一条线: `Tool.annotations` 的键
+    含义由业务自己定 (哪个工具会改数据 / 哪个要审批…), 框架只把它原样交到插件
+    手里. 一旦框架里出现 `annotations.get("writes")` 这种写法, 它就**认了**某
+    个业务词汇, 别家业务想换个说法就得改框架 —— 这条用例让那一刻立刻红.
+    """
+    assert _scan_for_words(ANNOTATION_WORDS) == []
+
+
+def test_the_framework_never_mentions_the_business() -> None:
+    """框架的源码与提示词里不出现业务词 —— 「框架不认识业务」这句话的证据.
+
+    为什么值得一条用例: 这条规矩只靠自觉守不住 —— 顺手写一句
+    `if business == "商城"` 就能省不少事, 而且当下跑得通. 扫源码是最便宜的
+    防线: 假业务都在 tests/ 里, 真业务在 CharApp/, 两边都不该在框架的源码里
+    留下名字.
+    """
+    assert _scan_for_words(BUSINESS_WORDS) == []
 
 
 def test_the_business_scan_covers_the_framework_packages() -> None:

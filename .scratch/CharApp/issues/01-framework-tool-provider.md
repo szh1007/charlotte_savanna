@@ -97,3 +97,11 @@
 
 新增 4 个：`agent/provider.py` · `pyproject.toml` · `setup.cfg` · `tests/test_agent_provider.py`
 修改 8 个：`agent/__init__.py` · `__init__.py` · `prompt/load.py` · `prompt/__init__.py` · `client/session.py` · `prompt/templates/service.prompt` · `tests/test_prompt_load.py` · `tests/test_client_session.py`
+
+---
+
+> **口径修订 2026-09-21（issue 08 回指）**：本文件那句「`agent/loop.py` 零改动」说的是
+> **业务接入点** —— 「加一个业务接入点需要改主循环 = 接缝设计失败」。issue 08 为框架**自己**
+> 加了一个「工具执行前的拦截点」（框架能力，不是为业务破例），因此按预期动了 `_execute_one`。
+> 判据没变、也仍然可执行：`agent/loop.py` 里至今没有一行业务判断（业务词扫描用例绿）。
+> 分辨这两件事的完整说法见 `08-framework-before-tool-execute.md` 的「实际开发情况」第一节。

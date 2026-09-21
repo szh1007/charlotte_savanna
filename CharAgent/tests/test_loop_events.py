@@ -12,8 +12,12 @@
 - delta 与 final 的权威性: final.content 是权威值 (与 LoopResult.content
   一致); CONDENSE 丢弃的截断前缀不进 final
 - 工具失败 / 未知工具 → tool_result(status=error, 可操作错误文本 #2)
-- hooks 五个触发点的时机与载荷; before_turn 注入的消息被模型看到 (插件挂载
+- hooks 五个观察点的时机与载荷; before_turn 注入的消息被模型看到 (插件挂载
   语义); 插件抛异常不影响 run 完成 (异常隔离)
+- **拦截点 (before_tool_execute)**: 插件拒绝 → 工具一次都不跑 + 拒绝原因回填
+  模型 + 事件流仍是一条正常的失败结果; 全部放行 / 无人注册 → 与从前逐字一样;
+  护栏自己坏了按拒绝处理 (fail closed); 取消不被拦截挡住 (玩具业务的完整一跑
+  在最后一条: 一条「写操作最多 3 次」的护栏)
 
 载体工具就地定义 (Seam 3); 模型为 ScriptedModel (Seam 1). 事件经 event_sink
 收集 (同步 append), 断言序列与逐字段载荷.
@@ -32,18 +36,21 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
+import pytest
 from doubles import FakeClock
 from mock_llm import ScriptedModel, make_tool_call, text_response, tool_call_response
+from snapshots import project_events
 
 from CharAgent.agent import AgentLoop, LoopGuard, LoopOutcome, TruncationStrategy
 from CharAgent.agent.utils.events import TERMINAL_ERROR_TEXT
-from CharAgent.hooks import HookPoint, HookRegistry
+from CharAgent.hooks import Decision, HookPoint, HookRegistry
 from CharAgent.model.utils.types import FinishReason, ModelResponse, Usage
 from CharAgent.stream import EventType, StreamEvent
-from CharAgent.tool import ToolActionableError, tool
+from CharAgent.tool import Tool, ToolActionableError, tool
 
 USER_MSG = {"role": "user", "content": "订单 20260701123456 到哪了"}
 
@@ -78,6 +85,13 @@ def _big() -> str:
 ECHO_TOOL = tool(_echo, name="echo")
 ORDER_TOOL = tool(_require_order, name="require_order")
 BIG_TOOL = tool(_big, name="big")
+
+# 「调一次 echo 再答一句」的脚本 (多处用例共用; ScriptedModel 会把列表拷一份,
+# 所以常量可以放心重复使用). 要带 usage 或改答复的用例各自写自己的脚本.
+ECHO_SCRIPT = [
+    tool_call_response(make_tool_call("echo", '{"message": "hi"}')),
+    text_response("回声: hi"),
+]
 
 
 class _Collector:
@@ -649,12 +663,7 @@ async def test_hook_exception_does_not_break_run() -> None:
 
 async def test_loop_runs_without_event_sink() -> None:
     """不接 sink 与 hooks 时: loop 行为与之前一致 (回归保护)."""
-    model = ScriptedModel(
-        [
-            tool_call_response(make_tool_call("echo", '{"message": "hi"}')),
-            text_response("回声: hi"),
-        ]
-    )
+    model = ScriptedModel(ECHO_SCRIPT)
     loop = AgentLoop(model=model, tools=[ECHO_TOOL])
     result = await loop.run([dict(USER_MSG)])
 
@@ -663,3 +672,303 @@ async def test_loop_runs_without_event_sink() -> None:
         "回声: hi",
         2,
     )
+
+
+# ---------------------------------------------------------------------------
+# 拦截点 (before_tool_execute): 工具执行前请插件裁决
+# ---------------------------------------------------------------------------
+
+
+def _ledger_tool(calls: list[str]) -> Tool:
+    """造一个「写操作」玩具工具: 每被执行一次就往 calls 里记一笔.
+
+    用造工具函数而不是模块级常量, 是因为用例要断言「这个函数一次都没被调用」
+    —— 计数用的列表得由用例自己拿着.
+    """
+
+    def write_entry(note: str) -> str:
+        """往账本里记一笔.
+
+        Args:
+            note: 记什么.
+        """
+        calls.append(note)
+        return f"已记账: {note}"
+
+    return tool(write_entry, name="write_entry", annotations={"writes": True})
+
+
+def _run_loop(
+    script: list[Any],
+    *,
+    tools: list[Tool],
+    hooks: HookRegistry | None = None,
+    sink: _Collector | None = None,
+) -> tuple[AgentLoop, _Collector]:
+    """装配一次 run 的常用件 (脚本 + 工具 + 可选的插件与事件出口)."""
+    collector = sink if sink is not None else _Collector()
+    return (
+        AgentLoop(
+            model=ScriptedModel(script),
+            tools=tools,
+            hooks=hooks,
+            event_sink=collector,
+        ),
+        collector,
+    )
+
+
+async def test_a_rejected_call_never_reaches_the_tool() -> None:
+    """插件拒绝 → 工具函数一次都没被调用, 拒绝原因当作它的失败结果回填模型.
+
+    三样都要成立 (缺一样这事儿就没闭环): 工具真的没跑 / 模型真收到了那句话 /
+    事件流里它是一条正常的失败结果 (不是新增一种事件).
+    """
+    calls: list[str] = []
+    seen_executions: list[Any] = []
+    registry = HookRegistry()
+    registry.register(
+        HookPoint.BEFORE_TOOL_EXECUTE,
+        lambda **kw: Decision.reject("账本今天封账了, 明天再来"),
+    )
+    registry.register(
+        HookPoint.ON_TOOL_EXECUTED,
+        lambda **kw: seen_executions.append(kw["execution"]),
+    )
+    loop, sink = _run_loop(
+        [
+            tool_call_response(make_tool_call("write_entry", '{"note": "买咖啡"}')),
+            text_response("今天记不了了, 明天再记这笔"),
+        ],
+        tools=[_ledger_tool(calls)],
+        hooks=registry,
+    )
+
+    result = await loop.run([dict(USER_MSG)])
+
+    assert calls == [], "被拒的工具一次都不许执行"
+    assert sink.types() == ["tool_call", "tool_result", "final"], "序列形状不变"
+    assert [e.seq for e in sink.events] == [1, 2, 3], "seq 连续, 没有断号"
+
+    failed = sink.of(EventType.TOOL_RESULT)[0].data
+    assert failed["status"] == "error"
+    assert failed["error"] == "账本今天封账了, 明天再来"
+    assert "summary" not in failed, "被拒不是成功, 不带成功摘要"
+
+    backfilled = [message for message in result.messages if message["role"] == "tool"]
+    assert [message["content"] for message in backfilled] == [
+        "账本今天封账了, 明天再来"
+    ]
+    assert result.content == "今天记不了了, 明天再记这笔", "模型看着这句话接着答"
+
+    # 「执行完成」这条通道照常走: 被拒的调用同样产出失败态的 ToolExecution,
+    # 观测插件 (记账 / 审计) 因此看得见每一次被拦下的调用
+    assert [execution.ok for execution in seen_executions] == [False]
+
+
+async def test_an_allowing_plugin_changes_the_event_stream_in_no_way() -> None:
+    """插件全部放行 → 与没有插件时**逐字段一样** (事件序列 + 答复).
+
+    拦截点接进主循环最怕的就是顺手改了既有形状 —— 这条用例把「放行 = 什么都没
+    发生」钉死: 同一份脚本跑两遍 (一遍不插插件, 一遍插一个不表态的), 事件流
+    逐字段比对.
+    """
+    registry = HookRegistry()
+    registry.register(HookPoint.BEFORE_TOOL_EXECUTE, lambda **kw: None)
+
+    plain_loop, plain_sink = _run_loop(ECHO_SCRIPT, tools=[ECHO_TOOL])
+    hooked_loop, hooked_sink = _run_loop(ECHO_SCRIPT, tools=[ECHO_TOOL], hooks=registry)
+
+    plain = await plain_loop.run([dict(USER_MSG)])
+    hooked = await hooked_loop.run([dict(USER_MSG)])
+
+    assert project_events(hooked_sink.events) == project_events(plain_sink.events)
+    assert (hooked.content, hooked.outcome, hooked.turn_count) == (
+        plain.content,
+        plain.outcome,
+        plain.turn_count,
+    )
+    assert registry.failures == []
+
+
+async def test_no_registration_is_exactly_the_old_behavior() -> None:
+    """一个插件都没注册 → 与从前逐字一样 (逐字段投影比对).
+
+    「空注册零开销」的另一半 (没有挂起点) 钉在注册表层: test_hooks.py 用事件
+    循环探针断言空注册的 decide 不会挂起 —— 那是「没有挂起点」唯一测得准的地方;
+    本层多出来的只是**一次同步返回的 await** (没有回调、没有调度), 与别的 hook
+    点 (fire) 的既有做法一致.
+    """
+    bare_loop, bare_sink = _run_loop(ECHO_SCRIPT, tools=[ECHO_TOOL], hooks=None)
+    empty_loop, empty_sink = _run_loop(
+        ECHO_SCRIPT, tools=[ECHO_TOOL], hooks=HookRegistry()
+    )
+
+    bare = await bare_loop.run([dict(USER_MSG)])
+    empty = await empty_loop.run([dict(USER_MSG)])
+
+    assert project_events(empty_sink.events) == project_events(bare_sink.events)
+    assert empty.content == bare.content
+
+
+async def test_the_guardrail_sees_the_call_the_tool_and_the_turn() -> None:
+    """插件拿得到判断所需的一切: 第几轮、要调什么、那个工具带着什么标记.
+
+    「这个工具是不是写操作」由业务自己写在注解里, 框架不认识它 —— 插件读到
+    的就是业务当初打上去的那份键值 (`Tool.annotations` 只透传不解释).
+    """
+    seen: list[dict[str, Any]] = []
+    registry = HookRegistry()
+    registry.register(
+        HookPoint.BEFORE_TOOL_EXECUTE,
+        lambda **kw: seen.append(kw) or None,  # 看一眼就放行
+    )
+    loop, _ = _run_loop(
+        [
+            tool_call_response(make_tool_call("write_entry", '{"note": "买咖啡"}')),
+            text_response("记好了"),
+        ],
+        tools=[_ledger_tool([])],
+        hooks=registry,
+    )
+
+    await loop.run([dict(USER_MSG)])
+
+    (payload,) = seen
+    assert payload["turn"] == 1
+    assert payload["call"].name == "write_entry"
+    assert payload["call"].arguments == '{"note": "买咖啡"}'
+    assert payload["tool"].annotations == {"writes": True}, "业务打的标记原样到手"
+    assert payload["tool"].name == "write_entry"
+
+
+async def test_an_unknown_tool_never_reaches_the_guardrail() -> None:
+    """模型报一个不存在的工具名: 不给插件裁决的机会 (没有可拦的东西).
+
+    那道门管的是「真实存在、但这次不许跑」的工具; 一个不存在的工具本来也不会
+    执行 —— 顺手还省掉了一次插件调用 (插件因此不必处理 tool 为空的情况).
+    """
+    seen: list[str] = []
+    registry = HookRegistry()
+    registry.register(
+        HookPoint.BEFORE_TOOL_EXECUTE,
+        lambda *, call, **kw: seen.append(call.name) or None,
+    )
+    loop, sink = _run_loop(
+        [tool_call_response(make_tool_call("ghost")), text_response("换一个工具")],
+        tools=[ECHO_TOOL],
+        hooks=registry,
+    )
+
+    await loop.run([dict(USER_MSG)])
+
+    assert seen == [], "不存在的工具不该打扰拦截插件"
+    assert "不存在工具" in sink.of(EventType.TOOL_RESULT)[0].data["error"]
+
+
+async def test_a_broken_guardrail_fails_closed_at_the_loop() -> None:
+    """护栏自己抛异常 → 这次调用被拦下 (fail closed), 而不是悄悄放行.
+
+    与观察点的「插件坏了照常跑完」是两条相反的规矩: 护栏坏了按拒绝处理, 用户
+    看到的是「这一步没做成」而不是一次没人拦的写操作; 故障本身记在 failures
+    里等运维去看.
+    """
+
+    def broken(**kwargs: Any) -> Decision:
+        raise RuntimeError("护栏内部炸了")
+
+    calls: list[str] = []
+    registry = HookRegistry()
+    registry.register(HookPoint.BEFORE_TOOL_EXECUTE, broken)
+    loop, sink = _run_loop(
+        [
+            tool_call_response(make_tool_call("write_entry", '{"note": "买咖啡"}')),
+            text_response("这一步没能做成"),
+        ],
+        tools=[_ledger_tool(calls)],
+        hooks=registry,
+    )
+
+    result = await loop.run([dict(USER_MSG)])
+
+    assert calls == [], "护栏坏了也不许放行"
+    failed = sink.of(EventType.TOOL_RESULT)[0].data
+    assert failed["status"] == "error"
+    assert "拦截插件执行出错" in failed["error"]
+    assert result.outcome is LoopOutcome.FINISHED, "run 本身照常收尾"
+    assert [type(failure.error).__name__ for failure in registry.failures] == [
+        "RuntimeError"
+    ]
+
+
+async def test_interception_never_blocks_the_kill_switch() -> None:
+    """取消不被拦截点挡住 (#3): 插件挂在半路时 cancel 照样即时中断.
+
+    从**真取消路径**触发 (create_task + cancel, 与 test_loop_guard.py 同款):
+    一个卡住的护栏插件不能变成用户按不动的停止按钮.
+    """
+    entered = asyncio.Event()
+    gate = asyncio.Event()
+
+    async def stuck(**kwargs: Any) -> Decision:
+        entered.set()
+        await gate.wait()  # 永远等不到: 取消必须从这里打断它
+        return Decision.allow()
+
+    registry = HookRegistry()
+    registry.register(HookPoint.BEFORE_TOOL_EXECUTE, stuck)
+    loop, _ = _run_loop(
+        [tool_call_response(make_tool_call("write_entry", '{"note": "买咖啡"}'))],
+        tools=[_ledger_tool([])],
+        hooks=registry,
+    )
+    task = asyncio.create_task(loop.run([dict(USER_MSG)]))
+
+    await entered.wait()  # 已经进了拦截点
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert registry.failures == [], "取消不是插件失败, 不入 failures"
+    pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    assert pending == [], "取消传播干净, 没有留下后台任务"
+
+
+async def test_a_write_budget_guardrail_stops_the_last_call() -> None:
+    """玩具业务的完整一跑: 一条「写操作最多 3 次」的护栏, 第 4 次被拦下.
+
+    这是拦截点的**真实用法** (业务侧写法的最小样板, 与 issue 12 的护栏同形):
+    工具自己带 `writes` 标记, 插件用它认人并记数, 框架全程不知道 `writes` 是
+    什么意思. 断言落在真事件序列上 —— 前三次 tool_result 是成功, 第四次是失败,
+    且那个写函数总共只跑了三次.
+    """
+    calls: list[str] = []
+    registry = HookRegistry()
+    budget = 3
+    used = 0
+
+    def guardrail(*, tool: Tool, **kwargs: Any) -> Decision | None:
+        nonlocal used
+        if not tool.annotations.get("writes"):
+            return None  # 只读操作不管
+        if used >= budget:
+            return Decision.reject(
+                f"这次对话里已经记了 {budget} 笔, 请让用户在页面上继续"
+            )
+        used += 1
+        return None
+
+    registry.register(HookPoint.BEFORE_TOOL_EXECUTE, guardrail)
+    script: list[Any] = [
+        tool_call_response(make_tool_call("write_entry", f'{{"note": "第 {n} 笔"}}'))
+        for n in range(1, budget + 2)
+    ] + [text_response("后面几笔记不下了")]
+    loop, sink = _run_loop(script, tools=[_ledger_tool(calls)], hooks=registry)
+
+    result = await loop.run([dict(USER_MSG)])
+
+    assert calls == ["第 1 笔", "第 2 笔", "第 3 笔"], "超预算那一笔真没执行"
+    statuses = [e.data["status"] for e in sink.of(EventType.TOOL_RESULT)]
+    assert statuses == ["ok", "ok", "ok", "error"]
+    assert "已经记了 3 笔" in sink.of(EventType.TOOL_RESULT)[-1].data["error"]
+    assert result.content == "后面几笔记不下了", "模型收到拒绝原因后继续作答"

@@ -13,7 +13,7 @@
 | `tool` | @tool 装饰器 + JSON schema 自动生成 + 可操作错误语义 |
 | `agent` | 手写 agent loop (并行工具 / 错误自纠错 / 循环防护 / 截断处理) |
 | `stream` | 流式事件总线 (六类事件 + seq + 四条状态机不变量) |
-| `hooks` | hook 注册表骨架 (五个触发点, 空注册零开销) |
+| `hooks` | hook 注册表骨架 (六个触发点, 空注册零开销; 工具执行前那个可拒绝) |
 | `retry` | 重试退避 + 幂等键 (包在 ChatModel 协议层, loop 零改动) |
 | `checkpoint` | 快照序列化协议 + 内存 / Redis / Postgres 三实现 + 断点续跑 |
 | `db` | 五实体数据模型 + 表定义 + alembic 迁移 + 仓储 |
@@ -138,6 +138,7 @@ from CharAgent.db import (
 
 # --- hooks: hook 注册表骨架 (扩展点) ---------------------------------------
 from CharAgent.hooks import (
+    Decision,
     HookConfigError,
     HookError,
     HookFailure,
@@ -254,6 +255,7 @@ __all__ = [
     "DataStoreError",
     "Database",
     "DbError",
+    "Decision",
     "EventBus",
     "EventSequenceError",
     "EventSink",

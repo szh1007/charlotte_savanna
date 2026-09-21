@@ -268,3 +268,11 @@ CharAgent/tests/test_server_sse.py        6 条 (帧格式 + 边跑边推 + 关�
 · `CharAgent/tests/test_root_facade.py`（排除名单 + 子进程用例）· `CharAgent/tests/test_agent_provider.py`（扫描 +`server`）。
 
 **框架既有模块零改动**（`agent/` `stream/` `checkpoint/` `client/` `db/` `model/` `tool/` `hooks/` `retry/` `prompt/` 全部未动）。
+
+---
+
+> **口径修订 2026-09-21（issue 08 回指）**：本文件那句「`CharAgent/agent/loop.py` 零改动」
+> （"框架既有模块零改动" 一节同）说的是**业务接入点** —— 服务层接进来不必碰主循环。
+> issue 08 为框架**自己**加了一个「工具执行前的拦截点」（框架能力），因此按预期动了
+> `_execute_one`。判据没变：`agent/loop.py` 里至今没有一行业务判断（业务词扫描用例绿）。
+> 分辨这两件事的完整说法见 `08-framework-before-tool-execute.md` 的「实际开发情况」第一节。
