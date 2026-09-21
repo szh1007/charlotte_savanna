@@ -55,11 +55,15 @@ Django session → user_id → X-User-Id → RunContext.payload["user_id"] → �
 
 | 阶段 | 内容 | 验收标准 |
 |------|------|---------|
-| **L1a** | 框架 `ToolProvider` 接缝；minimall 只读内部端点；CharApp 9 个只读工具 + CLI | CLI 问"推荐个手机"/"我的订单到哪了" → 命中真实数据 |
-| **L1b** | `CharAgent/server/`（SSE + cancel）；Django BFF；minimall 客服页面 | 浏览器打开客服页，多用户各自登录、各自看到自己的数据 |
-| **L2** | hook 拦截点（`before_tool_execute` + 返回值语义）；`#69` prompt 版本化；minimall 写操作端点 + `RefundRequest` 扩建；轨迹断言测试 | 挂起/拦截行为可被测试断言；下单/退款链路跑通 |
-| **L3** | 可观测（trace 落 PG + 成本记账 + 脱敏）；HITL 框架级挂起（替代 prompt 层确认） | 能回答"当时它看到了什么、花了多少" |
-| **L4** | 评估集 + 自动跑分；prompt A/B；**工具数量 A/B（全挂 vs 动态裁剪）** | 能证明"这次改得比上次好"，且两个 A/B 有对照数据 |
+| **L1a** ✅ | 框架 `ToolProvider` 接缝；minimall 只读内部端点；CharApp 9 个只读工具 + CLI | CLI 问"推荐个手机"/"我的订单到哪了" → 命中真实数据（2026-09-19 完成，issues 01–03） |
+| **L1b** ✅ | `CharAgent/server/`（SSE + cancel）；Django BFF；minimall 客服页面 | 浏览器打开客服页，多用户各自登录、各自看到自己的数据（2026-09-21 完成并人工验收，issues 04–07） |
+| **L2** | hook 拦截点（`before_tool_execute` + 返回值语义）；`#69` prompt 版本化（清单文件）；minimall 写操作端点 + 退款域（**新建** `RefundRequest`）；17 个工具 + 护栏插件；工具事件去字段化 + 会话历史；顺带修三处缺事务/锁的写路径 | 拦截行为可被测试断言；**下单与退款链路跑通**（浏览器下单 → 申请退款 → 管理员批准 70 元 → 打款 → 助手答得出退了 70） |
+| **L3** | 可观测（trace 落 PG + 成本记账 + 脱敏）；**记录 prompt 实际命中的版本**；HITL 框架级挂起（替代 prompt 层确认）；**助手代付**（本人在页面输密码） | 能回答"当时它看到了什么、花了多少" |
+| **L4** | 评估集 + 自动跑分；prompt A/B；**工具数量 A/B（17 全挂 vs 动态裁剪）**；prompt 里要求模型不复述工具真实数据 | 能证明"这次改得比上次好"，且两个 A/B 有对照数据 |
+
+> **L2 的详细规划已就位**（2026-09-21）：`../.scratch/CharApp/issues/08`–`14`，共 7 片。
+> 关键路径 `09 → 10 → 11 → 12`；`08` 与 `09` 可并行、`13` 与 `11` 可并行。
+> 决策记录见 `docs/adr/0003`、`0004`，需求变更见 `../.scratch/CharApp/PRD.md` 的「修订记录」。
 
 **L1a 不可跳过**：Web 会同时引入 HTTP 层、SSE、BFF 转发、前端渲染、跨进程错误传播五个新变量。链路本身未验证时不加传输层。
 
@@ -158,9 +162,12 @@ CharApp/
 
 ### 3.5 工程侧
 
-- 根 `.env.example` 加 `CHARAPP_INTERNAL_TOKEN` 与 `CHARAPP_*` 段
-- `sh/charapp_client.sh` 启动脚本（沿用项目 `sh/` 惯例）
-- 更新根 `CLAUDE.md`（新增 `CharAgent/` `CharApp/` 两类顶层目录的约定）与 `README.md`
+- 根 `.env.example` 加 `CHARAPP_INTERNAL_TOKEN` 与 `CHARAPP_*` 段 ✅
+- `sh/charapp_client.sh`、`sh/charapp_backend.sh` 启动脚本（沿用项目 `sh/` 惯例）✅
+- ~~更新根 `CLAUDE.md`（新增 `CharAgent/` `CharApp/` 两类顶层目录的约定）与 `README.md`~~
+  → **已决意压后**：2026-09-18 的指示是「两个模块完全实现之前不要动根文档」，2026-09-21 复核为
+  「**整个项目正式完成后**才同步」。**这不是漏项** —— 中途同步要写大量马上会变的中间态描述。
+  收口时由 issue 14 之外的独立动作完成（届时本行改回 ✅）。
 
 ## 4. L1b 概要
 
@@ -171,11 +178,11 @@ CharApp/
 
 ## 5. L2–L4 概要
 
-**L2**：hook 拦截点（`before_tool_execute` + 返回值语义，配轨迹断言）· `#69` prompt 版本化收尾（目录布局已就位：`prompt/system/v1.prompt`；还差**清单文件声明当前默认用哪一版**与 **trace 记录实际命中的版本**）· minimall 写操作端点（加购/下单/支付/取消）· `RefundRequest` 扩建（仅退款、全额、三态、Admin 审批、补 `refunded_at`）· 顺带修 `pay_order` 的缺失事务与行锁
+**L2**（**已详细规划为 issues 08–14**，2026-09-21）：hook 拦截点（`before_tool_execute` + `Tool.annotations` + `HookRegistry.decide()`，配轨迹断言）· `#69` prompt 版本化收尾（清单文件 `prompt/manifest.yaml` 声明默认版本；**记录实际命中的版本归 L3**，它要落进轨迹）· minimall 写操作端点 8 个（加购/改量/移除/清空/下单/取消/退款申请/退款列表）· **`RefundRequest` 新建**（不是"扩建" —— 它此前根本不存在）· 退款域整片：三态 + `refunding` 订单状态 + `refunded_at` + `RefundRequestAdmin`，**含管理员协商金额的部分退款** · 17 个工具（9 只读 + 8 写）· 业务侧护栏插件（写操作预算 8 次 + 单笔金额上限 5000）· 工具事件去字段化（ADR-0003）· 会话历史接口 · 顺带修商城三处缺事务/锁的写路径
 
-**L3**：`CharAgent/plugins/observability`（trace 落 PG，run 粒度一行 + JSONB 明细）· 成本记账（`on_model_call` AFTER 的 usage）· 脱敏 · HITL 框架级挂起（`PendingApproval` → checkpoint 挂起 → `resume()`），替代 L1 的 prompt 层确认
+**L3**：`CharAgent/plugins/observability`（trace 落 PG，run 粒度一行 + JSONB 明细）· 成本记账（`on_model_call` AFTER 的 usage）· 脱敏 · HITL 框架级挂起（`PendingApproval` → checkpoint 挂起 → `resume()`），替代 L1 的 prompt 层确认 · **助手代付**（用户本人在页面上输支付密码，走挂起-恢复，密码不进会话历史）· 把 L2 算出来的 prompt 版本号**记进轨迹**
 
-**L4**：评估集（golden set 起步 + badcase 回流）· prompt A/B · **工具数量 A/B**：全挂 9→17 个 vs `before_turn` 动态裁剪，用准确率差值决定 `#70` 的取舍
+**L4**：评估集（golden set 起步 + badcase 回流）· prompt A/B · **工具数量 A/B**：全挂 **17** 个（不是 9→17，L2 后的基线就是 17）vs `before_turn` 动态裁剪，用准确率差值决定 `#70` 的取舍 · 在 prompt 里要求模型**不复述**工具的真实数据（ADR-0003 的补充）
 
 ## 6. 风险与开放项
 
@@ -206,7 +213,14 @@ CharApp/
 |----|------|
 | `charplot` 的 `X-Internal-Token` 实现 | 需读 `app/charplot/views_api.py` 取现成模式，避免两套写法 |
 
-### 6.3 已记录的一条 ADR（2026-09-19 完成）
+### 6.3 已记录的四条 ADR
+
+| # | 决策 | 日期 |
+|---|------|------|
+| 0001 | 内部端点直接采信调用方声明的 `X-User-Id` | 2026-09-19 |
+| 0002 | 浏览器 → BFF 用 POST + `fetch` 读流，不用 `EventSource` | 2026-09-21 |
+| 0003 | 工具事件在业务侧脱敏，不靠前端隐藏 | 2026-09-21（L2 规划期） |
+| 0004 | 「退款中」做成订单状态的一个取值，接受两个状态机耦合 | 2026-09-21（L2 规划期） |
 
 `CharApp/docs/adr/0001-internal-endpoint-trusts-declared-user-id.md` —— 内部端点信任 `X-User-Id`。三条 ADR 条件均满足：改认证契约要动所有内部端点（难回退）· 面试官必问"为什么信任裸 user_id"（无上下文时反直觉）· 存在真实取舍（单机演示 vs JWT 签发/验签/时钟偏移/密钥轮换）。已记入 ADR：**身份来路**（session cookie 是唯一验证点，裸声明只是同一信任域内的转发）· **什么时候必须还**（判据是信任域被拆开，不是用户数）· **生产化路径 = 内部 JWT（`sub` claim）或 mTLS + 服务网格身份**（换的只是传输，验证点不变）· 代价说明 · 三个被否的替代方案（身份做成工具参数 / 现在就上 JWT / 每个端点各自校验）。
 
