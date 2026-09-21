@@ -148,6 +148,7 @@
 - **#13 重试放哪一层**：包在**模型调用层**（`RetryingChatModel` 组合包装 ChatModel，SPI 用法），loop 与 model 零改动 —— 这是「在哪切一刀」的典型判断。
 - **#16 是全框架的主心骨**：模型只「建议」下一步动作，真正推进状态的是执行层（runtime）—— 这样多轮之间状态才一致、可控。状态集合：`created` / `running` / `waiting_tool` / `waiting_user` / `retrying` / `failed` / `finished` / `cancelled`。
 - **#17 #18 副作用与取消是一对**：幂等键（`request_id` / `task_id` / `operation_id`）标识一次操作；Saga 正向依次执行、任一步失败**逆序补偿**；取消时要连带释放协程与连接，已执行的副作用关联幂等键走补偿，不留半截状态。
+- **#17 至今零调用方，原因是前置条件还没到位（2026-09-22 核实）**：它挡的是「**同一个动作被执行两次**」，而今天框架里**不存在这条路径** —— 重试只包模型调用（见上一条「重试放哪一层」），工具执行是「跑一次 → 失败文本回填 → **模型自己决定要不要再发一次**」（`tool/executor.py` 的 `execute_tool` 永不抛异常、无循环、无超时），而模型重发**是一次新的调用**，不是同一个动作的重放。会产生重放的两条路径都还没做：**HITL 挂起-恢复**（补做欠着的工具调用，恢复被触发两次就重放同一个 `(run_id, tool_call_id)`）与 **#15 工具超时**（超时造成「结果未知」，而「结果未知」必须先靠幂等或先查状态解决 —— **#15 与 #17 是一对，要么一起做，要么都不做**）。届时还要**连持久化存储一起补**：P0 这个进程内 dict 记不住跨进程的重放，而两条路径**都跨进程**（`db/README.md` 已规划 `idempotency_keys` 表）。同一段话也写在 `retry/idempotency.py` 的模块 docstring 里。
 - **#20 #21 #22 是同一问题的三个尺度**：进程内 asyncio 队列（单实例）→ 分布式锁（跨进程互斥，进程内锁失效）→ 限流算法（固定窗口 / 滑动窗口 / 令牌桶 / 漏桶）。P0 形态是进程内幂等 store，Redis + TTL + Saga 属后续阶段。
 
 **落地**：`retry/policy.py`（退避与上限）、`retry/chat_model.py`（组合包装）、`retry/idempotency.py`（`IdempotencyKey` + 进程内 `IdempotencyStore`，claim / complete / release）、`retry/executor.py`。
