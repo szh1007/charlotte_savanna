@@ -15,6 +15,7 @@ from app.minimall.models import (
     Profile,
     ShippingAddress,
 )
+from app.minimall.services import MAX_CART_ITEM_QUANTITY
 
 User = get_user_model()
 
@@ -182,6 +183,40 @@ class CartAPITest(TestCase):
         ).data
         r = self.client.delete(f"/api/minimall/cart/items/{item['id']}/delete/")
         self.assertEqual(r.status_code, 204)
+
+    def test_add_capped_at_max_quantity(self):
+        """库存再多也封顶在单件上限 (上限是业务规则, 不只是库存的衍生)."""
+        big = Product.objects.create(
+            name="Big", slug="big", category=self.cat, price=10.00, stock=1000
+        )
+        r = self.client.post(
+            "/api/minimall/cart/items/",
+            {"product_id": big.id, "quantity": MAX_CART_ITEM_QUANTITY + 1},
+            format="json",
+        )
+        self.assertEqual(r.data["quantity"], MAX_CART_ITEM_QUANTITY)
+
+    def test_update_quantity_zero_removes_item(self):
+        item = self.client.post(
+            "/api/minimall/cart/items/",
+            {"product_id": self.prod.id, "quantity": 1},
+            format="json",
+        ).data
+        r = self.client.patch(
+            f"/api/minimall/cart/items/{item['id']}/", {"quantity": 0}, format="json"
+        )
+        self.assertEqual(r.status_code, 204)
+        self.assertFalse(CartItem.objects.filter(id=item["id"]).exists())
+
+    def test_clear_cart(self):
+        self.client.post(
+            "/api/minimall/cart/items/",
+            {"product_id": self.prod.id, "quantity": 2},
+            format="json",
+        )
+        r = self.client.delete("/api/minimall/cart/clear/")
+        self.assertEqual(r.status_code, 204)
+        self.assertEqual(CartItem.objects.filter(cart__user=self.user).count(), 0)
 
 
 class OrderAPITest(TestCase):

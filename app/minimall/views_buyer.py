@@ -3,6 +3,7 @@ import json
 import re
 
 from django.contrib.auth import get_user_model, login, logout
+from django.http import Http404
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -15,7 +16,7 @@ from .cache import (
     get_cached_product_list,
 )
 from .filters import ProductFilter
-from .models import Cart, CartItem, Order, Product, ShippingAddress
+from .models import Cart, Order, Product, ShippingAddress
 from .serializers import (
     AddToCartSerializer,
     CartItemSerializer,
@@ -33,14 +34,21 @@ from .serializers import (
     UserRegisterSerializer,
 )
 from .services import (
+    CartItemNotFoundError,
     InvalidOrderStatusError,
     OrderServiceError,
+    OutOfStockError,
     PaymentError,
+    ProductUnavailableError,
+    add_to_cart,
     cancel_order,
+    clear_cart,
     complete_order,
     create_order,
     pay_order,
     receive_order,
+    remove_cart_item,
+    update_cart_item,
 )
 
 User = get_user_model()
@@ -328,31 +336,20 @@ class AddCartItemView(APIView):
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        product_id = serializer.validated_data["product_id"]
-        quantity = serializer.validated_data["quantity"]
-
         try:
-            product = Product.objects.get(id=product_id, is_active=True)
-        except Product.DoesNotExist:
+            cart_item, created = add_to_cart(
+                request.user,
+                product_id=serializer.validated_data["product_id"],
+                quantity=serializer.validated_data["quantity"],
+            )
+        except ProductUnavailableError:
             return Response(
                 {"detail": "Product not found"}, status=status.HTTP_404_NOT_FOUND
             )
-
-        if product.stock <= 0:
+        except OutOfStockError:
             return Response(
                 {"detail": "商品暂时缺货"}, status=status.HTTP_400_BAD_REQUEST
             )
-        quantity = min(quantity, product.stock)
-
-        cart, _ = Cart.objects.get_or_create(user=request.user)
-        cart_item, created = CartItem.objects.get_or_create(
-            cart=cart,
-            product=product,
-            defaults={"quantity": quantity},
-        )
-        if not created:
-            cart_item.quantity = min(cart_item.quantity + quantity, product.stock)
-            cart_item.save()
 
         return Response(
             CartItemSerializer(cart_item, context={"request": request}).data,
@@ -364,20 +361,21 @@ class UpdateCartItemView(APIView):
     permission_classes = [IsAuthenticated]
 
     def patch(self, request, cart_item_id):
-        cart_item = get_object_or_404(
-            CartItem, id=cart_item_id, cart__user=request.user
-        )
         serializer = UpdateCartItemSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        quantity = serializer.validated_data["quantity"]
-        if quantity == 0:
-            cart_item.delete()
-            return Response(status=status.HTTP_204_NO_CONTENT)
+        try:
+            cart_item = update_cart_item(
+                request.user,
+                cart_item_id=cart_item_id,
+                quantity=serializer.validated_data["quantity"],
+            )
+        except CartItemNotFoundError:
+            raise Http404
 
-        cart_item.quantity = min(quantity, cart_item.product.stock)
-        cart_item.save()
+        if cart_item is None:  # 数量 0 = 移除该条目
+            return Response(status=status.HTTP_204_NO_CONTENT)
         return Response(
             CartItemSerializer(cart_item, context={"request": request}).data
         )
@@ -387,10 +385,10 @@ class DeleteCartItemView(APIView):
     permission_classes = [IsAuthenticated]
 
     def delete(self, request, cart_item_id):
-        cart_item = get_object_or_404(
-            CartItem, id=cart_item_id, cart__user=request.user
-        )
-        cart_item.delete()
+        try:
+            remove_cart_item(request.user, cart_item_id=cart_item_id)
+        except CartItemNotFoundError:
+            raise Http404
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -398,7 +396,7 @@ class ClearCartView(APIView):
     permission_classes = [IsAuthenticated]
 
     def delete(self, request):
-        CartItem.objects.filter(cart__user=request.user).delete()
+        clear_cart(request.user)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -537,7 +535,8 @@ class OrderPayView(APIView):
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         try:
-            pay_order(order, serializer.validated_data["payment_password"])
+            # 用返回值渲染: pay_order 判的是锁内那份实例, 传进去的这份可能已过期
+            order = pay_order(order, serializer.validated_data["payment_password"])
         except PaymentError as e:
             return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
         except InvalidOrderStatusError as e:
@@ -551,7 +550,7 @@ class OrderCancelView(APIView):
     def post(self, request, order_no):
         order = get_object_or_404(Order, order_no=order_no, user=request.user)
         try:
-            cancel_order(order)
+            order = cancel_order(order)
         except InvalidOrderStatusError as e:
             return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(OrderDetailSerializer(order).data)
