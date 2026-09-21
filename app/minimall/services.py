@@ -59,6 +59,18 @@ class PaymentError(OrderServiceError):
     """Payment failed."""
 
 
+class InsufficientBalanceError(PaymentError):
+    """余额不够付这一单 (充值就能解决, 与「密码错了」不是一回事)."""
+
+
+class EmptyCartError(OrderServiceError):
+    """购物车里没有可下单的商品."""
+
+
+class InvalidAddressError(OrderServiceError):
+    """收货地址不存在, 或不属于这个买家 (两种情况一律当成不存在)."""
+
+
 class ProductUnavailableError(OrderServiceError):
     """商品不存在或已下架 (页面回 404)."""
 
@@ -257,6 +269,8 @@ def create_order(user, cart_item_ids, address_id):
         Order instance
 
     Raises:
+        EmptyCartError: 购物车里没有可下单的商品.
+        InvalidAddressError: 地址不存在, 或不属于这个买家.
         InsufficientStockError: if any product stock is insufficient
     """
     # 事务外只读一次「要锁哪些商品」: 这次读不参与任何业务判断, 拿到的只是 id
@@ -267,12 +281,12 @@ def create_order(user, cart_item_ids, address_id):
         )
     )
     if not product_ids:
-        raise OrderServiceError("Cart is empty")
+        raise EmptyCartError("Cart is empty")
 
     try:
         address = ShippingAddress.objects.get(id=address_id, user=user)
     except ShippingAddress.DoesNotExist:
-        raise OrderServiceError("Invalid shipping address")
+        raise InvalidAddressError("Invalid shipping address")
 
     with transaction.atomic():
         # Lock product rows to prevent oversell
@@ -286,7 +300,7 @@ def create_order(user, cart_item_ids, address_id):
             )
         )
         if not cart_items:
-            raise OrderServiceError("Cart is empty")
+            raise EmptyCartError("Cart is empty")
 
         # Validate stock
         for item in cart_items:
@@ -404,7 +418,7 @@ def pay_order(order, payment_password) -> Order:
             raise PaymentError("支付密码错误")
 
         if profile.balance < locked.total_amount:
-            raise PaymentError("余额不足")
+            raise InsufficientBalanceError("余额不足")
 
         profile.balance -= locked.total_amount
         profile.save(update_fields=["balance"])

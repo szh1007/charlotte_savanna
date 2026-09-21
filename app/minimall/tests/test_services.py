@@ -21,6 +21,7 @@ from app.minimall.services import (
     MAX_CART_ITEM_QUANTITY,
     ORDER_NO_MAX_ATTEMPTS,
     CartItemNotFoundError,
+    InsufficientBalanceError,
     InsufficientStockError,
     InvalidOrderStatusError,
     InvalidRefundAmountError,
@@ -104,6 +105,23 @@ class OrderServiceTest(TestCase):
         order = create_order(self.user, [ci.id], self.addr.id)
         with self.assertRaises(PaymentError):
             pay_order(order, "wrong")
+
+    def test_pay_insufficient_balance(self):
+        """余额不够: 与「密码错了」是两个异常 —— 一个充值能解决, 一个要重输.
+
+        (余额不足这个错误码在 agent 端点上暂时触发不到: 支付走 L3 的挂起.
+        但异常分开是 agent 那层能把它讲成不同中文的前提.)
+        """
+        self.user.minimall_profile.balance = Decimal("1.00")
+        self.user.minimall_profile.save(update_fields=["balance"])
+        ci = self._cart_item(1)
+        order = create_order(self.user, [ci.id], self.addr.id)
+
+        with self.assertRaises(InsufficientBalanceError):
+            pay_order(order, "123456")
+
+        order.refresh_from_db()
+        self.assertEqual(order.status, Order.Status.PENDING, "没扣钱也没推状态")
 
     def test_pay_success(self):
         ci = self._cart_item(1)

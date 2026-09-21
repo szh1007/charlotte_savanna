@@ -15,7 +15,15 @@ from decimal import Decimal
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
 
-from .models import CartItem, Category, Order, OrderItem, Product, ShippingAddress
+from .models import (
+    CartItem,
+    Category,
+    Order,
+    OrderItem,
+    Product,
+    RefundRequest,
+    ShippingAddress,
+)
 
 User = get_user_model()
 
@@ -219,3 +227,100 @@ class AgentAddressSerializer(serializers.ModelSerializer):
             "detail",
             "is_default",
         ]
+
+
+# ---------------------------------------------------------------------------
+# 写操作的请求体 (issue 11)
+# ---------------------------------------------------------------------------
+# 与只读那批同一条纪律: 这是 agent 的契约, 不复用买家面 serializers.py 那套
+# (那边是按网页表单设计的, 改网页形状不应该动到助手).
+#
+# 只做「形状」校验 (字段在不在, 类型对不对) —— 业务规则一律留给 services.py:
+# 库存够不够, 状态让不让, 余额够不够, 都由那边的锁内判据回答. 这里放开一条,
+# 不等于那边也放开 (端点的校验永远不会是唯一那道).
+
+
+class AgentCartItemAddSerializer(serializers.Serializer):
+    """加购: `slug` + 数量 (默认 1)."""
+
+    # 用 slug 不用 cart_item_id —— 商品标识在商品页/搜索结果/购物车返回体里到处
+    # 都能看到, 而主键对模型是个没有语义的数字 (见 issue 11 的清单).
+    slug = serializers.CharField()
+    quantity = serializers.IntegerField(default=1, min_value=1)
+
+
+class AgentCartItemUpdateSerializer(serializers.Serializer):
+    """改数量; **0 = 拿掉这一条** (与 service 的哨兵值一致)."""
+
+    quantity = serializers.IntegerField(min_value=0)
+
+
+class AgentOrderCreateSerializer(serializers.Serializer):
+    """下单: 不带 address_id 就用默认收货地址."""
+
+    address_id = serializers.IntegerField(required=False, min_value=1)
+
+
+class AgentRefundCreateSerializer(serializers.Serializer):
+    """申请退款: 只给订单号 —— **不带金额** (金额由管理员批准时协商, PRD §4.5)."""
+
+    order_no = serializers.CharField()
+
+
+# ---------------------------------------------------------------------------
+# 写操作的返回体
+# ---------------------------------------------------------------------------
+
+
+class AgentRefundSerializer(serializers.ModelSerializer):
+    """一条退款申请 (申请完 / 列表里都用它).
+
+    `admin_note` 一定要给: 故事 18 问「为什么被驳回」, 答案就写在这一栏.
+    `amount` 可以是 null —— 还没批准时协商金额还没定.
+    """
+
+    order_no = serializers.CharField(source="order.order_no", read_only=True)
+    status_display = serializers.CharField(source="get_status_display", read_only=True)
+
+    class Meta:
+        model = RefundRequest
+        fields = [
+            "order_no",
+            "status",
+            "status_display",
+            "amount",
+            "admin_note",
+            "created_at",
+            "approved_at",
+            "refunded_at",
+            "rejected_at",
+        ]
+
+
+class AgentOrderCancelSerializer(AgentOrderDetailSerializer):
+    """取消订单的回执: 订单详情 + 这次动作干了两件什么事.
+
+    取消有**两个**副作用 (回滚库存, 退款给余额), 而买家问的正是这两件事
+    「钱退了吗, 货退了吗」—— 所以它们必须出现在响应里, 别只回一句 ok.
+    余额那笔只在**已付款**的订单上发生 (`pending` 还没扣钱, 退 0): 判据是
+    `paid_at` —— 它是付款那一刻写下的记录, 取消不会清掉它 (`cancel_order` 只
+    改 status / cancelled_at), 而与它对应的那条规则写在 `cancel_order` 里.
+    """
+
+    balance_returned = serializers.SerializerMethodField()
+    restocked_count = serializers.SerializerMethodField()
+
+    class Meta(AgentOrderDetailSerializer.Meta):
+        fields = [
+            *AgentOrderDetailSerializer.Meta.fields,
+            "balance_returned",
+            "restocked_count",
+        ]
+
+    def get_balance_returned(self, obj) -> str:
+        """退回余额的金额 (2 位小数字符串); 未付款的订单是 "0.00"."""
+        return f"{obj.total_amount:.2f}" if obj.paid_at else "0.00"
+
+    def get_restocked_count(self, obj) -> int:
+        """这次回滚了几件库存 —— 数字来自订单明细 (它就是当初扣掉的那批)."""
+        return sum(item.quantity for item in obj.items.all())

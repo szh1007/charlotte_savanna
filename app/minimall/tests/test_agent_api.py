@@ -1,7 +1,11 @@
-"""Agent 内部端点测试 (CharApp issue 02).
+"""Agent 内部端点测试 (CharApp issue 02 的 9 个只读端点).
 
 接缝: Django 测试客户端直接打 /api/minimall/agent/, 断言三件事 ——
 认证 fail closed / 买家数据隔离 / 商品数据不走 Redis 缓存.
+
+认证那张表 (AGENT_URLS) 后来把 issue 11 的 8 个写端点一并收了进来: 三种失败方式
+(无令牌 / 错令牌 / 未配置令牌) 对写端点同样是一个字都不许放行, 证据是同一套 ——
+按方法与路径各打一次, 而不是照抄一份新的表.
 """
 
 import contextlib
@@ -30,23 +34,38 @@ User = get_user_model()
 
 TOKEN = "test-internal-token"
 
-# 9 个端点: (url name, 路径参数). 认证测试遍历用, 路径参数取假值 ——
-# 权限校验先于数据查询, 因此假 slug / 假订单号也能验证"被拒"这件事.
+# 17 个端点: (url name, 路径参数, 方法). 认证测试遍历用, 路径参数与请求体都取假值
+# —— 权限校验先于数据查询, 因此假 slug / 假订单号也能验证"被拒"这件事.
+# 后面 8 行是 issue 11 的写端点 (POST / PATCH / DELETE 各要单独验一遍: 认证挂在
+# 方法上, 只验 GET 会漏掉整片写操作面).
 AGENT_URLS = [
-    ("product_list", {}),
-    ("product_detail", {"slug": "whatever"}),
-    ("category_tree", {}),
-    ("featured_products", {}),
-    ("cart", {}),
-    ("order_list", {}),
-    ("order_detail", {"order_no": "whatever"}),
-    ("profile", {}),
-    ("address_list", {}),
+    ("product_list", {}, "get"),
+    ("product_detail", {"slug": "whatever"}, "get"),
+    ("category_tree", {}, "get"),
+    ("featured_products", {}, "get"),
+    ("cart", {}, "get"),
+    ("order_list", {}, "get"),
+    ("order_detail", {"order_no": "whatever"}, "get"),
+    ("profile", {}, "get"),
+    ("address_list", {}, "get"),
+    ("cart_item_add", {}, "post"),
+    ("cart_item", {"slug": "whatever"}, "patch"),
+    ("cart_item", {"slug": "whatever"}, "delete"),
+    ("cart_clear", {}, "delete"),
+    ("order_list", {}, "post"),
+    ("order_cancel", {"order_no": "whatever"}, "post"),
+    ("refunds", {}, "post"),
+    ("refunds", {}, "get"),
 ]
 
 
 def _url(name, kwargs=None):
     return reverse(f"minimall_agent:{name}", kwargs=kwargs or {})
+
+
+def _call(client, method, name, kwargs=None, **headers):
+    """按方法打一次端点 (写端点也要被认证这张表罩住, 所以方法名是参数)."""
+    return getattr(client, method)(_url(name, kwargs), **headers)
 
 
 def _clear_minimall_cache():
@@ -57,21 +76,23 @@ def _clear_minimall_cache():
 
 @override_settings(CHARAPP_INTERNAL_TOKEN=TOKEN)
 class AgentAuthTest(TestCase):
-    """内部令牌认证 — 全部 9 个端点, 三种失败方式."""
+    """内部令牌认证 — 全部 17 个端点, 三种失败方式."""
 
     def setUp(self):
         self.client = APIClient()
 
     def test_all_endpoints_reject_without_token(self):
-        for name, kwargs in AGENT_URLS:
-            with self.subTest(endpoint=name):
-                r = self.client.get(_url(name, kwargs))
+        for name, kwargs, method in AGENT_URLS:
+            with self.subTest(endpoint=name, method=method):
+                r = _call(self.client, method, name, kwargs)
                 self.assertEqual(r.status_code, 403)
 
     def test_all_endpoints_reject_wrong_token(self):
-        for name, kwargs in AGENT_URLS:
-            with self.subTest(endpoint=name):
-                r = self.client.get(_url(name, kwargs), HTTP_X_INTERNAL_TOKEN="wrong")
+        for name, kwargs, method in AGENT_URLS:
+            with self.subTest(endpoint=name, method=method):
+                r = _call(
+                    self.client, method, name, kwargs, HTTP_X_INTERNAL_TOKEN="wrong"
+                )
                 self.assertEqual(r.status_code, 403)
 
     def test_non_ascii_token_rejected(self):
@@ -84,9 +105,11 @@ class AgentAuthTest(TestCase):
     @override_settings(CHARAPP_INTERNAL_TOKEN="")
     def test_all_endpoints_reject_when_token_unconfigured(self):
         """环境变量没配置 → 拒绝一切请求, 即使请求带了"正确"的令牌."""
-        for name, kwargs in AGENT_URLS:
-            with self.subTest(endpoint=name):
-                r = self.client.get(_url(name, kwargs), HTTP_X_INTERNAL_TOKEN=TOKEN)
+        for name, kwargs, method in AGENT_URLS:
+            with self.subTest(endpoint=name, method=method):
+                r = _call(
+                    self.client, method, name, kwargs, HTTP_X_INTERNAL_TOKEN=TOKEN
+                )
                 self.assertEqual(r.status_code, 403)
 
 
