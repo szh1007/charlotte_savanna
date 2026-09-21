@@ -14,6 +14,7 @@ from .models import (
     Product,
     ProductImage,
     Profile,
+    RefundRequest,
     ShippingAddress,
 )
 
@@ -326,9 +327,31 @@ class OrderListSerializer(serializers.ModelSerializer):
         return obj.items.count()
 
 
+class RefundRequestSerializer(serializers.ModelSerializer):
+    """买家面的一条退款申请 (故事 18: "我的退款处理到哪一步了").
+
+    金额与管理员备注都要给: 前者是协商结果, 后者是驳回原因 —— 买家最关心的两句话.
+    不给 `status_display`: 页面说的是整句话 ("管理员已批准, 正在打款"), 不是状态标签,
+    所以那句人话写在模板里, 不在这里再存一份.
+    """
+
+    class Meta:
+        model = RefundRequest
+        fields = [
+            "status",
+            "amount",
+            "admin_note",
+            "created_at",
+            "approved_at",
+            "refunded_at",
+            "rejected_at",
+        ]
+
+
 class OrderDetailSerializer(serializers.ModelSerializer):
     items = OrderItemSerializer(many=True, read_only=True)
     status_timeline = serializers.SerializerMethodField()
+    refund = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
@@ -339,13 +362,26 @@ class OrderDetailSerializer(serializers.ModelSerializer):
             "shipping_address_snapshot",
             "items",
             "status_timeline",
+            "refund",
             "paid_at",
             "shipped_at",
             "received_at",
             "cancelled_at",
+            "refunded_at",
             "created_at",
             "updated_at",
         ]
+
+    def get_refund(self, obj):
+        """最新一条退款申请, 从未申请过是 `None`.
+
+        给"最新一条"而不是"进行中的那条": 驳回后买家要看的就是那条被驳回的
+        (原因写在 `admin_note` 里), 只给进行中的话它恰好是查不到的那条.
+        """
+        refund = obj.refunds.order_by("-created_at").first()
+        if refund is None:
+            return None
+        return RefundRequestSerializer(refund).data
 
     def get_status_timeline(self, obj):
         timeline = [

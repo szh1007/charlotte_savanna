@@ -40,6 +40,8 @@ from .services import (
     OutOfStockError,
     PaymentError,
     ProductUnavailableError,
+    RefundAlreadyInProgressError,
+    RefundNotAllowedError,
     add_to_cart,
     cancel_order,
     clear_cart,
@@ -48,6 +50,7 @@ from .services import (
     pay_order,
     receive_order,
     remove_cart_item,
+    request_refund,
     update_cart_item,
 )
 
@@ -462,11 +465,14 @@ class OrderActiveCountView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        # `refunding` 也算进行中 (2026-09-21 拍板): 退款还没走完, 这单仍在流程里.
+        # 不计的话买家一申请退款, 顶部的角标反而少一个 —— 看起来像订单消失了.
         active_statuses = [
             Order.Status.PENDING,
             Order.Status.PAID,
             Order.Status.SHIPPED,
             Order.Status.RECEIVED,
+            Order.Status.REFUNDING,
         ]
         count = Order.objects.filter(
             user=request.user, status__in=active_statuses
@@ -577,4 +583,30 @@ class OrderCompleteView(APIView):
             complete_order(order)
         except InvalidOrderStatusError as e:
             return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(OrderDetailSerializer(order).data)
+
+
+# ---------------------------------------------------------------------------
+# Refund
+# ---------------------------------------------------------------------------
+
+
+class OrderRefundView(APIView):
+    """买家申请退款 (故事 17): 建一条申请, 订单进 `refunding`.
+
+    请求体是空的 —— 买家能填的只有订单号, 而它在 URL 里. 退多少钱不在这一步定:
+    金额由管理员批准时协商 (`approve_refund`), 所以这里没有金额可传.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, order_no):
+        order = get_object_or_404(Order, order_no=order_no, user=request.user)
+        try:
+            request_refund(order)
+        except (RefundNotAllowedError, RefundAlreadyInProgressError) as e:
+            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        # 服务函数返回的是退款单, 页面要的是订单 —— 重新读一次, 与 cancel /
+        # receive / complete 三个的返回体保持一致 (它们也回订单详情)
+        order.refresh_from_db()
         return Response(OrderDetailSerializer(order).data)

@@ -77,8 +77,8 @@ function orderList() {
     changePageSize: function(size) {
       this.pageSize = size; this.page = 1; this.load(1);
     },
-    statusColor(s) { return {pending:'#f4a261', paid:'#2a9d8f', shipped:'#264653', received:'#e76f51', completed:'#2a9d8f', cancelled:'#ccc', refunded:'#e63946'}[s] || '#333'; },
-    statusLabel(s) { return {pending:'待付款', paid:'已付款', shipped:'已发货', received:'已收货', completed:'已完成', cancelled:'已取消', refunded:'已退款'}[s] || s; }
+    statusColor(s) { return {pending:'#f4a261', paid:'#2a9d8f', shipped:'#264653', received:'#e76f51', completed:'#2a9d8f', cancelled:'#ccc', refunding:'#f4a261', refunded:'#e63946'}[s] || '#333'; },
+    statusLabel(s) { return {pending:'待付款', paid:'已付款', shipped:'已发货', received:'已收货', completed:'已完成', cancelled:'已取消', refunding:'退款中', refunded:'已退款'}[s] || s; }
   };
 }
 </script>

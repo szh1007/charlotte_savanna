@@ -96,6 +96,29 @@
               <button @click="doComplete" style="width:100%;padding:12px;background:#ff6b6b;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:15px;font-weight:600;">确认完成</button>
             </template>
           </div>
+
+          <!-- 售后: 单独一块 —— 它的可见条件与服务层的 REFUNDABLE_STATUSES 对应,
+               且"已完成"的订单不在上面那条主线里, 塞进去就漏了 -->
+          <div x-show="order.refund" style="background:#fff;border-radius:12px;padding:20px 24px;box-shadow:0 2px 12px rgba(0,0,0,.06);margin-top:16px;">
+            <h3 style="font-size:15px;font-weight:600;margin-bottom:14px;">退款进度</h3>
+            <template x-if="order.refund">
+              <div style="font-size:14px;">
+                <div style="font-weight:600;color:#333;" x-text="refundLabel()"></div>
+                <template x-if="order.refund.amount">
+                  <div style="margin-top:8px;color:#666;">退款金额: <span style="color:#ff6b6b;font-weight:700;">&yen;<span x-text="Number(order.refund.amount).toFixed(2)"></span></span></div>
+                </template>
+                <template x-if="order.refund.admin_note">
+                  <div style="margin-top:10px;padding:10px 12px;background:#fafbfc;border-radius:8px;color:#666;font-size:13px;line-height:1.6;">管理员备注: <span x-text="order.refund.admin_note"></span></div>
+                </template>
+                <div style="margin-top:10px;color:#adb5bd;font-size:12px;" x-text="'申请时间: ' + new Date(order.refund.created_at).toLocaleString()"></div>
+              </div>
+            </template>
+          </div>
+
+          <div x-show="canRefund()" style="background:#fff;border-radius:12px;padding:20px 24px;box-shadow:0 2px 12px rgba(0,0,0,.06);margin-top:16px;">
+            <button @click="doRefund" style="width:100%;padding:12px;background:#fff;color:#ff6b6b;border:1.5px solid #ff6b6b;border-radius:8px;cursor:pointer;font-size:15px;font-weight:600;">申请退款</button>
+            <div style="margin-top:10px;color:#adb5bd;font-size:12px;line-height:1.6;">申请后由管理员协商退款金额并打款，期间订单显示「退款中」</div>
+          </div>
         </div>
       </div>
     </div>
@@ -197,6 +220,8 @@ document.addEventListener('alpine:init', () => {
     },
     isActive: function(key) {
       if (this.order.status === 'cancelled' || this.order.status === 'refunded') return false;
+      // 退款中: 流程被售后打断, 没有再"进行中"的那一步 (红线停在原地, 不脉冲)
+      if (this.order.status === 'refunding') return false;
       if (this.order.status === 'completed') return false;
       var order2 = ['pending','paid','shipped','received','completed'];
       // 找到第一个未完成的步骤，即为"下一个状态"
@@ -210,7 +235,7 @@ document.addEventListener('alpine:init', () => {
     stepDone: function(key) {
       var s = this.order.status;
       var order2 = ['pending','paid','shipped','received','completed'];
-      if (s === 'cancelled' || s === 'refunded') {
+      if (s === 'cancelled' || s === 'refunding' || s === 'refunded') {
         // 根据时间线判断哪些步骤已完成
         var tl = this.order.status_timeline || [];
         var doneKeys = tl.map(function(x) { return x.status; });
@@ -229,6 +254,21 @@ document.addEventListener('alpine:init', () => {
     doComplete: function() {
       var self = this;
       this.confirmModal = {show: true, title: '确认完成', message: '确定该订单已完成？', onConfirm: function() { self.doAction('/api/minimall/orders/'+self.orderNo+'/complete/'); }};
+    },
+    doRefund: function() {
+      var self = this;
+      this.confirmModal = {show: true, title: '申请退款', message: '确定要为该订单申请退款吗？退款金额由管理员与您协商。', onConfirm: function() { self.doAction('/api/minimall/orders/'+self.orderNo+'/refund/'); }};
+    },
+    // 比服务层的 REFUNDABLE_STATUSES 少一个 `paid`（2026-09-21 拍板）: 未发货的订单
+    // 走"取消"就够 —— 取消即刻全额退回并回滚库存, 同一状态上的退款按钮严格更差
+    // （要等审批, 还不回库存）. 端点本身没跟着收窄: 助手与直接调用仍按服务层那份
+    // 白名单放行, 这里少给一个入口, 只是页面不为难买家二选一.
+    // 不用另判"有没有进行中的申请" —— 有申请时订单必然已经是 refunding.
+    canRefund: function() { return ['shipped','received','completed'].indexOf(this.order.status) !== -1; },
+    refundLabel: function() {
+      if (!this.order.refund) return '';
+      var m = {requested:'退款申请已提交，等待管理员处理', approved:'管理员已批准，正在打款', rejected:'退款申请未通过', refunded:'退款已完成'};
+      return m[this.order.refund.status] || this.order.refund.status;
     },
     closeConfirmModal: function() { this.confirmModal.show = false; },
     async doAction(url) {
@@ -274,8 +314,8 @@ document.addEventListener('alpine:init', () => {
       }
     },
     closeModal: function() { this.modal.show = false; },
-    statusColor: function(s) { var m={pending:'#f4a261',paid:'#ff6b6b',shipped:'#339af0',received:'#20c997',completed:'#20c997',cancelled:'#adb5bd',refunded:'#adb5bd'}; return m[s]||'#333'; },
-    statusLabel: function(s) { var m={pending:'待付款',paid:'已付款',shipped:'已发货',received:'已收货',completed:'已完成',cancelled:'已取消',refunded:'已退款'}; return m[s]||s; }
+    statusColor: function(s) { var m={pending:'#f4a261',paid:'#ff6b6b',shipped:'#339af0',received:'#20c997',completed:'#20c997',cancelled:'#adb5bd',refunding:'#f4a261',refunded:'#adb5bd'}; return m[s]||'#333'; },
+    statusLabel: function(s) { var m={pending:'待付款',paid:'已付款',shipped:'已发货',received:'已收货',completed:'已完成',cancelled:'已取消',refunding:'退款中',refunded:'已退款'}; return m[s]||s; }
   }));
 });
 </script>

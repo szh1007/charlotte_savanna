@@ -20,6 +20,7 @@ from .views_buyer import (
     OrderListView,
     OrderPayView,
     OrderReceiveView,
+    OrderRefundView,
     ProductDetailView,
     ProductListView,
     RechargeView,
@@ -83,5 +84,10 @@ urlpatterns = [
         "orders/<str:order_no>/complete/",
         OrderCompleteView.as_view(),
         name="order_complete",
+    ),
+    path(
+        "orders/<str:order_no>/refund/",
+        OrderRefundView.as_view(),
+        name="order_refund",
     ),
 ]

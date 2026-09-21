@@ -1,6 +1,7 @@
 """API endpoint tests."""
 
 import contextlib
+from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
@@ -11,11 +12,18 @@ from app.minimall.models import (
     Cart,
     CartItem,
     Category,
+    Order,
     Product,
     Profile,
+    RefundRequest,
     ShippingAddress,
 )
-from app.minimall.services import MAX_CART_ITEM_QUANTITY
+from app.minimall.services import (
+    MAX_CART_ITEM_QUANTITY,
+    approve_refund,
+    reject_refund,
+    settle_refund,
+)
 
 User = get_user_model()
 
@@ -326,3 +334,161 @@ class OrderAPITest(TestCase):
         self.client.force_login(other)
         r = self.client.get(f"/api/minimall/orders/{order_data['order_no']}/")
         self.assertEqual(r.status_code, 404)
+
+
+class OrderRefundAPITest(TestCase):
+    """买家退款入口 (故事 17 申请 / 故事 18 看进度).
+
+    订单状态与退款单状态是同一件事的两面 (ADR-0004), 所以这里不只断言端点回了什么,
+    还断言**订单**跟着变了 —— 页面就是靠订单状态决定露不露那个按钮的.
+    """
+
+    def setUp(self):
+        _clear_minimall_cache()
+        self.client = APIClient()
+        self.user = User.objects.create_user(
+            username="refunduser", email="ru@t.com", password="pass"
+        )
+        Profile.objects.create(user=self.user, balance=10000)
+        self.user.minimall_profile.set_payment_password("123456")
+        self.user.minimall_profile.save()
+        self.cat = Category.objects.create(name="Test", slug="test")
+        self.prod = Product.objects.create(
+            name="P", slug="p", category=self.cat, price=10.00, stock=10
+        )
+        self.addr = ShippingAddress.objects.create(
+            user=self.user,
+            receiver_name="X",
+            phone="1",
+            province="A",
+            city="B",
+            district="C",
+            detail="D",
+        )
+        self.client.force_login(self.user)
+        self.order = self._paid_order()
+
+    def _place_order(self, quantity=2):
+        cart = Cart.objects.get_or_create(user=self.user)[0]
+        item = CartItem.objects.create(cart=cart, product=self.prod, quantity=quantity)
+        return self.client.post(
+            "/api/minimall/orders/",
+            {"cart_item_ids": [item.id], "address_id": self.addr.id},
+            format="json",
+        ).data["order_no"]
+
+    def _paid_order(self, quantity=2):
+        """退款的起点是"钱已经出去"的订单, 所以先下一单再付掉."""
+        order_no = self._place_order(quantity)
+        self.client.post(
+            f"/api/minimall/orders/{order_no}/pay/",
+            {"payment_password": "123456"},
+            format="json",
+        )
+        return Order.objects.get(order_no=order_no)
+
+    def _refund_url(self, order=None):
+        order = order or self.order
+        return f"/api/minimall/orders/{order.order_no}/refund/"
+
+    def _detail(self, order=None):
+        order = order or self.order
+        return self.client.get(f"/api/minimall/orders/{order.order_no}/").data
+
+    def _active_count(self):
+        return self.client.get("/api/minimall/orders/active-count/").data["count"]
+
+    def test_request_refund_marks_order_refunding(self):
+        # 注意这里的起点是 `paid` —— **端点**按服务层的 REFUNDABLE_STATUSES 放行四个
+        # 状态, 页面只是少给 `paid` 一个入口 (未发货走取消更划算, 2026-09-21 拍板).
+        # 这条用例钉住的就是"端点没跟着页面收窄".
+        r = self.client.post(self._refund_url())
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.data["status"], "refunding")
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, Order.Status.REFUNDING)
+        refund = RefundRequest.objects.get(order=self.order)
+        self.assertEqual(refund.status, RefundRequest.Status.REQUESTED)
+        self.assertEqual(refund.order_status_before, Order.Status.PAID)
+        # 金额这一步还是不填的 —— 它由管理员批准时协商
+        self.assertIsNone(refund.amount)
+
+    def test_refund_does_not_restore_stock(self):
+        """退款与取消的关键差别: 货已经出去了, 库存不回滚."""
+        self.prod.refresh_from_db()
+        stock_before = self.prod.stock
+        self.client.post(self._refund_url())
+        self.prod.refresh_from_db()
+        self.assertEqual(self.prod.stock, stock_before)
+
+    def test_detail_has_no_refund_before_any_request(self):
+        self.assertIsNone(self._detail()["refund"])
+
+    def test_detail_reports_requested_refund(self):
+        self.client.post(self._refund_url())
+        refund = self._detail()["refund"]
+        self.assertEqual(refund["status"], "requested")
+        self.assertIsNone(refund["amount"])
+
+    def test_detail_reports_rejected_reason(self):
+        self.client.post(self._refund_url())
+        reject_refund(RefundRequest.objects.get(order=self.order), note="商品已发出")
+
+        detail = self._detail()
+        # 驳回把订单恢复成申请前的状态 —— 页面据此重新露出"申请退款"按钮
+        self.assertEqual(detail["status"], Order.Status.PAID)
+        self.assertEqual(detail["refund"]["status"], "rejected")
+        self.assertEqual(detail["refund"]["admin_note"], "商品已发出")
+
+    def test_rejected_refund_can_be_requested_again(self):
+        self.client.post(self._refund_url())
+        reject_refund(RefundRequest.objects.get(order=self.order), note="再想想")
+        self.assertEqual(self.client.post(self._refund_url()).status_code, 200)
+        self.assertEqual(RefundRequest.objects.filter(order=self.order).count(), 2)
+
+    def test_detail_reports_settled_amount(self):
+        self.client.post(self._refund_url())
+        refund = RefundRequest.objects.get(order=self.order)
+        approve_refund(refund, amount=Decimal("15.00"), note="协商一致")
+        settle_refund(refund)
+
+        detail = self._detail()
+        self.assertEqual(detail["status"], Order.Status.REFUNDED)
+        self.assertEqual(detail["refund"]["status"], "refunded")
+        self.assertEqual(detail["refund"]["amount"], "15.00")
+        self.assertIsNotNone(detail["refunded_at"])
+
+    def test_pending_order_cannot_refund(self):
+        order_no = self._place_order(1)  # 只下单, 不付款
+        r = self.client.post(f"/api/minimall/orders/{order_no}/refund/")
+        self.assertEqual(r.status_code, 400)
+        self.assertFalse(
+            RefundRequest.objects.filter(order__order_no=order_no).exists()
+        )
+
+    def test_duplicate_request_rejected(self):
+        self.client.post(self._refund_url())
+        r = self.client.post(self._refund_url())
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(RefundRequest.objects.filter(order=self.order).count(), 1)
+
+    def test_refunding_order_still_counts_as_active(self):
+        """退款中的订单仍算「进行中」—— 一申请就少一个角标, 看着像订单没了."""
+        self.assertEqual(self._active_count(), 1)  # paid 阶段
+        self.client.post(self._refund_url())
+        self.assertEqual(self._active_count(), 1)  # refunding 阶段, 不是 0
+
+    def test_unauthorized(self):
+        self.client.logout()
+        r = self.client.post(self._refund_url())
+        self.assertEqual(r.status_code, 403)
+
+    def test_other_user_cannot_refund(self):
+        other = User.objects.create_user(
+            username="o3", email="o3@t.com", password="pass"
+        )
+        self.client.logout()
+        self.client.force_login(other)
+        r = self.client.post(self._refund_url())
+        self.assertEqual(r.status_code, 404)
+        self.assertFalse(RefundRequest.objects.filter(order=self.order).exists())
