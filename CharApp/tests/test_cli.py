@@ -15,6 +15,8 @@
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 from conftest import AGENT_BASE_URL, BUYER_ID, agent_url, mock_all
@@ -29,6 +31,19 @@ from CharAgent.tests.mock_llm import (
 from CharAgent.tests.trace_assertions import trace_of
 from CharApp.minimall import cli
 from CharApp.minimall.config import ENV_BASE_URL, ENV_TOKEN
+
+
+def backfilled(model, turn: int) -> list[str]:
+    """第 `turn` 轮模型看到的历史里, 那些**回填给它的工具结果**的正文.
+
+    「工具回了什么」这类断言一律走它 —— 判据是 wire 上的历史 (模型真收到的东西),
+    而不是工具函数的返回值: 后者证明不了它有没有被送进模型.
+    """
+    return [
+        str(message.get("content") or "")
+        for message in trace_of(model).seen(turn)
+        if message.get("role") == "tool"
+    ]
 
 
 @pytest.fixture(autouse=True)
@@ -79,13 +94,15 @@ def test_asking_for_a_product_gets_real_data(mall, capsys) -> None:
     # `2000` 在这里变成 `2000.0`: 工具的参数声明是 float, pydantic 校验时把模型
     # 给的整数转成了浮点 —— 商城侧的 NumberFilter 两者都收.
     # `page_size` 是工具的默认值, 模型没填也会发出去.
-    assert dict(routes["products/"].calls[0].request.url.params) == {
+    assert dict(routes["GET products/"].calls[0].request.url.params) == {
         "search": "手机",
         "max_price": "2000.0",
         "page_size": "100",
     }
     # 身份也真的带上了
-    assert routes["products/"].calls[0].request.headers["X-User-Id"] == str(BUYER_ID)
+    assert routes["GET products/"].calls[0].request.headers["X-User-Id"] == str(
+        BUYER_ID
+    )
 
 
 def test_asking_about_orders_gets_the_order_list(mall, capsys) -> None:
@@ -104,7 +121,7 @@ def test_asking_about_orders_gets_the_order_list(mall, capsys) -> None:
 
     assert code == 0
     assert "202609191230450000031234" in capsys.readouterr().out
-    assert routes["orders/"].called
+    assert routes["GET orders/"].called
 
 
 def test_asking_about_the_balance_gets_the_profile(mall, capsys) -> None:
@@ -121,7 +138,7 @@ def test_asking_about_the_balance_gets_the_profile(mall, capsys) -> None:
 
     assert code == 0
     assert "9500.00" in capsys.readouterr().out
-    assert routes["profile/"].called
+    assert routes["GET profile/"].called
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +215,7 @@ def test_the_buyer_identity_comes_from_the_command_line(mall) -> None:
     code = cli.main(["--user-id", "7", "-q", "我余额还有多少"], model=model)
 
     assert code == 0
-    assert routes["profile/"].calls[0].request.headers["X-User-Id"] == "7"
+    assert routes["GET profile/"].calls[0].request.headers["X-User-Id"] == "7"
 
 
 def test_the_session_id_carries_the_business_and_the_buyer() -> None:
@@ -236,7 +253,7 @@ def test_interactive_mode_answers_then_quits(mall, capsys) -> None:
     out = capsys.readouterr().out
     assert "minimall 电商客服" in out, "启动横幅要摆清现在以谁的身份在跟谁说话"
     assert "9500.00" in out
-    assert routes["profile/"].called
+    assert routes["GET profile/"].called
 
 
 def test_an_unknown_command_is_not_sent_to_the_model(mall, capsys) -> None:
@@ -321,18 +338,118 @@ def test_a_tool_failure_is_reported_to_the_model_not_crashed(mall, capsys) -> No
     code = cli.main(["--user-id", str(BUYER_ID), "-q", "我余额还有多少"], model=model)
 
     assert code == 0, "工具失败不该让整次运行失败 —— 模型还能把话说圆"
-    backfilled = [
-        str(message.get("content") or "")
-        for message in trace_of(model).seen(2)
-        if message.get("role") == "tool"
-    ]
     # 判据取框架内部错误文案的独有片段 (`tool/utils/messages.INTERNAL_ERROR_TEXT`),
     # 而不是「内部错误」这四个字 —— 后者在异常原文漏出去时也成立, 那样这条用例
     # 就守不住它自己声称的那件事了
-    assert any("请勿使用相同参数重试" in text for text in backfilled), (
-        f"工具失败要以框架的可操作错误文案回填给模型, 实际: {backfilled}"
+    seen = backfilled(model, 2)
+    assert any("请勿使用相同参数重试" in text for text in seen), (
+        f"工具失败要以框架的可操作错误文案回填给模型, 实际: {seen}"
     )
     assert "稍后再试" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# 写操作端到端: 真的改了数据, 而且真的被护栏拦得住
+# ---------------------------------------------------------------------------
+
+
+def test_asking_to_add_to_cart_really_adds_it(mall, capsys) -> None:
+    """「把红米加两件到购物车」→ 商城真的收到加购请求, 答复里是加完之后的整车.
+
+    断在**商城侧收到的那条请求**上 (方法 / 路径 / 请求体), 不是断在「工具被调用
+    了」—— 工具调了但参数拼错, 在只读那边只是"查不到", 在这里是**改错东西**.
+    紧接着再查一次车, 于是「写后立刻读得到」也被钉住了.
+    """
+    routes = mock_all(mall)
+    model = MockLLM.scripted(
+        [
+            tool_call_response(
+                make_tool_call(
+                    "add_to_cart", '{"slug": "redmi-note-13", "quantity": 2}'
+                )
+            ),
+            tool_call_response(make_tool_call("get_my_cart")),
+            text_response("加好了, 购物车里现在 2 件, 一共 2598.00 元."),
+        ]
+    )
+
+    code = cli.main(
+        ["--user-id", str(BUYER_ID), "-q", "把红米 Note 13 加两件到购物车"],
+        model=model,
+    )
+
+    assert code == 0
+    added = routes["POST cart/items/"].calls[0].request
+    assert json.loads(added.content) == {"slug": "redmi-note-13", "quantity": 2}
+    assert added.headers["X-User-Id"] == str(BUYER_ID), "写操作也要带身份"
+    assert routes["GET cart/"].called, "加完之后再查一次车要读得到"
+    assert "2598.00" in capsys.readouterr().out
+
+
+def test_the_write_budget_stops_the_ninth_write(mall, capsys) -> None:
+    """连环加购到第 9 次被护栏拦下: 商城只收到 8 次请求, 模型收到理由后继续作答.
+
+    这是 L2 验收里那句「护栏生效且可轨迹断言」的落地 —— 三条证据缺一不可:
+
+    1. 商城侧**只收到 8 次** (第 9 次真的没打出去, 不是打完了才发现);
+    2. 被拒的那条 tool 消息里是护栏给的理由 (模型据此对买家说明);
+    3. 整次运行照常收尾 (拒绝不是崩溃).
+    """
+    routes = mock_all(mall)
+    model = MockLLM.scripted(
+        [
+            tool_call_response(
+                make_tool_call("add_to_cart", f'{{"slug": "p{n}"}}', call_id=f"c{n}")
+            )
+            for n in range(1, 10)  # 9 次写操作, 预算 8
+        ]
+        + [text_response("这件我先不动了, 你到页面上操作吧.")]
+    )
+
+    code = cli.main(["--user-id", str(BUYER_ID), "-q", "把这些都加上"], model=model)
+
+    assert code == 0, "被拒的那一次不该让整次运行失败"
+    assert routes["POST cart/items/"].call_count == 8, "第 9 次不该打出去"
+    # 看**最后一轮**模型看到的历史 (第 10 轮: 9 次调用都出结果之后才轮到它总结),
+    # 而不是第 9 轮 —— 那一轮模型看到的还只有前 8 条结果
+    seen = backfilled(model, 10)
+    assert len(seen) == 9
+    assert "已经用完" in seen[-1] and "页面上完成" in seen[-1]
+    assert "你到页面上操作吧" in capsys.readouterr().out
+
+
+def test_an_order_over_the_limit_never_reaches_the_mall(mall, capsys) -> None:
+    """购物车合计 9900 元时, 那一单**商城侧一次都没收到** —— 护栏在下单前拦下.
+
+    这里不用 `mock_all` 的现成样本, 而是自己铺一份「车里很贵」的: 该收到的只有
+    那条查购物车的请求. `assert_all_mocked` 是开着的, 所以「下单打出去了」会以
+    未预期请求的形式当场炸出来, 不必另外断言.
+    """
+    routes = {
+        "cart": mall.get(agent_url("cart/")).mock(
+            return_value=httpx.Response(
+                200, json={"items": [], "total_count": 100, "total_amount": "9900.00"}
+            )
+        ),
+        "order": mall.request("POST", agent_url("orders/")).mock(
+            return_value=httpx.Response(200, json={})
+        ),
+    }
+    model = MockLLM.scripted(
+        [
+            tool_call_response(make_tool_call("place_order")),
+            text_response("这单金额有点大, 你自己在结算页下吧."),
+        ]
+    )
+
+    code = cli.main(["--user-id", str(BUYER_ID), "-q", "下单"], model=model)
+
+    assert code == 0
+    assert routes["cart"].called, "判金额要真去问一次车 (不是猜的)"
+    assert routes["order"].call_count == 0, "超限的那一单不该打出去"
+    seen = backfilled(model, 2)
+    assert "9900.00" in seen[0] and "5000.00" in seen[0]
+    assert "结算页" in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------

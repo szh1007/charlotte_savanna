@@ -28,7 +28,8 @@ AGENT_BASE_URL = "http://minimall.test/api/minimall/agent/"
 TOKEN = "test-internal-token"
 BUYER_ID = 3
 
-# 9 个只读工具的名字 (顺序即注册顺序) —— 工具与提供者两组用例共用同一份期望
+# 17 个工具的名字 (顺序即注册顺序: 9 个只读在前, 8 个写接在后面) ——
+# 工具与提供者两组用例共用同一份期望
 TOOL_NAMES = (
     "search_products",
     "get_product_detail",
@@ -39,6 +40,29 @@ TOOL_NAMES = (
     "get_my_order",
     "get_my_profile",
     "list_my_addresses",
+    "add_to_cart",
+    "update_cart_item",
+    "remove_cart_item",
+    "clear_cart",
+    "place_order",
+    "cancel_my_order",
+    "request_refund",
+    "list_my_refunds",
+)
+
+# **会改数据**的那 7 个 (护栏的判据是注解, 而注解的含义就是"会改数据").
+#
+# 为什么不是上面那 8 个: L2 一次加了 8 个工具, 但 `list_my_refunds` 只是**读**
+# 退款列表 —— 它不该占买家的写操作预算, 也不该被金额规则管 (见 tools.py 的
+# 那一节说明). 「8 个写工具」是这一批的名字, 「7 个会改数据」才是注解的判据.
+WRITE_TOOL_NAMES = (
+    "add_to_cart",
+    "update_cart_item",
+    "remove_cart_item",
+    "clear_cart",
+    "place_order",
+    "cancel_my_order",
+    "request_refund",
 )
 
 
@@ -149,6 +173,48 @@ ADDRESSES: list[dict[str, Any]] = [
     }
 ]
 
+# 8 个写端点的样本 (方法 + 路径 → 返回体).
+#
+# 形状与只读那批同源 (写购物车的四个端点回的**也是整车**), 只有两处是写端点独有
+# 的: 取消的回执多两个副作用字段 (`balance_returned` / `restocked_count`), 退款
+# 那条 `amount` 是 null (还没批准, 金额没协商出来).
+ORDER_NO = "202609191230450000031234"
+
+REFUND: dict[str, Any] = {
+    "order_no": ORDER_NO,
+    "status": "requested",
+    "status_display": "待处理",
+    "amount": None,
+    "admin_note": "",
+    "created_at": "2026-09-21T10:00:00+08:00",
+    "approved_at": None,
+    "refunded_at": None,
+    "rejected_at": None,
+}
+
+CANCELLED_ORDER: dict[str, Any] = {
+    **ORDER_DETAIL,
+    "status": "cancelled",
+    "status_display": "已取消",
+    "cancelled_at": "2026-09-21T10:00:00+08:00",
+    "balance_returned": "1899.00",
+    "restocked_count": 1,
+}
+
+EMPTY_CART: dict[str, Any] = {"items": [], "total_count": 0, "total_amount": "0.00"}
+
+WRITE_ENDPOINTS: dict[tuple[str, str], Any] = {
+    ("POST", "cart/items/"): CART,
+    ("PATCH", "cart/items/redmi-note-13/"): CART,
+    ("DELETE", "cart/items/redmi-note-13/"): CART,
+    ("DELETE", "cart/clear/"): EMPTY_CART,
+    ("POST", "orders/"): ORDER_DETAIL,
+    ("POST", f"orders/{ORDER_NO}/cancel/"): CANCELLED_ORDER,
+    ("POST", "refunds/"): REFUND,
+    ("GET", "refunds/"): [REFUND],
+}
+
+
 # 9 个只读端点的完整样本表 (路径 → 返回体); 端到端用例拿它一次性铺满假商城
 ENDPOINTS: dict[str, Any] = {
     "products/": {
@@ -194,13 +260,28 @@ def mall() -> Iterator[respx.MockRouter]:
 
 
 def mock_all(mall: respx.MockRouter) -> dict[str, respx.Route]:
-    """把 9 个端点全部挂上 (端到端用例用: 模型想调哪个都有得调)."""
-    return {
-        path: mall.get(agent_url(path)).mock(
+    """把 17 个端点全部挂上 (端到端用例用: 模型想调哪个都有得调).
+
+    返回的字典键**一律是 `"方法 路径"`** (`"GET cart/"` / `"POST cart/items/"`), 用例
+    按它去翻哪条被调过. 方法必须进键里: 同一个 `orders/` 上 GET 与 POST 是两条
+    路由, 只看路径分不开 —— 与其让 GET 用裸路径、写操作带方法 (两套约定混在一个
+    字典里), 不如一律带上.
+    """
+    routes = {
+        f"GET {path}": mall.get(agent_url(path)).mock(
             return_value=httpx.Response(200, json=body)
         )
         for path, body in ENDPOINTS.items()
     }
+    routes.update(
+        {
+            f"{method} {path}": mall.request(method, agent_url(path)).mock(
+                return_value=httpx.Response(200, json=body)
+            )
+            for (method, path), body in WRITE_ENDPOINTS.items()
+        }
+    )
+    return routes
 
 
 @pytest.fixture

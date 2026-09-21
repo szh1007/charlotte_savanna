@@ -1,7 +1,7 @@
 """商城内部端点的异步客户端: 业务侧唯一一处「怎么跟商城说话」.
 
-打的是 issue 02 建的那 9 个只读端点 (前缀 `/api/minimall/agent/`, 见
-`app/minimall/urls_agent.py`), 一个端面一个方法.
+打的是商城那 17 个内部端点 (9 个只读 + 8 个写; 前缀 `/api/minimall/agent/`,
+见 `app/minimall/urls_agent.py`), 一个端面一个方法.
 
 三条约束都不是随手定的:
 
@@ -15,16 +15,18 @@
 3. **连接池是进程级的**. 一个进程一个实例 (命令行入口建一个、退出时关掉):
    一次会话里问十几句也只建一次连接池, 而不是每问一句新建一批连接。
 
-错误语义只有两条分叉 (为什么这么分): **404 是答案, 其余是故障**。查无此单
-不是异常情况, 模型应当把它当事实告诉买家 ("没有查到这笔订单"), 所以单独一个
-`MinimallNotFoundError` 让工具层翻译成人话; 网络/超时/5xx 则原样上抛, 由框架统一的
+错误语义分三路 (为什么这么分): **「没有」与「不行」都是答案, 其余是故障**.
+查无此单不是异常情况, 模型应当把它当事实告诉买家 ("没有查到这笔订单"), 所以
+单独一个 `MinimallNotFoundError`; 写操作被商城按业务规则拒了 ("库存不足"),
+那是另一个方向的答案, 由 `MinimallRefusalError` 带着错误码与中文原话上去 ——
+工具层要按码决定怎么跟买家说. 网络/超时/5xx 则原样上抛, 由框架统一的
 「内部错误」文案回填模型 (`tool/executor.py` 的 `INTERNAL_ERROR_TEXT` —— 它说的
 正是「别用相同参数重试」)。
 """
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 import httpx
 
@@ -66,12 +68,44 @@ class MinimallError(Exception):
         self.status = status
 
 
+class Refusal(NamedTuple):
+    """商城拒绝一次动作时给的那两样东西 (错误码 + 中文原话).
+
+    用具名字段而不是裸的 `tuple[str, str]`: 两样都是字符串, 顺序反了也能跑, 而
+    `MinimallRefusalError` 的构造参数顺序正好是反的 (`message` 在前) —— 那种错
+    没人看得出来.
+    """
+
+    code: str
+    message: str
+
+
 class MinimallNotFoundError(MinimallError):
     """商城明确回答「没有这个东西」(404).
 
     与 `MinimallError` 分开是因为两者对买家意味着完全不同的事: 这是**答案**
     (你要找的东西不存在), 那才是**故障** (商城没答上来)。
     """
+
+
+class MinimallRefusalError(MinimallError):
+    """商城按业务规则拒绝了这次**动作**(带错误码的 4xx) —— 写操作独有的那一族.
+
+    与上一条同一个道理, 只是换了个方向: 这是**答案** (商城讲清了为什么不行,
+    还给了面向模型的中文原话), 那才是**故障** (商城没答上来). 工具层据此回填
+    一句人话, 而不是让买家听到「系统出错了」.
+
+    attributes:
+        code: 商城那边的错误码 (`views_agent.ERROR_CODES` 的键, 如
+            `insufficient_stock`). 工具按它决定给不给「下一步该做什么」的补充,
+            所以它必须留到工具层 —— 在这里就被压成一句话的话, 那层信息就没了.
+        message: 商城给的中文一句 (为什么不行).
+    """
+
+    def __init__(self, code: str, message: str, *, status: int | None = None) -> None:
+        super().__init__(f"商城拒绝了这次操作 ({code}): {message}", status=status)
+        self.code = code
+        self.message = message
 
 
 def _present(**values: Any) -> dict[str, Any]:
@@ -97,6 +131,30 @@ def _is_json(response: httpx.Response) -> bool:
     打到了别的路由 (基地址配错) 时拿到的是 Django 那张 HTML 404 页。
     """
     return "json" in response.headers.get("content-type", "").lower()
+
+
+def _refusal(response: httpx.Response) -> Refusal | None:
+    """响应体是不是商城的「按业务规则拒绝」, 是就取出 (码, 中文原话).
+
+    写端点的 4xx 有两种长相, 这个函数就是那道分界线:
+
+    - `{"error": {"code", "message"}}` —— **业务拒绝** (库存不够 / 状态不允许 /
+      没有默认地址), 那句话是给模型看的答案, 由工具层按码补一句「下一步做什么」
+    - `{"detail": ...}` 或一张 HTML 页 —— **故障** (买家身份无效 / 地址配错打到了
+      别的路由), 交给框架那套内部错误文案
+
+    把故障说成「业务上不行」就是对买家撒谎 (而提示词里明写了「不编造」),
+    所以这里认不出 `error` 体就返回 None, 由调用方按故障处理.
+    """
+    if not _is_json(response):
+        return None
+    try:
+        error = response.json().get("error")
+    except (ValueError, AttributeError):  # 体不是 JSON 对象
+        return None
+    if not isinstance(error, dict) or not error.get("code"):
+        return None
+    return Refusal(code=str(error["code"]), message=str(error.get("message") or ""))
 
 
 class MinimallClient:
@@ -131,7 +189,7 @@ class MinimallClient:
         await self._http.aclose()
 
     # ------------------------------------------------------------------
-    # 传输: 9 个方法共用的一段
+    # 传输: 17 个方法共用的一段
     # ------------------------------------------------------------------
 
     async def _get(
@@ -169,16 +227,7 @@ class MinimallClient:
             2. 响应的 `Content-Type` 不是 JSON。DRF 的 404 体是 `{"detail": ...}`;
                打错地方时拿到的是 Django 那张 HTML 404 页。
         """
-        try:
-            response = await self._http.get(
-                path,
-                params=params,
-                headers={HEADER_USER_ID: str(user_id)},
-            )
-        except httpx.HTTPError as exc:
-            raise MinimallError(
-                f"请求 {path} 失败 ({type(exc).__name__}): {exc}"
-            ) from exc
+        response = await self._send("GET", path, user_id=user_id, params=params)
 
         if response.status_code == 404:
             if not by_identifier:
@@ -200,6 +249,69 @@ class MinimallClient:
                 f"商城对 {path} 返回 {response.status_code}: {_detail(response)}",
                 status=response.status_code,
             )
+        return self._json(response, path)
+
+    async def _write(
+        self,
+        method: str,
+        path: str,
+        *,
+        user_id: int,
+        body: dict[str, Any] | None = None,
+    ) -> Any:
+        """打一个写请求 (**业务拒绝**与**故障**在这里第一次分开).
+
+        与 `_get` 只差在 4xx 那一支: 写端点的 4xx 多半是商城在按业务规则说不
+        (库存不够 / 状态不允许 / 没有默认地址), 那句话是给模型看的答案, 必须原样
+        带上去; 认不出 `error` 体的才是故障.
+
+        Note:
+            这里**没有**「404 是答案」那一层: 写端点要的东西不存在时, 商城回的是
+            带码的 404 (`order_not_found`), 走的是上面的拒绝路径.
+        """
+        response = await self._send(method, path, user_id=user_id, body=body)
+        if response.status_code >= 400:
+            refusal = _refusal(response)
+            if refusal is not None:
+                raise MinimallRefusalError(
+                    refusal.code, refusal.message, status=response.status_code
+                )
+            raise MinimallError(
+                f"商城对 {method} {path} 返回 {response.status_code}: "
+                f"{_detail(response)}",
+                status=response.status_code,
+            )
+        return self._json(response, path)
+
+    async def _send(
+        self,
+        method: str,
+        path: str,
+        *,
+        user_id: int,
+        params: dict[str, Any] | None = None,
+        body: dict[str, Any] | None = None,
+    ) -> httpx.Response:
+        """打一个请求 (四种方法共用的一段) —— 只翻「请求根本没打出去」那一类失败.
+
+        状态码的解释留给调用方: 同一个 404 在只读端点是答案, 在写端点是故障,
+        那是**端点语义**而不是传输层的事 (见 `_get` 与 `_write`).
+        """
+        try:
+            return await self._http.request(
+                method,
+                path,
+                params=params,
+                json=body,
+                headers={HEADER_USER_ID: str(user_id)},
+            )
+        except httpx.HTTPError as exc:
+            raise MinimallError(
+                f"请求 {path} 失败 ({type(exc).__name__}): {exc}"
+            ) from exc
+
+    def _json(self, response: httpx.Response, path: str) -> Any:
+        """把 2xx 的响应体解成 JSON; 解不出来算故障 (与非 JSON 的 404 同一条口径)."""
         try:
             return response.json()
         except ValueError as exc:  # json.JSONDecodeError 是它的子类
@@ -300,6 +412,69 @@ class MinimallClient:
         """该买家的收货地址列表。"""
         return await self._get("addresses/", user_id=user_id)
 
+    # ------------------------------------------------------------------
+    # 写操作 (issue 11 的 8 个端点): 一次调用完成一个动作
+    # ------------------------------------------------------------------
+    # 与只读那批同一条纪律: 每个方法都要一个 `user_id`, 由工具闭包提供 ——
+    # 「改谁的数据」与「查谁的数据」在 wire 上是同一件事 (X-User-Id 头).
+    #
+    # 购物车四个动作回的**都是动作之后的整车**: 模型一句就能念出来 ("车里现在
+    # 有两件, 一共 30 元"), 不用再补一次 GET.
+    #
+    # 用 slug 而不是 cart_item_id 定位: slug 在商品页, 搜索结果, 购物车返回体里
+    # 到处都能看到, 主键对模型是个没有语义的数字 (商城侧的取舍见 views_agent.py).
+
+    async def add_to_cart(self, *, user_id: int, slug: str, quantity: int = 1) -> dict:
+        """加购 (同一商品重复加会累加到同一条上)."""
+        return await self._write(
+            "POST",
+            "cart/items/",
+            user_id=user_id,
+            body={"slug": slug, "quantity": quantity},
+        )
+
+    async def update_cart_item(self, *, user_id: int, slug: str, quantity: int) -> dict:
+        """改购物车里的数量; `quantity=0` 等于拿掉这一条 (商城侧的哨兵值)."""
+        return await self._write(
+            "PATCH", f"cart/items/{slug}/", user_id=user_id, body={"quantity": quantity}
+        )
+
+    async def remove_cart_item(self, *, user_id: int, slug: str) -> dict:
+        """拿掉购物车里的这一条."""
+        return await self._write("DELETE", f"cart/items/{slug}/", user_id=user_id)
+
+    async def clear_cart(self, *, user_id: int) -> dict:
+        """清空购物车 (回的是空车)."""
+        return await self._write("DELETE", "cart/clear/", user_id=user_id)
+
+    async def place_order(self, *, user_id: int, address_id: int | None = None) -> dict:
+        """下单 (**整车**), 不带地址就用默认收货地址.
+
+        下多少不由参数决定: 商城侧下的是购物车里现有的全部条目 —— 让模型先查车
+        再挑出"买哪几件"正是 PRD §4.3 说的"凑几次调用才拼齐".
+        """
+        return await self._write(
+            "POST", "orders/", user_id=user_id, body=_present(address_id=address_id)
+        )
+
+    async def cancel_order(self, *, user_id: int, order_no: str) -> dict:
+        """取消订单 (不用审批, 即刻生效).
+
+        回执里带着两件买家最关心的事: 退回余额多少 (`balance_returned`), 回滚了
+        几件库存 (`restocked_count`).
+        """
+        return await self._write("POST", f"orders/{order_no}/cancel/", user_id=user_id)
+
+    async def request_refund(self, *, user_id: int, order_no: str) -> dict:
+        """申请退款 —— **不带金额**: 退多少由管理员批准时协商 (PRD §4.5)."""
+        return await self._write(
+            "POST", "refunds/", user_id=user_id, body={"order_no": order_no}
+        )
+
+    async def list_refunds(self, *, user_id: int) -> list:
+        """该买家的退款申请列表 (**裸数组**, 不分页)."""
+        return await self._get("refunds/", user_id=user_id)
+
 
 __all__ = [
     "DEFAULT_BASE_URL",
@@ -309,6 +484,7 @@ __all__ = [
     "MinimallClient",
     "MinimallError",
     "MinimallNotFoundError",
+    "MinimallRefusalError",
     "Ordering",
     "PageSize",
 ]

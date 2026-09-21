@@ -1,22 +1,30 @@
-"""电商客服的 9 个只读工具: 模型能对这个商城做的全部事情 (L1a).
+"""电商客服的 17 个工具: 模型能对这个商城做的全部事情 (9 只读 + 8 写).
 
 一句话理解: 每个工具 = 一次「业务动作」, 背后是 `client.py` 的一个方法。工具
 本身**不含逻辑**, 只做三件事: 声明参数 (写进 schema 给模型看)、带上身份调商城、
 把结果或「没有」翻成模型看得懂的话。
 
-三条贯穿全篇的约定:
+四条贯穿全篇的约定:
 
-1. **身份不进参数表** (PRD §4.2, 本项目的核心安全设计). 9 个工具的入参全是业务
+1. **身份不进参数表** (PRD §4.2, 本项目的核心安全设计). 17 个工具的入参全是业务
    字段 —— 没有一个叫 `user_id` 的参数。身份由 `build_tools(client, user_id)`
    在装配时裹进闭包, 模型既看不见也无从伪造。「查一下别人的订单」这条攻击路径
    因此**根本不存在**, 而不是「被挡住了」。
 2. **涉及「我」的工具一律用 my 标识** (PRD §4.4): `get_my_cart` / `list_my_orders`
-   / `get_my_order` / `get_my_profile` / `list_my_addresses`。这既是给模型的语言
-   提示 (「这个工具查的是当前对话者自己的东西」), 也是给评审者的信号 —— 名字里
-   的 my 就是「身份不可指定」那句话。
+   / `get_my_order` / `get_my_profile` / `list_my_addresses` / `cancel_my_order`
+   / `list_my_refunds`. 这既是给模型的语言提示 (「这个工具查的是当前对话者自己
+   的东西」), 也是给评审者的信号 —— 名字里的 my 就是「身份不可指定」那句话.
+   (购物车那四个写工具没带 my: 它们操作的对象是**车里的东西**而不是「我的档案」,
+   名字按动作本身叫更准 —— 见下面那一节的说明.)
 3. **全部是 `async def`** (PRD §4.4). 框架把同步工具函数扔进线程池
-   (`tool/executor.py` 的 `_invoke`), 9 个同步工具会互相排队; 写成协程才真的
-   并发。有一条测试专门遍历这 9 个函数断言这一点。
+   (`tool/executor.py` 的 `_invoke`), 同步工具会互相排队; 写成协程才真的并发.
+   有一条测试专门遍历这些函数断言这一点.
+4. **会改数据的工具打 `annotations`** (PRD §4.6): L2 新加的 8 个里, 7 个会改数据
+   (`add_to_cart` / `update_cart_item` / `remove_cart_item` / `clear_cart` /
+   `place_order` / `cancel_my_order` / `request_refund`) 带上
+   `{WRITE_ANNOTATION_KEY: True}`, 给业务侧的护栏插件认人用. 第 8 个 `list_my_refunds`
+   **只是读**退款列表, 所以不打 —— 它不该占买家的写预算. 框架**只透传不解释**
+   这个标记 (与 `RunContext.payload` 同一条纪律), 所以它也不进模型的 schema.
 
 金额一律**原样转达**, 不做 float 转换: 商城的序列化契约就是 2 位小数字符串
 (`serializers_agent.py`), 而二进制浮点表示不了 0.1 —— 模型只需要照读, 不需要
@@ -35,9 +43,17 @@ from CharAgent.tool import Tool, tool
 from CharApp.minimall.client import (
     MinimallClient,
     MinimallNotFoundError,
+    MinimallRefusalError,
     Ordering,
     PageSize,
 )
+
+# 写操作的标记键 (打在写工具的 annotations 上, 护栏插件靠它认人)
+WRITE_ANNOTATION_KEY = "writes"
+
+# 商品 slug 的形状 —— 商城侧的路由是 `<slug:slug>`, 这个 pattern 与它对齐.
+# 写进 schema 的好处是模型填错当场被拦, 而不是拼出一个打到别处的路径
+SLUG_PATTERN = r"^[a-zA-Z0-9_-]+$"
 
 
 async def _fetch(
@@ -78,6 +94,53 @@ async def _fetch(
             raise
         return missing
     return json.dumps(data, ensure_ascii=False)
+
+
+async def _act(call: Callable[..., Awaitable[Any]], **kwargs: Any) -> str:
+    """调一次**写**接口, 把结果翻成回填给模型的文本 (与 `_fetch` 的写侧对照).
+
+    失败那一支不同: 写操作没有「查无此物」这种答案, 有的是**商城按业务规则说不**
+    (库存不够 / 状态不允许 / 没有默认地址). 商城给的那句中文就是最准的, 照读;
+    只有它没说清**下一步**时才按错误码补一句 (`_REFUSAL_HINTS`).
+
+    没有 `missing` 参数: 写端点的 404 是带码的拒绝 (`order_not_found`), 走的是
+    `MinimallRefusalError` 那条路, 与只读端点「404 是答案」不是一回事. 与 `_fetch`
+    共用的尾巴只有一行 `json.dumps` —— 为此把两个翻译器合并成一个带开关的函数,
+    换来的是两个可选参数与两个只有一半用得上的分支, 不划算.
+
+    Raises:
+        MinimallError: 商城故障 (连不上 / 超时 / 5xx / 不带码的 4xx) —— 交给框架
+            统一的内部错误文案, 与 `_fetch` 同一条.
+    """
+    try:
+        data = await call(**kwargs)
+    except MinimallRefusalError as exc:
+        return _refusal_text(exc)
+    return json.dumps(data, ensure_ascii=False)
+
+
+# 按错误码补的「下一步做什么」. **只补商城那句话没说到的部分** —— 它已经在说
+# 「为什么不行」了 (库存不足 / 状态不允许), 再复述一遍只是浪费 token.
+#
+# 判据是: 照着商城原文念, 模型会不会卡住, 或者去重试同一件事? 会 → 补一句.
+#
+# 键取自商城侧的 `views_agent.ERROR_CODES` (那边才是错误码的权威). 键对不上时
+# 这里静默不补, 退化成照念原文 —— 少一句提示, 不会说错话.
+_REFUSAL_HINTS: dict[str, str] = {
+    "cart_empty": "先加购再下单",
+    "order_not_found": "让买家核对一下订单号",
+    "invalid_order_status": "让买家打开订单详情看看当前状态",
+    "out_of_stock": "可以让买家换一件, 或稍后再试",
+    "insufficient_stock": "可以让买家改小数量, 或换一件",
+    "no_default_address": "让买家先在页面上加一条收货地址",
+    "refund_already_in_progress": "用 list_my_refunds 看进度, 不要重复申请",
+}
+
+
+def _refusal_text(exc: MinimallRefusalError) -> str:
+    """一次被拒的写操作 → 回填给模型的一句话 (带错误码对应的下一步)."""
+    hint = _REFUSAL_HINTS.get(exc.code)
+    return f"操作没有完成: {exc.message}" + (f" ({hint})" if hint else "")
 
 
 # ---------------------------------------------------------------------------
@@ -330,10 +393,219 @@ def _list_my_addresses(client: MinimallClient, user_id: int) -> Tool:
 
 
 # ---------------------------------------------------------------------------
+# 写操作 (L2): 7 个会改数据的工具 + 1 个读退款的, 会改数据的都打 WRITE_ANNOTATION_KEY
+# ---------------------------------------------------------------------------
+# 这一节与上面两节的差别只有一条: 它们**改**数据 (最后一个除外). 其余照旧 —— 身份
+# 照样只在闭包里, 参数表里照样没有买家; 失败照样翻成模型看得懂的话 (只是写操作的
+# 失败多了「商城按规则说了不行」这一族, 见 `_act`).
+#
+# 购物车四个工具没带 my 前缀, 而 cancel_my_order / list_my_refunds 带了: 判据是
+# 那句话读起来指代的是什么 —— 「把购物车里这件事改了」说的是**车里那件东西**,
+# 「取消我的订单」说的是**我的一笔单**. 两个都指不到别人身上 (身份在闭包里),
+# 所以这是可读性取舍, 不是安全边界.
+
+
+def _add_to_cart(client: MinimallClient, user_id: int) -> Tool:
+    """加购工具."""
+
+    @tool(annotations={WRITE_ANNOTATION_KEY: True})
+    async def add_to_cart(
+        slug: Annotated[
+            str,
+            Field(
+                description="商品 slug (英文短标识); 从 search_products / "
+                "list_featured_products 的结果里取, 在 get_my_cart 的返回体里"
+                "叫 product_slug, 不要自己拼",
+                pattern=SLUG_PATTERN,
+                examples=["redmi-note-13"],
+            ),
+        ],
+        quantity: Annotated[
+            int,
+            Field(description="加几件 (至少 1); 买家没说数量就加 1 件", ge=1),
+        ] = 1,
+    ) -> str:
+        """把一件商品加进**当前买家自己**的购物车 (同一商品重复加会累加到同一条
+        上), 返回加完之后的整车. 买家说「把这个加进购物车」「要两件」时使用;
+        买什么还没定就先 search_products, 想先看看车里有什么用 get_my_cart.
+        """
+        return await _act(
+            client.add_to_cart, user_id=user_id, slug=slug, quantity=quantity
+        )
+
+    return add_to_cart
+
+
+def _update_cart_item(client: MinimallClient, user_id: int) -> Tool:
+    """改购物车数量工具."""
+
+    @tool(annotations={WRITE_ANNOTATION_KEY: True})
+    async def update_cart_item(
+        slug: Annotated[
+            str,
+            Field(
+                description="商品 slug; 取自购物车返回体的 product_slug",
+                pattern=SLUG_PATTERN,
+                examples=["redmi-note-13"],
+            ),
+        ],
+        quantity: Annotated[
+            int,
+            Field(description="改成几件; **填 0 等于把这一条拿掉**", ge=0),
+        ],
+    ) -> str:
+        """修改**当前买家自己**购物车里某件商品的数量, 返回改完之后的整车.
+        买家说「改成两件」「只要一件」时使用; 整条拿掉用 remove_cart_item 更
+        直白, 全清空用 clear_cart.
+        """
+        return await _act(
+            client.update_cart_item, user_id=user_id, slug=slug, quantity=quantity
+        )
+
+    return update_cart_item
+
+
+def _remove_cart_item(client: MinimallClient, user_id: int) -> Tool:
+    """移除购物车条目的工具."""
+
+    @tool(annotations={WRITE_ANNOTATION_KEY: True})
+    async def remove_cart_item(
+        slug: Annotated[
+            str,
+            Field(
+                description="商品 slug; 取自购物车返回体的 product_slug",
+                pattern=SLUG_PATTERN,
+                examples=["redmi-note-13"],
+            ),
+        ],
+    ) -> str:
+        """从**当前买家自己**的购物车里拿掉一件商品, 返回拿掉之后的整车. 买家说
+        「不要这个了」「把它删掉」时使用; 只想改数量用 update_cart_item, 想整车
+        清空用 clear_cart.
+        """
+        return await _act(client.remove_cart_item, user_id=user_id, slug=slug)
+
+    return remove_cart_item
+
+
+def _clear_cart(client: MinimallClient, user_id: int) -> Tool:
+    """清空购物车工具."""
+
+    @tool(annotations={WRITE_ANNOTATION_KEY: True})
+    async def clear_cart() -> str:
+        """清空**当前买家自己**的购物车 (整车都拿掉), 返回清空之后的空车. 买家说
+        「购物车清空」「都不要了」时使用; 只拿掉其中一件用 remove_cart_item.
+        **这是不可撤销的**: 拿掉的东西要重新加购, 所以买家话里有一丝犹豫就先问
+        一句.
+        """
+        return await _act(client.clear_cart, user_id=user_id)
+
+    return clear_cart
+
+
+def _place_order(client: MinimallClient, user_id: int) -> Tool:
+    """下单工具."""
+
+    @tool(annotations={WRITE_ANNOTATION_KEY: True})
+    async def place_order(
+        address_id: Annotated[
+            int | None,
+            Field(
+                description="收货地址 id; 不填就用买家的默认收货地址. 要指定"
+                "别的地址先从 list_my_addresses 拿到 id",
+                ge=1,
+                examples=[5],
+            ),
+        ] = None,
+    ) -> str:
+        """把**当前买家自己**购物车里的全部商品下成一笔订单, 返回订单号与明细.
+        买家说「下单」「结账」「买了」时使用; 买什么还没定就先 search_products
+        加 add_to_cart, 想先确认买什么就用 get_my_cart.
+        **下单不等于付钱** —— 下成的是待付款的订单, 付款要买家本人在商城的订单
+        页输支付密码; 也不要向买家承诺到货时间.
+        """
+        return await _act(client.place_order, user_id=user_id, address_id=address_id)
+
+    return place_order
+
+
+def _cancel_my_order(client: MinimallClient, user_id: int) -> Tool:
+    """取消订单工具."""
+
+    @tool(annotations={WRITE_ANNOTATION_KEY: True})
+    async def cancel_my_order(
+        order_no: Annotated[
+            str,
+            Field(
+                description="24 位数字订单号; 从 list_my_orders / get_my_order 的"
+                "结果里取, 不要自己拼",
+                pattern=r"^\d{24}$",
+                examples=["202609191230450000031234"],
+            ),
+        ],
+    ) -> str:
+        """取消**当前买家自己**的一笔还没发货的订单 (待付款 / 已付款的订单可以
+        取消; 已发货之后的不能). 买家说「取消订单」「这单不要了」时使用 —— 它
+        **即刻生效, 不用任何人审批**: 已付款的订单会当场把钱退回余额, 商品也
+        回滚库存, 回执里就写着退了多少, 回滚了几件, 照读即可.
+        **取消与退款不是一回事**: 货已经出去了 (已发货 / 已收货 / 已完成的订单)
+        就取消不了, 那种情况改用 request_refund —— 那个要管理员审批, 而且不退
+        库存. 买家说「退钱」而订单还没发货时, 用这个更快 (当场到账).
+        """
+        return await _act(client.cancel_order, user_id=user_id, order_no=order_no)
+
+    return cancel_my_order
+
+
+def _request_refund(client: MinimallClient, user_id: int) -> Tool:
+    """申请退款工具."""
+
+    @tool(annotations={WRITE_ANNOTATION_KEY: True})
+    async def request_refund(
+        order_no: Annotated[
+            str,
+            Field(
+                description="24 位数字订单号; 从 list_my_orders / get_my_order 的"
+                "结果里取, 不要自己拼",
+                pattern=r"^\d{24}$",
+                examples=["202609191230450000031234"],
+            ),
+        ],
+    ) -> str:
+        """为**当前买家自己**的一笔订单申请退款 (申请之后订单显示「退款中」).
+        买家说「我要退款」「这单退钱」时使用. **退多少钱不在这一步定, 也不要问
+        买家想退多少** —— 金额由管理员审批时协商, 所以这个工具不收金额参数.
+        **退款与取消不是一回事**: 退款要等管理员审批; 商城也没有「退货退款」这
+        回事 (不需要把货寄回来), 不要描述任何寄回流程. 还没发货的订单用
+        cancel_my_order 更快 (即刻到账). 申请之后用 list_my_refunds 看进度.
+        """
+        return await _act(client.request_refund, user_id=user_id, order_no=order_no)
+
+    return request_refund
+
+
+def _list_my_refunds(client: MinimallClient, user_id: int) -> Tool:
+    """退款进度工具."""
+
+    @tool
+    async def list_my_refunds() -> str:
+        """列出**当前买家自己**的退款申请 (订单号, 状态中文名, 协商金额, 管理员
+        备注, 申请/批准/打款/驳回时间). 买家问「我的退款到哪了」「为什么被驳回」
+        时使用 —— 被驳回时管理员会把原因写在备注里 (`admin_note`), 照实转达.
+        金额还没协商出来时它是 null, 如实说「还没定」即可. 查订单本身用
+        get_my_order.
+        """
+        return await _act(client.list_refunds, user_id=user_id)
+
+    return list_my_refunds
+
+
+# ---------------------------------------------------------------------------
 # 装配
 # ---------------------------------------------------------------------------
 
-# 9 个工具的工厂 (顺序即注册顺序; 名字用 my 标记「查的是自己的东西」)
+# 17 个工具的工厂 (顺序即注册顺序; 9 个只读在前, 8 个写在后 —— 只读那 9 个的
+# 相对次序从 L1a 起没动过, 加工具是**往后接**而不是插队)
 _BUILDERS: tuple[Callable[[MinimallClient, int], Tool], ...] = (
     _search_products,
     _get_product_detail,
@@ -344,11 +616,19 @@ _BUILDERS: tuple[Callable[[MinimallClient, int], Tool], ...] = (
     _get_my_order,
     _get_my_profile,
     _list_my_addresses,
+    _add_to_cart,
+    _update_cart_item,
+    _remove_cart_item,
+    _clear_cart,
+    _place_order,
+    _cancel_my_order,
+    _request_refund,
+    _list_my_refunds,
 )
 
 
 def build_tools(client: MinimallClient, user_id: int) -> tuple[Tool, ...]:
-    """把 9 个只读工具装到「这个客户端 + 这个买家」上。
+    """把 17 个工具装到「这个客户端 + 这个买家」上.
 
     身份 (`user_id`) 在这里被写进闭包 —— 这是它**唯一**进入工具的地方, 也因此
     永远不会出现在任何一个工具的 schema 里 (PRD §4.2).
@@ -359,9 +639,12 @@ def build_tools(client: MinimallClient, user_id: int) -> tuple[Tool, ...]:
             请求头, 换的是「从哪取」那一小段, 本函数一行不改)。
 
     Returns:
-        tuple[Tool, ...]: 正好 9 个只读工具。
+        tuple[Tool, ...]: 正好 17 个工具 (9 只读 + 8 写).
     """
     return tuple(builder(client, user_id) for builder in _BUILDERS)
 
 
-__all__ = ["build_tools"]
+# 出去两个名字: 工具集, 以及**写操作的标记键** —— 后者是跨模块的约定 (护栏插件与
+# 测试都要拿它去读工具身上的注解), 所以它虽然是个常量也在门面上. `SLUG_PATTERN`
+# 不是: 它只在本模块里用, 出去只会让「还有谁在用它」变得难查.
+__all__ = ["WRITE_ANNOTATION_KEY", "build_tools"]

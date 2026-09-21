@@ -371,12 +371,46 @@ async def test_a_question_comes_back_as_an_sse_stream(mall, client) -> None:
         event["data"]["tool_name"] for event in events if event["event"] == "tool_call"
     ]
     assert calls == ["get_my_profile"]
-    assert routes["profile/"].called, "工具没打到商城 —— 答复里的余额就是编的了"
-    assert routes["profile/"].calls[0].request.headers[HEADER_USER_ID] == str(BUYER_ID)
+    assert routes["GET profile/"].called, "工具没打到商城 —— 答复里的余额就是编的了"
+    assert routes["GET profile/"].calls[0].request.headers[HEADER_USER_ID] == str(
+        BUYER_ID
+    )
 
     # 终局事件是权威答复: 里面有商城返回的那个余额
     final = terminal_events(events)[0]["data"]
     assert final["content"] is not None and PROFILE["balance"] in final["content"]
+
+
+async def test_the_web_entry_has_the_guardrail_too(mall, client) -> None:
+    """网页入口同样装着护栏: 第 9 次写操作被拒, 商城只收到 8 次请求.
+
+    为什么非要在 server 这侧再证一遍 (CLI 那侧已经有一条): 护栏是**业务**的插件,
+    而"装错地方"的写法太自然了 —— 在 `cli.build_session` 里加一行就"跑通了",
+    网页版却是裸奔的, 而 CLI 用例照样全绿. 「装配只有一处」这句话靠的就是两个入口
+    各有一条这样的用例 (`test_both_entries_go_through_the_same_assembly` 断的是
+    走同一个函数, 这条断的是**那个函数真的把闸装上了**).
+    """
+    allow_app(mall)
+    routes = mock_all(mall)
+    model = MockLLM.scripted(
+        [
+            tool_call_response(
+                make_tool_call("add_to_cart", f'{{"slug": "p{n}"}}', call_id=f"c{n}")
+            )
+            for n in range(1, 10)  # 9 次写操作, 预算 8
+        ]
+        + [text_response("这件我先不动了, 你到页面上操作吧.")]
+    )
+
+    response = await ask(serving(model, client), "把这些都加上")
+
+    assert response.status_code == 200
+    events = parse_sse(response.text)
+    assert routes["POST cart/items/"].call_count == 8, "第 9 次不该打出去"
+    results = [event["data"] for event in events if event["event"] == "tool_result"]
+    assert len(results) == 9
+    assert results[-1]["status"] == "error" and "已经用完" in results[-1]["error"]
+    assert terminal_events(events)[0]["event"] == "final", "拒绝不是崩溃"
 
 
 # ---------------------------------------------------------------------------
@@ -425,7 +459,7 @@ async def test_a_request_without_a_buyer_is_refused_explicitly(mall, client) -> 
         assert "X-User-Id" in response.json()["error"]["message"], (
             "拒绝的理由要说清是「缺身份」, 转发方才知道该补什么"
         )
-    assert not routes["profile/"].called, "身份不明时不该拿任何人的数据去查商城"
+    assert not routes["GET profile/"].called, "身份不明时不该拿任何人的数据去查商城"
     assert "余额" not in missing.text, "别把装配期的错伪装成业务结果"
 
 
@@ -762,7 +796,7 @@ def test_build_service_wires_the_process_level_parts(
 
     assert isinstance(service.client, MinimallClient)
     assert session.thread_id == context.thread_id
-    assert len(session.tool_names) == 9, "零件接全了: 工具从上下文里装了出来"
+    assert len(session.tool_names) == 17, "零件接全了: 工具从上下文里装了出来"
     assert service.thinking is False, "env 里的思考模式开关没接到零件上"
     asyncio.run(service.aclose())
 

@@ -1,9 +1,13 @@
-"""工具提供者契约: 给定买家, 交出正好 9 个工具, 而且身份进不了它们的参数表.
+"""工具提供者契约: 给定买家, 交出正好 17 个工具, 而且身份进不了它们的参数表.
 
 本文件的重点只有一个 —— **那个安全守卫** (PRD §4.2). 它是那条核心设计的可执行
 证据: 模型的视角就是工具的 JSON schema (名字 + 说明 + 参数表), 里面没有的东西
 它看不见, 也就无从填别人的值。这条不能靠「我记得」, 得靠遍历断言 ——
-所以下面不止断言「没有 user_id」, 而是把 9 个工具的参数表**逐个钉死**.
+所以下面不止断言「没有 user_id」, 而是把 17 个工具的参数表**逐个钉死**.
+
+L2 加了 8 个**写**工具之后这条守卫更值钱了: 写工具能改数据, 身份漏进它们的参数表
+就不只是「看得到别人的数据」, 而是「改得动别人的数据」—— 所以 EXPECTED_PARAMS 里
+那 8 行是逐个键写死的, 多一个 `user_id` 就红.
 """
 
 from __future__ import annotations
@@ -43,6 +47,15 @@ EXPECTED_PARAMS: dict[str, set[str]] = {
     "get_my_order": {"order_no"},
     "get_my_profile": set(),
     "list_my_addresses": set(),
+    # --- 8 个写工具 (L2) ---
+    "add_to_cart": {"slug", "quantity"},
+    "update_cart_item": {"slug", "quantity"},
+    "remove_cart_item": {"slug"},
+    "clear_cart": set(),
+    "place_order": {"address_id"},
+    "cancel_my_order": {"order_no"},
+    "request_refund": {"order_no"},
+    "list_my_refunds": set(),
 }
 
 # 任何形态的身份字段都不许出现在参数表里 (中英文写法都列上)
@@ -60,8 +73,10 @@ def context_for(
     return RunContext(thread_id=thread, payload={PAYLOAD_USER_ID: user_id})
 
 
-async def test_a_provider_returns_exactly_nine_tools(client: MinimallClient) -> None:
-    """给定买家, 交出正好 9 个工具, 名字与顺序都对."""
+async def test_a_provider_returns_exactly_seventeen_tools(
+    client: MinimallClient,
+) -> None:
+    """给定买家, 交出正好 17 个工具, 名字与顺序都对."""
     tools = await MinimallToolProvider(client).provide(context_for())
 
     assert tuple(item.name for item in tools) == TOOL_NAMES
@@ -129,7 +144,8 @@ async def test_the_identity_only_tools_take_no_arguments_at_all(
     tools = await MinimallToolProvider(client).provide(context_for())
     no_argument = [item for item in tools if EXPECTED_PARAMS[item.name] == set()]
 
-    assert len(no_argument) == 5, "空参数工具应当有 5 个 (分类/精选/购物车/余额/地址)"
+    # 5 个只读 (分类/精选/购物车/余额/地址) + 2 个写 (清空购物车/看我的退款)
+    assert len(no_argument) == 7
     for item in no_argument:
         assert item.parameters.get("required", []) == []
 

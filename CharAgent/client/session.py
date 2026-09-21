@@ -44,6 +44,7 @@ from CharAgent.checkpoint import (
     format_history,
 )
 from CharAgent.client.utils.types import DEFAULT_THREAD_ID
+from CharAgent.hooks import HookRegistry
 from CharAgent.model.protocol import ChatModel
 from CharAgent.model.utils.types import ModelMessage
 from CharAgent.prompt import load_prompt, resolve_model_name
@@ -98,6 +99,9 @@ class ChatSession:
             行为一字不变. 业务助手在这里填自己的客服提示词名.
         prompt_dir: 从哪个目录取那份提示词; None (默认) 表示框架的 `templates/`.
             业务提示词放业务自己的目录, 于是框架目录里不留业务的东西.
+        hooks: hook 注册表 (扩展点); None 表示不挂任何插件, 行为与从前一字不变.
+            业务侧挂插件走**这条路**, 而不是自己建 `AgentLoop` —— 会话是装配的
+            唯一入口, 绕开它建 loop 就等于把快照 / 提示词 / 历史那几件事各做一遍.
 
     没跑完的那一轮怎么办 (本类最要紧的一条规矩): loop 干活时用的是自己那份**副本**
     历史, 副本随被取消的任务一起没了 —— 但每一轮结束时落过盘的快照还在. 于是失败
@@ -120,6 +124,7 @@ class ChatSession:
         thinking: bool | None = None,
         prompt_name: str = "system",
         prompt_dir: str | os.PathLike[str] | None = None,
+        hooks: HookRegistry | None = None,
     ) -> None:
         self._model = model
         self._saver = saver
@@ -136,6 +141,9 @@ class ChatSession:
             event_sink=event_sink,
             saver=saver,
             thread_id=thread_id,
+            # 插件注册表原样转交: 会话不解释它挂的是什么, 也不替业务挑点
+            # (六个触发点见 HookRegistry; 空注册零开销).
+            hooks=hooks,
         )
         # 对话历史 (wire 消息): 跑完换成 loop 的完整历史; 没跑完则从快照收回
         # 已完成的工作 (见 _reclaim_progress) —— 两条路都让「上一轮做过什么」

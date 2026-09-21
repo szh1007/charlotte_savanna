@@ -29,6 +29,7 @@ from mock_llm import MockLLM, make_tool_call, text_response, tool_call_response
 
 from CharAgent.checkpoint import InMemoryCheckpointSaver, RedisCheckpointSaver
 from CharAgent.client.session import DEMO_TOOLS, ChatSession
+from CharAgent.hooks import Decision, HookPoint, HookRegistry
 from CharAgent.model.utils.types import ModelMessage, ModelResponse
 from CharAgent.prompt import load_prompt
 from CharAgent.tool import Tool, tool
@@ -70,6 +71,7 @@ def make_session(
     tools: list[Tool] | None = None,
     prompt_name: str = "system",
     prompt_dir: Path | None = None,
+    hooks: HookRegistry | None = None,
 ) -> ChatSession:
     """造一个会话 (存储不指定时给内存版; 工具不指定时给回显工具).
 
@@ -83,6 +85,7 @@ def make_session(
         model_name=model_name,
         prompt_name=prompt_name,
         prompt_dir=prompt_dir,
+        hooks=hooks,
     )
 
 
@@ -370,6 +373,58 @@ async def test_demo_tools_are_the_five_without_the_manual_twin() -> None:
         "count_text_stats",
         "query_order_status",
     ]
+
+
+# ---------------------------------------------------------------------------
+# 扩展点: 业务挂插件走会话这一条路
+# ---------------------------------------------------------------------------
+
+
+async def test_hooks_reach_the_loop_through_the_session() -> None:
+    """注册表透传到 loop: 挂在会话上的插件真的会被叫到.
+
+    这条是业务侧护栏的**唯一入口** —— 不给这个参数, 业务要挂插件就只能自己
+    建 `AgentLoop`, 而会话里那几件事 (提示词 / 快照 / 历史) 就得各做一遍.
+    """
+    turns: list[int] = []
+
+    def record(*, turn: int, **kwargs: Any) -> None:
+        turns.append(turn)
+
+    registry = HookRegistry()
+    registry.register(HookPoint.BEFORE_TURN, record)
+    session = make_session(MockLLM.fixed(text_response("好的")), hooks=registry)
+
+    await session.ask("随便问一句")
+
+    assert turns == [1]
+
+
+async def test_a_plugin_can_stop_a_tool_at_the_session_level() -> None:
+    """拦截插件在**会话**这一层就管用: 说「不许」, 工具一次都不跑.
+
+    比「hook 被叫到了」更进一步 —— 断言的是返回值那半条链路 (loop 里 decide 的
+    接线) 也接上了. 时机的活: 会话构造时把注册表带进去, 运行期改注册表不影响
+    已经在跑的 loop.
+    """
+    ECHO_CALLS.clear()
+    registry = HookRegistry()
+    registry.register(
+        HookPoint.BEFORE_TOOL_EXECUTE,
+        lambda **kwargs: Decision.reject("这个工具这次不许跑"),
+    )
+    model = MockLLM.scripted(
+        [
+            tool_call_response(make_tool_call("echo", '{"text": "hi"}')),
+            text_response("那我不回显了"),
+        ]
+    )
+    session = make_session(model, hooks=registry)
+
+    result = await session.ask("帮我回显 hi")
+
+    assert ECHO_CALLS == [], "被拒的工具一次都不该跑"
+    assert result.content == "那我不回显了", "模型收到拒绝原因后继续作答"
 
 
 # ---------------------------------------------------------------------------

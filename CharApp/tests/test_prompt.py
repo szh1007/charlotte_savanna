@@ -1,11 +1,13 @@
-"""客服提示词: 它在业务目录里、按版本落盘, 而且该说的四条禁则都在.
+"""客服提示词: 它在业务目录里, 按版本落盘, 由清单声明默认版本.
 
 提示词是这个助手的立身之本 —— 工具决定它**能**做什么, 提示词决定它**不会**做
-什么. 后半句没法用单元测试断言 (那要靠评估集, L4 的事), 但下面两件事可以:
+什么. 后半句没法用单元测试断言 (那要靠评估集, L4 的事), 但下面三件事可以:
 
 1. **落库方式**: 按 `{名字}/{版本}.prompt` 分目录存 (PLAN §3.3) —— 换一版是加一个
    文件, 不是覆盖旧文件.
-2. **该写的写没写**: 四条禁则、项目术语、示例.
+2. **版本号从哪来**: 清单文件 (`prompt/manifest.yaml` 的 `default`), 而不是代码里
+   的常量. 读不到清单是**启动期错误**, 不静默退回上一版.
+3. **该写的写没写**: 禁则, 项目术语, 示例.
 
 为什么钉的是「必须有哪几件事」而不是逐字比对全文: 话术会改, 改话术不该红;
 但「不能替买家付款」这类禁则被删掉, 必须红.
@@ -13,18 +15,36 @@
 
 from __future__ import annotations
 
+import shutil
+import subprocess
+from pathlib import Path
+
 import pytest
+from conftest import BUYER_ID
 
+from CharAgent.checkpoint import InMemoryCheckpointSaver
 from CharAgent.prompt import PromptNotFoundError, load_prompt
-from CharApp.minimall.service import PROMPT_DIR, PROMPT_NAME, PROMPT_VERSION
+from CharAgent.tests.mock_llm import MockLLM, text_response
+from CharApp.minimall import service
+from CharApp.minimall.config import MinimallConfigError
+from CharApp.minimall.service import (
+    PROMPT_DIR,
+    PROMPT_MANIFEST,
+    PROMPT_NAME,
+    MinimallService,
+    build_context,
+    resolve_prompt_version,
+)
 
-# 当前声明的这一版在盘上的位置 (好几条用例都要它, 只算一次)
-CURRENT_PROMPT = PROMPT_DIR / PROMPT_NAME / f"{PROMPT_VERSION}.prompt"
+# 当前声明的那一版在盘上的位置 —— 下面好几条用例都要它
+CURRENT_VERSION = resolve_prompt_version()
+CURRENT_PROMPT = PROMPT_DIR / PROMPT_NAME / f"{CURRENT_VERSION}.prompt"
 
 
-def system_prompt() -> str:
-    """按命令行那条路读一遍提示词 (读法必须与生产一致)."""
-    return load_prompt(f"{PROMPT_NAME}/{PROMPT_VERSION}", prompt_dir=PROMPT_DIR)
+def system_prompt(version: str | None = None) -> str:
+    """按生产那条路读一遍提示词 (读法与装配一致: `{名字}/{版本}`)."""
+    name = f"{PROMPT_NAME}/{version or CURRENT_VERSION}"
+    return load_prompt(name, prompt_dir=PROMPT_DIR)
 
 
 # ---------------------------------------------------------------------------
@@ -39,23 +59,169 @@ def test_the_prompt_lives_in_a_versioned_layout() -> None:
     会静默地把上一版弄丢, 那次对比就永远做不成 (PRD §4.8).
     """
     assert CURRENT_PROMPT.is_file()
-    assert sorted(path.name for path in PROMPT_DIR.iterdir()) == [PROMPT_NAME]
-    assert sorted(path.name for path in (PROMPT_DIR / PROMPT_NAME).iterdir()) == [
-        f"{PROMPT_VERSION}.prompt"
+    assert sorted(path.name for path in PROMPT_DIR.iterdir()) == [
+        "manifest.yaml",
+        PROMPT_NAME,
     ]
+    versions = sorted(path.name for path in (PROMPT_DIR / PROMPT_NAME).iterdir())
+    assert f"{CURRENT_VERSION}.prompt" in versions
+    assert len(versions) >= 2, "只留一版就没有 A/B 可比了 (L4 要用它)"
 
 
-def test_the_declared_version_is_the_one_that_gets_loaded() -> None:
-    """声明用哪一版, 读到的就是哪一版 —— 声明与落盘对不上时当场炸.
+def test_the_retired_version_is_still_the_retired_one() -> None:
+    """换版是**加一个文件**, 不是就地改旧的 —— v1 至今还是那份只读客服.
 
-    这条守的是「版本」这件事的意义: 评估结论要能归因到具体一版. 若读不到就悄悄
-    退回上一版, 一次「v2 的跑分」可能其实是 v1 的成绩, 而且没有任何地方会报警.
-    `PromptNotFoundError` 是启动期错误, 命令行会报一句人话就退出.
+    这条守的是「评估结论能归因到具体一版」这件事的地基: 若某一版被人就地改过,
+    那它当初的跑分就再也不对应任何东西, 而盘上看不出任何异常.
+    """
+    body = system_prompt("v1")
+
+    assert "当前只有查询能力" in body, "v1 是 L1a 的只读版, 不该被改写"
+    assert "加购" not in body
+
+
+def test_the_manifest_can_be_committed() -> None:
+    """清单**没被 .gitignore 挡掉** —— 根 .gitignore 里有一条通用的 `*.yaml`.
+
+    这条守的是一种看不见的失效: 本地一切正常 (那份文件就在盘上), 别人克隆下来却
+    一启动就报「读不到提示词清单」—— 而按设计它**不会**静默退回上一版. 靠人记得
+    在 .gitignore 里加一条否定规则是不可靠的, 所以这里问一次 git 自己.
+    """
+    git = shutil.which("git")
+    if git is None:  # pragma: no cover - 开发机上都装了 git
+        pytest.skip("这个环境没有 git, 跳过这条仓库卫生检查")
+
+    result = subprocess.run(
+        [git, "check-ignore", "--quiet", str(PROMPT_MANIFEST)],
+        cwd=PROMPT_MANIFEST.parents[3],  # 仓库根
+        capture_output=True,
+    )
+
+    # check-ignore 用退出码表态: 0 = 被忽略, 1 = 没被忽略
+    assert result.returncode == 1, (
+        f"{PROMPT_MANIFEST.name} 被 .gitignore 挡掉了: 清单进不了仓库, "
+        f"别人克隆下来助手起不来 (见根 .gitignore 里那条 `!` 例外)"
+    )
+
+
+def test_the_manifest_is_the_only_source_of_the_version() -> None:
+    """声明用哪一版, 装配读到的就是哪一版 —— 声明与落盘对不上时当场炸.
+
+    若读不到就悄悄退回上一版, 一次「v2 的跑分」可能其实是 v1 的成绩, 而且没有
+    任何地方会报警. `PromptNotFoundError` 与 `MinimallConfigError` 都是启动期
+    错误, 两个入口会报一句人话就退出.
     """
     assert system_prompt() == CURRENT_PROMPT.read_text(encoding="utf-8")
 
     with pytest.raises(PromptNotFoundError):
         load_prompt(f"{PROMPT_NAME}/v999", prompt_dir=PROMPT_DIR)
+
+
+def test_the_declared_prompt_lets_the_model_change_data() -> None:
+    """声明的那一版必须是**能改数据**的那一版.
+
+    这条钉的是「版本号交给清单」之后的那个新风险: 把 `default` 改回只读版是一个
+    字符的改动, 而后果是 8 个写工具当场全废 (模型会照提示词一律拒绝) —— 别的
+    用例一条都不会红, 因为它们读的就是"声明的那一版".
+
+    判据取正文里有没有那几个动作, **不是**写死 `== "v2"`: 版本号该由清单说了算,
+    测试再去钉一个具体的版本名, 就把清单的一处改动变成了两处.
+    """
+    body = system_prompt()
+
+    for must_have in ("加购", "下单", "申请退款"):
+        assert must_have in body, (
+            f"声明的那一版没有写「{must_have}」, 像是一份只读提示词"
+        )
+
+
+def test_a_missing_manifest_is_a_startup_error(tmp_path: Path) -> None:
+    """清单不在 → 报错, 不猜, 不退回. 静默的后果见上一条."""
+    with pytest.raises(MinimallConfigError) as excinfo:
+        resolve_prompt_version(tmp_path / "manifest.yaml")
+
+    assert "manifest.yaml" in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "",  # 空文件
+        "# 只有一行注释\n",  # 解出来是 None
+        "default: 2\n",  # 版本号写成了数字 (文件名是 2.prompt? 说不清)
+        "- v1\n",  # 根本不是映射
+        "default: [v2, v3]\n",  # 一个字段两个值, 没人知道取哪个
+    ],
+)
+def test_a_manifest_without_a_usable_default_is_a_startup_error(
+    tmp_path: Path, content: str
+) -> None:
+    """清单在, 但里面没有一句能用的「默认用哪一版」→ 同样是启动期错误."""
+    manifest = tmp_path / "manifest.yaml"
+    manifest.write_text(content, encoding="utf-8")
+
+    with pytest.raises(MinimallConfigError):
+        resolve_prompt_version(manifest)
+
+
+def test_a_default_pointing_at_a_missing_version_is_a_startup_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """清单说用 v9, 而盘上没有 `v9.prompt` → 启动期报错 (不静默退回 v2).
+
+    这条要的是**早报**: 清单与落盘对不上时, 服务进程就该起不来 —— 而不是等第一个
+    买家来提问、框架去读文件时才发现. 所以判据落在 `resolve_prompt_version` 上
+    (那句启动期预读读的就是它), 而不是 `load_prompt`.
+    """
+    (tmp_path / PROMPT_NAME).mkdir()
+    (tmp_path / "manifest.yaml").write_text("default: v9\n", encoding="utf-8")
+    monkeypatch.setattr(service, "PROMPT_DIR", tmp_path)
+
+    with pytest.raises(MinimallConfigError) as excinfo:
+        resolve_prompt_version(tmp_path / "manifest.yaml")
+
+    assert "v9" in str(excinfo.value)
+
+
+def test_a_broken_manifest_is_a_startup_error(tmp_path: Path) -> None:
+    """YAML 本身写坏了也是启动期错误 (报的是「这份文件读不出」, 而不是让它变成
+    一个「查不到数据」的假象)."""
+    manifest = tmp_path / "manifest.yaml"
+    manifest.write_text("default: v1\n  bad-indent: 1\n", encoding="utf-8")
+
+    with pytest.raises(MinimallConfigError):
+        resolve_prompt_version(manifest)
+
+
+# ---------------------------------------------------------------------------
+# 换一版: 加一个文件 + 改清单, 装配就取到新版
+# ---------------------------------------------------------------------------
+
+
+async def test_switching_the_manifest_switches_what_the_assembly_loads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, client
+) -> None:
+    """换一版 = 加一个版本文件 + 把清单的 `default` 指过去 (PRD §4.8 的用法).
+
+    断在**装配的产物**上 (会话历史的第一条就是那份正文) 而不是断在
+    `resolve_prompt_version` 上: 版本号读对了, 却没传进会话, 正是那种「开关解析
+    了, 存下了, 但没生效」的静默失效 —— 而它骗过的是评估, 不是用户.
+    """
+    (tmp_path / PROMPT_NAME).mkdir()
+    (tmp_path / PROMPT_NAME / "v9.prompt").write_text(
+        "你是 v9 客服.\n", encoding="utf-8"
+    )
+    (tmp_path / "manifest.yaml").write_text("default: v9\n", encoding="utf-8")
+    monkeypatch.setattr(service, "PROMPT_DIR", tmp_path)
+    monkeypatch.setattr(service, "PROMPT_MANIFEST", tmp_path / "manifest.yaml")
+
+    session = await MinimallService(
+        client=client,
+        model=MockLLM.fixed(text_response("好的")),
+        saver=InMemoryCheckpointSaver(),
+    ).session_for(build_context(BUYER_ID, "prompt-test"), event_sink=lambda event: None)
+
+    assert session.history[0]["content"] == "你是 v9 客服.\n"
 
 
 # ---------------------------------------------------------------------------
@@ -71,17 +237,38 @@ def test_the_prompt_is_read_from_the_business_directory() -> None:
     assert "客服" in body
 
 
-def test_the_prompt_forbids_the_four_things_it_must_forbid() -> None:
-    """四条禁则一条都不能少 (写操作 / 查别人 / 编造 / 许诺)."""
+def test_the_prompt_forbids_the_things_it_must_forbid() -> None:
+    """禁则一条都不能少 (代付 / 查别人 / 编造 / 许诺).
+
+    与 v1 的差别只有一条: **「不能下单 / 取消 / 退款」那条退场了** —— L2 起助手
+    真的能改数据, 再留着它, 模型会一律拒绝. 接替它的是「不能替买家付款」:
+    付款要买家本人在页面上输支付密码 (L3 的挂起才做).
+    """
     body = system_prompt()
 
     for must_say in (
-        "下单",  # 不能替买家付款、下单、取消、退款 (L1a 只有查询)
+        "不能替买家付款",
         "不能查别人的",
         "不编造",
         "不许诺",
     ):
         assert must_say in body, f"提示词里少了这条禁则: {must_say}"
+
+
+def test_the_prompt_tells_the_model_to_obey_the_guardrail() -> None:
+    """被护栏拦下时该怎么办, 提示词里要有一句.
+
+    具体阈值 (8 次 / 5000 元) **不写进提示词** —— 那是 `guardrail.py` 里那两个
+    常量的事, 写两处迟早对不上. 提示词只管一件事: 撞上之后**不要重试, 不要拆单**,
+    让买家自己去页面 (护栏回填的那句话里也这么说).
+    """
+    body = system_prompt()
+
+    assert "金额上限" in body
+    assert "不要反复重试" in body and "也不要拆成几单" in body
+    # 查「5000 元」而不是裸的 5000: 示例里的订单号 (...1230450000031234) 恰好含着
+    # 那四个字符, 裸查会假红
+    assert "5000 元" not in body, "阈值只在 guardrail.py 里有一处, 别抄进提示词"
 
 
 def test_the_prompt_uses_the_project_vocabulary() -> None:
@@ -99,6 +286,7 @@ def test_the_prompt_uses_the_project_vocabulary() -> None:
     assert "取消" in body and "退款" in body
     assert "退货退款" in body, "要明确说清商城不涉及寄回, 否则模型会自己编一套退货流程"
     assert "没有卖家" in body
+    assert "回滚库存" in body, "取消与退款的关键差别 (回不回库存) 必须写出来"
 
 
 def test_the_prompt_carries_examples() -> None:

@@ -29,9 +29,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from CharAgent.agent import GuardConfigError, LoopConfigError, LoopGuard, RunContext
 from CharAgent.checkpoint import CheckpointError, CheckpointSaver
 from CharAgent.client import ChatSession, CliOptions, build_model
+from CharAgent.hooks import HookRegistry
 from CharAgent.model import ModelError
 from CharAgent.model.protocol import ChatModel
 from CharAgent.prompt import PromptError
@@ -39,7 +42,12 @@ from CharAgent.stream import EventSink
 from CharAgent.tool import Tool
 from CharApp.minimall.client import MinimallClient
 from CharApp.minimall.config import MinimallConfigError
-from CharApp.minimall.provider import PAYLOAD_USER_ID, MinimallToolProvider
+from CharApp.minimall.guardrail import WriteGuardrail
+from CharApp.minimall.provider import (
+    PAYLOAD_USER_ID,
+    MinimallToolProvider,
+    buyer_id,
+)
 
 # 会话编号的第一段 (PRD §4.11: `业务:买家ID:对话ID`) —— 快照按它分区, 于是
 # 多用户隔离是免费得到的: 换一个买家就是换一个分区, 谁也读不到谁的档.
@@ -62,7 +70,7 @@ DEFAULT_MAX_TURNS = 10
 DEFAULT_MAX_TOTAL_TOKENS = 60_000
 DEFAULT_MAX_DURATION_SECONDS = 90.0
 
-# 业务提示词: 目录 + 名字 + 版本. 盘上的位置是 `{目录}/{名字}/{版本}.prompt`
+# 业务提示词: 目录 + 名字 + 清单. 盘上的位置是 `{目录}/{名字}/{版本}.prompt`
 # (PLAN §3.3 的布局), 而框架取正文的规则是「{目录}/{名字}.prompt」—— 所以下面拼
 # 的时候把版本接在名字后面, 目录层级因此是**落库方式**的一部分, 而不是文件名里的
 # 一个装饰: 换一版是加一个文件, 旧的还在.
@@ -73,7 +81,14 @@ DEFAULT_MAX_DURATION_SECONDS = 90.0
 # system 只有一条.
 PROMPT_DIR = Path(__file__).resolve().parent / "prompt"
 PROMPT_NAME = "system"
-PROMPT_VERSION = "v1"
+
+# 版本不再硬编码在这里, 而是由清单声明 (`manifest.yaml` 的 `default`) —— 见
+# `resolve_prompt_version`. 这样「这一次跑的是哪一版」在盘上有一个**可读的**
+# 答案, 而不再是散在 Python 常量里的一句话.
+PROMPT_MANIFEST = PROMPT_DIR / "manifest.yaml"
+
+# 清单里声明默认版本的那个字段名
+MANIFEST_DEFAULT_KEY = "default"
 
 # 启动期可能抛出的配置类错误 (命令敲错了 / 环境没配好 / 提示词不在), 都不是
 # 「运行中出问题」—— 报一句人话就退出, 不打印 traceback. 六者没有共同祖先
@@ -89,6 +104,54 @@ STARTUP_ERRORS: tuple[type[Exception], ...] = (
     GuardConfigError,
     PromptError,
 )
+
+
+def resolve_prompt_version(manifest: Path | None = None) -> str:
+    """读清单, 定下这次用哪一版提示词 (**版本号的唯一出处**).
+
+    为什么要有清单文件而不是一个常量: 版本号是评估的前置条件 —— 运行记录里不写
+    「用了哪一版」, 跑分再高也不知道是谁的功劳 (PRD §4.8). 而版本写进文件之后,
+    「当前用哪一版」这件事就不再需要改代码.
+
+    Args:
+        manifest: 清单文件; None 表示本业务目录下那一份 (测试用来指向临时文件).
+
+    Returns:
+        str: 版本号 (如 `"v2"`), 交给 `ChatSession` 拼成 `{名字}/{版本}`.
+
+    Raises:
+        MinimallConfigError: 清单不在 / 不是合法 YAML / 没有可用的 `default` /
+            声明的版本在盘上没有对应的 `.prompt`. **读不到就报错, 不静默退回上一
+            版** —— 与 `PromptNotFoundError` 同一条纪律: 静默退回会让一次「v2 的
+            跑分」其实是 v1 的成绩, 而且没有任何地方会报警.
+    """
+    path = PROMPT_MANIFEST if manifest is None else manifest
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise MinimallConfigError(f"读不到提示词清单 {path}: {exc}") from exc
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        raise MinimallConfigError(f"提示词清单 {path} 不是合法的 YAML: {exc}") from exc
+    version = data.get(MANIFEST_DEFAULT_KEY) if isinstance(data, dict) else None
+    if not isinstance(version, str) or not version.strip():
+        raise MinimallConfigError(
+            f"提示词清单 {path} 里没有可用的 {MANIFEST_DEFAULT_KEY}: "
+            f"写一行 `{MANIFEST_DEFAULT_KEY}: v1` 指明当前用哪一版"
+        )
+    # 「声明了哪一版」与「那一版在不在盘上」是同一件事的两半, 所以一起判:
+    # 只读清单的话服务进程会照常起来, 错误推到每个买家的第一次提问 (框架那边
+    # `load_prompt` 才发现文件不在) —— 那就不叫启动期错误了.
+    resolved = version.strip()
+    prompt_file = PROMPT_DIR / PROMPT_NAME / f"{resolved}.prompt"
+    if not prompt_file.is_file():
+        raise MinimallConfigError(
+            f"提示词清单声明的版本 {resolved!r} 在盘上没有对应的文件: 找的是 "
+            f"{prompt_file}. 补上它, 或者把清单的 {MANIFEST_DEFAULT_KEY} 改成"
+            f"已有的一版"
+        )
+    return resolved
 
 
 def thread_id_for(user_id: int, conversation_id: str) -> str:
@@ -165,10 +228,11 @@ class MinimallService:
     async def session_for(
         self, context: RunContext, *, event_sink: EventSink
     ) -> ChatSession:
-        """把零件装成一台能问答的机器: 上下文 → 工具 → 会话 (**唯一一处装配**).
+        """把零件装成一台能问答的机器: 上下文 → 工具 + 护栏 → 会话 (**唯一一处装配**).
 
-        顺序如实反映依赖: 先拿上下文换工具 (提供者是异步的), 再把工具交给会话 ——
-        框架的 `ChatSession` 至今不知道 `RunContext` 存在 (见 `agent/provider.py`).
+        顺序如实反映依赖: 先拿上下文换工具 (提供者是异步的), 再把工具与护栏一起
+        交给会话 —— 框架的 `ChatSession` 至今不知道 `RunContext` 存在 (见
+        `agent/provider.py`); 业务借它的 `hooks=` 参数挂自己的插件.
 
         为什么要收一个 `event_sink`: 事件的出口在**会话构造时**就定死了, 而一个
         会话要连续服务很多次运行. HTTP 那侧由框架按运行分流 (它递进来的是一条
@@ -185,6 +249,11 @@ class MinimallService:
             MinimallConfigError: 载荷里没有买家身份 (装配时忘了放).
         """
         tools: Sequence[Tool] = await MinimallToolProvider(self.client).provide(context)
+        # 护栏挂在这**唯一一处装配**上: 命令行与 HTTP 两个入口因此都装上, 不会有
+        # 「网页版忘了挂」这种半边生效 (05 立过的旗). 注册表一次会话一份, 里面
+        # 那条插件的账本按**运行**归零 (挂哪个点由它自己决定, 见 guardrail.install).
+        hooks = HookRegistry()
+        WriteGuardrail(client=self.client, user_id=buyer_id(context)).install(hooks)
         return ChatSession(
             self.model,
             saver=self.saver,
@@ -201,10 +270,12 @@ class MinimallService:
             ),
             thinking=self.thinking,
             # 业务提示词在业务自己的目录里, 框架目录里不留业务的东西 (PRD §4.8).
-            # 名字里带版本: 读不到就是启动期错误 (PromptNotFoundError), 不会悄悄退回
-            # 上一版 —— 评估结论要能归因到具体一版, 静默降级会让跑分张冠李戴.
-            prompt_name=f"{PROMPT_NAME}/{PROMPT_VERSION}",
+            # 名字里带版本, 而版本由清单文件说了算: 读不到清单 (这里) 或读不到那份
+            # 文件 (框架) 都是启动期错误, 不会悄悄退回上一版 —— 评估结论要能归因到
+            # 具体一版, 静默降级会让跑分张冠李戴.
+            prompt_name=f"{PROMPT_NAME}/{resolve_prompt_version()}",
             prompt_dir=PROMPT_DIR,
+            hooks=hooks,
         )
 
     async def aclose(self) -> None:
@@ -226,11 +297,12 @@ __all__ = [
     "DEFAULT_MAX_TOTAL_TOKENS",
     "DEFAULT_MAX_TURNS",
     "PROMPT_DIR",
+    "PROMPT_MANIFEST",
     "PROMPT_NAME",
-    "PROMPT_VERSION",
     "STARTUP_ERRORS",
     "MinimallService",
     "build_context",
     "build_model_for",
+    "resolve_prompt_version",
     "thread_id_for",
 ]

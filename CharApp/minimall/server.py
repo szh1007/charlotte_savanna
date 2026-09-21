@@ -77,6 +77,7 @@ from CharApp.minimall.service import (
     MinimallService,
     build_context,
     build_model_for,
+    resolve_prompt_version,
 )
 
 logger = logging.getLogger(__name__)
@@ -238,6 +239,10 @@ def build_service(writer: Callable[[str], Any]) -> MinimallService:
         ModelError: 模型 API Key 没配.
         CheckpointConfigError: 快照后端名不认识 / 缺连接信息.
     """
+    # 提示词清单在**进程启动期**先读一遍: 会话装配 (session_for) 那一次才是真正
+    # 用它的时候, 但那时已经是第一个买家在等了 —— 清单写坏该让进程起不来, 而不是
+    # 让每个买家撞一句"启动失败". 与上面那几项同一个性质 (配置对不上的话, 现在说).
+    resolve_prompt_version()
     # 服务端没有命令行开关: 模型名 / 快照后端 / 是否重试都听 .env (CliOptions 的
     # 缺省语义就是「听环境变量」); color 是终端的事, 服务端一律关掉.
     # 思考模式不在 CliOptions 里 (它是会话运行时的参数), 所以单独从 CHARAPP_THINKING

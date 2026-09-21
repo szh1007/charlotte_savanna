@@ -1,8 +1,9 @@
 """命令行入口: `python -m CharApp.minimall.cli` —— 以某个买家的身份跟客服助手对话.
 
 一句话理解: L1a 的那扇门。终端里敲一句「有什么 2000 块以下的手机推荐吗」, 助手
-带着 9 个只读工具去打真实的商城接口, 拿真实数据回答; 过程实时打在屏幕上, 多轮
-对话连得上, 中途 Ctrl-C 能打断, 说一句「继续」就接着跑。
+带着真实工具去打真实的商城接口, 拿真实数据回答 —— L2 之后它**也能改数据** (加购 /
+下单 / 取消 / 申请退款, 但付款除外); 过程实时打在屏幕上, 多轮对话连得上, 中途
+Ctrl-C 能打断, 说一句「继续」就接着跑.
 
 **为什么先做命令行再做网页** (PRD §4.9): 网页版会同时引入 HTTP 层、流式输出、
 Django 转发、前端渲染、跨进程错误传播五个新变量。命令行用最少的变量把
@@ -66,16 +67,18 @@ from CharApp.minimall.service import (
 )
 
 _EPILOG = """\
-两条演示脚本 (L1a 验收要的事):
-  1) 问商品:  python -m CharApp.minimall.cli --user-id 3
-     试问: 有什么 2000 块以下的商品推荐吗 / 我余额还有多少 / 我最近的订单到哪了
-     (示例问句按本机商城现有的商品写的 —— 换成目录里没有的东西也不出错, 助手会
-      如实说「没找到」, 那同样是它该有的表现)
+两条演示脚本 (L2 验收要的事):
+  1) 改数据:  python -m CharApp.minimall.cli --user-id 3
+     试问: 把红米 Note 13 加两件到购物车 / 下单 / 这单我不要了 / 我要退款
+     (助手会真的去改数据; 写操作有预算与金额上限两道护栏, 见 guardrail.py)
   2) 多轮连贯: 上面推荐完之后追问「第二个多少钱」—— 助手接得住上一轮说过的商品
      (模型看得到对话历史, 不需要你重复一遍)
 
+问商品 / 订单 / 余额这类只读问答同样可以试:
+     有什么 2000 块以下的商品推荐吗 / 我余额还有多少 / 我最近的订单到哪了
+
 需要商城在跑 (python manage.py runserver), 并在根 .env 里配好内部令牌;
-只读: 这个版本不能下单、付款、取消、退款。
+助手**不能替买家付款** —— 下单只到「待付款」, 付款要买家本人在页面上输支付密码.
 """
 
 
@@ -147,7 +150,7 @@ def build_parser() -> argparse.ArgumentParser:
     """构造参数解析器 (帮助文本与选项都是对外契约, 单独一个函数好单测)."""
     parser = argparse.ArgumentParser(
         prog="python -m CharApp.minimall.cli",
-        description="minimall 电商客服助手 (命令行版, 只读)",
+        description="minimall 电商客服助手 (命令行版; 能查也能改数据, 付款除外)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=_EPILOG,
     )
@@ -316,12 +319,12 @@ class ServiceRepl(InteractiveRepl):
         return "\n".join(
             [
                 "",
-                "minimall 电商客服 (命令行版, 只读)",
+                "minimall 电商客服 (命令行版)",
                 f"  买家: #{self._options.user_id} · "
                 f"会话: {self._session.thread_id} · "
                 f"模型: {self._session.model_name}",
-                f"  工具: {len(self._session.tool_names)} 个 (商品 / 分类 / 购物车 / "
-                f"订单 / 账户) · 轮数上限: {self._options.max_turns}",
+                f"  工具: {len(self._session.tool_names)} 个 (商品 / 购物车 / 订单 / "
+                f"退款; 会改数据, 带护栏) · 轮数上限: {self._options.max_turns}",
                 f"  快照: {self._session.saver_name} ({', '.join(traits)})",
                 "  输入 /help 看指令; Ctrl-C 打断后说一句「继续」即可接着跑",
                 "",
