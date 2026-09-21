@@ -25,6 +25,7 @@
 | `tools.py`     | 17 个工具 (9 只读 + 8 写) + `build_tools` (身份在这里进闭包) |
 | `provider.py`  | `MinimallToolProvider`: 上下文 → 这次运行的工具集 |
 | `guardrail.py` | 写操作护栏 (预算 8 次 + 单笔 5000 上限), 挂在框架的拦截点上 |
+| `redaction.py` | 展示层脱敏: 工具事件换成中文短语 (敏感数据不出本进程, ADR-0003) |
 | `service.py`   | 两入口共用的装配: 身份 → 上下文 → 会话 (CLI 与 server 同一份) |
 | `cli.py`       | 命令行入口 (薄: 解析参数 / 读输入 / 打结果) |
 | `server.py`    | 服务进程入口 (薄: 认证解析 / 转交装配 / 进程生命周期) |

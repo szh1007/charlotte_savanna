@@ -122,7 +122,12 @@ for pid in "${!PROJ[@]}"; do
         while [ ${#queue[@]} -gt 0 ]; do
             node="${queue[0]}"
             queue=("${queue[@]:1}")
-            for c in ${CHILDREN[$node]//,/ }; do
+            # `:-` 不能省: 叶子节点 (没有子进程的那种) 不在 CHILDREN 里, 而 set -u
+            # 把「取一个不存在的键」当硬错误 —— BFS 一弹出叶子就崩在这行
+            # (2026-09-22 实撞: CHILDREN[$node]: unbound variable).
+            # 逗号换空格要留在**取值之后**做: 默认值那一段不能接 // 替换
+            children="${CHILDREN[$node]:-}"
+            for c in ${children//,/ }; do
                 [ -z "$c" ] && continue
                 if [[ -n "${PORTS[$c]:-}" ]]; then
                     found="$c"

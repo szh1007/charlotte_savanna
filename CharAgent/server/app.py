@@ -1,4 +1,4 @@
-"""应用工厂: 一个 HTTP 端点, 两条接缝, 一套收尾.
+"""应用工厂: 三条 HTTP 路 (跑一次 / 停一次 / 读历史), 两条接缝, 一套收尾.
 
 一句话理解: 客户端问一句话 (`POST /runs`), 服务把这次问答的流式事件推回去
 (SSE); 中间两处属于业务 (认证解析 / 会话装配), 框架只认它们的结果. 框架仍然
@@ -49,6 +49,17 @@ final, 失败与取消有本层补的 error (见 runs.py), 之后流才收线.
   出册), 也不该分 (403 会确认「这个编号真实存在过」). 理由与那条纪律同源, 见
   RunNotFoundError.
 
+读历史那条路是另一件小事 (同一道门, 只读)::
+
+    GET /history
+      ├─ 1. ContextProvider.provide(request)   <- 与上两条**同一道门**
+      └─ 2. 查登记表 → 200 {"thread_id", "messages": [{role, content}, ...]}
+            没聊过的会话编号 → 空列表 (不是 404: 那是「还没聊过」)
+
+它存在的理由只有一个: 会话活在**进程内存**里, 浏览器刷新会把页面那一份渲染丢光.
+取的是会话对象手上那份历史 (不是快照 —— 那是断点续跑用的), 而过滤掉哪些角色、
+交出去哪些字段由 `history.py` 说了算. 本路由不建会话、不占会话、不产生任何运行.
+
 三条边界:
 
 - **框架不写用户文案**: 补发的 error 只陈述事实 (错误码 + 异常说明), 面向用户的
@@ -69,6 +80,12 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.responses import Response, StreamingResponse
 
+from CharAgent.server.history import (
+    HISTORY_PATH,
+    MESSAGES_FIELD,
+    THREAD_ID_FIELD,
+    conversation_of,
+)
 from CharAgent.server.runs import (
     RunHandle,
     RunRegistry,
@@ -116,7 +133,7 @@ def create_app(
 
     Returns:
         FastAPI: 装好的应用. 业务可以再往上加自己的路由与中间件 (框架只占
-        `POST /runs` 与 `POST /runs/{run_id}/cancel` 两个端点).
+        `POST /runs` / `POST /runs/{run_id}/cancel` / `GET /history` 三条路).
     """
     registry = SessionRegistry(session_provider)
     runs = RunRegistry()
@@ -223,6 +240,42 @@ def create_app(
 
         handle.task.cancel()
         return JSONResponse({"run_id": run_id, "status": "cancelling"})
+
+    @app.get(HISTORY_PATH)
+    async def session_history(request: Request) -> JSONResponse:
+        """读一段会话聊过什么 (只读 —— 与 `POST /runs` 是同一道门下的两条路).
+
+        为什么要有它: 会话活在**进程内存**里 (登记表按 thread_id 长驻), 而浏览器
+        刷新会把页面那一份渲染丢光 —— 没有这个读口, 用户看到的就是「我刚说的话
+        不见了」. 取的是会话对象手上那份历史, 不是快照: 快照是断点续跑用的
+        (`resume` 走那条路), 而这里问的是「这段对话现在聊到哪儿了」.
+
+        四件事按顺序说清:
+
+        1. **认证走同一个插座** —— 与 `/runs` 一字不差 (`context_provider.provide`).
+           于是「拉谁的对话」这件事只有一条判据: 请求里认出来的 `thread_id`. 请求体
+           与查询串都影响不了它 —— 换一个身份就换一段对话, 拿不到别人的.
+        2. **只读**: 本路由不建会话, 不占会话, 不产生任何运行. 没聊过的对话编号
+           回一个**空的** `messages` —— 那是「还没聊过」, 不是错误 (第一次打开页面
+           就是这种情形, 不该让调用方分辨「404 还是空」).
+        3. **过滤在 `history.conversation_of` 里** (哪些角色、哪些字段能出去, 那里
+           写明了理由) —— 本路由只负责取数与包信封.
+        4. **方法**: 只登记 GET. 同一个路径上的别的写意图 (POST / DELETE) 由框架的
+           路由层回 405 + `Allow: GET`, 不必在这里手写一段拒绝 —— 但**要有用例钉住**
+           (看起来像「什么都不做」, 其实是被别处的机制挡下了).
+
+        Returns:
+            JSONResponse: 200 + `{"thread_id": ..., "messages": [{"role", "content"}]}`.
+
+        Raises:
+            ServerAuthError: 业务那个插座没认下这次请求 (框架翻成 401).
+        """
+        context = await context_provider.provide(request)
+        entry = registry.entry(context.thread_id)
+        messages = [] if entry is None else conversation_of(entry.session.history)
+        return JSONResponse(
+            {THREAD_ID_FIELD: context.thread_id, MESSAGES_FIELD: messages}
+        )
 
     return app
 

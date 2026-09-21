@@ -18,6 +18,12 @@ HTTP + SSE 那一层, 业务只接两个插座: 认证解析 (认下这次请求
 拼对话走的是**同一个插座** (`MinimallContexts`) —— 所以「只能取消自己那段会话里的
 运行」不需要业务这边写一行 (判据是会话编号里含买家, 见 `service.thread_id_for`).
 
+**推给浏览器的事件是脱敏后的** (`redaction.py`, ADR-0003): 工具的参数原文与返回正文
+换成一句中文短语, 它们不再出门 (模型自己在答复或思维链里复述的值不在此列 —— 那是
+模型的话, 见 `redaction.py` 开头那段范围说明). 包在 `MinimallSessions.provide`
+那一处 —— 框架把事件出口交给业务的那一行, 也是浏览器这条路唯一的出口 (命令行那条路
+不脱敏: 它的出口是开发者自己的终端, 见那个方法上的说明).
+
 **身份与令牌**: 两个头都是 Django 转发来的 —— 浏览器 ↔ Django 是唯一真正验证
 「你是谁」的地方, 这里只是同一信任域内的转发 (PRD §4.10 的三层信任模型; 为什么
 敢信裸的 `X-User-Id` 见 `CharApp/docs/adr/0001-...`). 所以本进程不查库、不认
@@ -72,6 +78,7 @@ from CharApp.minimall.config import (
     server_config_from_env,
     thinking_from_env,
 )
+from CharApp.minimall.redaction import redacting_sink
 from CharApp.minimall.service import (
     STARTUP_ERRORS,
     MinimallService,
@@ -211,8 +218,18 @@ class MinimallSessions:
     async def provide(
         self, context: RunContext, *, event_sink: EventSink
     ) -> ChatSession:
-        """装配这个会话 (事件出口原样转交, 框架按运行分流)."""
-        return await self.service.session_for(context, event_sink=event_sink)
+        """装配这个会话 (事件出口**脱敏后**转交, 框架按运行分流).
+
+        为什么脱敏在这里而不是共用装配里 (`service.session_for`): 威胁模型是
+        「谁能看到**浏览器**」(ADR-0003), 而命令行的事件出口是框架的终端渲染器
+        —— 它按框架的载荷契约打 `name(args)` / `name ok: summary`, 包上脱敏之后
+        那两行会变成 `add_to_cart( (畸形 JSON))`. 按 `service.py` 自己的放置标准
+        (「换一个入口还要不要这段」), 这一段是入口特有的: 这里正是框架把 sink
+        交给业务的那一处, 也是浏览器唯一的那条出口.
+        """
+        return await self.service.session_for(
+            context, event_sink=redacting_sink(event_sink)
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -267,7 +284,8 @@ def create_minimall_app(service: MinimallService, config: ServerConfig) -> FastA
         config: 监听地址 / 端口 / 校验令牌.
 
     Returns:
-        FastAPI: 装好的应用 (框架占 `POST /runs` 与 `POST /runs/{id}/cancel` 两个端点).
+        FastAPI: 装好的应用 —— 框架占三条路 (问一句 / 停一次 / 读历史), 后两条
+        业务这边一行不用写.
 
     Note:
         取消端点**不需要业务这边多写一行**: 它复用同一个 `MinimallContexts` 认人
@@ -342,7 +360,7 @@ def main() -> int:
         return 1
 
     logger.info(
-        "客服服务启动中: http://%s:%d (POST /runs 与 POST /runs/{id}/cancel)",
+        "客服服务启动中: http://%s:%d (三条路: 问一句 / 停一次 / 读历史)",
         config.host,
         config.port,
     )

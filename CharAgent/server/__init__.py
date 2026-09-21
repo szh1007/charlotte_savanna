@@ -6,11 +6,13 @@
 
 结构总览 (对齐 model / tool / agent 包惯例):
 
-- app.py       应用工厂 create_app: 两个端点 (POST /runs 问一句 / POST /runs/{id}/cancel
-               停一次) + 两条接缝 + 一套收尾
+- app.py       应用工厂 create_app: 三条路 (POST /runs 问一句 / POST /runs/{id}/cancel
+               停一次 / GET /history 读这段对话聊过什么) + 两条接缝 + 一套收尾
 - sse.py       事件流 → SSE: 字段映射 (纯函数) + 响应体生成器 (收尾时叫停没人听的运行)
 - sessions.py   会话登记表 + 事件路由: 会话按 thread_id 长驻, 同一会话不并发跑
 - runs.py       一次运行的流与在册: 事件队列 + 序号记账 + 可取消的任务句柄
+- history.py    会话历史的只读视图: wire 历史 → 能给人看的那一份对话 (滤掉
+               system 与工具消息)
 - utils/        支撑子包: types (两个插座协议 + wire 契约常量) /
                 errors (一族自带状态码的错误)
 
@@ -52,6 +54,11 @@ db 的内部, 也不改它们任何一行.
 from __future__ import annotations
 
 from CharAgent.server.app import create_app
+from CharAgent.server.history import (
+    HISTORY_PATH,
+    MESSAGES_FIELD,
+    THREAD_ID_FIELD,
+)
 from CharAgent.server.utils.errors import (
     InvalidRequestError,
     RunNotFoundError,
@@ -72,10 +79,13 @@ from CharAgent.server.utils.types import (
 
 __all__ = [
     "CANCELLED_CODE",
+    "HISTORY_PATH",
+    "MESSAGES_FIELD",
     "MESSAGE_FIELD",
     "RUN_FAILED_CODE",
     "RUN_ID_HEADER",
     "SSE_MEDIA_TYPE",
+    "THREAD_ID_FIELD",
     "ContextProvider",
     "InvalidRequestError",
     "RunNotFoundError",

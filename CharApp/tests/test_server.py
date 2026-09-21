@@ -31,7 +31,15 @@ from typing import Any
 import httpx
 import pytest
 import respx
-from conftest import AGENT_BASE_URL, BUYER_ID, PROFILE, TOKEN, agent_url, mock_all
+from conftest import (
+    AGENT_BASE_URL,
+    BUYER_ID,
+    ORDER_NO,
+    PROFILE,
+    TOKEN,
+    agent_url,
+    mock_all,
+)
 
 from CharAgent.checkpoint import InMemoryCheckpointSaver
 from CharAgent.checkpoint import config as checkpoint_config
@@ -59,6 +67,7 @@ from CharApp.minimall.config import (
     server_config_from_env,
     thinking_from_env,
 )
+from CharApp.minimall.redaction import TOOL_PHRASES
 from CharApp.minimall.server import (
     DEFAULT_CONVERSATION_ID,
     HEADER_CONVERSATION_ID,
@@ -381,6 +390,73 @@ async def test_a_question_comes_back_as_an_sse_stream(mall, client) -> None:
     assert final["content"] is not None and PROFILE["balance"] in final["content"]
 
 
+async def test_the_stream_carries_no_backend_fields(mall, client) -> None:
+    """浏览器拿到的那条流里**搜不到任何后端字段** (ADR-0003 的验收: 敢当场开 devtools).
+
+    样本挑的是最容易漏的那个工具: 订单号在 `get_my_order` 这条路上同时出现在三处
+    (模型填的参数 / 工具返回的正文 / 错误文案), 删漏任何一处这条都红; 收货人、
+    金额、状态是同一类东西 —— 它们只该躺在商城与模型的 wire 历史里.
+
+    两条**正向**断言同样是重点: 页面上那两行得换成中文短语, 而 `tool_name` 要留着
+    (演示时讲「模型选了哪个工具、有没有选错」全靠它).
+    """
+    allow_app(mall)
+    routes = mock_all(mall)
+    model = MockLLM.scripted(
+        [
+            tool_call_response(
+                make_tool_call("get_my_order", f'{{"order_no": "{ORDER_NO}"}}')
+            ),
+            text_response("订单查到了。"),
+        ]
+    )
+
+    response = await ask(serving(model, client), "我最近的订单到哪了")
+
+    assert response.status_code == 200
+    assert routes[f"GET orders/{ORDER_NO}/"].called, "工具没真跑, 后面几条就都空了"
+    for leak in (ORDER_NO, "张三", "1899.00", "shipped"):
+        assert leak not in response.text, f"{leak!r} 漏到了 SSE 流上"
+
+    tool_events = [
+        event["data"]
+        for event in parse_sse(response.text)
+        if event["event"] in ("tool_call", "tool_result")
+    ]
+    assert tool_events, "工具调用与结果都该在流里 (脱敏不是删事件)"
+    for data in tool_events:
+        assert "arguments" not in data and "summary" not in data and "error" not in data
+    assert [data["label"] for data in tool_events] == [
+        TOOL_PHRASES["get_my_order"].calling,
+        TOOL_PHRASES["get_my_order"].done,
+    ]
+    assert {data["tool_name"] for data in tool_events} == {"get_my_order"}
+
+
+async def test_the_conversation_can_be_read_back(mall, client) -> None:
+    """浏览器刷新之后能不能把这段对话拿回来 —— 走业务这一侧的同一个 app.
+
+    这条只证**接线**: 历史端点随框架的 `create_app` 一起装到本业务的服务上, 认证
+    用的是业务那两个头 (框架不认识它们). 过滤规则本身 (哪些角色、哪些字段出去)
+    归框架的用例, 这里顺带钉一句最要紧的: 工具返回的正文不在历史里 —— 刷新页面
+    不能变成一条绕过脱敏的路.
+    """
+    allow_app(mall)
+    mock_all(mall)
+    app = serving(MockLLM.fixed(balance_dialogue), client)
+    await ask(app, "我余额还有多少")
+
+    async with talking_to(app) as http:
+        response = await http.get("/history", headers=headers())
+
+    assert response.status_code == 200
+    messages = response.json()["messages"]
+    assert messages[0] == {"role": "user", "content": "我余额还有多少"}
+    assert messages[-1]["role"] == "assistant"
+    for leak in (PROFILE["phone"], PROFILE["email"], PROFILE["username"]):
+        assert leak not in response.text, f"{leak!r} 从历史接口漏了出去"
+
+
 async def test_the_web_entry_has_the_guardrail_too(mall, client) -> None:
     """网页入口同样装着护栏: 第 9 次写操作被拒, 商城只收到 8 次请求.
 
@@ -409,7 +485,17 @@ async def test_the_web_entry_has_the_guardrail_too(mall, client) -> None:
     assert routes["POST cart/items/"].call_count == 8, "第 9 次不该打出去"
     results = [event["data"] for event in events if event["event"] == "tool_result"]
     assert len(results) == 9
-    assert results[-1]["status"] == "error" and "已经用完" in results[-1]["error"]
+    # 被拒的那一次分两个通道各说各的: 事件流上是一句「没成功」(页面看到的), 而
+    # **那句理由** (预算用完了) 回填给了模型 —— 买家从答复里听到原因, 浏览器里不留
+    # 内部文案 (脱敏见 redaction.py). 两边都要钉, 少一半就成了「用户什么都听不到」
+    assert results[-1]["status"] == "error"
+    assert "已经用完" not in results[-1].get("label", "")
+    backfilled = [
+        message
+        for message in model.calls[-1]["messages"]
+        if message.get("role") == "tool" and "已经用完" in str(message.get("content"))
+    ]
+    assert backfilled, "护栏给的理由没回填给模型 —— 买家就无从听说了"
     assert terminal_events(events)[0]["event"] == "final", "拒绝不是崩溃"
 
 

@@ -47,6 +47,7 @@ RUNS_URL = f"{AGENT_URL}/runs"
 CHAT_URL = "/minimall/agent/chat/"
 PAGE_URL = "/minimall/agent/"
 CANCEL_URL = "/minimall/agent/cancel/"
+HISTORY_URL = "/minimall/agent/history/"
 
 BUYER_NAME = "bff_buyer"
 OTHER_NAME = "bff_other"
@@ -58,6 +59,18 @@ TAB_TWO = "2b7d9a10-aaaa-4bbb-8ccc-111222333444"
 # 一次运行的编号 (框架 `new_run_id()` 发的就是 32 位十六进制), 取消要用它
 RUN_ID = "9f3a1c2b4d5e6f7081a2b3c4d5e6f708"
 CANCEL_UPSTREAM = f"{AGENT_URL}/runs/{RUN_ID}/cancel"
+
+# 助手服务的历史端点 (框架 `CharAgent/server/history.py` 那条路由)
+HISTORY_UPSTREAM = f"{AGENT_URL}/history"
+
+# 一次历史响应 (框架那边的形状: 会话编号 + 一段段 user / assistant 的消息)
+HISTORY_BODY = {
+    "thread_id": f"minimall:{1}:{TAB_ONE}",
+    "messages": [
+        {"role": "user", "content": "我最近的订单到哪了"},
+        {"role": "assistant", "content": "你的订单已发货。"},
+    ],
+}
 
 
 def _frame(seq: int, event: str, **payload) -> str:
@@ -161,6 +174,18 @@ class BffTestBase(TestCase):
         body.update(payload or {})
         return self.client.post(
             CANCEL_URL, data=json.dumps(body), content_type="application/json", **kwargs
+        )
+
+    def mock_history(self, response: httpx.Response) -> respx.Route:
+        """把助手服务的历史端点拦下来, 让它回指定的响应."""
+        return respx.get(HISTORY_UPSTREAM).mock(return_value=response)
+
+    def read_history(self, conversation_id: str = TAB_ONE, **body):
+        """按页面的样子读一次历史 (POST + JSON: 会话编号待在请求体里)."""
+        payload = {"conversation_id": conversation_id}
+        payload.update(body)
+        return self.client.post(
+            HISTORY_URL, data=json.dumps(payload), content_type="application/json"
         )
 
 
@@ -741,6 +766,166 @@ class BffCancelTest(BffTestBase):
 
 
 # ---------------------------------------------------------------------------
+# 读历史: 刷新之后对话还在
+# ---------------------------------------------------------------------------
+
+
+class BffHistoryTest(BffTestBase):
+    """读历史那条路 —— 页面加载时问一次「这段对话聊到哪儿了」."""
+
+    def test_the_history_forwards_the_conversation_and_the_service_headers(self):
+        """转发到 `/history`, 三个头一个不少, 上游的正文原样交给浏览器.
+
+        少 `X-Conversation-Id` 的表现与取消那条一样具体: 助手服务会按缺省那段会话
+        去查, 于是**每次都回一段空历史** —— 用户刷新十次都是「没聊过」, 而链路上
+        一处报错都没有.
+
+        转发**下游仍是 GET**: 会话编号走头, 地址里不带参数, 要内部令牌才进得来 ——
+        上面那条「编号不进 URL」的纪律是给**浏览器**这一侧定的.
+        """
+        with respx.mock:
+            route = self.mock_history(httpx.Response(200, json=HISTORY_BODY))
+            r = self.read_history()
+
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(json.loads(r.content), HISTORY_BODY)
+        self.assertEqual(r["Content-Type"], "application/json")
+        request = route.calls[0].request
+        self.assertEqual(request.method, "GET")
+        self.assertEqual(request.headers["X-Internal-Token"], TOKEN)
+        self.assertEqual(request.headers["X-User-Id"], str(self.buyer.pk))
+        self.assertEqual(request.headers["X-Conversation-Id"], TAB_ONE)
+
+    def test_the_conversation_id_stays_out_of_the_url(self):
+        """**守卫测试**: 会话编号只走请求体 —— 它不该出现在地址上, 一次都不该.
+
+        这条守的是「会话编号不进 URL」这个决定本身 (理由见 `AgentHistoryView`):
+        进了 URL 就等于同时进了访问日志 / 浏览器历史 / Referer. 判据落在**上游收到
+        的请求**上: 对下游也不能把它挂进查询串 (它现在走 `X-Conversation-Id` 头).
+        """
+        with respx.mock:
+            route = self.mock_history(httpx.Response(200, json=HISTORY_BODY))
+            r = self.read_history(TAB_TWO)
+
+        self.assertNotIn(TAB_TWO, str(r.request["QUERY_STRING"]))
+        self.assertEqual(route.calls[0].request.url.query, b"")
+
+    def test_the_identity_comes_from_the_session_not_from_the_body(self):
+        """**守卫测试**: 请求体里塞别人的 user_id → 仍然以自己的身份转发.
+
+        读历史不像取消那样让别人花钱, 但它读到的是**别人的对话内容** —— 身份只要
+        能被参数影响一次, 「买家 A 拉不到买家 B 的历史」就只剩助手服务那一层在守.
+        """
+        with respx.mock:
+            route = self.mock_history(httpx.Response(200, json=HISTORY_BODY))
+            self.read_history(user_id=str(self.other.pk))
+
+        request = route.calls[0].request
+        self.assertEqual(request.headers["X-User-Id"], str(self.buyer.pk))
+
+    def test_each_tab_asks_for_its_own_conversation(self):
+        """会话编号跟着请求体走: 两个标签页问的是两段对话.
+
+        这条是用户故事 25 在读出方向上的那一半 (写方向由 chat 那条守) —— 页面把
+        自己那一段的编号发出来, 拿回来的才是自己那一段.
+        """
+        with respx.mock:
+            route = self.mock_history(httpx.Response(200, json=HISTORY_BODY))
+            self.read_history(TAB_TWO)
+
+        self.assertEqual(route.calls[0].request.headers["X-Conversation-Id"], TAB_TWO)
+
+    def test_a_conversation_id_that_cannot_be_forwarded_is_refused(self):
+        """编号不合法 → 400, 而且一个请求都不发出去 (与另两条路同一处校验)."""
+        with respx.mock:
+            route = self.mock_history(httpx.Response(200, json=HISTORY_BODY))
+            r = self.read_history("有中文不行")
+
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(
+            json.loads(r.content)["error"]["code"], "invalid_conversation_id"
+        )
+        self.assertFalse(route.called)
+
+    def test_a_missing_conversation_id_is_refused(self):
+        """缺编号 → 400 (不给默认值): 默认值的表现是两个标签页悄悄共用一段历史."""
+        with respx.mock:
+            route = self.mock_history(httpx.Response(200, json=HISTORY_BODY))
+            r = self.client.post(
+                HISTORY_URL, data=json.dumps({}), content_type="application/json"
+            )
+
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(
+            json.loads(r.content)["error"]["code"], "invalid_conversation_id"
+        )
+        self.assertFalse(route.called)
+
+    def test_a_body_that_is_not_json_is_refused(self):
+        """请求体不是 JSON 对象 → 400, 一个请求都不发出去 (与 chat 那条同款)."""
+        with respx.mock:
+            route = self.mock_history(httpx.Response(200, json=HISTORY_BODY))
+            r = self.client.post(
+                HISTORY_URL, data="不是 JSON", content_type="text/plain"
+            )
+
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(json.loads(r.content)["error"]["code"], "invalid_request")
+        self.assertFalse(route.called)
+
+    def test_an_unreachable_service_is_reported(self):
+        """助手服务没起来 → 502 + 一句人话 (与另两条路同一个口径)."""
+        with respx.mock:
+            respx.get(HISTORY_UPSTREAM).mock(
+                side_effect=httpx.ConnectError("connection refused")
+            )
+            r = self.read_history()
+
+        self.assertEqual(r.status_code, 502)
+        self.assertEqual(json.loads(r.content)["error"]["code"], "agent_unavailable")
+
+    def test_an_unconfigured_token_fails_before_calling_out(self):
+        """本机没配令牌 (fail closed): 一个请求都不发, 码与另两条路一致."""
+        with respx.mock:
+            route = self.mock_history(httpx.Response(200, json=HISTORY_BODY))
+            with override_settings(CHARAPP_INTERNAL_TOKEN=""):
+                r = self.read_history()
+
+        self.assertEqual(r.status_code, 503)
+        self.assertEqual(json.loads(r.content)["error"]["code"], "agent_unavailable")
+        self.assertFalse(route.called)
+
+    def test_an_upstream_refusal_keeps_its_code(self):
+        """上游拒绝转发时保留它的码 —— 那是对面特意留给业务分辨用的."""
+        with respx.mock:
+            self.mock_history(
+                httpx.Response(503, json={"error": {"code": "not_configured"}})
+            )
+            r = self.read_history()
+
+        self.assertEqual(r.status_code, 502)
+        self.assertEqual(json.loads(r.content)["error"]["code"], "not_configured")
+
+    def test_a_read_by_url_is_not_allowed(self):
+        """**守卫测试**: GET 一律 405 —— 会话编号不能从 URL 上读, 也不该被塞进 URL.
+
+        这就是这次改动的全部意义: 一条 `GET /minimall/agent/history/?conversation_id=…`
+        会被访问日志、浏览器历史、Referer 记下来, 而跨站页面上一个 `<img src>` 就能
+        让别人的浏览器替他去读. 别的写意图同样挡在门外 (同一个出口).
+        """
+        for method in ("get", "put", "patch", "delete"):
+            with self.subTest(method=method), respx.mock:
+                route = self.mock_history(httpx.Response(200, json=HISTORY_BODY))
+                r = getattr(self.client, method)(HISTORY_URL)
+
+                self.assertEqual(r.status_code, 405)
+                self.assertEqual(
+                    json.loads(r.content)["error"]["code"], "method_not_allowed"
+                )
+                self.assertFalse(route.called)
+
+
+# ---------------------------------------------------------------------------
 # CSRF: 换 POST 换来的一层显式防护
 # ---------------------------------------------------------------------------
 
@@ -791,14 +976,42 @@ class BffCsrfTest(BffTestBase):
         self.assertEqual(r.status_code, 403)
         self.assertFalse(route.called, "被 CSRF 拦下的请求绝不该打到下游")
 
+    def test_reading_the_history_without_the_csrf_token_is_refused(self):
+        """**读历史也受 CSRF 保护** —— 这正是它从 GET 改成 POST 的原因.
+
+        改之前这条请求不过 CSRF 检查: 跨站页面上一行 `<img src>` 就能让登录用户替
+        他去读历史 (响应那头读不到, 但请求真的发出去了 —— 而「会话编号进 URL」本身
+        已经把编号泄给了日志与 Referer). 现在它与提问、取消同一层防护.
+
+        顺带守住那条「编号不进 URL」的决定: 伪造者连**怎么发**这条请求都得先拿到
+        页面上的 CSRF 令牌, 光知道编号没用.
+        """
+        client = self.csrf_client()
+        with respx.mock:
+            route = self.mock_history(httpx.Response(200, json=HISTORY_BODY))
+            r = client.post(
+                HISTORY_URL,
+                data=json.dumps({"conversation_id": TAB_ONE}),
+                content_type="application/json",
+            )
+
+        self.assertEqual(r.status_code, 403)
+        self.assertFalse(route.called, "被 CSRF 拦下的请求绝不该打到下游")
+
     def test_the_pages_own_token_is_accepted(self):
-        """页面拿到的那个令牌能过 —— 有防护还不够, 正常路径不能被误伤."""
+        """页面拿到的那个令牌能过 —— 有防护还不够, 正常路径不能被误伤.
+
+        三条 POST 一起过一遍 (提问 / 取消 / 读历史): 页面用的是同一个 `csrfToken()`,
+        「哪一条能用」分家就等于某一条在真机上永远是 403, 而用例全绿.
+        """
         client = self.csrf_client()
         client.get(PAGE_URL)  # 页面渲染时种下 csrf cookie
         token = client.cookies["csrftoken"].value
 
         with respx.mock:
-            route = self.mock_agent(_frame(1, "final", content="好的."))
+            chat = self.mock_agent(_frame(1, "final", content="好的."))
+            cancel = self.mock_cancel(httpx.Response(200, json={}))
+            history = self.mock_history(httpx.Response(200, json=HISTORY_BODY))
             r = client.post(
                 CHAT_URL,
                 data=_question(),
@@ -806,9 +1019,24 @@ class BffCsrfTest(BffTestBase):
                 HTTP_X_CSRFTOKEN=token,
             )
             _body(r)
+            client.post(
+                CANCEL_URL,
+                data=_cancellation(),
+                content_type="application/json",
+                HTTP_X_CSRFTOKEN=token,
+            )
+            read = client.post(
+                HISTORY_URL,
+                data=json.dumps({"conversation_id": TAB_ONE}),
+                content_type="application/json",
+                HTTP_X_CSRFTOKEN=token,
+            )
 
         self.assertEqual(r.status_code, 200)
-        self.assertTrue(route.called)
+        self.assertTrue(chat.called)
+        self.assertTrue(cancel.called)
+        self.assertEqual(read.status_code, 200)
+        self.assertTrue(history.called)
 
     def test_a_client_generated_conversation_id_is_passed_through(self):
         """两个标签页各自的编号 → 各自成段 (用户故事 25 的前端那一半)."""
@@ -919,6 +1147,66 @@ class AgentPageTest(BffTestBase):
 
         self.assertIn("runId = response.headers.get('X-Run-Id')", compact)
         self.assertIn("if (finished || !runId || stopping) return", compact)
+
+    def test_the_page_restores_the_conversation_on_load(self):
+        """页面加载时拉一次历史, 并用它渲染出聊过的那几轮.
+
+        前端能被 Django 测试够到的那一半 (另一半在浏览器里真刷新一次): 拉的地址、
+        带的编号、以及**渲染走的是同一套 DOM** —— 恢复的那一轮与直播那一轮共用
+        `startTurn`, 没有第二套渲染代码. 两套迟早会漂, 而漂了只在一个方向上看得出来.
+        """
+        compact = " ".join(self.client.get(PAGE_URL).content.decode("utf-8").split())
+
+        self.assertIn("'/minimall/agent/history/'", compact)
+        self.assertIn("loadHistory();", compact)
+        self.assertIn("renderHistory(payload.messages || [])", compact)
+        self.assertIn("restoreTurn(message.content)", compact)
+
+    def test_the_history_is_asked_for_with_post_not_get(self):
+        """会话编号**不当 URL 参数发出去** —— 页面这一侧也得守这条纪律.
+
+        改这条的理由是「编号进 URL = 同时进日志 / 浏览器历史 / Referer, 而 GET 带
+        cookie 跨站可触发」(见 `AgentHistoryView`). 断言落在**页面发的那个请求**上:
+        方法是 POST、编号在请求体里、且带着 CSRF 令牌 —— 三样缺一, 这条纪律就漏了.
+        """
+        compact = " ".join(self.client.get(PAGE_URL).content.decode("utf-8").split())
+
+        self.assertIn("fetch('/minimall/agent/history/', {", compact)
+        self.assertIn(
+            "body: JSON.stringify({ conversation_id: conversationId })", compact
+        )
+        self.assertNotIn("/history/?conversation_id=", compact)
+        # 提问与取消早就是这么发的; 读历史跟上之后, 三条路一套写法
+        self.assertEqual(compact.count("'X-CSRFToken': csrfToken()"), 3)
+
+    def test_the_conversation_id_survives_a_reload_but_not_a_new_tab(self):
+        """会话编号存 `sessionStorage`: 刷新还在, 新标签页是新的一段.
+
+        换成 `localStorage` 会让两个标签页共用一段对话 (历史串台 —— 用户故事 25 要
+        防的正是这个), 换成一个内存变量则刷新即丢 (那是 L1b 的旧边界). 这条把那个
+        选择钉在页面上, 不让它随手被改掉.
+        """
+        compact = " ".join(self.client.get(PAGE_URL).content.decode("utf-8").split())
+
+        self.assertIn("window.sessionStorage.getItem(STORAGE_KEY)", compact)
+        self.assertIn("window.sessionStorage.setItem(STORAGE_KEY, fresh)", compact)
+        # 查的是那个 API 有没有被用 (注释里提到了它是被否掉的那条路, 不算)
+        self.assertNotIn("window.localStorage", compact)
+
+    def test_the_tool_rows_take_their_words_from_the_backend(self):
+        """工具那两行读的是 `label` (服务端给的人话), 不再读 `summary`.
+
+        事件载荷换过形状了 (ADR-0003): 还按老字段渲染的话, 页面上那两行会变成空 ——
+        这正是「后端改了字段、前端没跟上」那类静默失效. 反过来也要守住: 页面**不该**
+        再引用那个已经不存在的字段, 否则以后有人补一个 `data.summary` 就又漏回来了.
+        """
+        compact = " ".join(self.client.get(PAGE_URL).content.decode("utf-8").split())
+
+        self.assertIn("data.label || '正在处理'", compact)
+        self.assertIn(
+            "data.label || (data.status === 'ok' ? '完成了' : '没成功')", compact
+        )
+        self.assertNotIn("data.summary", compact, "工具结果不再带正文了")
 
     def test_the_entry_is_in_the_navigation_on_a_product_page(self):
         """用户故事 23: 一边看商品页一边问 —— 入口在导航栏, 不在某一页里."""

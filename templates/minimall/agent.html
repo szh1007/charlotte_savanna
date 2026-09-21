@@ -12,6 +12,16 @@
   的终局事件 (error / cancelled), 它顺着上面那条正在读的流回来, 与答完走同一条收尾
   路径 (所以"停下之后说一句继续"和平时没两样).
 
+  打开页面时还拉一次历史 (POST /minimall/agent/history/): 会话活在助手服务的**进程
+  内存**里, 而页面这一份渲染刷新即丢 —— 会话编号存在 sessionStorage 里, 于是刷新
+  之后还是同一段对话, 聊过的话拉得回来; 新标签页则是新的一段 (各聊各的, 用户故事
+  25). 历史里只有 user / assistant 两类消息, 工具的返回正文进不来 (与事件流同一条
+  脱敏纪律, 见 CharApp 的 adr/0003).
+
+  这条读历史用的是 POST 而不是 GET: 会话编号是私密数据, 不该出现在 URL 上 (访问
+  日志 / 浏览器历史 / Referer 都会跟着它走), 而 GET 带 cookie 还是跨站可触发的.
+  与提问、取消同一个形状 (POST + JSON + CSRF).
+
   为什么不用 `EventSource` (它本来能白送帧解析): 它只能发 GET、也带不了自定义头,
   于是认证只能靠 cookie、问句只能进 URL —— 而这个端点有副作用 (真跑模型真花钱),
   按语义就不该是 GET, 问句进 URL 还会落进访问日志. 换 POST + fetch 之后由 Django
@@ -25,7 +35,7 @@
 
   但这个库**不走 CDN, 用的是仓库里的本地副本** (static/vendor/eventsource-parser/).
   商城别的页面 (htmx / Alpine) 走 CDN 没问题 —— 它们属于渐进增强, 加载失败顶多少点
-  交互; 这里不是: 解析层一挂, 整个 `<script type="module">` 一行都不执行 (import
+  交互; 这里不是: 解析层一挂, 整个 module 脚本一行都不执行 (import
   失败 = 模块求值失败), 连下面那段「拦住表单提交」也一起没了, 表单于是退回浏览器
   原生提交, 地址栏被刷成 `/agent/?` —— 用户看到的是「按了发送没反应」. 核心链路上
   挂一个可能断的外部依赖, 代价不对等.
@@ -140,10 +150,13 @@ const send = document.getElementById('ask-send');
 const stop = document.getElementById('ask-stop');
 
 // 会话编号的第三段 (thread_id = minimall:{user_id}:{这一段}).
-// 每个标签页一个: 同一买家开两个标签页 = 两段互不相干的对话 (用户故事 25).
-// 浏览器刷新 = 新的标签页生命周期 = 新对话 —— L1b 不做历史消息接口,
-// 这条是已知边界 (见 ticket 06 备注).
-const conversationId = newConversationId();
+// 它存在 `sessionStorage` 里 —— 那个存储按**标签页**隔离, 却能在刷新之后留下来,
+// 正好就是这里要的两条语义:
+//   - 刷新页面 = 同一段对话 → 加载时拉得回聊过的话 (下面 loadHistory);
+//   - 开新标签页 = 一段新对话 → 两个标签页各聊各的 (用户故事 25).
+// 换 localStorage 会让两个标签页共用一段对话 (历史串台), 换成一个内存变量则刷新
+// 即丢历史 (那是 L1b 的旧边界).
+const conversationId = loadConversationId();
 document.getElementById('session-tag').textContent = '会话 ' + conversationId.slice(0, 8);
 
 let turn = null;          // 当前这一轮在页面上的那块 DOM (渲染函数都要用它)
@@ -156,6 +169,26 @@ function newConversationId() {
   // crypto.randomUUID 只在安全上下文里有 (https / localhost); 退路是时间戳 + 随机
   if (window.crypto && window.crypto.randomUUID) return window.crypto.randomUUID();
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+}
+
+function loadConversationId() {
+  // 这个键**就地声明**: 模块级的 const 有暂时性死区, 而本函数是在文件更上面那一行
+  // (`const conversationId = loadConversationId()`) 就被调用的 —— 键声明在函数
+  // 外面的下面, 取值时就是个 ReferenceError, 还正好被本函数那两个 try 吞掉: 页面
+  // 上一切正常, 只是**刷新之后历史永远拉不回来** (2026-09-22 真机上栽过一次).
+  const STORAGE_KEY = 'minimall.agent.conversation';
+  // sessionStorage 在隐私模式下可能直接抛异常 (Safari 的旧行为), 存不下就退回
+  // 「这一段对话只在当前页面里」的老做法 —— 不让整个模块挂在第一行上 (那会让页面
+  // 退回原生提交, 用户看到的是一个静默的问号, 见文件头那段说明).
+  try {
+    const saved = window.sessionStorage.getItem(STORAGE_KEY);
+    if (saved) return saved;
+  } catch (err) { /* 存不了: 当成新对话 */ }
+  const fresh = newConversationId();
+  try {
+    window.sessionStorage.setItem(STORAGE_KEY, fresh);
+  } catch (err) { /* 同上 */ }
+  return fresh;
 }
 
 function el(tag, className, text) {
@@ -292,18 +325,18 @@ const RENDERERS = {
     turn.addStep('思路', data.message);
   },
   tool_call: function (data) {
-    // 记下来, 结果回来时原地补全这一行 (工具名与顺序都看得见)
-    turn.calls.set(data.tool_call_id, turn.addStep('查询', '正在查 ' + data.tool_name));
+    // 记下来, 结果回来时原地补全这一行 (工具名与顺序都看得见).
+    // 这一行的话**由服务端给** (`label`): 工具的参数原文与返回正文不出后端进程
+    // (ADR-0003), 页面拿不到、也不该拿到 —— 这里只是把它画出来.
+    turn.calls.set(data.tool_call_id, turn.addStep('操作', data.label || '正在处理'));
   },
   tool_result: function (data) {
     const step = turn.calls.get(data.tool_call_id);
-    const text = data.status === 'ok'
-      ? (data.summary || '查到了')
-      : ('没查到: ' + (data.error || '查询失败'));
+    const text = data.label || (data.status === 'ok' ? '完成了' : '没成功');
     if (step) {
       step.lastChild.textContent = text;
     } else {
-      turn.addStep('查询', text, data.status === 'ok' ? null : 'agent-error');
+      turn.addStep('操作', text, data.status === 'ok' ? null : 'agent-error');
     }
   },
   reasoning: function (data) {
@@ -412,6 +445,74 @@ async function ask(question) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// 历史: 页面加载时把这段对话拉回来 (刷新 / 切回来之后对话还在)
+// ---------------------------------------------------------------------------
+//
+// 会话活在助手服务的**进程内存**里, 而页面这一份渲染刷新即丢 —— 所以每次加载都先问
+// 一次「这段对话聊到哪儿了」, 拿到的是一段段 user / assistant 的消息 (过滤规则在
+// 服务端: 工具的返回正文不进这条路, 与事件流同一条纪律).
+//
+// 拉不到就**当作一段新对话**: 这是首屏的一件事, 不该因为它失败就拦着用户提问.
+
+function restoreTurn(question) {
+  // 聊过的一轮: 与直播那一轮同一套 DOM, 只是没有「正在查…」那一行
+  const handle = startTurn(question);
+  handle.waiting.remove();
+  return handle;
+}
+
+function appendAnswer(handle, text) {
+  // 同一问之下模型可能说过好几段 (中间轮那句「我先查一下」也在), 用空行接起来
+  const chunk = (text || '').trim();
+  if (!chunk) return;
+  const already = handle.body.textContent.trim();
+  handle.body.textContent = already ? already + '\n\n' + chunk : chunk;
+}
+
+function renderHistory(messages) {
+  let handle = null;
+  messages.forEach(function (message) {
+    if (message.role === 'user') {
+      handle = restoreTurn(message.content);
+    } else if (message.role === 'assistant' && handle) {
+      appendAnswer(handle, message.content);
+    }
+  });
+  toBottom();
+}
+
+async function loadHistory() {
+  if (!finished) return;   // 用户已经在问了, 别把历史盖到新一轮上
+  let response;
+  try {
+    // POST 而不是 GET: 会话编号是私密数据, 不当 URL 参数挂在地址上 (它会跟着进
+    // 访问日志 / 浏览器历史 / Referer, 而 GET 带 cookie 还是跨站可触发的) ——
+    // 与提问、取消同一个形状 (POST + JSON + CSRF)
+    response = await fetch('/minimall/agent/history/', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRFToken': csrfToken(),
+      },
+      body: JSON.stringify({ conversation_id: conversationId }),
+    });
+  } catch (err) {
+    return;
+  }
+  if (!response.ok) return;   // 失败不打扰用户: 页面上就是一段新对话
+  let payload;
+  try {
+    payload = await response.json();
+  } catch (err) {
+    return;
+  }
+  // 等这份 JSON 的工夫, 用户可能已经把第一句问出去了 —— 那时渲染历史只会插到
+  // 正在跑的那一轮前面, 看着像「回答张冠李戴」
+  if (!finished) return;
+  renderHistory(payload.messages || []);
+}
+
 form.addEventListener('submit', function (event) {
   event.preventDefault();
   const question = input.value.trim();
@@ -431,6 +532,7 @@ document.querySelectorAll('.agent-example').forEach(function (button) {
 });
 
 input.focus();
+loadHistory();
 
 // 模块整个跑完了才置真: 上面任何一行抛错 (或开头那个 import 失败), 这个标记就落不
 // 下去, 表单那条路继续由上面那段兜底脚本守着. 放在末尾而不是 import 之后 —— 兜底要
