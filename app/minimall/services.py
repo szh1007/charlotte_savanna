@@ -1,22 +1,37 @@
-"""商城业务逻辑: 购物车写操作与订单生命周期.
+"""商城业务逻辑: 购物车写操作, 订单生命周期, 退款域.
 
-写路径 (加购/改量/移除/清空/下单/付款/取消) 都会被并发调用 —— 买家点两下,
+写路径 (加购/改量/移除/清空/下单/付款/取消/退款) 都会被并发调用 —— 买家点两下,
 助手和页面同时动手, 都会撞在一起. 两条规矩:
 
 1. **判据取锁内的值**: 调用方传进来的实例可能是几秒前读的. 会动到**钱与库存**的
-   判断 (下单/付款/取消) 一律在 `select_for_update` 之后重新读一次, 不信手里那份;
-   `pay_order` / `cancel_order` 因此**返回**锁内那份实例, 调用方要拿返回值去渲染,
-   传进来的那份不作数. (`ship_order` / `receive_order` / `complete_order` 不在这条
-   里: 它们只推一步状态, 不碰钱与库存, 重复执行最多是时间戳被再写一次.)
-2. **行锁顺序固定** `Order → Product → CartItem → Profile`: 要加锁的函数都按同一
-   顺序, 两笔写操作互相等待时不会绕成环.
+   判断 (下单/付款/取消/退款) 一律在 `select_for_update` 之后重新读一次, 不信手里
+   那份; `pay_order` / `cancel_order` / 四个退款函数因此**返回**锁内那份实例, 调用
+   方要拿返回值去渲染, 传进来的那份不作数. (`ship_order` / `receive_order` /
+   `complete_order` 不在这条里: 它们只推一步状态, 不碰钱与库存, 重复执行最多是
+   时间戳被再写一次.)
+2. **行锁顺序固定** `Order → RefundRequest → Product → CartItem → Profile`: 要加锁
+   的函数都按同一顺序, 两笔写操作互相等待时不会绕成环.
 
-只读路径 (页面展示, agent 的只读端点) 不在这里 —— 它们用不着锁."""
+只读路径 (页面展示, agent 的只读端点) 不在这里 —— 它们用不着锁.
+
+退款域跟订单函数放在同一份文件里, 是因为两者的状态机**耦合在四个转换点上**
+(ADR-0004): 拆成两个模块, 就没有一个地方能看全这条状态机."""
+
+from decimal import Decimal
 
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
-from .models import Cart, CartItem, Order, OrderItem, Product, Profile, ShippingAddress
+from .models import (
+    Cart,
+    CartItem,
+    Order,
+    OrderItem,
+    Product,
+    Profile,
+    RefundRequest,
+    ShippingAddress,
+)
 from .utils import generate_order_no
 
 # 单个商品在购物车里的数量上限 (库存之外的第二道闸).
@@ -62,6 +77,22 @@ class CartItemNotFoundError(OrderServiceError):
 
 class OrderNumberConflictError(OrderServiceError):
     """订单号连续撞车, 重试次数用尽."""
+
+
+class RefundNotAllowedError(OrderServiceError):
+    """这张订单现在的状态不能申请退款 (只有钱已经出去的四个状态能提)."""
+
+
+class RefundAlreadyInProgressError(OrderServiceError):
+    """这张订单已有一笔进行中的退款申请 (`requested` / `approved`)."""
+
+
+class InvalidRefundStatusError(OrderServiceError):
+    """退款申请的状态不允许这个动作 (批准 / 打款 / 驳回 各有前置状态)."""
+
+
+class InvalidRefundAmountError(OrderServiceError):
+    """退款金额不在 `(0, 订单总额]` 区间内."""
 
 
 def _cap(quantity: int, product: Product) -> int:
@@ -479,3 +510,203 @@ def complete_order(order):
         )
     order.status = Order.Status.COMPLETED
     order.save(update_fields=["status", "updated_at"])
+
+
+# ---------------------------------------------------------------------------
+# 退款 (申请 / 批准 / 打款 / 驳回)
+# ---------------------------------------------------------------------------
+# 两个状态机的四个转换点 (ADR-0004): RefundRequest.status 与 Order.status 必须
+# 一起变. 四个转换一律走下面四个函数, 别在别处直接改订单或退款单的状态.
+#
+# 退款一律**不动库存**: cancel_order 回滚库存是因为货还没出去 (只认 pending /
+# paid); 退款发生在货已经出去之后, 把库存加回来等于凭空造库存.
+
+# 能发起退款的订单状态: 钱已经出去的那四个. `pending` 还没扣钱 —— 走取消就行.
+REFUNDABLE_STATUSES = (
+    Order.Status.PAID,
+    Order.Status.SHIPPED,
+    Order.Status.RECEIVED,
+    Order.Status.COMPLETED,
+)
+
+
+def request_refund(order) -> RefundRequest:
+    """买家申请退款: 建一条申请, 订单置 `refunding`.
+
+    与 `cancel_order` 的差别就是这套流程存在的理由: 取消是买家单方、无需审批、即刻
+    退钱**并回滚库存**; 退款要管理员批准、**不回滚库存**. 同一张已付款订单走这两条
+    路, 库存结果不一样 —— 这不是缺陷, 是货有没有出去决定的.
+
+    判据取锁内重新读的值 (与订单那三个函数同一条规矩): 调用方手里那份可能还停在
+    `paid`. 锁订单行同时兼作**防并发双提** —— 两个请求同时申请时会在这行上排队,
+    后到的那个在锁内看得见前一条申请, 于是被拒.
+
+    Args:
+        order: 订单实例, 只用来定位 (状态一律以锁内的为准).
+
+    Returns:
+        新建的申请 (`requested`, 金额为空 —— 金额在批准那步协商).
+
+    Raises:
+        RefundAlreadyInProgressError: 这单已有一条 `requested` / `approved` 的申请.
+        RefundNotAllowedError: 订单状态不在 `REFUNDABLE_STATUSES` 里.
+    """
+    with transaction.atomic():
+        # 订单行就是「同一订单只允许一条进行中申请」的那把锁
+        locked = Order.objects.select_for_update().get(pk=order.pk)
+        if RefundRequest.objects.filter(
+            order=locked, status__in=RefundRequest.ACTIVE_STATUSES
+        ).exists():
+            raise RefundAlreadyInProgressError(
+                f"订单 {locked.order_no} 已有一笔进行中的退款申请"
+            )
+        if locked.status not in REFUNDABLE_STATUSES:
+            raise RefundNotAllowedError(
+                f"订单 {locked.order_no} 状态为 '{locked.status}', 不能申请退款"
+            )
+
+        refund = RefundRequest.objects.create(
+            order=locked,
+            status=RefundRequest.Status.REQUESTED,
+            order_status_before=locked.status,
+        )
+        locked.status = Order.Status.REFUNDING
+        locked.save(update_fields=["status", "updated_at"])
+
+    return refund
+
+
+def _locked_refund(
+    refund, *, expected: RefundRequest.Status, action: str
+) -> tuple[Order, RefundRequest]:
+    """审批三个动作共用的前奏: 按统一锁序锁住订单行与退款单, 并校验退款单状态.
+
+    锁序 (`Order → RefundRequest → ...`, 见模块 docstring) 在这里只写一遍 —— 三个
+    函数各抄一遍的话, 哪天有人给其中一个调了顺序, 死锁就会在并发下悄悄回来. 即便
+    动作不改订单状态 (批准就是), 也照样先锁它: 顺序一致比省一把锁重要.
+
+    Args:
+        refund: 退款申请实例, 只用来定位.
+        expected: 这个动作要求的退款单状态.
+        action: 动作名 (批准 / 打款 / 驳回), 只用来拼错误消息.
+
+    Returns:
+        (锁内的订单, 锁内的退款单).
+
+    Raises:
+        InvalidRefundStatusError: 退款单不在 `expected` 状态.
+    """
+    locked_order = Order.objects.select_for_update().get(pk=refund.order_id)
+    locked = RefundRequest.objects.select_for_update().get(pk=refund.pk)
+    if locked.status != expected:
+        raise InvalidRefundStatusError(
+            f"退款申请处于 '{locked.status}', 只有{expected.label}的能{action}"
+        )
+    return locked_order, locked
+
+
+def approve_refund(refund, *, amount: Decimal, note: str = "") -> RefundRequest:
+    """管理员批准退款: 把协商金额定死在这一步; **订单状态不变** (仍是 `refunding`).
+
+    批准与打款分开是故意的 (PRD §4.5): 生产环境里两者之间常隔着支付网关, 而且这个
+    中间态正好是「暂停等人工审批」的验证场. 金额在批准时定, 钱在打款时出.
+
+    Args:
+        refund: 退款申请实例, 只用来定位.
+        amount: 实际退多少 (协商金额), 必须 `0 < amount <= order.total_amount`.
+        note: 管理员备注, 这里写的是协商结果.
+
+    Returns:
+        锁内那份申请 (调用方传进来的那份不作数, 同 `pay_order`).
+
+    Raises:
+        InvalidRefundStatusError: 只有 `requested` 能批准.
+        InvalidRefundAmountError: 金额不在 `(0, 订单总额]` 区间内.
+    """
+    with transaction.atomic():
+        locked_order, locked = _locked_refund(
+            refund, expected=RefundRequest.Status.REQUESTED, action="批准"
+        )
+        if not 0 < amount <= locked_order.total_amount:
+            raise InvalidRefundAmountError(
+                f"退款金额 {amount} 不在 (0, 订单总额 {locked_order.total_amount}] 之内"
+            )
+
+        locked.status = RefundRequest.Status.APPROVED
+        locked.amount = amount
+        locked.admin_note = note
+        locked.approved_at = timezone.now()
+        locked.save(update_fields=["status", "amount", "admin_note", "approved_at"])
+
+    return locked
+
+
+def settle_refund(refund) -> RefundRequest:
+    """管理员打款: 余额加上协商金额, 订单置 `refunded` 并写 `Order.refunded_at`.
+
+    出账金额只认批准时定下的 `refund.amount`, 不是订单总额 —— 部分退款靠的就是这两
+    者的差 (申请全退 100, 协商退 70, 出账就是 70).
+
+    Args:
+        refund: 退款申请实例, 只用来定位.
+
+    Returns:
+        锁内那份申请.
+
+    Raises:
+        InvalidRefundStatusError: 只有 `approved` 能打款.
+    """
+    with transaction.atomic():
+        locked_order, locked = _locked_refund(
+            refund, expected=RefundRequest.Status.APPROVED, action="打款"
+        )
+
+        now = timezone.now()
+        profile = Profile.objects.select_for_update().get(user_id=locked_order.user_id)
+        profile.balance += locked.amount
+        profile.save(update_fields=["balance"])
+
+        locked_order.status = Order.Status.REFUNDED
+        locked_order.refunded_at = now
+        locked_order.save(update_fields=["status", "refunded_at", "updated_at"])
+
+        locked.status = RefundRequest.Status.REFUNDED
+        locked.refunded_at = now
+        locked.save(update_fields=["status", "refunded_at"])
+
+    return locked
+
+
+def reject_refund(refund, *, note: str = "") -> RefundRequest:
+    """管理员驳回: 申请置 `rejected`, 订单**恢复**申请前的状态.
+
+    恢复而不是推到某个终点: 驳回意味着「这笔退款不成立」, 订单该继续正常流转 (该
+    发货发货, 该收货收货). 推到 `cancelled` 是错的 —— 取消是买家终止订单, 驳回不是.
+    恢复取的是申请那一刻的快照 (`order_status_before`), 不靠时间戳推断.
+
+    驳回后可以再提一条新申请, 所以「同一时刻只有一条」是应用层校验, 不是唯一约束.
+
+    Args:
+        refund: 退款申请实例, 只用来定位.
+        note: 管理员备注, 这里写的是驳回原因 (故事 18 要拿它回答买家).
+
+    Returns:
+        锁内那份申请.
+
+    Raises:
+        InvalidRefundStatusError: 只有 `requested` 能驳回.
+    """
+    with transaction.atomic():
+        locked_order, locked = _locked_refund(
+            refund, expected=RefundRequest.Status.REQUESTED, action="驳回"
+        )
+
+        locked.status = RefundRequest.Status.REJECTED
+        locked.admin_note = note
+        locked.rejected_at = timezone.now()
+        locked.save(update_fields=["status", "admin_note", "rejected_at"])
+
+        locked_order.status = locked.order_status_before
+        locked_order.save(update_fields=["status", "updated_at"])
+
+    return locked

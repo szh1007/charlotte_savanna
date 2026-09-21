@@ -14,6 +14,7 @@ from app.minimall.models import (
     OrderItem,
     Product,
     Profile,
+    RefundRequest,
     ShippingAddress,
 )
 from app.minimall.services import (
@@ -22,17 +23,26 @@ from app.minimall.services import (
     CartItemNotFoundError,
     InsufficientStockError,
     InvalidOrderStatusError,
+    InvalidRefundAmountError,
+    InvalidRefundStatusError,
     OrderNumberConflictError,
     OutOfStockError,
     PaymentError,
     ProductUnavailableError,
+    RefundAlreadyInProgressError,
+    RefundNotAllowedError,
     add_to_cart,
+    approve_refund,
     cancel_order,
     clear_cart,
+    complete_order,
     create_order,
     pay_order,
     receive_order,
+    reject_refund,
     remove_cart_item,
+    request_refund,
+    settle_refund,
     ship_order,
     update_cart_item,
 )
@@ -192,14 +202,14 @@ class OrderServiceTest(TestCase):
     def test_cancel_rejected_for_refunding_order(self):
         """退款中的订单自动不可取消: 取消的白名单只有 pending / paid.
 
-        `refunding` 目前还不是 Order.Status 的枚举值 (issue 10 才加), 这里用
-        字面量钉住这条约束 —— 枚举加上之后, 这条仍然成立.
+        09 写这条时 `refunding` 还不是枚举值, 用的是字面量; 10 加上枚举后改成
+        枚举 (值没变, 断言照旧成立).
         """
         ci = self._cart_item(1)
         order = create_order(self.user, [ci.id], self.addr.id)
         pay_order(order, "123456")
         refunding = Order.objects.get(pk=order.pk)
-        refunding.status = "refunding"
+        refunding.status = Order.Status.REFUNDING
         refunding.save(update_fields=["status"])
 
         with self.assertRaises(InvalidOrderStatusError):
@@ -371,3 +381,300 @@ class CartServiceTest(TestCase):
 
         self.assertFalse(CartItem.objects.filter(id=mine.id).exists())
         self.assertTrue(CartItem.objects.filter(id=theirs.id).exists())
+
+
+class RefundServiceTest(TestCase):
+    """退款域: 四个转换点, 两个状态机的耦合 (ADR-0004 的核心风险).
+
+    每条转换都断言**两张表一起对**: `RefundRequest.status` 与 `Order.status`.
+    只测其中一张, 漏掉的那种不一致就测不出来 —— 而这个耦合是有意选的.
+    """
+
+    # 退款只能从「钱已经出去」之后发起 (pending 走取消, 不走退款).
+    # 目标状态 → 推到它需要的几步; 发货 / 收货 / 完成 都只推一步状态.
+    _PUSH_TO = {
+        Order.Status.PAID: (),
+        Order.Status.SHIPPED: (ship_order,),
+        Order.Status.RECEIVED: (ship_order, receive_order),
+        Order.Status.COMPLETED: (ship_order, receive_order, complete_order),
+    }
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="refund-svc", email="rf@t.com", password="pass"
+        )
+        Profile.objects.create(user=self.user, balance=10000)
+        self.user.minimall_profile.set_payment_password("123456")
+        self.user.minimall_profile.save()
+        self.cat = Category.objects.create(name="Refund", slug="refund-svc")
+        self.prod = Product.objects.create(
+            name="P", slug="p-refund", category=self.cat, price=100.00, stock=20
+        )
+        self.addr = ShippingAddress.objects.create(
+            user=self.user,
+            receiver_name="X",
+            phone="1",
+            province="A",
+            city="B",
+            district="C",
+            detail="D",
+        )
+
+    def _paid_order(self, status=Order.Status.PAID, quantity=1):
+        """一张已付款订单, 按需推进到 shipped / received / completed."""
+        cart = Cart.objects.get_or_create(user=self.user)[0]
+        item = CartItem.objects.create(cart=cart, product=self.prod, quantity=quantity)
+        order = create_order(self.user, [item.id], self.addr.id)
+        pay_order(order, "123456")
+        order = Order.objects.get(pk=order.pk)
+        for step in self._PUSH_TO[status]:
+            step(order)
+        order.refresh_from_db()
+        self.assertEqual(order.status, status, "夹具没把订单推到目标状态")
+        self.prod.refresh_from_db()
+        return order
+
+    def _balance(self) -> Decimal:
+        return Profile.objects.get(pk=self.user.minimall_profile.pk).balance
+
+    def _fresh(self, order) -> Order:
+        """重新读一份订单 —— 模拟「另一个请求几秒前读到的那份」."""
+        return Order.objects.get(pk=order.pk)
+
+    def _fresh_refund(self, refund) -> RefundRequest:
+        return RefundRequest.objects.get(pk=refund.pk)
+
+    # ------------------------------------------------------------------
+    # 申请 → 订单变 refunding
+    # ------------------------------------------------------------------
+
+    def test_request_snapshots_status_and_marks_order_refunding(self):
+        """申请: 建一条 requested 的申请, 订单置退款中, 并快照申请前的状态.
+
+        金额**不带** —— 买家申请时只表达「我要退钱」, 金额在批准时由管理员协商.
+        """
+        order = self._paid_order()
+        refund = request_refund(order)
+
+        self.assertEqual(refund.status, RefundRequest.Status.REQUESTED)
+        self.assertIsNone(refund.amount)
+        self.assertEqual(refund.order_status_before, Order.Status.PAID)
+        self.assertIsNone(refund.approved_at)
+        self.assertIsNone(refund.refunded_at)
+        order.refresh_from_db()
+        self.assertEqual(order.status, Order.Status.REFUNDING)
+        self.assertIsNone(order.refunded_at, "退款时间由打款那步写, 申请时不该有")
+
+    def test_request_rejected_before_payment(self):
+        """待付款的订单不能申请退款 —— 钱还没出去, 走取消就行."""
+        cart = Cart.objects.get_or_create(user=self.user)[0]
+        item = CartItem.objects.create(cart=cart, product=self.prod, quantity=1)
+        pending = create_order(self.user, [item.id], self.addr.id)
+
+        with self.assertRaises(RefundNotAllowedError):
+            request_refund(pending)
+
+        self.assertFalse(RefundRequest.objects.filter(order=pending).exists())
+
+    def test_request_rejected_when_one_is_already_active(self):
+        """同一订单只能有一条进行中的申请 —— 拿申请前的旧实例再提也一样被拒.
+
+        判据取锁内的值: 传进来的那份实例还停在 paid, 若信它就会多建一条申请.
+        """
+        order = self._paid_order()
+        request_refund(order)
+
+        with self.assertRaises(RefundAlreadyInProgressError):
+            request_refund(self._fresh(order))
+
+        self.assertEqual(RefundRequest.objects.filter(order=order).count(), 1)
+
+    def test_rejected_refund_can_be_requested_again(self):
+        """被驳回后可以再提一条 —— 所以「同一时刻只有一条」做不成唯一约束."""
+        order = self._paid_order()
+        refund = request_refund(order)
+        reject_refund(refund, note="凭证不足")
+
+        again = request_refund(self._fresh(order))
+
+        self.assertNotEqual(again.pk, refund.pk)
+        self.assertEqual(again.status, RefundRequest.Status.REQUESTED)
+        self.assertEqual(RefundRequest.objects.filter(order=order).count(), 2)
+
+    # ------------------------------------------------------------------
+    # 批准 → 订单状态不变 (仍是 refunding), 金额定死在这一步
+    # ------------------------------------------------------------------
+
+    def test_approve_records_amount_and_leaves_order_refunding(self):
+        """批准只动退款单, 不动订单 —— 钱还没出账, 订单仍停在退款中."""
+        order = self._paid_order()
+        refund = request_refund(order)
+
+        approved = approve_refund(
+            refund, amount=Decimal("70.00"), note="协商一致退 70 元"
+        )
+
+        self.assertEqual(approved.status, RefundRequest.Status.APPROVED)
+        self.assertEqual(approved.amount, Decimal("70.00"))
+        self.assertEqual(approved.admin_note, "协商一致退 70 元")
+        self.assertIsNotNone(approved.approved_at)
+        order.refresh_from_db()
+        self.assertEqual(order.status, Order.Status.REFUNDING)
+        self.assertIsNone(order.refunded_at)
+
+    def test_approve_amount_boundaries(self):
+        """金额边界: 0 与负数拒绝, 超过订单总额拒绝, 恰好等于总额通过."""
+        order = self._paid_order()  # 总额 100.00
+
+        for amount in (Decimal("0.00"), Decimal("-1.00"), Decimal("100.01")):
+            with self.subTest(amount=amount):
+                refund = request_refund(self._fresh(order))
+                with self.assertRaises(InvalidRefundAmountError):
+                    approve_refund(refund, amount=amount)
+                refund.refresh_from_db()
+                self.assertEqual(refund.status, RefundRequest.Status.REQUESTED)
+                reject_refund(refund)  # 清场, 好让下一边界值能再提
+
+        refund = request_refund(self._fresh(order))
+        self.assertEqual(
+            approve_refund(refund, amount=Decimal("100.00")).amount,
+            Decimal("100.00"),
+        )
+
+    def test_approve_rejected_when_not_requested(self):
+        """已批准的不能重批 —— 金额只能定一次."""
+        order = self._paid_order()
+        refund = request_refund(order)
+        approve_refund(refund, amount=Decimal("70.00"))
+
+        with self.assertRaises(InvalidRefundStatusError):
+            approve_refund(self._fresh_refund(refund), amount=Decimal("50.00"))
+
+        refund.refresh_from_db()
+        self.assertEqual(refund.amount, Decimal("70.00"))
+
+    def test_approve_rejected_after_reject(self):
+        """已驳回的不能批准 —— 驳回是终态."""
+        order = self._paid_order()
+        refund = request_refund(order)
+        reject_refund(refund, note="凭证不足")
+
+        with self.assertRaises(InvalidRefundStatusError):
+            approve_refund(self._fresh_refund(refund), amount=Decimal("70.00"))
+
+    # ------------------------------------------------------------------
+    # 打款 → 钱出账 + 订单置 refunded + 写 refunded_at
+    # ------------------------------------------------------------------
+
+    def test_settle_pays_negotiated_amount(self):
+        """按协商金额出账 (不是订单总额), 订单置已退款并写退款时间."""
+        order = self._paid_order()  # 100.00, 付款后余额 9900.00
+        refund = request_refund(order)
+        approve_refund(refund, amount=Decimal("70.00"))
+
+        settled = settle_refund(refund)
+
+        self.assertEqual(settled.status, RefundRequest.Status.REFUNDED)
+        self.assertIsNotNone(settled.refunded_at)
+        self.assertEqual(self._balance(), Decimal("9970.00"))
+        order.refresh_from_db()
+        self.assertEqual(order.status, Order.Status.REFUNDED)
+        self.assertIsNotNone(order.refunded_at)
+
+    def test_settle_rejected_before_approval(self):
+        """待处理的不能直接打款 —— 金额都还没定, 打什么."""
+        order = self._paid_order()
+        refund = request_refund(order)
+        balance_before = self._balance()
+
+        with self.assertRaises(InvalidRefundStatusError):
+            settle_refund(refund)
+
+        self.assertEqual(self._balance(), balance_before)
+        order.refresh_from_db()
+        self.assertEqual(order.status, Order.Status.REFUNDING)
+
+    def test_settle_twice_pays_once(self):
+        """已打款的不能重打 —— 重复执行不能重复出账."""
+        order = self._paid_order()
+        refund = request_refund(order)
+        approve_refund(refund, amount=Decimal("70.00"))
+        settle_refund(refund)
+
+        with self.assertRaises(InvalidRefundStatusError):
+            settle_refund(self._fresh_refund(refund))
+
+        self.assertEqual(self._balance(), Decimal("9970.00"))
+
+    # ------------------------------------------------------------------
+    # 驳回 → 订单**恢复**申请前的状态 (四个起始状态各来一遍)
+    # ------------------------------------------------------------------
+
+    def test_reject_restores_order_status(self):
+        """四个可退款的起始状态, 驳回后都回到原样.
+
+        驳回意味着「这笔退款不成立」, 订单该继续正常流转 —— 推到 cancelled 是错的
+        (取消是买家终止订单, 驳回不是). 恢复靠快照, 不靠时间戳推断.
+        """
+        for status in self._PUSH_TO:
+            with self.subTest(status=status):
+                order = self._paid_order(status)
+                refund = request_refund(order)
+
+                rejected = reject_refund(refund, note="商品没问题")
+
+                self.assertEqual(rejected.status, RefundRequest.Status.REJECTED)
+                self.assertEqual(rejected.admin_note, "商品没问题")
+                self.assertIsNotNone(rejected.rejected_at)
+                order.refresh_from_db()
+                self.assertEqual(order.status, status)
+                self.assertIsNone(order.refunded_at)
+
+    # ------------------------------------------------------------------
+    # 与既有订单动作的关系
+    # ------------------------------------------------------------------
+
+    def test_refunding_order_cannot_be_cancelled_shipped_or_received(self):
+        """退款中的订单自动不可取消 / 发货 / 收货 —— `refunding` 不在三者的白名单里.
+
+        这是 `refunding` 挤进 `Order.Status` 白拿的一份好处 (ADR-0004): 三个既有
+        函数一行都不用改. 但「不用改」得有用例钉住, 否则以后谁放宽了白名单都没人知道.
+        """
+        order = self._paid_order()
+        request_refund(order)
+
+        for action in (cancel_order, ship_order, receive_order):
+            with (
+                self.subTest(action=action.__name__),
+                self.assertRaises(InvalidOrderStatusError),
+            ):
+                action(self._fresh(order))
+
+        self.assertEqual(self._balance(), Decimal("9900.00"), "取消没被执行, 钱不该动")
+
+    def test_refund_never_touches_stock(self):
+        """整条退款流程前后库存一字不变.
+
+        与 `cancel_order` 不对称, 且这条不对称是**对的**: 取消时货还没出去
+        (只认 pending / paid), 退款时货已经在买家手里 —— 把库存加回来等于凭空造货.
+        """
+        order = self._paid_order(quantity=2)
+        stock_before = Product.objects.get(pk=self.prod.pk).stock
+
+        refund = request_refund(order)
+        approve_refund(refund, amount=Decimal("70.00"))
+        settle_refund(refund)
+
+        self.assertEqual(Product.objects.get(pk=self.prod.pk).stock, stock_before)
+
+    def test_amounts_stay_decimal_end_to_end(self):
+        """全程 Decimal —— 金额一旦沾上 float, 账就对不上分了."""
+        order = self._paid_order()
+        refund = request_refund(order)
+        approve_refund(refund, amount=Decimal("70.00"))
+        settle_refund(refund)
+
+        refund.refresh_from_db()
+        self.assertIsInstance(refund.amount, Decimal)
+        self.assertIsInstance(self._balance(), Decimal)
+        self.assertIsInstance(order.total_amount, Decimal)

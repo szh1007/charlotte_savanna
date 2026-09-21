@@ -1,21 +1,30 @@
 """真并发用例: 顺序调用测不出锁.
 
-本片修的正是锁 —— 购物车的丢更新与支付的重复扣款, 都只在**两个请求同时进行**
-时才发生. 顺序调用 (哪怕第二次用的是旧实例) 也照样能过, 所以这里的用例:
+本片修的正是锁 —— 购物车的丢更新、支付的重复扣款、退款的双提与双打款, 都只在
+**两个请求同时进行**时才发生. 顺序调用 (哪怕第二次用的是旧实例) 也照样能过, 所以
+这里的用例:
 
 1. 用 `TransactionTestCase` —— `TestCase` 把每个用例包在一个事务里回滚, 线程
    看不到别人已提交的数据, 那就不叫并发了;
 2. 用线程 + `Barrier` 让几个写操作尽量在同一刻发起;
 3. 断言「无论怎么交错都必须成立」的结果 (总件数, 扣款次数), 而不是去复现某
    一种具体交错 —— 具体交错复现不出来, 但「不许丢, 不许扣两遍」是硬要求.
+4. 光靠第 2 条会合不够: 判据读完之后到写入之间的窗口只有零点几毫秒, 线程往往
+   一前一后就过去了 (这类用例在**拆掉锁的实现**上也可能侥幸通过). 退款的四条
+   写入窗口尤其窄, 所以那两条另加一个**窗口内的会合点**: 两个线程都走到窗口正中
+   才放行. 没有锁时它们一起冲过判据 (于是复现出双提 / 双打款), 有锁时后到的那个
+   卡在锁上根本到不了 —— 等超时放行, 那时判据已经是锁内 re-fetch 出来的新状态了.
 """
 
+import contextlib
 import threading
 from decimal import Decimal
+from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.db import connections
 from django.test import TransactionTestCase
+from django.utils import timezone
 
 from app.minimall.models import (
     Cart,
@@ -24,13 +33,19 @@ from app.minimall.models import (
     Order,
     Product,
     Profile,
+    RefundRequest,
     ShippingAddress,
 )
 from app.minimall.services import (
     InvalidOrderStatusError,
+    InvalidRefundStatusError,
+    RefundAlreadyInProgressError,
     add_to_cart,
+    approve_refund,
     create_order,
     pay_order,
+    request_refund,
+    settle_refund,
 )
 
 User = get_user_model()
@@ -38,6 +53,9 @@ User = get_user_model()
 THREADS = 4
 # 线程之间会互相等锁 (MySQL 默认 innodb_lock_wait_timeout 是 50 秒), 给足余量
 THREAD_TIMEOUT = 60
+# 窗口内会合的等待上限: 没锁时两个线程都在窗口里, 会合是毫秒级的事;
+# 有锁时另一个线程到不了, 就等这么久再放行 (它卡在锁上等的是我们提交)
+RENDEZVOUS_TIMEOUT = 2.0
 
 
 class ConcurrentTestBase(TransactionTestCase):
@@ -167,3 +185,113 @@ class ConcurrentPayOrderTest(ConcurrentTestBase):
         self.assertEqual(sorted(outcomes), ["paid", "rejected"])
         self.assertEqual(Profile.objects.get(user=user).balance, Decimal("9990.00"))
         self.assertEqual(Order.objects.get(pk=order.pk).status, Order.Status.PAID)
+
+
+class ConcurrentRefundTest(ConcurrentTestBase):
+    """并发退款: 买家两个设备同时申请, 管理员两个标签页同时打款."""
+
+    def _paid_order(self, username: str, slug: str) -> Order:
+        """建一个买家与一张已付款订单, 供下面两个用例复用."""
+        user = User.objects.create_user(
+            username=username, email=f"{username}@t.com", password="pass"
+        )
+        Profile.objects.create(user=user, balance=10000)
+        profile = Profile.objects.get(user=user)
+        profile.set_payment_password("123456")
+        profile.save()
+        cat = Category.objects.create(name=username, slug=slug)
+        prod = Product.objects.create(
+            name="P", slug=f"p-{slug}", category=cat, price=10.00, stock=10
+        )
+        address = ShippingAddress.objects.create(
+            user=user,
+            receiver_name="X",
+            phone="1",
+            province="A",
+            city="B",
+            district="C",
+            detail="D",
+        )
+        cart = Cart.objects.create(user=user)
+        item = CartItem.objects.create(cart=cart, product=prod, quantity=1)
+        order = create_order(user, [item.id], address.id)
+        pay_order(order, "123456")
+        return Order.objects.get(pk=order.pk)
+
+    def test_concurrent_request_creates_only_one(self):
+        """两个请求同时申请退款 → 只建起一条, 另一个被拒.
+
+        「同一订单只允许一条进行中的申请」是应用层校验, 不能靠唯一约束表达 (驳回
+        后允许再提), 所以必须有锁兜着: 没有锁时两个请求都会看到「订单是 paid, 没有
+        申请」, 于是建出两条 —— 那张订单就有了两笔各自能被打款的退款.
+
+        会合点卡在**判据读完、插入之前** (patch 掉建申请那一步): 顺序调用测不出这个
+        bug, 得让两个线程在窗口里碰头才复现得出来.
+        """
+        order = self._paid_order("race-refund", "race-refund")
+        outcomes: list[str] = []
+        gate = threading.Barrier(2)
+        real_create = RefundRequest.objects.create
+
+        def create_after_rendezvous(*args, **kwargs):
+            with contextlib.suppress(threading.BrokenBarrierError):
+                gate.wait(timeout=RENDEZVOUS_TIMEOUT)
+            return real_create(*args, **kwargs)
+
+        def worker():
+            try:
+                request_refund(Order.objects.get(pk=order.pk))
+            except RefundAlreadyInProgressError:
+                outcomes.append("rejected")
+            else:
+                outcomes.append("requested")
+
+        with mock.patch.object(
+            RefundRequest.objects, "create", side_effect=create_after_rendezvous
+        ):
+            self.run_concurrently(worker, 2)
+
+        self.assertEqual(sorted(outcomes), ["rejected", "requested"])
+        self.assertEqual(RefundRequest.objects.filter(order_id=order.pk).count(), 1)
+        self.assertEqual(Order.objects.get(pk=order.pk).status, Order.Status.REFUNDING)
+
+    def test_concurrent_settle_pays_once(self):
+        """两个请求同时打款同一笔已批准的退款 → 只出账一次.
+
+        与 09 的并发支付同一类: 两个标签页各自读到「已批准」, 都觉得自己该打钱.
+        判据取锁内 re-fetch 的值, 第二个请求看到的是 `refunded`.
+
+        会合点卡在**判据判完、钱还没动**那一刻 —— `settle_refund` 里那一次
+        `timezone.now()` 正好在那里.
+        """
+        order = self._paid_order("race-settle", "race-settle")
+        refund = request_refund(order)
+        approve_refund(refund, amount=Decimal("7.00"))  # 订单总额 10.00, 协商退 7
+        stale = RefundRequest.objects.get(pk=refund.pk)  # 两个标签页手里都是这份
+        outcomes: list[str] = []
+        gate = threading.Barrier(2)
+        real_now = timezone.now
+
+        def now_after_rendezvous():
+            with contextlib.suppress(threading.BrokenBarrierError):
+                gate.wait(timeout=RENDEZVOUS_TIMEOUT)
+            return real_now()
+
+        def worker():
+            try:
+                settle_refund(stale)
+            except InvalidRefundStatusError:
+                outcomes.append("rejected")
+            else:
+                outcomes.append("settled")
+
+        with mock.patch(
+            "app.minimall.services.timezone.now", side_effect=now_after_rendezvous
+        ):
+            self.run_concurrently(worker, 2)
+
+        self.assertEqual(sorted(outcomes), ["rejected", "settled"])
+        self.assertEqual(
+            Profile.objects.get(user=order.user).balance, Decimal("9997.00")
+        )
+        self.assertEqual(Order.objects.get(pk=order.pk).status, Order.Status.REFUNDED)

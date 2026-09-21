@@ -82,7 +82,8 @@ class CartModelTest(TestCase):
 class OrderModelTest(TestCase):
     def test_status_choices(self):
         self.assertEqual(Order.Status.PENDING, "pending")
-        self.assertEqual(len(Order.Status.choices), 7)
+        # 8 个: 10 (退款域) 加了 "refunding" (退款中), 见 ADR-0004
+        self.assertEqual(len(Order.Status.choices), 8)
 
     def test_order_no_unique(self):
         user = User.objects.create_user(

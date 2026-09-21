@@ -316,6 +316,7 @@ class Order(models.Model):
         RECEIVED = "received", "已收货"
         COMPLETED = "completed", "已完成"
         CANCELLED = "cancelled", "已取消"
+        REFUNDING = "refunding", "退款中"
         REFUNDED = "refunded", "已退款"
 
     order_no = models.CharField(max_length=32, unique=True, verbose_name="订单号")
@@ -339,6 +340,7 @@ class Order(models.Model):
     shipped_at = models.DateTimeField(null=True, blank=True, verbose_name="发货时间")
     received_at = models.DateTimeField(null=True, blank=True, verbose_name="收货时间")
     cancelled_at = models.DateTimeField(null=True, blank=True, verbose_name="取消时间")
+    refunded_at = models.DateTimeField(null=True, blank=True, verbose_name="退款时间")
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
     updated_at = models.DateTimeField(auto_now=True, verbose_name="更新时间")
 
@@ -380,3 +382,69 @@ class OrderItem(models.Model):
 
     def __str__(self):
         return f"{self.product_name} x{self.quantity}"
+
+
+class RefundRequest(models.Model):
+    """退款申请 — 买家发起, 管理员协商金额并打款.
+
+    与 `Order.status` 是两个状态机, 但耦合在四个转换点上 (ADR-0004):
+    申请 → 订单变 `refunding`, 批准 → 订单不变, 打款 → 订单变 `refunded`,
+    驳回 → 订单**恢复** `order_status_before`. 四个转换一律走 `services.py`
+    里的函数, 不要在这里改订单状态 —— 任何一处漏了就是数据不一致.
+    """
+
+    class Status(models.TextChoices):
+        REQUESTED = "requested", "待处理"
+        APPROVED = "approved", "已批准"
+        REJECTED = "rejected", "已驳回"
+        REFUNDED = "refunded", "已退款"
+
+    # 「进行中」= 还没走到终态的两种. 同一订单同一时刻只允许有一条, 但驳回后
+    # 允许再提 —— 所以不能用 unique_together 表达, 是应用层校验 (见 request_refund).
+    ACTIVE_STATUSES = (Status.REQUESTED, Status.APPROVED)
+
+    order = models.ForeignKey(
+        Order,
+        on_delete=models.PROTECT,
+        related_name="refunds",
+        verbose_name="订单",
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.REQUESTED,
+        verbose_name="状态",
+    )
+    amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        verbose_name="退款金额",
+        help_text="买家申请时不带金额, 管理员批准时必填 (协商金额)",
+    )
+    order_status_before = models.CharField(
+        max_length=20,
+        choices=Order.Status.choices,
+        verbose_name="申请前订单状态",
+        help_text="申请那一刻的快照, 驳回时用它恢复订单状态",
+    )
+    admin_note = models.TextField(
+        blank=True,
+        default="",
+        verbose_name="管理员备注",
+        help_text="批准时写明协商结果, 驳回时是原因",
+    )
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="申请时间")
+    approved_at = models.DateTimeField(null=True, blank=True, verbose_name="批准时间")
+    refunded_at = models.DateTimeField(null=True, blank=True, verbose_name="打款时间")
+    rejected_at = models.DateTimeField(null=True, blank=True, verbose_name="驳回时间")
+
+    class Meta:
+        db_table = "minimall_refund_request"
+        verbose_name = "退款申请"
+        verbose_name_plural = verbose_name
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.order.order_no} - {self.get_status_display()}"

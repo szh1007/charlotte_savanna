@@ -1,0 +1,56 @@
+{% extends "admin/base_site.html" %}
+{% load i18n static admin_urls %}
+
+{% block extrahead %}
+  {{ block.super }}
+  <script src="{% static 'admin/js/cancel.js' %}" async></script>
+{% endblock %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+  <a href="{% url 'admin:index' %}">首页</a>
+  &rsaquo; <a href="{% url 'admin:app_list' app_label=opts.app_label %}">{{ opts.app_config.verbose_name }}</a>
+  &rsaquo; <a href="{% url opts|admin_urlname:'changelist' %}">{{ opts.verbose_name_plural|capfirst }}</a>
+  &rsaquo; {{ title }}
+</div>
+{% endblock %}
+
+{% block content %}
+  <h1>{{ title }}</h1>
+
+  <table style="width:auto;margin-bottom:16px;">
+    <thead>
+      <tr>
+        <th style="padding:4px 12px 4px 0;">订单号</th>
+        <th style="padding:4px 12px;">买家</th>
+        <th style="padding:4px 12px;">订单总额</th>
+        <th style="padding:4px 12px;">申请前状态</th>
+        <th style="padding:4px 12px;">退款单状态</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for refund in refunds %}
+        <tr>
+          <td style="padding:4px 12px 4px 0;">{{ refund.order.order_no }}</td>
+          <td style="padding:4px 12px;">{{ refund.order.user.username }}</td>
+          <td style="padding:4px 12px;">{{ refund.order.total_amount }}</td>
+          <td style="padding:4px 12px;">{{ refund.get_order_status_before_display }}</td>
+          <td style="padding:4px 12px;">{{ refund.get_status_display }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <form method="post">{% csrf_token %}
+    <div>
+      {% for refund in refunds %}
+        <input type="hidden" name="{{ action_checkbox_name }}" value="{{ refund.pk }}">
+      {% endfor %}
+      <input type="hidden" name="action" value="{{ action_name }}">
+      <input type="hidden" name="confirm" value="yes">
+      {{ form.as_p }}
+      <input type="submit" value="确认{{ title }}">
+      <a role="button" href="#" class="button cancel-link">取消</a>
+    </div>
+  </form>
+{% endblock %}
