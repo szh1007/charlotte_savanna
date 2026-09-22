@@ -1,6 +1,6 @@
 # 15 · L2 验收收口：领域规则改判 + 三个缺陷 + 簿记
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Type:** task
 
@@ -125,7 +125,7 @@ L2 的七片（08–14）交付完整、验收框全勾，但 **2026-09-22 的�
 - [x] 被业务拒绝的写操作在页面上显示 failed 话术，且模型收到同一句文案
 - [x] `test_tools.py:427` / `:454` 两条已按新语义改写，**文案一字未动**；新增「拒绝 → `status=error`」一条
 - [x] `serializers_agent.py` 的 `restocked_count` 与改判后的行为一致（有用例）
-- [x] issues 12/13/14 的 `Status` 改成 `done`
+- [x] issues 12/13/14 的 `Status` 改成 `done`（**本片自己那份也一起改了** —— 12/13/14 是 ticket 点名的，15 是收尾时容易漏的那个）
 - [x] 三套测试全绿：框架（`pytest CharAgent`）· 业务（`pytest CharApp`）· 商城（`manage.py test app.minimall`，**耗时较长，由用户手动跑**）；`ruff check` / `ruff format --check` 干净
 - [x] 收口时清理真机现场（`l2accept_*` 两个账号、三张订单、退款单、以及验收期的两个进程）
 
