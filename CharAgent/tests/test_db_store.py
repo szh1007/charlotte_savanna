@@ -848,8 +848,8 @@ async def test_add_terminal_records_a_finished_run_in_one_write(db: PgDatabase):
     assert loaded.is_terminal is True
     assert loaded.finished_at == moment
     assert (loaded.turn_count, loaded.total_tokens) == (3, 128)
-    # 调用方没给用量分解与提示词版本: 那几列如实留空 (NULL = 没有, 不是「零」);
-    # 模型名与花费留给 L3 的成本记账
+    # 调用方没给模型名 / 提示词版本 / 用量分解: 那几列如实留空 (NULL = 没有, 不是
+    # 「零」); 花费那一列留给 L3 的成本记账
     assert (loaded.model, loaded.prompt_version, loaded.error) == (None, None, None)
     assert (loaded.input_tokens, loaded.cache_hit_tokens) == (None, None)
 

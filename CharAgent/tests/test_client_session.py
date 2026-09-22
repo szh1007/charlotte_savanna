@@ -726,12 +726,18 @@ async def test_the_session_hands_every_run_to_the_recorder() -> None:
             result: Any,
             since: int = 0,
             summary: str | None = None,
+            model: str | None = None,
         ) -> bool:
             calls.append((thread_id, since, result.content))
             return True
 
         async def record_unfinished(
-            self, *, thread_id: str, question: str, status: Any
+            self,
+            *,
+            thread_id: str,
+            question: str,
+            status: Any,
+            model: str | None = None,
         ) -> bool:
             calls.append((thread_id, -1, question))
             return True
@@ -748,6 +754,53 @@ async def test_the_session_hands_every_run_to_the_recorder() -> None:
     )
 
 
+async def test_the_session_tells_the_recorder_which_model_ran() -> None:
+    """记录: 会话把**实际生效**的模型名交给记录员 (#40 版本归因).
+
+    为什么由会话交: `LoopResult` 里没有模型名 —— loop 手上是个薄协议的模型对象
+    (`ChatModel` 上就没有「我叫什么」这一项), 名字只有装配处知道. 与身份说明同
+    一条规矩: 记录里写的必须是**真跑的那个** (--model 优先于 .env).
+    """
+    seen: list[str | None] = []
+
+    class Recorder:
+        """只关心 model 那一个参数的记录员."""
+
+        async def record(
+            self,
+            *,
+            thread_id: str,
+            result: Any,
+            since: int = 0,
+            summary: str | None = None,
+            model: str | None = None,
+        ) -> bool:
+            seen.append(model)
+            return True
+
+        async def record_unfinished(
+            self,
+            *,
+            thread_id: str,
+            question: str,
+            status: Any,
+            model: str | None = None,
+        ) -> bool:
+            seen.append(model)
+            return True
+
+    session = make_session(
+        MockLLM.fixed(text_response("答好了")),
+        thread_id="rec-model",
+        model_name="cli-model",
+        recorder=Recorder(),
+    )
+
+    await session.ask("第一问")
+
+    assert seen == ["cli-model"], "交的必须与会话实际生效的那个名字一致"
+
+
 async def test_an_interrupted_run_is_recorded_as_unfinished() -> None:
     """取消 / 失败那一轮也要记: 用户确实说过那句话 (记录里不该少一轮)."""
     calls: list[tuple[str, Any]] = []
@@ -762,12 +815,18 @@ async def test_an_interrupted_run_is_recorded_as_unfinished() -> None:
             result: Any,
             since: int = 0,
             summary: str | None = None,
+            model: str | None = None,
         ) -> bool:
             calls.append(("finished", result.outcome))
             return True
 
         async def record_unfinished(
-            self, *, thread_id: str, question: str, status: Any
+            self,
+            *,
+            thread_id: str,
+            question: str,
+            status: Any,
+            model: str | None = None,
         ) -> bool:
             calls.append((question, status))
             return True
@@ -810,12 +869,18 @@ async def test_only_a_fresh_summary_is_handed_to_the_recorder() -> None:
             result: Any,
             since: int = 0,
             summary: str | None = None,
+            model: str | None = None,
         ) -> bool:
             summaries.append(summary)
             return True
 
         async def record_unfinished(
-            self, *, thread_id: str, question: str, status: Any
+            self,
+            *,
+            thread_id: str,
+            question: str,
+            status: Any,
+            model: str | None = None,
         ) -> bool:
             return True
 

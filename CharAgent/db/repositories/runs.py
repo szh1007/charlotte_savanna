@@ -102,6 +102,7 @@ class RunsRepository(PgRepository):
         thread_id: str,
         status: RunStatus,
         run_id: str | None = None,
+        model: str | None = None,
         turn_count: int = 0,
         total_tokens: int = 0,
         input_tokens: int | None = None,
@@ -127,6 +128,9 @@ class RunsRepository(PgRepository):
             thread_id: 属于哪段会话 (会话必须已存在, 否则外键会拦下来).
             status: 终态之一 (finished / failed / cancelled).
             run_id: 显式编号 (测试用); None 则生成 uuid4 hex.
+            model: 这次用的模型名 —— 与发给 API 的那个**逐字一致** (取
+                `prompt/load.py` 的 `resolve_model_name`); None 表示调用方没给
+                (框架自己不知道模型对象的名字, 见 `ChatModel` 那份薄协议).
             turn_count: 这次跑了多少轮模型决策.
             total_tokens: 这次累计用量 (账单原值: 上游 usage 的总数).
             input_tokens / output_tokens / reasoning_tokens / cache_hit_tokens /
@@ -158,9 +162,10 @@ class RunsRepository(PgRepository):
             thread_id=thread_id,
             status=status.value,
             request_id=None,
-            # 模型名 / 花费这两列留给 L3 的成本记账 (本片只把行建起来); 提示词版本
-            # 与用量分解已经由调用方递进来了 (它们不要额外信息, 顺手就填得上)
-            model=None,
+            # 模型名与提示词版本都是**版本归因** (#40): 回答质量掉了要能查出「是换了
+            # 模型还是换了 prompt」—— 两样都由调用方递进来; 花费那一列仍留给 L3 的
+            # 成本记账
+            model=model,
             prompt_version=prompt_version,
             total_tokens=total_tokens,
             input_tokens=input_tokens,

@@ -185,6 +185,39 @@ async def test_an_unfinished_turn_leaves_the_usage_breakdown_empty() -> None:
     assert run["input_tokens"] is None
     assert run["cache_miss_tokens"] is None
     assert run["prompt_version"] is None
+    assert run["model"] is None, "调用方没给模型名就留空, 不编一个名字出来"
+
+
+async def test_the_run_row_carries_the_model_name_on_both_paths() -> None:
+    """运行行带上模型名 (#40 版本归因): 跑完的那一轮与没跑完的那一轮都带得上.
+
+    模型名与用量分解不是一回事: 后者是**跑出来的账目** (没跑完就没有), 前者是跑
+    之前就定下的**配置事实** —— 所以取消 / 失败那一行照样写得出来, 而那一行的
+    账目仍然是空的. 归因要能答的问题是「这次用的是哪个模型」, 与「跑成没跑成」
+    无关.
+    """
+    finished = FakeRecordDatabase()
+
+    await recorder(finished).record(
+        thread_id=THREAD_ID, result=result(), model="deepseek-flash"
+    )
+
+    [run] = finished.rows_of("charagent_runs")
+    assert run["model"] == "deepseek-flash"
+
+    unfinished = FakeRecordDatabase()
+
+    await recorder(unfinished).record_unfinished(
+        thread_id=THREAD_ID,
+        question="订单到哪了",
+        status=RunStatus.CANCELLED,
+        model="deepseek-flash",
+    )
+
+    [run] = unfinished.rows_of("charagent_runs")
+    assert (run["model"], run["input_tokens"]) == ("deepseek-flash", None), (
+        "模型名有, 账目空 —— 两者不是一回事"
+    )
 
 
 async def test_the_hidden_work_of_a_tool_turn_is_recorded_as_hidden() -> None:

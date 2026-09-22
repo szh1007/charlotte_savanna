@@ -301,3 +301,12 @@
 - 真机（本机 `charlotte` 库）已应用：三条齐了（0001 / 0002 补记留空，0003 带真实时刻与执行者 `Lenovo@CHARLOTTE`），`alembic check` 零差异。
 
 顺带纠正用户的一处误判（有据可查，不是迁移出错）：他以为新增的 5 列没有 comment —— 真库上 `pg_description` 逐列查得到（18/18 列都有注释），是查看器的表结构缓存。**回滚重迁没有做**：`comment` 是迁移脚本里写死的参数，重跑结果一模一样，而真跑一次 downgrade 会把那 5 列 drop 掉，是纯风险无收益。
+
+**追加的第三件（2026-09-23 稍后，用户查库时提问触发）**：用户问「`charagent_runs` 里的 `request_id` 与 `model` 为什么是 NULL（我用 CLI 跑的）」。核对下来是两件性质不同的事：
+
+- **`model` 是「同一件事做了一半」** —— 那一列从建表起就是为 #40 版本归因准备的（`本次 run 用的模型名 —— 版本化 (#40) 的基础`），而上一批只填了同组的 `prompt_version`。已补齐：`RunFacts` 加 `model`，`RunRecorder.record` / `record_unfinished` 各加一个 `model=` 参数，由 `ChatSession` 把**实际生效的模型名**（`prompt/load.py` 的 `resolve_model_name`，与发给 API 的逐字一致）递进来。结果对象里没有它 —— loop 手上是薄协议的模型对象（`ChatModel` 上就没有「我叫什么」这一项），名字只有装配处知道。没跑完那一轮也带：模型名是**跑之前就定下的配置事实**，不是跑出来的账目，所以取消 / 失败的那一行照样写得出它（而那一行的五个分解列仍然是 NULL）。
+- **`request_id` 按兵不动** —— 它是幂等键（#17），语义属于**请求方**：记录函数写的是「一次已经跑完的运行」，不是「开始一次执行」。今天没有任何入口能填它（`server/` 里 `request_id` 零命中，`runs.add(request_id=...)` 只有用例在用），在幂等那条路真正接线（`POST /runs` 收 `Idempotency-Key`）之前填它只可能是编一个值 —— 比 NULL 更坏。
+
+顺带核出一处落差（**未动**，留给用户判断）：框架自己的 CLI（`CharAgent/client/app.py` 建 `ChatSession` 时）**没传 `recorder=`**，于是 `python -m CharAgent.client` 一条记录都不写。`db/recorder.py` 的 docstring 说「钩子挂在 `ChatSession` 上，两个入口都覆盖」—— 钩子位置没错，是那条装配线自己没挂上去。真库里那几行（`tenant_id='minimall-cli'`、线程 `minimall:2:cli`）来自 CharApp 的 CLI，它走 `MinimallService.session_for` 那条挂了记录员的装配。
+
+验证：CharAgent 全量 982 通过（74 排除；另单跑 `-m pg_db -k add_terminal` 三条通过）、CharApp 191 通过、ruff check / format 干净。

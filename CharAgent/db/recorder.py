@@ -21,8 +21,8 @@ agent 答完, 这正好是「一句话的账」. 每轮写一次会让一次带�
 | 落库的 | 内容 |
 |--------|------|
 | `runs` 一行 | 这次运行的结局 (`RUN_STATUS_FOR_OUTCOME` 映射的终态) 与轮次 / |
-| | 用量 —— 用量含**分解** (输入 / 输出 / 思维链 / 缓存命中 / 未命中) 与 |
-| | 提示词版本, 见 `RunFacts` |
+| | 用量 —— 用量含**分解** (输入 / 输出 / 思维链 / 缓存命中 / 未命中), 以及 |
+| | 模型名与提示词版本 (版本归因 #40), 见 `RunFacts` |
 | 可见消息 | 用户那句提问 + 最终答复正文 (**取 `LoopResult.content`**,
 | | 理由见 conversation.py 那条硬规矩) |
 | 隐藏消息 | 工具回填、带工具调用的中间轮、续写指令、**新压出来的摘要** |
@@ -110,8 +110,9 @@ class RunFacts:
     一个缓存命中的 token 都没有, 而真相是「没记」). 打成包之后, `_write` 的签名
     不必随着列的增加而变长, 而「一次运行的账」长什么样只有一个定义.
 
-    空实例 (`RunFacts()`) 是**没跑完那一轮**的账: 取消 / 失败时确实什么都没有 ——
-    这时五个分解字段都是 None (「没有」, 不是「零」).
+    空实例 (`RunFacts()`) 是**没跑完那一轮**的账: 取消 / 失败时确实没有账目可记
+    —— 五个分解字段都是 None (「没有」, 不是「零」), 而模型名是**跑之前就定下的
+    配置事实**, 那一轮照样带得上 (见 `record_unfinished`).
 
     attributes:
         turn_count / total_tokens: 跑了几轮 / 累计用量 (账单原值).
@@ -120,6 +121,8 @@ class RunFacts:
             过这个分量 (见 agent/utils/messages.py 的 accumulate_usage).
         prompt_version: 这一轮用的提示词名 (如 "system/v2"); None 表示装配时没给
             身份说明的引用 (框架不知道它是什么).
+        model: 这一轮用的模型名 (与发给 API 的逐字一致, 见
+            `prompt/load.py` 的 `resolve_model_name`); None 表示调用方没给.
     """
 
     turn_count: int = 0
@@ -130,10 +133,19 @@ class RunFacts:
     cache_hit_tokens: int | None = None
     cache_miss_tokens: int | None = None
     prompt_version: str | None = None
+    model: str | None = None
 
     @classmethod
-    def of(cls, result: LoopResult) -> RunFacts:
-        """一次跑完的运行 → 它的账 (字段全部原样取自结果, 不在这里换算)."""
+    def of(cls, result: LoopResult, *, model: str | None = None) -> RunFacts:
+        """一次跑完的运行 → 它的账 (账目字段全部原样取自结果, 不在这里换算).
+
+        模型名是唯一例外: 结果里没有它, 由调用方另给 (见 Args).
+
+        Args:
+            result: 这次运行的结果.
+            model: 这次用的模型名 —— 结果里没有它 (loop 手上是个薄协议的模型对象,
+                名字只有装配处知道), 所以由调用方递进来.
+        """
         return cls(
             turn_count=result.turn_count,
             total_tokens=result.total_tokens,
@@ -145,6 +157,7 @@ class RunFacts:
             # 提示词名取自已记录的引用: 内联 (老帧) 或没配时是 None —— 那种情况
             # 运行记录里如实留空, 不编一个名字出来
             prompt_version=ref_name(result.prompt_ref),
+            model=model,
         )
 
 
@@ -166,6 +179,7 @@ class RunRecorder(Protocol):
         result: LoopResult,
         since: int = 0,
         summary: str | None = None,
+        model: str | None = None,
     ) -> bool:
         """记下**一次跑完的运行** (含 visible / hidden 消息与运行行).
 
@@ -177,6 +191,8 @@ class RunRecorder(Protocol):
             summary: 这一轮**新压出来的**摘要; None 表示这一轮没压 (或压出来的与
                 上一轮那份一样). 调用方判「新不新」而实现不自己比 —— 比较基准
                 (上一轮那份) 只有会话手上有.
+            model: 这次用的模型名 —— 结果里没有它 (loop 手上是个薄协议的模型对象,
+                名字只有装配处知道), 所以由调用方递进来; None 表示没给.
 
         Returns:
             bool: 记上了 True; 没记上 (库不可用等) False.
@@ -184,7 +200,12 @@ class RunRecorder(Protocol):
         ...
 
     async def record_unfinished(
-        self, *, thread_id: str, question: str, status: RunStatus
+        self,
+        *,
+        thread_id: str,
+        question: str,
+        status: RunStatus,
+        model: str | None = None,
     ) -> bool:
         """记下**一次没答完的运行** (取消 / 失败那一轮).
 
@@ -192,6 +213,8 @@ class RunRecorder(Protocol):
             thread_id: 算哪段会话.
             question: 用户那一句提问 (页面上已经显示了, 记录里不能少).
             status: 这次运行的终态 (cancelled / failed).
+            model: 这次用的模型名 (同 `record`); 这一轮没有账目, 但模型是跑之前
+                就定下的配置事实, 照样记得下来.
 
         Returns:
             bool: 记上了 True; 没记上 False.
@@ -237,6 +260,7 @@ class ConversationRecorder:
         result: LoopResult,
         since: int = 0,
         summary: str | None = None,
+        model: str | None = None,
     ) -> bool:
         """记下这次跑完的运行 (消息按可见性落库 + 运行行 + 刷会话的活动时刻)."""
         lines = recorded_transcript(result.messages, result.content, since=since)
@@ -268,11 +292,16 @@ class ConversationRecorder:
             thread_id=thread_id,
             lines=lines,
             status=run_status_for_outcome(result.outcome),
-            facts=RunFacts.of(result),
+            facts=RunFacts.of(result, model=model),
         )
 
     async def record_unfinished(
-        self, *, thread_id: str, question: str, status: RunStatus
+        self,
+        *,
+        thread_id: str,
+        question: str,
+        status: RunStatus,
+        model: str | None = None,
     ) -> bool:
         """记下这一轮没答完 (提问 + 一条可见说明) —— 取消 / 失败那一轮走这里."""
         lines = [
@@ -284,9 +313,10 @@ class ConversationRecorder:
                 hidden=False,
             ),
         ]
-        # 没跑完那一轮没有账可记: 空实例 = 五个分解字段都是 None (「没有」, 不是「零」)
+        # 没跑完那一轮没有账可记: 五个分解字段都是 None (「没有」, 不是「零」) ——
+        # 但模型名照样带上: 它是跑之前就定下的配置事实, 不是跑出来的账目
         return await self._write(
-            thread_id=thread_id, lines=lines, status=status, facts=RunFacts()
+            thread_id=thread_id, lines=lines, status=status, facts=RunFacts(model=model)
         )
 
     async def _write(

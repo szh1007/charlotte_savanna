@@ -533,8 +533,14 @@ class ChatSession:
         """把这一轮交给记录员 (没配记录员 = 一步都不走)."""
         if self._recorder is None:
             return
+        # 模型名由**会话**告诉记录员: loop 手上是个薄协议的模型对象 (没有名字属性),
+        # 而 `LoopResult` 里也没有 —— 装配处是唯一知道「这次跑的是哪个模型」的地方
         await self._recorder.record(
-            thread_id=self._thread_id, result=result, since=since, summary=summary
+            thread_id=self._thread_id,
+            result=result,
+            since=since,
+            summary=summary,
+            model=self._model_name,
         )
 
     async def _record_unfinished(self, question: str, error: BaseException) -> None:
@@ -552,7 +558,10 @@ class ChatSession:
             else RunStatus.FAILED
         )
         await self._recorder.record_unfinished(
-            thread_id=self._thread_id, question=question, status=status
+            thread_id=self._thread_id,
+            question=question,
+            status=status,
+            model=self._model_name,
         )
 
     async def _reclaim_progress(self) -> None:
