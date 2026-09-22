@@ -68,6 +68,13 @@ class RunsRepository(PgRepository):
             # 三个计数列在库里有默认值, 但显式写 0 让「新建的运行账目是零」
             # 这件事在代码里也看得见 (读代码的人不必去翻建表语句)
             total_tokens=0,
+            # 用量分解显式写 None: 这次运行**还没跑过**, 所以还没有分量可拆 ——
+            # 与「跑过了, 用量是零」不是同一件事 (见 _params 与 db/schema.py)
+            input_tokens=None,
+            output_tokens=None,
+            reasoning_tokens=None,
+            cache_hit_tokens=None,
+            cache_miss_tokens=None,
             total_cost=0,
             turn_count=0,
             error=None,
@@ -97,6 +104,12 @@ class RunsRepository(PgRepository):
         run_id: str | None = None,
         turn_count: int = 0,
         total_tokens: int = 0,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+        reasoning_tokens: int | None = None,
+        cache_hit_tokens: int | None = None,
+        cache_miss_tokens: int | None = None,
+        prompt_version: str | None = None,
         moment: datetime | None = None,
     ) -> Run:
         """把一次**已经跑完**的运行记成一行 (直接以终态落库).
@@ -115,7 +128,13 @@ class RunsRepository(PgRepository):
             status: 终态之一 (finished / failed / cancelled).
             run_id: 显式编号 (测试用); None 则生成 uuid4 hex.
             turn_count: 这次跑了多少轮模型决策.
-            total_tokens: 这次累计用量 (L3 的成本归因接着往这几列上加).
+            total_tokens: 这次累计用量 (账单原值: 上游 usage 的总数).
+            input_tokens / output_tokens / reasoning_tokens / cache_hit_tokens /
+            cache_miss_tokens: total_tokens 的**归因拆解** (#34). None 表示上游
+                一次都没上报过这个分量 —— 与 0 (报过、值就是零) 是两回事, 所以
+                这几个参数默认是 None 而不是 0.
+            prompt_version: 这次用的提示词名 (如 "system/v2"); None 表示装配时
+                没给身份说明 (框架不知道它是什么).
             moment: 显式时刻 (测试用); None 则取当下 (UTC) —— 建 / 更新 / 结束
                 三个时刻取同一个值: 这是一条**回顾**记录, 不是三个真实时刻.
 
@@ -139,10 +158,16 @@ class RunsRepository(PgRepository):
             thread_id=thread_id,
             status=status.value,
             request_id=None,
-            # 模型名 / prompt 版本 / 花费这几列留给 L3 的成本记账 (本片只把行建起来)
+            # 模型名 / 花费这两列留给 L3 的成本记账 (本片只把行建起来); 提示词版本
+            # 与用量分解已经由调用方递进来了 (它们不要额外信息, 顺手就填得上)
             model=None,
-            prompt_version=None,
+            prompt_version=prompt_version,
             total_tokens=total_tokens,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            reasoning_tokens=reasoning_tokens,
+            cache_hit_tokens=cache_hit_tokens,
+            cache_miss_tokens=cache_miss_tokens,
             total_cost=0,
             turn_count=turn_count,
             error=None,
@@ -248,7 +273,11 @@ class RunsRepository(PgRepository):
 
     @staticmethod
     def _params(run: Run) -> dict[str, object]:
-        """实体 → 插入参数."""
+        """实体 → 插入参数.
+
+        列清单只有这一处: 表里加一列, 就在这里加一个键 —— 漏了会**当场**被库拦下
+        (INSERT 少给一列, 而 NOT NULL 的那些不接受缺省), 不会悄悄写进空值.
+        """
         return {
             "run_id": run.run_id,
             "thread_id": run.thread_id,
@@ -257,6 +286,11 @@ class RunsRepository(PgRepository):
             "model": run.model,
             "prompt_version": run.prompt_version,
             "total_tokens": run.total_tokens,
+            "input_tokens": run.input_tokens,
+            "output_tokens": run.output_tokens,
+            "reasoning_tokens": run.reasoning_tokens,
+            "cache_hit_tokens": run.cache_hit_tokens,
+            "cache_miss_tokens": run.cache_miss_tokens,
             "total_cost": run.total_cost,
             "turn_count": run.turn_count,
             "error": run.error,

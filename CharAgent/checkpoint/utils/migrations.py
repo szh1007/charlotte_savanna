@@ -27,8 +27,12 @@ Postgres 的 state 列 + metadata 列).
 - **v3**: 把上面那三个观察值搬进 metadata, 并补上 source / turn_tokens /
   turn_elapsed_ms / tool_names 四个调试字段 (「哪一步最贵、这一步是怎么来的」).
   于是 state 只剩「接着跑必需的输入」, metadata 专管「这一步发生了什么」.
-- **v4 (当前)**: 进度多两样上下文压缩 (#7) 的账 —— summary (摘要正文) 与
+- **v4**: 进度多两样上下文压缩 (#7) 的账 —— summary (摘要正文) 与
   summary_covers (它压到第几条). 老帧没有摘要, 补 None / 0, 那正是当时的事实.
+- **v5 (当前)**: 进度多两样东西 —— ① 身份说明的**引用** (prompt_ref): 老帧的
+  正文本来就在 messages[0] 里, 于是补 None = 「不用补」; ② 五个**归因**分量
+  (input / output / reasoning / cache_hit / cache_miss), 老帧补 None = 「那时
+  上游还没上报过这些」. 两样都不动老帧的 messages.
 """
 
 from __future__ import annotations
@@ -53,6 +57,22 @@ _V3_METADATA_DEFAULTS: dict[str, Any] = {
 # 翻译函数表: 键是「从哪个版本出发」, 值是「怎么升到下一版」
 # (1: _v1_to_v2 表示把 v1 的主体升成 v2 的主体)
 MIGRATIONS: dict[int, Callable[[dict[str, Any]], dict[str, Any]]] = {}
+
+# v5 给进度补的两类字段默认值: 老帧一律「那时候还没有这两个概念」. 两类默认值
+# 说的**不是同一件事**, 所以分开写清楚 (别读成一句「老帧不知道」):
+#
+# - prompt_ref=None: 不是「那时候没有身份说明」, 而是「**正文就内联在 messages
+#   那一侧**」—— 老帧仍然完全自描述, 读回来一个字都不必补.
+# - 五个归因分量 = None: 「上游一次都没上报过这个分量」. 填 0 会把「当时没这个
+#   字段」说成「当时确实为零」, 而这两个在成本归因里是相反的结论.
+_V5_STATE_DEFAULTS: dict[str, Any] = {
+    "prompt_ref": None,
+    "input_tokens": None,
+    "output_tokens": None,
+    "reasoning_tokens": None,
+    "cache_hit_tokens": None,
+    "cache_miss_tokens": None,
+}
 
 
 def migrate_body(body: dict[str, Any], *, from_version: int) -> dict[str, Any]:
@@ -162,6 +182,23 @@ def _v3_to_v4(body: dict[str, Any]) -> dict[str, Any]:
     return upgraded
 
 
+def _v4_to_v5(body: dict[str, Any]) -> dict[str, Any]:
+    """v4 -> v5: 进度里补上身份说明引用与五个归因分量的默认值 (见上面的常量).
+
+    三类迁移里它又是**纯加字段**那一类 —— 但注意它**不动 messages**: v5 的剥离
+    只发生在**写侧**, 而且只在调用方给了引用时才剥 (见 serialization 的
+    `_body_payload`). 老帧里那条身份说明正文照旧留着, 于是「读三个月前的快照
+    重放」仍然拿得到当时逐字的原文, 不依赖盘上那份提示词还在不在.
+    """
+    upgraded = dict(body)
+    state = dict(upgraded["state"])
+    for key, default in _V5_STATE_DEFAULTS.items():
+        state.setdefault(key, default)
+    upgraded["state"] = state
+    return upgraded
+
+
 MIGRATIONS[1] = _v1_to_v2
 MIGRATIONS[2] = _v2_to_v3
 MIGRATIONS[3] = _v3_to_v4
+MIGRATIONS[4] = _v4_to_v5

@@ -97,8 +97,8 @@ def migrated(_engine) -> Iterator[Config]:
 def _reflect(connection: Connection) -> MetaData:
     """把测试 schema 里的实际结构读回来 (不含 alembic 自己的版本表).
 
-    版本表是**迁移工具**的表, 不是我们的业务表 —— 断言「五张表齐全」时把它算进来
-    就成了假阳性. 想验版本号的地方直接查它, 不用反射.
+    版本表是**迁移工具**的表, 不是我们的业务表 —— 断言「表齐全」时把它算进来就成了
+    假阳性. 想验版本号的地方直接查它, 不用反射.
     """
     reflected = MetaData(schema=ALEMBIC_SCHEMA)
     reflected.reflect(bind=connection, schema=ALEMBIC_SCHEMA)
@@ -107,7 +107,7 @@ def _reflect(connection: Connection) -> MetaData:
 
 
 def test_upgrade_head_creates_every_table_on_an_empty_schema(migrated, _engine):
-    """空库跑 `upgrade head`: 五张表齐全.
+    """空库跑 `upgrade head`: 表齐全 (五张业务表 + 迁移审计表).
 
     这是一条关键验收 (「alembic 首次迁移在空库可执行」) —— 从零建库
     是每个新环境的第一件事, 它在半路报错的话后面什么都做不了.
@@ -181,7 +181,7 @@ def test_alembic_version_records_the_head_revision(migrated, _engine):
             {"name": f"{ALEMBIC_SCHEMA}.{VERSION_TABLE}"},
         ).scalar()
 
-    assert version == "0001_core"
+    assert version == "0003_migration_audit_log"
     assert test_schema_version, (
         "版本表没落在测试 schema 里 (version_table_schema 没生效)"
     )
@@ -199,7 +199,34 @@ def test_upgrade_head_is_idempotent(migrated, _engine):
             text(f"SELECT version_num FROM {ALEMBIC_SCHEMA}.{VERSION_TABLE}")
         ).scalar()
 
-    assert version == "0001_core"
+    assert version == "0003_migration_audit_log"
+
+
+def test_the_audit_table_records_every_applied_revision(migrated, _engine):
+    """审计表把跑过的三条都记下: 0001 / 0002 是补记, 0003 由钩子记 (有真实时刻).
+
+    补记那两条为什么时刻留空: 它们在**任何**库里都发生在审计表建起来之前 (新建库
+    同样如此), 无从考证 —— 编一个时间比留空更糟 (见 0003 的 docstring).
+    """
+    with _engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                "SELECT revision, name, applied_at, applied_by"
+                f" FROM {ALEMBIC_SCHEMA}.charagent_migrations ORDER BY revision"
+            )
+        ).all()
+
+    assert [row.revision for row in rows] == [
+        "0001_core",
+        "0002_run_usage_breakdown",
+        "0003_migration_audit_log",
+    ]
+    assert rows[1].name == "runs 表加用量分解五列 (成本归因 #34)", (
+        "标题取的是脚本 docstring 的首行, 与 alembic history 印的是同一句"
+    )
+    assert (rows[0].applied_at, rows[1].applied_at) == (None, None), "补记留空"
+    assert (rows[0].applied_by, rows[1].applied_by) == (None, None)
+    assert rows[2].applied_at is not None, "0003 由钩子记, 有真实时刻"
 
 
 def test_no_difference_between_code_and_migrated_schema(migrated, _engine):

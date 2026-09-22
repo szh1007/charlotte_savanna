@@ -1,6 +1,6 @@
 [
   {
-    "schema_version": 4,
+    "schema_version": 5,
     "checkpoint_id": "<id>",
     "thread_id": "snapshot-thread",
     "run_id": "run-snapshot",
@@ -39,7 +39,13 @@
       "content_parts": [],
       "suspension": null,
       "summary": null,
-      "summary_covers": 0
+      "summary_covers": 0,
+      "prompt_ref": null,
+      "input_tokens": 376,
+      "output_tokens": 50,
+      "reasoning_tokens": null,
+      "cache_hit_tokens": 128,
+      "cache_miss_tokens": 248
     },
     "metadata": {
       "source": "loop",
@@ -54,7 +60,7 @@
     }
   },
   {
-    "schema_version": 4,
+    "schema_version": 5,
     "checkpoint_id": "<id>",
     "thread_id": "snapshot-thread",
     "run_id": "run-snapshot",
@@ -97,7 +103,13 @@
       "content_parts": [],
       "suspension": null,
       "summary": null,
-      "summary_covers": 0
+      "summary_covers": 0,
+      "prompt_ref": null,
+      "input_tokens": 840,
+      "output_tokens": 125,
+      "reasoning_tokens": null,
+      "cache_hit_tokens": 384,
+      "cache_miss_tokens": 456
     },
     "metadata": {
       "source": "loop",

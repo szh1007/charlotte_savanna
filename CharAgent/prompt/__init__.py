@@ -24,6 +24,7 @@
 | 文件 | 管什么 |
 |------|--------|
 | `load.py` | 读盘入口 (读 `{prompt_dir}/{name}.prompt`, 渲染 `${var}`) + 取数函数 |
+| `ref.py` | 身份说明的**引用**: 快照靠它记住「用的是哪一份」, 不必逐帧抄正文 (帧 v5) |
 | `errors.py` | `PromptError` 族 (找不到文件 / 占位符对不上) |
 | `templates/` | 提示词文件本身, 一个 `.prompt` 一段提示词 |
 
@@ -57,14 +58,34 @@ from __future__ import annotations
 from CharAgent.prompt.errors import (
     PromptError,
     PromptNotFoundError,
+    PromptRefMismatchError,
     PromptVariableError,
 )
 from CharAgent.prompt.load import load_prompt, resolve_model_name
+from CharAgent.prompt.ref import (
+    IDENTITY_ROLE,
+    PromptRef,
+    deref_prompt,
+    detach_identity,
+    identity_message,
+    prompt_ref,
+    ref_name,
+    restore_identity,
+)
 
 __all__ = [
+    "IDENTITY_ROLE",
     "PromptError",
     "PromptNotFoundError",
+    "PromptRef",
+    "PromptRefMismatchError",
     "PromptVariableError",
+    "deref_prompt",
+    "detach_identity",
+    "identity_message",
     "load_prompt",
+    "prompt_ref",
+    "ref_name",
     "resolve_model_name",
+    "restore_identity",
 ]

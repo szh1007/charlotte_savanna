@@ -123,7 +123,9 @@ class Base(DeclarativeBase):
     串, 迁移脚本里想改一个约束就得先去库里查它叫什么.
     """
 
-    # 自己不映射任何表 (基类不是实体): 五张表分别由下面的五个子类认领.
+    # 自己不映射任何表 (基类不是实体): 五张业务表分别由下面的五个子类认领.
+    # (`charagent_migrations` 那张审计表**没有实体** —— 它是运维设施, 由 alembic
+    # 的钩子直接写, 没有业务代码去读它.)
     # 少了这一行, SQLAlchemy 会试着给基类也找一张表, 找不到就报错.
     __abstract__ = True
     # 认领 schema.py 那份 metadata (表定义与迁移体系的唯一来源)
@@ -171,7 +173,14 @@ class Run(Base):
             直接返回已有结果, 不重跑 (退款这种动作重跑就是事故).
         model / prompt_version: 这次用的模型与 prompt 版本 —— 版本化 (#40) 的
             基础: 回答质量掉了要能查出「是换了模型还是换了 prompt」.
+            prompt_version 存的是提示词名 (如 "system/v2"), 与快照里那个引用的
+            name 同源; 没配身份说明时为 NULL.
         total_tokens / total_cost: 本 run 累计用量与花费 (#34 成本归因按 task).
+        input_tokens / output_tokens / reasoning_tokens / cache_hit_tokens /
+        cache_miss_tokens: total_tokens 的**归因拆解** (#34). 五列都可空 —— NULL
+            表示上游一次都没上报过这个分量, 与 0 (报过、值就是零) 是两回事. 要算
+            钱就按「缓存命中 / 未命中 / 输出」三档单价分别乘, 别拿 total_tokens 乘
+            一个均价 (那会把三类不同价的 token 混成一个数).
         turn_count: 已执行的 Turn 数 (断点续跑时是累计值).
         error: 失败原因 (结构化 JSONB: code + message), 供审计与降级判断.
         created_at / updated_at / finished_at: 建 / 最后更新 / 结束的时刻;

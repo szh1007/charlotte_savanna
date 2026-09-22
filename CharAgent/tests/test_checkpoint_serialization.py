@@ -45,6 +45,12 @@ from CharAgent.checkpoint.utils.types import (
     CheckpointSource,
     Suspension,
 )
+from CharAgent.prompt.ref import (
+    IDENTITY_ROLE,
+    REF_NAME_KEY,
+    REF_SHA_KEY,
+    prompt_ref,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -491,9 +497,20 @@ def test_v2_migration_moves_non_null_observation_values():
     assert upgraded["metadata"]["content"] == "上一段答的"
     assert upgraded["metadata"]["finish_reason"] == "stop"
     assert upgraded["metadata"]["outcome"] == "finished"
-    # 搬完 state 里那三个字段就没了 (同一份数据只有一个家); 顺流升到 v4 时
-    # 又补上压缩的两个字段 —— 那是 v4 的加法, 与这次搬家无关
-    assert set(upgraded["state"]) == {"messages", "summary", "summary_covers"}
+    # 搬完 state 里那三个字段就没了 (同一份数据只有一个家); 顺流升到当前版本时
+    # 又补上后面几版的加法 (v4 的压缩进度 / v5 的引用与用量分解) —— 那些与这次
+    # 搬家无关, 这里既验证搬家搬干净了, 也钉住「新字段确实补上了」
+    assert set(upgraded["state"]) == {
+        "messages",
+        "summary",
+        "summary_covers",
+        "prompt_ref",
+        "input_tokens",
+        "output_tokens",
+        "reasoning_tokens",
+        "cache_hit_tokens",
+        "cache_miss_tokens",
+    }
 
 
 def test_old_snapshots_report_current_schema_version():
@@ -509,11 +526,12 @@ def test_old_snapshots_report_current_schema_version():
 
 
 def test_v4_progress_keeps_only_resume_inputs():
-    """进度里不再有观察值 (v3), 且带上了压缩的账 (v4).
+    """进度里不再有观察值 (v3), 且带上了压缩的账 (v4) 与用量/引用 (v5).
 
-    v3 起 state 只剩「接着跑要用的」; v4 又加了 summary / summary_covers ——
-    它们是「压到哪一步」的进度 (滚动摘要要接着滚), 不是「当时答成什么样」的
-    观察值, 所以归 state 而不是 metadata.
+    v3 起 state 只剩「接着跑要用的」; v4 又加了 summary / summary_covers, v5 再加
+    prompt_ref (读的人靠它把身份说明补回来) 与五个用量分量 (续跑接着累计) —— 这几
+    样都是**恢复要用的输入**, 不是「当时答成什么样」的观察值, 所以归 state 而不是
+    metadata. 这条用例钉的正是这条分界: 字段可以加, 但加的必须是这一侧的东西.
     """
     checkpoint = DEFAULT_CODEC.decode_record(read_fixture("checkpoint_v4.json"))
 
@@ -526,6 +544,12 @@ def test_v4_progress_keeps_only_resume_inputs():
         "suspension",
         "summary",
         "summary_covers",
+        "prompt_ref",
+        "input_tokens",
+        "output_tokens",
+        "reasoning_tokens",
+        "cache_hit_tokens",
+        "cache_miss_tokens",
     }
 
 
@@ -544,15 +568,19 @@ def test_a_v3_snapshot_reads_back_without_a_summary():
 
 
 def test_serialized_record_matches_fixture():
-    """序列化产物与 fixtures/checkpoint_v4.json 逐字一致 (改格式必须是有意的).
+    """序列化产物与 fixtures/checkpoint_v5.json 逐字一致 (改格式必须是有意的).
 
     这个用例红了怎么办: 先确认格式变更是有意为之, 再重新生成 fixture —— 顺手
     也要判断「老快照还读得回来吗」, 读不回来就得加一个迁移函数并把
-    SCHEMA_VERSION +1 (见 utils/migrations.py). v3 的 fixture 留着不删: 它是
-    「老快照读得回来」那条用例的样本 (见上面两条).
+    SCHEMA_VERSION +1 (见 utils/migrations.py). v1~v4 的 fixture 留着不删: 它们是
+    「老快照读得回来」那些用例的样本 (见上面几条).
+
+    它同时钉住 v5 帧的**目标形状**: 身份说明的正文不在 messages 里 (只剩 prompt_ref
+    那个引用) —— 那是**造帧的人**摘的 (prompt/ref.py 的 detach_identity), 编解码器
+    只负责原样写出来.
     """
-    expected = (FIXTURES / "checkpoint_v4.json").read_text(encoding="utf-8")
-    checkpoint = DEFAULT_CODEC.decode_record(read_fixture("checkpoint_v4.json"))
+    expected = (FIXTURES / "checkpoint_v5.json").read_text(encoding="utf-8")
+    checkpoint = DEFAULT_CODEC.decode_record(read_fixture("checkpoint_v5.json"))
 
     assert DEFAULT_CODEC.dumps(
         DEFAULT_CODEC.encode_record(checkpoint), indent=2
@@ -571,3 +599,114 @@ def test_fixture_suspension_agrees_with_pending_extraction():
     assert pending_tool_calls(checkpoint.state.messages) == (
         checkpoint.state.suspension.pending
     )
+
+
+# ---------------------------------------------------------------------------
+# v5: 身份说明的引用 (写侧剥离) + 用量分解
+# ---------------------------------------------------------------------------
+
+IDENTITY_TEXT = "你是商城客服, 只回答问题, 不编造事实."
+IDENTITY_REF = prompt_ref("system/v2", IDENTITY_TEXT)
+
+
+def test_encoding_leaves_the_identity_inlined_without_a_reference():
+    """没给引用: 正文原样留在帧里 (v4 及更早的帧, 以及没配身份说明的会话)."""
+    messages = [
+        {"role": IDENTITY_ROLE, "content": IDENTITY_TEXT},
+        {"role": "user", "content": "在吗"},
+    ]
+
+    body = DEFAULT_CODEC.encode_body(
+        make_checkpoint(state=make_state(messages=messages))
+    )
+
+    assert body["state"]["messages"] == messages
+    assert body["state"]["prompt_ref"] is None
+
+
+def test_encoding_writes_the_messages_exactly_as_given():
+    """编解码器**不改内容**: 给什么形状就写什么形状.
+
+    剥离身份说明是**造帧的人**的事 (prompt/ref.py 的 detach_identity, 由 loop 调),
+    不在这里 —— 三个后端里内存版根本不编码, 把剥离放进编码器会让「帧里存不存正文」
+    随后端而变. 这条用例钉住这条边界: 连「带着引用却仍有身份说明」这种形状, 编码器
+    也照写不误 (那种帧是调用方自己拼的, 不是它该管的事).
+    """
+    messages = [
+        {"role": IDENTITY_ROLE, "content": IDENTITY_TEXT},
+        {"role": "user", "content": "在吗"},
+    ]
+
+    body = DEFAULT_CODEC.encode_body(
+        make_checkpoint(state=make_state(messages=messages, prompt_ref=IDENTITY_REF))
+    )
+
+    assert body["state"]["messages"] == messages
+    assert body["state"]["prompt_ref"] == IDENTITY_REF
+
+
+def test_a_v4_snapshot_reads_back_with_inline_identity_and_no_breakdown():
+    """老快照 (v4) 读回: 引用为空 (正文内联着), 五个分量也全是「没有」.
+
+    两个默认值说的是两件不同的事, 别读成一句「老帧不知道」:
+    - prompt_ref=None = **这一帧没剥离过**, 正文仍在 messages 那边 —— 老帧仍然完全
+      自描述, 读回来一个字都不用补;
+    - 五个分量为 None = **那时候还没有这几个字段**. 填 0 会把「没有」说成「确实是
+      零」, 而成本归因里这两句话的结论相反.
+    """
+    checkpoint = DEFAULT_CODEC.decode_record(read_fixture("checkpoint_v4.json"))
+
+    assert checkpoint.schema_version == SCHEMA_VERSION  # 读回来已是当前版本
+    assert checkpoint.state.prompt_ref is None
+    assert (
+        checkpoint.state.input_tokens,
+        checkpoint.state.output_tokens,
+        checkpoint.state.reasoning_tokens,
+        checkpoint.state.cache_hit_tokens,
+        checkpoint.state.cache_miss_tokens,
+    ) == (None, None, None, None, None)
+
+
+def test_usage_breakdown_roundtrips_including_the_nulls():
+    """五个分量往返保真 —— 尤其要保住 None (「上游没上报」不能变成 0)."""
+    state = make_state(
+        input_tokens=120,
+        output_tokens=None,
+        reasoning_tokens=None,
+        cache_hit_tokens=100,
+        cache_miss_tokens=20,
+    )
+    codec = CheckpointCodec()
+
+    decoded_state, _ = codec.decode_body(
+        codec.loads(codec.dumps(codec.encode_body(make_checkpoint(state=state)))),
+        schema_version=SCHEMA_VERSION,
+    )
+
+    assert decoded_state.input_tokens == 120
+    assert decoded_state.output_tokens is None
+    assert decoded_state.reasoning_tokens is None
+    assert decoded_state.cache_hit_tokens == 100
+    assert decoded_state.cache_miss_tokens == 20
+
+
+def test_a_prompt_ref_missing_a_key_is_rejected():
+    """引用少一个键 = 读的人找不回正文: 报错, 不用默认值糊过去."""
+    record = read_fixture("checkpoint_v5.json")
+    record["state"]["prompt_ref"] = {REF_NAME_KEY: "system/v2"}  # 少了 sha256
+
+    with pytest.raises(CheckpointSerializationError) as excinfo:
+        DEFAULT_CODEC.decode_record(record)
+
+    assert REF_SHA_KEY in str(excinfo.value)
+
+
+def test_a_prompt_ref_of_the_wrong_type_is_rejected():
+    """引用不是字典 (数据被改坏了): 也报错, 不猜."""
+    record = read_fixture("checkpoint_v5.json")
+    record["state"]["prompt_ref"] = "system/v2"
+
+    with pytest.raises(CheckpointSerializationError) as excinfo:
+        DEFAULT_CODEC.decode_record(record)
+
+    assert "prompt_ref" in str(excinfo.value)

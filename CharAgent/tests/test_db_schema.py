@@ -39,15 +39,21 @@ def test_every_table_is_prefixed():
 
 
 def test_five_entities_are_declared():
-    """五实体齐全 (thread / run / message / tool_call / checkpoint)."""
+    """五实体齐全 (thread / run / message / tool_call / checkpoint) + 一张审计表.
+
+    审计表 (`charagent_migrations`) 不是实体: 没有实体类、没有仓储, 只是运维设施
+    (记「哪条迁移什么时候上的」, 由 alembic/env.py 的钩子写). 它在这份清单里是为了
+    「库里的表 = 这份清单」这条等式成立 —— 漏了它, 迁移与表定义就会被判成不一致.
+    """
     assert set(TABLE_NAMES) == {
         "charagent_threads",
         "charagent_runs",
         "charagent_messages",
         "charagent_tool_calls",
         "charagent_checkpoints",
+        "charagent_migrations",
     }
-    assert len(ALL_TABLES) == 5
+    assert len(ALL_TABLES) == 6
 
 
 def test_every_column_has_a_comment():

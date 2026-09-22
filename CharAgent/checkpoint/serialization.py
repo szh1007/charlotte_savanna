@@ -48,6 +48,7 @@ from CharAgent.checkpoint.utils.errors import (
 from CharAgent.checkpoint.utils.fields import (
     read_float,
     read_int,
+    read_optional_int,
     read_optional_str,
     read_str,
     read_str_list,
@@ -62,6 +63,14 @@ from CharAgent.checkpoint.utils.types import (
     Suspension,
 )
 from CharAgent.model.utils.types import ModelMessage, ModelToolCall
+
+# 身份说明引用的**键名**只有一处定义, 在 prompt/ref.py —— 本文件只是它的一个
+# 消费者 (读帧时按它校验引用形状). 反过来 (引用去认 checkpoint) 不成立, 于是这两
+# 个包之间没有环.
+#
+# 正文的剥离与还原都不在这里: 写侧归造帧的人 (prompt/ref.py 的 detach_identity,
+# 由 loop 调), 读侧归会话层 (restore_identity). 编解码器只管值怎么进出行李箱.
+from CharAgent.prompt.ref import REF_NAME_KEY, REF_SHA_KEY
 
 # 行李牌上的两个键名; 一个字典**恰好**是这两个键时才被当成行李牌
 # (为什么要求「恰好」: 业务数据里也可能正好有个同名字段,
@@ -398,17 +407,28 @@ class CheckpointCodec:
 
         为什么分两层: 整条记录 (encode_record) 要一次编码到底, 中途先编码一次
         主体再跟着整条过第二遍会白走一遍大树; 于是「结构长什么样」单独一个方法.
+
+        本方法**不改内容**: 给什么形状就写什么形状 (身份说明该不该剥离由造帧的人
+        决定, 见 `prompt/ref.py` 的 detach_identity). 编解码器只负责「值怎么进出行
+        李箱」, 不负责决定帧里该有什么 —— 那件事归写帧的一侧.
         """
+        state = checkpoint.state
         return {
             "state": {
-                "messages": checkpoint.state.messages,
-                "turn_count": checkpoint.state.turn_count,
-                "total_tokens": checkpoint.state.total_tokens,
-                "truncation_count": checkpoint.state.truncation_count,
-                "content_parts": checkpoint.state.content_parts,
-                "suspension": self._suspension_payload(checkpoint.state.suspension),
-                "summary": checkpoint.state.summary,
-                "summary_covers": checkpoint.state.summary_covers,
+                "messages": state.messages,
+                "turn_count": state.turn_count,
+                "total_tokens": state.total_tokens,
+                "truncation_count": state.truncation_count,
+                "content_parts": state.content_parts,
+                "suspension": self._suspension_payload(state.suspension),
+                "summary": state.summary,
+                "summary_covers": state.summary_covers,
+                "prompt_ref": state.prompt_ref,
+                "input_tokens": state.input_tokens,
+                "output_tokens": state.output_tokens,
+                "reasoning_tokens": state.reasoning_tokens,
+                "cache_hit_tokens": state.cache_hit_tokens,
+                "cache_miss_tokens": state.cache_miss_tokens,
             },
             "metadata": {
                 "source": checkpoint.metadata.source.value,
@@ -465,7 +485,44 @@ class CheckpointCodec:
             suspension=self._read_suspension(payload.get("suspension")),
             summary=read_optional_str(payload, "summary"),
             summary_covers=read_int(payload, "summary_covers"),
+            prompt_ref=self._read_prompt_ref(payload.get("prompt_ref")),
+            input_tokens=read_optional_int(payload, "input_tokens"),
+            output_tokens=read_optional_int(payload, "output_tokens"),
+            reasoning_tokens=read_optional_int(payload, "reasoning_tokens"),
+            cache_hit_tokens=read_optional_int(payload, "cache_hit_tokens"),
+            cache_miss_tokens=read_optional_int(payload, "cache_miss_tokens"),
         )
+
+    @staticmethod
+    def _read_prompt_ref(payload: Any) -> dict[str, str] | None:
+        """取身份说明的引用 (缺失 / null = 这帧没剥离过, 正文内联在 messages 里).
+
+        要求**恰好**那两个键、值都是非空字符串: 引用是读的人找回正文的唯一凭据,
+        缺一半就找不到 —— 而「找不到」不能用默认值糊过去, 那等于悄悄换一份身份
+        说明来顶替. 多出来的键说明这是别的版本写的引用, 读不懂就报错, 不猜.
+        """
+        if payload is None:
+            return None
+        if not isinstance(payload, dict):
+            raise CheckpointSerializationError(
+                f"快照的 prompt_ref 应当是字典或 null, 实际为 "
+                f"{type(payload).__name__}: {payload!r}"
+            )
+        if set(payload) != {REF_NAME_KEY, REF_SHA_KEY}:
+            raise CheckpointSerializationError(
+                f"快照的 prompt_ref 应当恰好有 {REF_NAME_KEY!r} 与 "
+                f"{REF_SHA_KEY!r} 两个键, 实际为 {sorted(payload)}"
+            )
+        values: dict[str, str] = {}
+        for key in (REF_NAME_KEY, REF_SHA_KEY):
+            value = payload[key]
+            if not isinstance(value, str) or not value:
+                raise CheckpointSerializationError(
+                    f"prompt_ref 的 {key!r} 应当是非空字符串, 实际为 "
+                    f"{type(value).__name__}: {value!r}"
+                )
+            values[key] = value
+        return values
 
     def _build_metadata(self, payload: Any) -> CheckpointMetadata:
         """观察值字典 -> CheckpointMetadata (缺失 / None 全部按默认值填).

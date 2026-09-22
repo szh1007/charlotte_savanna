@@ -848,8 +848,39 @@ async def test_add_terminal_records_a_finished_run_in_one_write(db: PgDatabase):
     assert loaded.is_terminal is True
     assert loaded.finished_at == moment
     assert (loaded.turn_count, loaded.total_tokens) == (3, 128)
-    # 成本那几列留给 L3 (本片只把行建起来)
+    # 调用方没给用量分解与提示词版本: 那几列如实留空 (NULL = 没有, 不是「零」);
+    # 模型名与花费留给 L3 的成本记账
     assert (loaded.model, loaded.prompt_version, loaded.error) == (None, None, None)
+    assert (loaded.input_tokens, loaded.cache_hit_tokens) == (None, None)
+
+
+async def test_add_terminal_writes_the_usage_breakdown(db: PgDatabase) -> None:
+    """真库往返: 用量分解五列与提示词版本都写得进去、读得回来.
+
+    真正要验的是**列本身** (0002 那条迁移建出来的类型与可空性): 单元测试用的是假
+    库, 列不存在它照样绿.
+    """
+    runs = RunsRepository(db)
+    thread_id = await _make_thread(db)
+
+    run = await runs.add_terminal(
+        thread_id=thread_id,
+        status=RunStatus.FINISHED,
+        total_tokens=4441,
+        input_tokens=4120,
+        output_tokens=321,
+        reasoning_tokens=180,
+        cache_hit_tokens=2048,
+        cache_miss_tokens=2072,
+        prompt_version="system/v2",
+    )
+
+    loaded = await runs.get(run.run_id)
+    assert (loaded.input_tokens, loaded.output_tokens) == (4120, 321)
+    assert loaded.reasoning_tokens == 180
+    assert (loaded.cache_hit_tokens, loaded.cache_miss_tokens) == (2048, 2072)
+    assert loaded.prompt_version == "system/v2"
+    assert loaded.input_tokens + loaded.output_tokens == loaded.total_tokens
 
 
 async def test_add_terminal_refuses_a_status_that_is_not_an_ending(db: PgDatabase):

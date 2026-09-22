@@ -1,4 +1,4 @@
-"""prompt 包的错误族: 找不到提示词文件 / 占位符填不上值.
+"""prompt 包的错误族: 找不到提示词文件 / 占位符填不上值 / 引用与正文对不上.
 
 为什么单独一个模块: 与 db / checkpoint / retry 同一条口径 —— 每包一个基类,
 调用方一次 `except PromptError` 就能兜住这一包的全部失败, 不必认识每个子类.
@@ -30,6 +30,34 @@ class PromptNotFoundError(PromptError):
         self.name = name
         self.path = path
         super().__init__(f"提示词文件不存在: {path} (提示词名 {name!r})")
+
+
+class PromptRefMismatchError(PromptError):
+    """身份说明的**引用**与手里那份正文对不上 (引用陈旧 / 拿错了历史).
+
+    触发点只有写帧那一侧 (`ref.detach_identity`): 调用方手上有一个引用, 也有一段
+    历史, 但两者说的不是同一份正文. 这是一种**装配 bug**, 不是数据问题 —— 引用在
+    会话装配时算好之后就不该再变, 而历史若是从别处来的 (另一个会话 / 手拼的),
+    它第 0 条自然不是那条身份说明.
+
+    为什么必须报错而不是挑一个用: 照这个引用把帧存下去, 这段会话从此每一帧都记着
+    一个**错的**身份说明; 而读的人只会看到「名字 + 哈希」, 没有任何线索知道它错了.
+
+    attributes:
+        name: 引用里的提示词名.
+        expected: 引用里记的 sha256 (前 12 位即可定位).
+        actual: 手里那条正文算出来的 sha256.
+    """
+
+    def __init__(self, name: str, expected: str, actual: str) -> None:
+        self.name = name
+        self.expected = expected
+        self.actual = actual
+        super().__init__(
+            f"身份说明的引用与正文对不上 (提示词 {name!r}: 引用记的是 "
+            f"{expected[:12]}, 手里这条算出来是 {actual[:12]}): 引用在装配时算好, "
+            "之后一个字都不该变 —— 检查这段历史是不是从别处拿来的"
+        )
 
 
 class PromptVariableError(PromptError):

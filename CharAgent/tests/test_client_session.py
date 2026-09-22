@@ -37,7 +37,7 @@ from CharAgent.checkpoint import (
 from CharAgent.client.session import DEMO_TOOLS, ChatSession
 from CharAgent.hooks import Decision, HookPoint, HookRegistry
 from CharAgent.model.utils.types import ModelMessage, ModelResponse
-from CharAgent.prompt import load_prompt
+from CharAgent.prompt import PromptError, load_prompt, prompt_ref
 from CharAgent.stream.utils.types import EventType
 from CharAgent.tool import Tool, tool
 
@@ -839,3 +839,133 @@ async def test_only_a_fresh_summary_is_handed_to_the_recorder() -> None:
     await session.ask("第三次提问")  # 压出来的与手上那份一样
 
     assert summaries == [None, "早前聊的是查订单", None]
+
+
+# ---------------------------------------------------------------------------
+# 帧 v5: 身份说明只存引用, 正文由会话按引用补回来
+# ---------------------------------------------------------------------------
+
+
+async def test_frames_store_a_reference_instead_of_the_identity_text(
+    tmp_path: Path,
+) -> None:
+    """落盘的帧里**没有**那几千字正文, 只有一个引用 (名字 + 渲染后正文的哈希)."""
+    (tmp_path / "cs.prompt").write_text("你是客服 A.", encoding="utf-8")
+    saver = InMemoryCheckpointSaver()
+    session = make_session(
+        MockLLM.fixed(text_response("好的")),
+        saver=saver,
+        prompt_name="cs",
+        prompt_dir=tmp_path,
+    )
+
+    await session.ask("在吗")
+
+    frames = await saver.list_history(session.thread_id)
+    state = frames[-1].state
+    assert state.prompt_ref == prompt_ref("cs", "你是客服 A.")
+    roles = [message.get("role") for message in state.messages]
+    assert "system" not in roles, "帧里不该再有那条身份说明"
+    # 会话自己那份历史里当然还在 —— 请求照旧带着它发出去
+    assert session.history[0] == {"role": "system", "content": "你是客服 A."}
+
+
+async def test_a_restarted_session_gets_the_identity_back(tmp_path: Path) -> None:
+    """重启之后: 新会话从帧里读回历史, 身份说明按引用补回来, 模型仍看得到它.
+
+    这一条盯的是「剥离」的另一半 —— 少了它, 重启后的第一次提问就是一次**没有身份**
+    的对话: 不报错, 只是模型答得不像那个人.
+    """
+    (tmp_path / "cs.prompt").write_text("你是客服 A.", encoding="utf-8")
+    saver = InMemoryCheckpointSaver()
+    thread_id = "restart-thread"
+    first = make_session(
+        MockLLM.fixed(text_response("好的")),
+        saver=saver,
+        thread_id=thread_id,
+        prompt_name="cs",
+        prompt_dir=tmp_path,
+    )
+    await first.ask("在吗")
+
+    model = MockLLM.fixed(text_response("还在的"))
+    reborn = make_session(
+        model,
+        saver=saver,
+        thread_id=thread_id,
+        prompt_name="cs",
+        prompt_dir=tmp_path,
+    )
+    await reborn.ask("接着说")
+
+    # 补回来的身份说明 + 上一段的历史, 真的发给了模型
+    sent = requests(model)[0]
+    assert sent[0] == {"role": "system", "content": "你是客服 A."}
+    assert contents(sent)[1:3] == ["在吗", "好的"], "上一轮的问与答都读回来了"
+    # 新落的帧照样只存引用 (这一段历史用的还是同一份提示词)
+    frames = await saver.list_history(thread_id)
+    assert frames[-1].state.prompt_ref == prompt_ref("cs", "你是客服 A.")
+
+
+async def test_resume_restores_the_identity_before_handing_it_to_the_loop(
+    tmp_path: Path,
+) -> None:
+    """`resume()` 那条路同样要补: loop 拿到的历史必须带身份说明.
+
+    不补的话 loop 会当场拒绝 (它有护栏) —— 但会话层本就该在这一步补好, 于是这里
+    断言「补好了, 没抛」.
+    """
+    (tmp_path / "cs.prompt").write_text("你是客服 A.", encoding="utf-8")
+    saver = InMemoryCheckpointSaver()
+    thread_id = "resume-thread"
+    first = make_session(
+        MockLLM.fixed(text_response("好的")),
+        saver=saver,
+        thread_id=thread_id,
+        prompt_name="cs",
+        prompt_dir=tmp_path,
+    )
+    await first.ask("在吗")
+
+    model = MockLLM.fixed(text_response("接着说"))
+    reborn = make_session(
+        model, saver=saver, thread_id=thread_id, prompt_name="cs", prompt_dir=tmp_path
+    )
+    result = await reborn.resume()
+
+    assert result is not None
+    assert requests(model)[0][0] == {"role": "system", "content": "你是客服 A."}
+
+
+async def test_a_missing_prompt_version_stops_the_restart_loudly(
+    tmp_path: Path,
+) -> None:
+    """那段会话用的那版提示词被删了: 报错, 不猜也不退回别的版本.
+
+    「读不到就不静默退回上一版」是 `resolve_prompt_version` 立下的纪律; 这里同一条
+    —— 编不出正文还继续, 等于让这段会话带着别人的身份往下聊.
+    """
+    (tmp_path / "cs.prompt").write_text("你是客服 A.", encoding="utf-8")
+    saver = InMemoryCheckpointSaver()
+    thread_id = "gone-prompt-thread"
+    first = make_session(
+        MockLLM.fixed(text_response("好的")),
+        saver=saver,
+        thread_id=thread_id,
+        prompt_name="cs",
+        prompt_dir=tmp_path,
+    )
+    await first.ask("在吗")
+
+    # 新会话先建起来 (构造期它会读一次提示词), 随后那份提示词没了 (换目录 / 误删)
+    reborn = make_session(
+        MockLLM.fixed(text_response("接着说")),
+        saver=saver,
+        thread_id=thread_id,
+        prompt_name="cs",
+        prompt_dir=tmp_path,
+    )
+    (tmp_path / "cs.prompt").unlink()
+
+    with pytest.raises(PromptError):
+        await reborn.ask("接着说")

@@ -38,7 +38,7 @@ from uuid import uuid4
 from CharAgent.checkpoint.utils.errors import CheckpointConfigError
 from CharAgent.model.utils.types import ModelMessage, ModelToolCall
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 """当前快照格式的版本号 (difficulties #5 向前兼容).
 
 改字段结构的**不兼容**变化就 +1, 并在 utils/migrations.py 写一个「老版本 → 新
@@ -48,8 +48,14 @@ SCHEMA_VERSION = 4
 - v2: state 变成结构化字典 (messages + 计数器 + 正文片段 + 结束原因)
 - v3: 观察值从 state 搬进 metadata (content / finish_reason / outcome),
   并新增 source / turn_tokens / turn_elapsed_ms / tool_names 四个调试字段
-- v4 (当前): 进度多两样「上下文压缩」的账 —— summary (摘要正文) 与
+- v4: 进度多两样「上下文压缩」的账 —— summary (摘要正文) 与
   summary_covers (它压到第几条). 老帧没有摘要, 补 None / 0 = 「那时候还没压过」
+- v5 (当前): 两件事 —— ① **身份说明不再逐帧抄正文**, 改存一个引用 (prompt_ref:
+  名字 + 渲染后正文的 sha256, 见 prompt/ref.py), 正文的唯一定义仍在提示词目录里;
+  ② 累计用量多出五个**归因**字段 (input / output / reasoning / cache_hit /
+  cache_miss), 它们是 total_tokens 的分解, 供成本归因 (#34) 拆解用. 老帧两样都
+  没有: prompt_ref 补 None —— 正文仍在 messages[0] 里, 那正是当时的事实, 不是
+  「补不上」; 五个计数器补 None —— 「上游一次都没上报过」, 与 0 是两回事
 """
 
 # 标识别符 (thread_id / run_id) 的长度上限与禁用字符 (见 check_identifier)
@@ -161,6 +167,23 @@ class CheckpointState:
             (v3 及更早) 缺这两个字段, 补 None / 0 = 「那时候还没压过」.
             注意 messages 存的是**全量账本** (压缩不落地), 摘要只是送模型那份
             视图里的替身.
+        prompt_ref: 身份说明的**引用** (v5 起): `{"name": 提示词名, "sha256":
+            渲染后正文的哈希}`, 见 prompt/ref.py. 非空表示「这一帧的 messages
+            **不含**身份说明那条, 它得由读的人按引用补回来」; None 表示正文就
+            内联在 messages[0] 里 (v4 及更早的帧, 或调用方根本没给引用).
+            为什么可以不存正文: 同一段会话的每一帧抄的都是同一份几千字配置,
+            而正文的唯一定义在盘上按版本留着 (一版一个文件) —— 帧里记「是哪一份」
+            就够了. **读回来时必须还原** (prompt.ref.restore_identity), 否则模型
+            拿到的请求就少了一条身份说明.
+        input_tokens / output_tokens / reasoning_tokens / cache_hit_tokens /
+        cache_miss_tokens: 累计用量的**分解** (v5 起) —— 与 total_tokens 同一个
+            口径的五个分量 (输入 / 输出 / 思维链 / 缓存命中输入 / 缓存未命中输入).
+            total_tokens 是账单原值, 这五个是它的归因拆解 (#34): 「钱花在哪一类
+            token 上」靠它们才答得出来 (缓存命中的单价远低于未命中, 两者混在一个
+            总数里看不出区别). **None 表示上游一次都没上报过这个分量**, 与 0
+            (报过、值就是零) 是两回事 —— 写 0 会让「不适用」看起来像「真的没命中」.
+            续跑时接着累计 (与 total_tokens 同规矩), 否则断点续跑的 run 会出现
+            「总量有值、分解全是 0」这种自相矛盾的行.
 
     注意这里**没有** content / finish_reason / outcome: 那三个是「当时答成什么
     样、为什么停」的观察值, 属 CheckpointMetadata (v3 起从 state 搬过去).
@@ -174,6 +197,12 @@ class CheckpointState:
     suspension: Suspension | None = None
     summary: str | None = None
     summary_covers: int = 0
+    prompt_ref: dict[str, str] | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    reasoning_tokens: int | None = None
+    cache_hit_tokens: int | None = None
+    cache_miss_tokens: int | None = None
 
 
 @dataclass(slots=True)

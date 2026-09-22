@@ -11,8 +11,11 @@
       ├── model:  RetryingChatModel(chat_model_from_env())      <- 重试包在协议层
       │             └ 被包的是 httpx 裸调适配器 (或测试塞的替身)
       ├── tools:  DEMO_TOOLS (演示工具集)
+      ├── prompt: load_prompt(prompt_name, prompt_dir=...)      <- 身份说明 (读一次)
+      │             └ 它的**引用** {名字, sha256} 随快照落盘, 那几千字正文本体
+      │               不必逐帧抄 (帧 v5, 见 prompt/ref.py)
       ├── saver:  checkpoint_saver_from_env() / build_saver()   <- 三后端可切换
-      └── loop:   AgentLoop(model, tools, saver=..., thread_id=..., event_sink=...)
+      └── loop:   AgentLoop(model, tools, saver=..., thread_id=..., prompt_ref=...)
 
 三条得到验证的关系 (P0 验收要的三件事, 都落在这一页):
 1. **带工具的问答跑通** —— `ask()` 走完「模型决策 → 工具执行 → 结果回填 → 最终
@@ -55,8 +58,10 @@ summary_covers 两个字段, 记的是「压到哪一步了」) —— 那是进
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from collections.abc import Awaitable, Sequence
+from dataclasses import replace
 
 from CharAgent.agent import (
     AgentLoop,
@@ -80,7 +85,14 @@ from CharAgent.db.recorder import RunRecorder
 from CharAgent.hooks import HookRegistry
 from CharAgent.model.protocol import ChatModel
 from CharAgent.model.utils.types import ModelMessage
-from CharAgent.prompt import load_prompt, resolve_model_name
+from CharAgent.prompt import (
+    PromptError,
+    identity_message,
+    load_prompt,
+    prompt_ref,
+    resolve_model_name,
+    restore_identity,
+)
 from CharAgent.stream.utils.types import EventSink
 from CharAgent.tool import Tool, ToolExecution
 from CharAgent.tool.tools_demo import (
@@ -90,6 +102,11 @@ from CharAgent.tool.tools_demo import (
     get_current_time,
     query_order_status,
 )
+
+# 同一棵日志树 (与 checkpoint / prompt / db 那几处同一个做法): 会话层只在**收尾
+# 那条路**上记日志 —— 那条路不能上抛, 于是必须留痕 (见 _reclaim_progress)
+logger = logging.getLogger("charagent.client")
+
 
 # CLI 默认开放的工具集 (演示工具集, 业务无关、无外部依赖、确定性输出).
 #
@@ -179,6 +196,29 @@ class ChatSession:
         self._thread_id = thread_id
         # 身份说明里要写它, 所以装配时就定下来 (值必须跟实际跑的模型一致)
         self._model_name = resolve_model_name(model_name)
+        # 对话历史 (wire 消息): 跑完换成 loop 的完整历史; 没跑完则从快照收回
+        # 已完成的工作 (见 _reclaim_progress) —— 两条路都让「上一轮做过什么」
+        # 留在历史里, 模型下一轮就看得到.
+        #
+        # 会话历史的第一条恒为身份说明 (system). 正文按 prompt_name 从 prompt_dir
+        # 取; 两个参数都不给时 = 框架自己的 system.prompt, 与从前完全一致.
+        # model_name 照传: 框架那份模板里有 ${model_name} 占位符, 业务模板若要
+        # 自己写身份说明也用得上; 模板里没这个占位符时多传的值会被忽略.
+        #
+        # 它在**构造期**只读一次盘 (prompt 包刻意不缓存: 一个会话读一次正好, 而
+        # 缓存会带来「改了文件不生效」的调试陷阱); 从快照读回历史时要按引用再读
+        # 一次, 那时还得知道去哪儿取 —— 所以目录留着备用 (名字不用留: 它在引用里).
+        self._prompt_dir = prompt_dir
+        system_prompt = load_prompt(
+            prompt_name,
+            prompt_dir=prompt_dir,
+            model_name=self._model_name,
+        )
+        # 引用 = 「这段会话用的是哪一份身份说明」的凭据 (名字 + 正文哈希). 它进
+        # 每一帧快照, 于是那几千字正文不必逐帧抄一遍 (帧 v5, 见 prompt/ref.py);
+        # 正文本体仍留在下面那条 history[0] 里 —— 请求照旧带着它发出去.
+        self._prompt_ref = prompt_ref(prompt_name, system_prompt)
+        self._history: list[ModelMessage] = [identity_message(system_prompt)]
         # 两个开关原样收下 (会话不解释它们: 一个管「读不读历史」, 一个管「记不记账」)
         self._hydrate = hydrate
         self._recorder = recorder
@@ -199,22 +239,6 @@ class ChatSession:
             # (六个触发点见 HookRegistry; 空注册零开销).
             hooks=hooks,
         )
-        # 对话历史 (wire 消息): 跑完换成 loop 的完整历史; 没跑完则从快照收回
-        # 已完成的工作 (见 _reclaim_progress) —— 两条路都让「上一轮做过什么」
-        # 留在历史里, 模型下一轮就看得到.
-        #
-        # 会话历史的第一条恒为身份说明 (system). 正文按 prompt_name 从 prompt_dir
-        # 取; 两个参数都不给时 = 框架自己的 system.prompt, 与从前完全一致.
-        # model_name 照传: 框架那份模板里有 ${model_name} 占位符, 业务模板若要
-        # 自己写身份说明也用得上; 模板里没这个占位符时多传的值会被忽略.
-        system_prompt = load_prompt(
-            prompt_name,
-            prompt_dir=prompt_dir,
-            model_name=self._model_name,
-        )
-        self._history: list[ModelMessage] = [
-            {"role": "system", "content": system_prompt}
-        ]
         # 上下文压缩的进度 (摘要 + 它压到第几条): 与 history 一样是**会话状态** ——
         # 每段 run 结束时从结果里收下, 下一段连同历史一起递回去. 不收的话, 每次
         # 提问都是一个全新的压缩进度, 于是同一段旧历史会被反复重压 (内容不会错,
@@ -243,6 +267,16 @@ class ChatSession:
         启动横幅与身份说明都从这一个值取 —— 两处各读一次 env 迟早会不一致.
         """
         return self._model_name
+
+    @property
+    def prompt_ref(self) -> dict[str, str] | None:
+        """当前这段历史用的身份说明的引用 (名字 + 正文哈希); None 表示没有.
+
+        它恒与 `history[0]` 相符 —— 历史被换成快照里那段时, 引用跟着一起换 (见
+        `_hydrate_once` / `_reclaim_progress` / `_restore` 三处). 要回答「这段会话
+        到底用的哪一版提示词」就查它.
+        """
+        return self._prompt_ref
 
     @property
     def tool_names(self) -> tuple[str, ...]:
@@ -324,6 +358,9 @@ class ChatSession:
             result = await self._run(
                 self._loop.run(
                     self._history,
+                    # 身份说明的引用**逐次给**: 历史可能是刚从快照读回来的那一段,
+                    # 它用的也许是另一版提示词 (引用跟着历史一起换, 见 _hydrate_once)
+                    prompt_ref=self._prompt_ref,
                     summary=self._summary,
                     summary_covers=self._summary_covers,
                     # 接着上一段的快照链往下写 (水合之后第一帧就挂在那条链上)
@@ -357,12 +394,16 @@ class ChatSession:
 
         Raises:
             CheckpointError: 读取快照失败.
+            PromptNotFoundError: 这帧的身份说明不在盘上了 (那段会话用的那版提示词
+                被删了) —— 编不出正文就不猜, 见 prompt/ref.py 的 deref_prompt.
             asyncio.CancelledError: 续跑期间又被 Ctrl-C 打断 (同样可再续).
         """
         checkpoint = await self._saver.load_latest(self._thread_id)
         if checkpoint is None:
             return None
-        result = await self._run(self._loop.resume(checkpoint))
+        # 身份说明被剥离过的帧 (v5) 先补回来再交给 loop —— 补它要读盘, 而 loop 不碰
+        # 磁盘; 不补的话 loop 会当场拦下 (见 AgentLoop.resume 的护栏)
+        result = await self._run(self._loop.resume(self._restore(checkpoint)))
         return result
 
     async def frame_count(self) -> int | None:
@@ -452,6 +493,11 @@ class ChatSession:
         不该拦住用户这一句问话. 这种情形下不必我们自己喊 —— 这一轮落快照时同一个
         后端会再报一次, 那次是往上抛的 (存不下存档不吞).
 
+        身份说明取不回来 (那段会话用的那版提示词被删了) 是另一回事: 那种情况**上抛**
+        —— 编不出正文还继续, 等于让这段会话带着别人的身份往下聊 (与 `load.py` 的
+        「读不到就不静默退回上一版」同一条纪律). 快照读不到丢的是「旧账」, 提示词
+        读不到丢的是「它是谁」, 两者不该同一条处理.
+
         Note:
             失败之后**不设「已试过」标记**: 历史还是只有一条, 于是下一次提问会再
             试一次 —— 抖动过去之后自己就好了, 成功之后这条门自然关上.
@@ -464,7 +510,17 @@ class ChatSession:
             return
         if checkpoint is None:
             return
-        self._history = _seal_pending_calls(list(checkpoint.state.messages))
+        # 身份说明被剥离过的帧 (v5) 先补回来: 交给 loop 的历史必须是**完整请求形状**
+        # 那一条. 引用跟着一起换 —— 它必须与补回来的那条正文相符, 否则下一次落盘时
+        # sha 校验会拦下 (见 prompt/ref.py 的 restore_identity)
+        self._history, self._prompt_ref = restore_identity(
+            list(checkpoint.state.messages),
+            checkpoint.state.prompt_ref,
+            prompt_dir=self._prompt_dir,
+            model_name=self._model_name,
+            context=f"thread={self._thread_id}",
+        )
+        self._history = _seal_pending_calls(self._history)
         # 压缩进度也一起收 (与 `_reclaim_progress` 同一个口径): 不收的话, 重启后
         # 那一句问话会把同一段旧历史重压一遍 —— 内容不会错, 但白花一次摘要调用
         self._summary = checkpoint.state.summary
@@ -521,7 +577,9 @@ class ChatSession:
         下一句问话会把同一段旧历史重压一遍.
 
         读快照失败不上抛: 收不回来是小事, 把真正的失败原因 (模型错 / 存储错)
-        盖掉是大事.
+        盖掉是大事. **身份说明读不回来按同一条规矩办** (记一条 warning 就返回) ——
+        而 `_hydrate_once` 那条路恰好相反 (取不回来就上抛): 差别在「收尾」与「继续」,
+        后者要接着用这个身份聊下去, 前者只是少收一次进度.
         """
         try:
             checkpoint = await self._saver.load_latest(self._thread_id)
@@ -529,13 +587,71 @@ class ChatSession:
             return
         if checkpoint is None:
             return
-        messages = list(checkpoint.state.messages)
+        try:
+            messages, ref = restore_identity(
+                list(checkpoint.state.messages),
+                checkpoint.state.prompt_ref,
+                prompt_dir=self._prompt_dir,
+                model_name=self._model_name,
+                context=f"thread={self._thread_id}",
+            )
+        except PromptError as exc:
+            # 身份说明取不回来 (文件被删 / 目录改了): 本方法的职责是「把已完成的工作
+            # 收回来」, 而不是拦住一次已经在收尾的失败 —— 与上面那条「读快照失败不
+            # 上抛」同一条取舍: 收不回来是小事, 把真正的失败原因 (模型错 / 存储错)
+            # 盖掉是大事.
+            #
+            # 与 _hydrate_once 的区别正在这里: 那条路是**用户要接着聊**, 身份说明取
+            # 不回来就该当场报错; 这条路是**收尾**, 少收一次进度不该改变失败的性质.
+            logger.warning(
+                "会话 %s 收回进度时读不到身份说明, 本次不回收: %s",
+                self._thread_id,
+                exc,
+            )
+            return
         if len(messages) > len(self._history):
             self._history = messages
+            # 引用与历史同源 (restore_identity 的契约): 换了历史就得换引用, 否则
+            # 下一次落盘时 sha 校验发现两者对不上而报错
+            self._prompt_ref = ref
             self._summary = checkpoint.state.summary
             self._summary_covers = checkpoint.state.summary_covers
         # 下一帧挂到最新那一帧下面: 哪怕这次没收历史, 最新那一帧也是当前进度所在
         self._parent_id = checkpoint.checkpoint_id
+
+    def _restore(self, checkpoint: Checkpoint) -> Checkpoint:
+        """把快照里被剥离的身份说明补回来 (交给 loop 之前的准备工作).
+
+        为什么要经会话层这一道: 补它要**读盘** (按引用去提示词目录取正文), 而 loop
+        与存储层都不碰磁盘 —— 会话是唯一同时握着「提示词在哪儿」与「快照里那段历史」
+        的地方 (与 `_hydrate_once` / `_reclaim_progress` 同一个道理, 区别只在这条路
+        是交给 loop.resume 而不是收进内存).
+
+        返回的是**新对象** (dataclasses.replace) 而不是就地改: 传进来的快照可能还被
+        调用方拿着 (排查 / 断言), 动它会让「读到的那帧」与「实际用的那帧」悄悄不同.
+
+        Note:
+            没被剥离过的帧 (v4 及更早, 或调用方没给引用) 原样返回 —— 那种帧的正文就
+            在 messages[0] 里, 不需要补.
+
+        Raises:
+            PromptNotFoundError: 那段会话用的那版提示词不在盘上了 (见 deref_prompt).
+        """
+        if checkpoint.state.prompt_ref is None:
+            return checkpoint
+        messages, ref = restore_identity(
+            list(checkpoint.state.messages),
+            checkpoint.state.prompt_ref,
+            prompt_dir=self._prompt_dir,
+            model_name=self._model_name,
+            context=f"thread={self._thread_id}",
+        )
+        # 引用一起换: 它必须与补回来的正文相符, 否则 loop 之后落的每一帧都会被 sha
+        # 校验拦下 (帧里那个老引用说的是当初那份正文, 而正文可能已经不同了)
+        return replace(
+            checkpoint,
+            state=replace(checkpoint.state, messages=messages, prompt_ref=ref),
+        )
 
 
 # 水合时给「欠着结果的工具调用」补的回填文本.

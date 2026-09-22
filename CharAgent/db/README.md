@@ -82,6 +82,28 @@ pytest -m pg_db
 与「在新库上跑同一条迁移」建出不同的表，版本号从此失去意义。要改结构就加**新的**
 迁移。
 
+**既有迁移**：`0001_core`（五实体建表）、`0002_run_usage_breakdown`（runs 加用量
+分解五列）、`0003_migration_audit_log`（建迁移审计表 + 补记前两条）。后两条为
+**手写**：`0002` 是「加几列」这种一眼看得清的动作，手写比 autogenerate 少一轮核对；
+而那道纪律的真正保险不是 `--autogenerate` 这个动作，是 `pytest -m pg_db` 里那条
+「迁移结果与表定义逐列零差异」的比对 —— 手写脚本一样要过它。
+
+**迁移历史看哪里**（`alembic_version` 只有一行，那是设计不是丢数据）：
+`charagent_alembic_version` 记的是**当前 head** —— alembic 靠它判断还该跑哪些迁移，
+多行会被当成**分叉的 head**（后续 `upgrade` 直接报错），所以它天生不是应用日志。
+「哪条迁移什么时候上的」查 `charagent_migrations`：
+
+```sql
+select revision, name, applied_at, applied_by
+from charagent_migrations order by applied_at nulls first;
+```
+
+那张表由 `alembic/env.py` 的 `on_version_apply` 钩子写（**与迁移同一个事务**：要么
+都成要么都不成），应用插一行、回退删一行。建表之前的那两条（0001 / 0002）由 0003
+补记，`applied_at` / `applied_by` 留 NULL —— 它们在**任何**库里都发生在建表之前，
+无从考证，编一个时间比留空更糟（见 0003 的 docstring）。要看完整的迁移链（含未来
+还没跑的）仍然用命令：`alembic -c CharAgent/alembic.ini history`。
+
 **版本表叫 `charagent_alembic_version`**（不是 alembic 默认的 `alembic_version`）：
 与五张业务表同一条理由 —— 各子项目共用同一个 PG 库，通名的版本表会撞，而撞了的
 后果是「别人的迁移读到我们的版本号，于是该建的表被跳过」。名字在 `alembic/env.py`
@@ -94,7 +116,7 @@ pytest -m pg_db
 
 | 阶段 | 加什么 | 怎么加 |
 |------|--------|--------|
-| **P1** | 幂等表 `idempotency_keys`（**仅此一张**） | 在 `schema.py` 里按同样风格加 `Table`（`charagent_` 前缀），自增 `0002_<slug>` 迁移 |
+| **P1** | 幂等表 `idempotency_keys`（**仅此一张**） | 在 `schema.py` 里按同样风格加 `Table`（`charagent_` 前缀），自增下一号迁移（`000N_<slug>`，现有 head 见 `alembic/versions/`，或查 `charagent_migrations`） |
 
 > **2026-09-18**：原列在本行的 `tickets` / `escalations` / `approvals` / `audit_logs` **四张业务表已移出框架**（分层剥离）—— 它们归业务侧独立维护，走自己的迁移链与版本表，与本文的追加流程无关。框架侧只留 `idempotency_keys`（请求幂等属运行时能力）。
 | **P2** | `events` 表（事件溯源 #12）、`memories` 表、`cost_entries` 表 | 自增下一号迁移 |

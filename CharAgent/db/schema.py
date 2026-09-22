@@ -1,7 +1,10 @@
-"""五张表的 DDL 定义 (**唯一定义处**): 表长什么样只在这一个文件里说.
+"""表定义的**唯一定义处**: 表长什么样只在这一个文件里说.
 
-一句话理解: 这个文件是**数据库的户型图**. 五张表 (会话 / 运行 / 消息 / 工具
-调用 / 快照) 各有哪些列、哪列是主键、谁引用谁、建哪些索引, 全部写在这里.
+一句话理解: 这个文件是**数据库的户型图**. 五张业务表 (会话 / 运行 / 消息 / 工具
+调用 / 快照) 各有哪些列、哪列是主键、谁引用谁、建哪些索引, 全部写在这里; 另有一张
+**迁移审计表** `charagent_migrations` (记「哪条迁移什么时候上的」, 由
+`alembic/env.py` 的钩子写, 见 `alembic/versions/0003_migration_audit_log.py`) ——
+它是运维设施, 不是数据模型里的实体: 没有实体类、没有仓储.
 别处 (仓储 / 快照存储 / alembic 迁移 / 测试) 都从这里取, 不许自己再抄一份 ——
 抄两份的结果一定是「改了一份忘了另一份」, 然后代码与库悄悄对不上.
 
@@ -77,7 +80,7 @@ metadata = MetaData(naming_convention=NAMING_CONVENTION)
 # 因为某个状态改名就要改表结构.
 _ENUM_LEN = 32
 
-# --- 五张表 -------------------------------------------------------------------
+# --- 五张业务表 ---------------------------------------------------------------
 
 threads = Table(
     "charagent_threads",
@@ -174,6 +177,41 @@ runs = Table(
         nullable=False,
         server_default="0",
         comment="本 run 累计 token (#34 成本归因按 task)",
+    ),
+    # 用量分解 (#34): total_tokens 是账单原值, 下面五列是它的归因拆解 —— 「钱花在
+    # 哪一类 token 上」靠它们才答得出来 (deepseek-flash 的缓存命中输入单价只有未
+    # 命中的 1/50, 两者混在一个总数里看不出区别). 五列**都可空**: NULL 说的是
+    # 「上游一次都没上报过这个分量」(如流式未带 usage), 与 0 (报过、值就是零) 是
+    # 两回事 —— 成本归因里这两个的结论相反.
+    Column(
+        "input_tokens",
+        BigInteger,
+        nullable=True,
+        comment="本 run 累计输入 token (prompt_tokens); NULL = 上游一次都没上报",
+    ),
+    Column(
+        "output_tokens",
+        BigInteger,
+        nullable=True,
+        comment="本 run 累计输出 token (completion_tokens, 含思维链)",
+    ),
+    Column(
+        "reasoning_tokens",
+        BigInteger,
+        nullable=True,
+        comment="本 run 累计思维链 token (completion_tokens_details.reasoning_tokens)",
+    ),
+    Column(
+        "cache_hit_tokens",
+        BigInteger,
+        nullable=True,
+        comment="本 run 累计命中上下文缓存的输入 token (单价远低于未命中)",
+    ),
+    Column(
+        "cache_miss_tokens",
+        BigInteger,
+        nullable=True,
+        comment="本 run 累计未命中缓存的输入 token",
     ),
     Column(
         "total_cost",
@@ -440,10 +478,53 @@ checkpoints = Table(
     comment="会话快照: 一帧一行, 全历史都在 (agent/loop.py 每 Turn 末尾落一帧)",
 )
 
-# 五张表按依赖顺序排好, 建表时直接按这个顺序跑 (被引用的先建, 否则外键指向
+# --- 迁移审计表 (运维设施, 不是数据模型里的实体) ------------------------------
+migrations = Table(
+    "charagent_migrations",
+    metadata,
+    Column(
+        "revision",
+        String(64),
+        primary_key=True,
+        comment="迁移编号 (alembic 的 revision, 如 0002_run_usage_breakdown)",
+    ),
+    Column(
+        "name",
+        String(200),
+        nullable=False,
+        comment="迁移标题 (脚本 docstring 的首行, 与 alembic history 印的是同一句)",
+    ),
+    Column(
+        "applied_at",
+        DateTime(timezone=True),
+        nullable=True,
+        comment="应用时刻 (带时区); NULL = 补记 (见表注释)",
+    ),
+    Column(
+        "applied_by",
+        String(128),
+        nullable=True,
+        comment="执行者 (user@host); NULL = 补记 (见表注释)",
+    ),
+    # 表级注释 (会变成库里的 COMMENT ON TABLE)
+    comment="迁移审计: 每应用一条迁移追加一行. 0003 之前的两条 (0001 / 0002) "
+    "由 0003 补记, 时刻与执行者留 NULL —— 它们在**任何**库里都发生在建表之前, "
+    "无从考证, 编一个时间比留空更糟",
+)
+
+# 五张业务表按依赖顺序排好, 建表时直接按这个顺序跑 (被引用的先建, 否则外键指向
 # 一个还不存在的表). SQLAlchemy 的 metadata.sorted_tables 也能算出来, 这里显式
 # 列一份是为了让「谁依赖谁」在文件里一眼可见.
-ALL_TABLES: tuple[Table, ...] = (threads, runs, messages, tool_calls, checkpoints)
+#
+# 迁移审计表排在最后: 它不引用任何表, 也没人引用它.
+ALL_TABLES: tuple[Table, ...] = (
+    threads,
+    runs,
+    messages,
+    tool_calls,
+    checkpoints,
+    migrations,
+)
 
 # 表名清单 (测试与运维脚本按名字找表用; 顺序与 ALL_TABLES 一致)
 TABLE_NAMES: tuple[str, ...] = tuple(table.name for table in ALL_TABLES)

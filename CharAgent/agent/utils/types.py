@@ -106,6 +106,15 @@ class LoopState:
         summary_covers: 摘要覆盖到 history 的第几条 (前 summary_covers 条已被
             摘要取代). 第 0 条是 system, 永不裁也不进摘要. 压缩时靠它算出「哪些
             是这次新裁掉的」(滚动摘要要把上一条摘要连新段一起重压).
+        prompt_ref: 本 run 用的身份说明的**引用** (名字 + 渲染后正文的 sha256,
+            见 prompt/ref.py). loop **不解释它**: 它只是被原样搬进快照的进度
+            (落盘时按它把 messages[0] 的正文换成引用, 见 serialization.py).
+            None 表示这一段的 history 第 0 条就是身份说明正文本身, 照原样存.
+        input_tokens / output_tokens / reasoning_tokens / cache_hit_tokens /
+        cache_miss_tokens: 全 run 累计用量的五个**分量** (#34 成本归因), 与
+            total_tokens 同口径 (含摘要那几次调用). **None = 上游一次都没上报过
+            这个分量**, 与 0 (报过、值就是零) 是两回事 —— 累加规则见
+            `messages.accumulate_usage`.
     """
 
     history: list[ModelMessage]
@@ -122,6 +131,12 @@ class LoopState:
     last_checkpoint_id: str | None = None
     summary: str | None = None
     summary_covers: int = 0
+    prompt_ref: dict[str, str] | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    reasoning_tokens: int | None = None
+    cache_hit_tokens: int | None = None
+    cache_miss_tokens: int | None = None
 
 
 @dataclass(slots=True)
@@ -168,6 +183,14 @@ class LoopResult:
         last_checkpoint_id: 这一段 run 落的**最后一帧**快照编号; None 表示没配
             saver (或这一帧都没落成). 接着问下一句时把它当 `run(parent_id=...)`
             递回去, 同一段会话的快照就连成一条链而不是每次提问多一条新根.
+        prompt_ref: 这一段 run 用的身份说明的引用 (名字 + 正文 sha256); None 表示
+            装配时没给 (那这一段就没有可以据以还原的身份说明). 记录层拿它填
+            `runs.prompt_version` —— 「这一轮是哪一版提示词答的」, 复盘与 A/B 都
+            靠它 (#40), 而帧里那五个归因分量说不清这件事.
+        input_tokens / output_tokens / reasoning_tokens / cache_hit_tokens /
+        cache_miss_tokens: 全 run 累计用量的五个**分量** (#34 成本归因); 与
+            total_tokens 同口径、同一次累加里算出来的. **None = 上游一次都没
+            上报过这个分量** (与 0 是两回事, 见 messages.accumulate_usage).
     """
 
     messages: list[ModelMessage]
@@ -182,3 +205,9 @@ class LoopResult:
     summary: str | None = None
     summary_covers: int = 0
     last_checkpoint_id: str | None = None
+    prompt_ref: dict[str, str] | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    reasoning_tokens: int | None = None
+    cache_hit_tokens: int | None = None
+    cache_miss_tokens: int | None = None

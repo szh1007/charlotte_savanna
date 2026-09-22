@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from CharAgent.agent.utils.types import LoopState
 from CharAgent.model.utils.types import ModelMessage, ModelResponse, Usage
 from CharAgent.tool import ToolExecution
 
@@ -34,6 +35,40 @@ def count_tokens(usage: Usage | None) -> int:
     if usage.total_tokens is not None:
         return usage.total_tokens
     return (usage.input_tokens or 0) + (usage.output_tokens or 0)
+
+
+def accumulate_usage(state: LoopState, usage: Usage | None) -> None:
+    """把一次响应的用量**分解**累加进 state 的五个归因计数器 (原地改).
+
+    与 `count_tokens` 的分工: 那个给的是**一个总数** (guard 的 token 预算按它判),
+    这里给的是同一个数的**分量** (成本归因按它们拆). 两份数据取自同一个 `usage`,
+    所以口径必然一致 —— 分开是为了让「钱花在哪一类 token 上」答得出来: 缓存命中
+    的单价远低于未命中 (官方 flash 口径下差 50 倍), 混在一个总数里看不出区别.
+
+    三条规则都是为了**不让 None 与 0 混**:
+    - `usage` 为 None: 这次没拿到用量, **什么都不加** —— 不是加 0. 加 0 会让
+      「没拿到」随着轮数慢慢变成「确实是零」;
+    - 某个分量为 None (上游这次没上报它): 只跳过**这一个**, 其余照加;
+    - 分量有值: 累加 (计数器原为 None 时以 0 起算, 于是「报过至少一次」就有了值).
+
+    结果因此是**已上报部分的和**: 一次运行里若有轮次没上报, 它比真实用量小. 这是
+    有意的取舍 —— 宁可给一个说得清来路的偏小值, 也不给一个假装完整的数 (「这次
+    没拿到」与「这次就是零」在成本归因里是相反的结论).
+    """
+    if usage is None:
+        return
+    state.input_tokens = _plus(state.input_tokens, usage.input_tokens)
+    state.output_tokens = _plus(state.output_tokens, usage.output_tokens)
+    state.reasoning_tokens = _plus(state.reasoning_tokens, usage.reasoning_tokens)
+    state.cache_hit_tokens = _plus(state.cache_hit_tokens, usage.cache_hit_tokens)
+    state.cache_miss_tokens = _plus(state.cache_miss_tokens, usage.cache_miss_tokens)
+
+
+def _plus(current: int | None, increment: int | None) -> int | None:
+    """累计值 (None = 一次都没上报过) + 这次的增量 (None = 这次没上报)."""
+    if increment is None:
+        return current
+    return (current or 0) + increment
 
 
 def assistant_wire(response: ModelResponse) -> ModelMessage:

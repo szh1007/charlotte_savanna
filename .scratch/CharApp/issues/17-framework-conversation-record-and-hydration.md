@@ -262,3 +262,42 @@
 | ⑦ 查库 | 会话行 / 运行行 / 消息行三张表都对：`tenant_id` 网页端是 `minimall`、命令行是 `minimall-cli`；可见行 `hidden=False`、工具与中间轮 `hidden=True`；消息行带 `run_id` |
 
 **这一跑还抓出一个真问题（已修）**：业务的两处用例真的会跑 `cli.main`（`test_cli.py` 全体 + `test_server.py::test_both_entries_go_through_the_same_assembly`），而 CLI 从本片起会记账、用的又是真 `PgDatabase` —— 于是每跑一次业务测试就往**真库**写一轮 MockLLM 的假对话（本机 PG 里攒到 300 行，`minimall:3:cli` / `minimall:7:cli`）。这既违反业务测试「离线可跑、不碰外部服务」的约定（`CharApp/tests/conftest.py` 开头那条），也会让「记录表里有什么」这种排查完全失真。修法照这个文件已有的做法（它本来就 monkeypatch `build_saver_for` 换掉真存储）：CLI 多一个 `build_database()` 注入缝，两处 fixture 各把它换成 `FakeRecordDatabase`；残留行已按 `thread_id` 删干净，再跑两套测试记录表里不再多一行。
+
+### 七、追加改动：身份说明不入帧正文 + 用量归因入库（2026-09-23，用户要求，直接处理不走 issue）
+
+起因是用户的一个观察：**一次只问几句的会话里，固定开销占了 token 的绝大部分**（「只问一句你好就 5k+，一个简单工具查询就 10k+」）。据此提了两条：系统提示词不入库快照、每次模型计算的 token 减掉系统提示词那部分。
+
+**第二条在核对代码与官方价目后否掉了**（完整取舍见 `../adr/0005-identity-prompt-is-a-reference-and-cost-is-attribution-only.md`）：
+
+- `total_tokens` 是**账单原值**，也是 `LoopGuard` 那 6 万 token 硬刹车的输入 —— 从它里面减掉一部分，刹车会放行比它以为的更多真实花费（偏向不安全一侧）；
+- deepseek-flash 的缓存命中输入单价是未命中的 1/50、输出价的 1/200：**第 2 轮起**提示词占 token 数的 ~47%，占**钱**的 ~2%。按 token 减，报表会把「省了 2%」写成「省了 47%」；
+- 同一份「每轮重发的固定前缀」里还有 **17 个工具 schema**（用本仓的估算器实测 ~3600 token，比提示词那 ~2600 还大）—— 只减提示词、不减工具 schema，这条规则是任意划的。
+
+改成：**原始分量入库，口径在查询侧派生**。第一条照做，但理由不是省空间（提示词只占快照总存储的 ~1/N，真正在重复的是「每帧存全量账本」）—— 而是**把「帧里装什么」说清楚**：帧里装对话，配置按引用记。
+
+| 处 | 改动 |
+|---|---|
+| `CharAgent/prompt/ref.py`（新） | 引用机制：`prompt_ref`（名字 + 渲染后正文 sha256）/ `detach_identity`（写侧摘正文，校验 sha）/ `deref_prompt`（读侧取回，不符则 warning + 用当前那份）/ `restore_identity`（补回历史并把引用重算成与实际相符的那份） |
+| `CharAgent/agent/loop.py` | `run(prompt_ref=...)` **逐次传入**（会话的历史可能被换成另一段，用的也许是另一版提示词）；落帧时摘正文；`resume()` 加护栏 —— 帧声明了引用而历史里没有身份说明 → `LoopConfigError`（漏补是**无声**的行为改变） |
+| `CharAgent/client/session.py` | 装配时算引用；`_hydrate_once` / `_reclaim_progress` / `_restore` 三处补回正文并换引用；`_reclaim_progress` 那条收尾路径取不回正文时只记 warning（不盖掉真正的失败原因） |
+| `CharAgent/checkpoint/` | 帧 **v5**：`CheckpointState` 加 `prompt_ref` + 五个用量分量；`SCHEMA_VERSION=5` + v4→v5 迁移（**只补默认值**，老帧的正文照旧内联 —— 仍然完全自描述，零损失） |
+| `CharAgent/db/` + `alembic/versions/0002_run_usage_breakdown.py` | `runs` 加 5 列（`input` / `output` / `reasoning` / `cache_hit` / `cache_miss`，**全部可空**：NULL = 上游一次都没上报，与 0 是两回事）；顺手填上一直空着的 `prompt_version`；`RunFacts` 把一次运行的账打成一个包（分量必须同进同出） |
+| `CharAgent/tests/` | 新增 `test_prompt_ref.py`；帧格式（`checkpoint_v5.json` + 快照重生成）、会话水合与续跑、recorder 与真库往返各有用例 |
+
+**两处实现中途被自己的用例纠正**（记下来，它们是这次真正学到的）：
+
+1. **剥离最初写在编解码器里** → 内存版后端根本不编码，于是「帧里存不存正文」随后端而变（Postgres/Redis 摘，内存版不摘），违反 `checkpoint/memory.py` 那条「换存储不换行为」。改成由**造帧的人**（loop）摘。
+2. **`prompt_ref` 最初是构造参数** → 会话的历史被换成快照那段时引用会跟着变，而 loop 手里那份是冻结的 → 一次水合之后就会抛 `PromptRefMismatchError`。改成**逐次 `run()` 传入**。
+
+**验证到哪一步**：`pytest` 全绿（CharAgent 1042 例 + CharApp 191 例，含 `pg` / `pg_db` / `redis` 标记的用例；`test_db_alembic.py` 的 `compare_metadata` 零差异，确认手写的 0002 与 `db/schema.py` 逐列一致）。**真机验收没做** —— 它该跟 issue 18（CharApp 接线 Postgres 快照 + 压缩阈值）一起跑，那时才有「v5 帧 + Postgres 后端 + 压缩」三样同时在场的链路。
+
+**留给 issue 18 的一条**：压缩压掉的旧历史本来可能是**缓存命中价**（近乎免费），压掉它反而要按未命中价重付一次新前缀 —— 压缩的理由是窗口与首字延迟，**不是省钱**。阈值该按这个定，别按「省钱」定（见 ADR-0005 末节）。
+
+**追加的第二件（2026-09-23 稍后，同一次会话）**：用户看到 `charagent_alembic_version` 里只有一行（`0002_...`），希望「每次迁移的名称都列出来，0001 也要补上」。解释后确认要库里能查，于是：
+
+- 新增 `0003_migration_audit_log`：建审计表 `charagent_migrations`（revision / 标题 / 应用时刻 / 执行者）+ **补记** 0001 / 0002（它们在**任何**库里都发生在建表之前，时刻与执行者留 NULL —— 编一个时间比留空更糟）；
+- `alembic/env.py` 挂 `on_version_apply` 钩子：每跑完一条迁移记一行（**与迁移同一个事务**），回退则删掉那一行（只插不删的话，一次 downgrade 之后表就在撒谎）；对「审计表还不存在」「`alembic stamp`」两种情况安静跳过；
+- 为什么不能直接往版本表里补行：`charagent_alembic_version` 是 alembic 的**当前 head** 标记，多行会被当成**分叉的 head**，后续 `upgrade` 直接报错。所以「应用日志」只能在另一张表里。
+- 真机（本机 `charlotte` 库）已应用：三条齐了（0001 / 0002 补记留空，0003 带真实时刻与执行者 `Lenovo@CHARLOTTE`），`alembic check` 零差异。
+
+顺带纠正用户的一处误判（有据可查，不是迁移出错）：他以为新增的 5 列没有 comment —— 真库上 `pg_description` 逐列查得到（18/18 列都有注释），是查看器的表结构缓存。**回滚重迁没有做**：`comment` 是迁移脚本里写死的参数，重跑结果一模一样，而真跑一次 downgrade 会把那 5 列 drop 掉，是纯风险无收益。

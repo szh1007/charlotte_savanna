@@ -30,6 +30,28 @@ def read_int(payload: dict[str, Any], key: str, *, default: int = 0) -> int:
     return value
 
 
+def read_optional_int(payload: dict[str, Any], key: str) -> int | None:
+    """取一个可空整数 (缺失或 null 都给 None; 类型不对报错).
+
+    与 `read_int` 的区别只在「字段缺失」这一种情况上的语义, 而那个区别是有意的:
+
+    - `read_int` 缺失 -> 0. 用于**计数器** (轮数 / 截断次数): 那时 0 就是当时的
+      事实 —— 老版本没有这个字段, 而它确实是零.
+    - `read_optional_int` 缺失 -> None. 用于**上游上报的用量**: None 说的是
+      「这一次没拿到这个值」(上游没给 usage / 没这个分量), 与 0 (给过、值就是
+      零) 是两回事. 成本归因里这两者结论相反 (「真的没命中缓存」vs「这次没拿到
+      缓存数据」), 混起来会让报表撒谎.
+    """
+    value = payload.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise CheckpointSerializationError(
+            f"字段 {key!r} 应当是整数或 null, 实际为 {type(value).__name__}: {value!r}"
+        )
+    return value
+
+
 def read_float(payload: dict[str, Any], key: str, *, default: float = 0.0) -> float:
     """取一个浮点量 (毫秒这类; 整数也接受 —— JSON 里 5 与 5.0 常常不分)."""
     value = payload.get(key, default)

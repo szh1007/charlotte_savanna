@@ -181,12 +181,26 @@ from CharAgent.model import (
 )
 
 # --- prompt: 提示词集中存放与按名加载 (difficulties #69) -------------------
+#
+# 除了「按名字取正文」, 还有身份说明的**引用**那一组 (prompt/ref.py): 它让快照
+# 不必逐帧抄那几千字正文 (帧 v5), 而由会话层按引用补回来. 那组函数是框架内部
+# 两级 (client/session.py 与 checkpoint/serialization.py) 在用的接口, 按本门面
+# 的规矩 (子包 __all__ 里的名字都在这里出现) 一并上浮.
 from CharAgent.prompt import (
+    IDENTITY_ROLE,
     PromptError,
     PromptNotFoundError,
+    PromptRef,
+    PromptRefMismatchError,
     PromptVariableError,
+    deref_prompt,
+    detach_identity,
+    identity_message,
     load_prompt,
+    prompt_ref,
+    ref_name,
     resolve_model_name,
+    restore_identity,
 )
 
 # --- retry: 重试退避 + 幂等键 ----------------------------------------------
@@ -238,6 +252,7 @@ __all__ = [
     "ALL_TABLES",
     "BACKEND_NAMES",
     "DEFAULT_CODEC",
+    "IDENTITY_ROLE",
     "RUN_STATUS_FOR_OUTCOME",
     "SCHEMA_VERSION",
     "TABLE_NAMES",
@@ -314,6 +329,8 @@ __all__ = [
     "PostgresCheckpointSaver",
     "PromptError",
     "PromptNotFoundError",
+    "PromptRef",
+    "PromptRefMismatchError",
     "PromptVariableError",
     "RedisCheckpointSaver",
     "RetryAttempt",
@@ -363,11 +380,14 @@ __all__ = [
     "checkpoints",
     "conversation_turns",
     "count_visible",
+    "deref_prompt",
+    "detach_identity",
     "echo_enabled",
     "ensure_transition",
     "execute_tool",
     "format_history",
     "has_visible_answer",
+    "identity_message",
     "is_retryable",
     "load_prompt",
     "messages",
@@ -377,8 +397,11 @@ __all__ = [
     "openai_chat_model_from_env",
     "pending_tool_calls",
     "postgres_dsn",
+    "prompt_ref",
     "recorded_transcript",
+    "ref_name",
     "resolve_model_name",
+    "restore_identity",
     "retry_async",
     "run_status_for_outcome",
     "runs",

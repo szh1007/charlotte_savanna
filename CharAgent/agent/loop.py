@@ -99,6 +99,12 @@
 - 落盘失败**向上抛** (与 event_sink 同一条规矩): 存不下快照是严重问题, 悄悄吞掉
   会变成「以为存上了」的事故. 注意与 hook 的「插件异常被隔离留痕」相反 —— hook
   是可选的旁挂插件, 快照是核心可靠性
+- 每帧还记「用量分解」(输入 / 输出 / 思维链 / 缓存命中 / 未命中): 与 total_tokens
+  同口径的五个分量, 供成本归因 (#34) 用 —— 缓存命中的单价远低于未命中, 混在一个
+  总数里看不出钱花在哪一类上
+- 身份说明**不在帧里存正文** (帧 v5): 构造时给 `prompt_ref` (名字 + 正文哈希),
+  落盘那一刻那几千字被换成这个引用, 读回来由会话层按引用补. loop 只是原样搬运它,
+  既不解释也不按它读盘 (那两件事归 prompt 包与会话层)
 
 大白话版 (给主循环加的两根线):
 - 直播线 (event_sink): 主循环每干一件事就「喊一嗓子」—— 我要去查什么、查
@@ -132,6 +138,7 @@ from CharAgent.agent.utils.events import (
 from CharAgent.agent.utils.messages import (
     TRUNCATION_CONDENSE_TEXT,
     TRUNCATION_CONTINUE_TEXT,
+    accumulate_usage,
     assistant_wire,
     count_tokens,
     tool_wire,
@@ -163,9 +170,33 @@ from CharAgent.model.utils.types import (
     ModelToolCall,
     ToolSpec,
 )
+
+# 两样都来自 prompt.ref: 一个常量 (身份说明的 role 名 —— resume 用它判「这帧的身份
+# 说明补回来了没」) 与一个纯函数 (detach_identity —— 落帧时把那条正文摘掉换成引用).
+# 借这两样**不等于**本层认识提示词: 本层依然不按引用读盘 (摘是纯函数, 还原才要读盘,
+# 而读盘归会话层).
+from CharAgent.prompt.ref import IDENTITY_ROLE, detach_identity
 from CharAgent.stream.bus import EventBus
 from CharAgent.stream.utils.types import EventSink, EventType
 from CharAgent.tool import Tool, ToolExecution, execute_tool
+
+
+def _checked_prompt_ref(
+    prompt_ref: dict[str, str] | None,
+) -> dict[str, str] | None:
+    """只查「是不是个字典」, 然后原样返回.
+
+    引用里该有哪两个键是**帧格式**的事, 归编解码器管 (serialization.py 的
+    `_read_prompt_ref`) 与摘正文那一侧 (prompt.ref 的 detach_identity) —— 本层不
+    越界去校验内容. 拦这一道只是为了让「传了个字符串进来」这类装配错误在**这一次
+    运行开始时**就炸, 而不是等第一帧落盘时才从一个看不懂的报错里发现.
+    """
+    if prompt_ref is not None and not isinstance(prompt_ref, dict):
+        raise LoopConfigError(
+            "prompt_ref 应当是身份说明的引用字典 (见 prompt/ref.py), "
+            f"实际: {type(prompt_ref).__name__}: {prompt_ref!r}"
+        )
+    return prompt_ref
 
 
 class AgentLoop:
@@ -367,6 +398,7 @@ class AgentLoop:
         messages: Sequence[ModelMessage],
         *,
         run_id: str | None = None,
+        prompt_ref: dict[str, str] | None = None,
         summary: str | None = None,
         summary_covers: int = 0,
         parent_id: str | None = None,
@@ -394,6 +426,14 @@ class AgentLoop:
                 返回值续接); 内部拷贝, 调用方列表不被修改.
             run_id: 本次运行的编号 (存快照时写进每帧记录). None 表示生成一个
                 (uuid4 hex) —— 同一个 loop 反复 run 时每次都是新编号.
+            prompt_ref: 身份说明的引用 (名字 + 正文 sha256, 见 prompt/ref.py) ——
+                `messages` 的第 0 条就是它描述的那条消息时传进来, 于是落盘时那几千
+                字正文被摘掉换成这个引用 (帧 v5), 读回来由会话层按引用补. **loop
+                不解释它**: 既不按它读盘, 也不校验它与正文是否相符 (摘的时候校验,
+                见 detach_identity). None (默认) 表示这段历史的身份说明内联在第 0
+                条里, 照原样存 —— 行为与 v4 时逐字一样.
+                **它是逐次运行的参数而不是构造参数**: 会话的历史可能被换成另一段
+                (从快照读回来的), 那一段用的可能是**另一版**提示词.
             summary: 上一段运行留下的上下文摘要 (配了 compactor 才有意义);
                 None 表示没有 (从头开始压). 续接上一段对话时把它一起递进来,
                 于是**滚动摘要**跨 run 成立 —— 不然每段运行都会把同一段旧历史
@@ -422,6 +462,7 @@ class AgentLoop:
             messages,
             resume=None,
             run_id=run_id,
+            prompt_ref=_checked_prompt_ref(prompt_ref),
             summary=summary,
             summary_covers=summary_covers,
             parent_id=parent_id,
@@ -452,8 +493,10 @@ class AgentLoop:
             含续跑前轮数的累计值 (预算判定要的正是累计口径).
 
         Raises:
-            LoopConfigError: 本 loop 没配 saver / thread_id, 或这帧快照属于别的
-                会话 (拿错存档会把两段对话搅在一起, 必须拦下).
+            LoopConfigError: 本 loop 没配 saver / thread_id; 这帧快照属于别的会话
+                (拿错存档会把两段对话搅在一起, 必须拦下); 或者这帧的身份说明被剥离
+                了 (帧 v5, 见 prompt/ref.py) 而调用方没有按引用把正文补回来 ——
+                补它要读盘, 那是会话层的事 (prompt.ref.restore_identity).
         """
         if self._saver is None or self._thread_id is None:
             raise LoopConfigError(
@@ -467,10 +510,27 @@ class AgentLoop:
                 f"{self._thread_id!r}: 恢复别的会话的存档会把两段对话搅在一起"
             )
 
+        if checkpoint.state.prompt_ref is not None and (
+            not checkpoint.state.messages
+            or checkpoint.state.messages[0].get("role") != IDENTITY_ROLE
+        ):
+            # 身份说明被剥离了 (v5 起) 而没补回来: 直接跑下去模型就少了那一条, 那是
+            # **无声**的行为改变 (不报错, 只是答得不像那个人). 补它要读盘, 所以该由
+            # 拿着 prompt_dir 的会话层来补 (prompt.ref.restore_identity) —— 本层只
+            # 拒绝一帧自己无法忠实还原的输入
+            raise LoopConfigError(
+                "这帧快照的身份说明被剥离了 "
+                f"(prompt_ref={checkpoint.state.prompt_ref!r}), 而 messages 的第 0 "
+                "条不是身份说明: 先按引用把正文补回来再 resume"
+                " (prompt.ref.restore_identity, 会话层负责这一步)"
+            )
+
         return await self._run(
             checkpoint.state.messages,
             resume=checkpoint,
             run_id=run_id or checkpoint.run_id,
+            # 引用从帧里来 (上面那条护栏保证了它已经被还原进历史), 不由调用方给
+            prompt_ref=None,
         )
 
     async def _run(
@@ -479,6 +539,7 @@ class AgentLoop:
         *,
         resume: Checkpoint | None,
         run_id: str | None,
+        prompt_ref: dict[str, str] | None = None,
         summary: str | None = None,
         summary_covers: int = 0,
         parent_id: str | None = None,
@@ -491,6 +552,10 @@ class AgentLoop:
             # 从快照续跑则由 _seed_from_checkpoint 覆盖掉
             summary=summary,
             summary_covers=summary_covers,
+            # 身份说明的引用: 本段历史的第 0 条就是它描述的消息 (调用方保证).
+            # resume 那条路传 None, 由 _seed_from_checkpoint 覆盖成**快照那段
+            # 历史**自己的引用 —— 从快照接着跑时, 用的当然不是这一次调用方给的
+            prompt_ref=prompt_ref,
             # 第一帧挂在哪一帧下面 (None = 新根); resume 那条路会由
             # _seed_from_checkpoint 覆盖成快照自己的编号
             last_checkpoint_id=parent_id,
@@ -566,6 +631,14 @@ class AgentLoop:
             # 最后一帧的编号: 下一轮提问拿它当 parent_id, 同一段会话的快照
             # 就串成一条链 (没配 saver 时恒为 None)
             last_checkpoint_id=state.last_checkpoint_id,
+            # 用量分解随结果交回调用方 (记录层拿它们填 runs 的归因列);
+            # 身份说明的引用也一起 —— 记录层用它填 runs.prompt_version
+            prompt_ref=state.prompt_ref,
+            input_tokens=state.input_tokens,
+            output_tokens=state.output_tokens,
+            reasoning_tokens=state.reasoning_tokens,
+            cache_hit_tokens=state.cache_hit_tokens,
+            cache_miss_tokens=state.cache_miss_tokens,
         )
         # 终局事件从 LoopResult 派生 (同一份 outcome / content / tokens /
         # elapsed_ms): 事件流与返回值不会各说各话, 且终局事件恰好一个
@@ -619,7 +692,10 @@ class AgentLoop:
             reasoning_effort=self._reasoning_effort,
         )
         state.turn_count = turn
+        # 用量记两笔: 总数给 guard 的预算 (它是账单原值, 也是唯一能跟供应商对账的
+        # 那个数), 分解给成本归因 (#34). 两笔取自同一个 usage, 所以必然对得上
         state.total_tokens += count_tokens(response.usage)
+        accumulate_usage(state, response.usage)
         state.finish_reason = response.finish_reason
         if self._counter is not None:
             # 权威值回灌 (锚): 上游说的 input_tokens 才是真的, 它记的是**账本**
@@ -665,7 +741,10 @@ class AgentLoop:
         )
         state.summary = compiled.summary
         state.summary_covers = compiled.summary_covers
+        # 摘要那一次调用同样记两笔 (与 _decide 同一个口径): 总数与分解必须同进
+        # 同出, 否则「总量 - 各分量之和」会凭空多出摘要这一笔
         state.total_tokens += count_tokens(compiled.summarizer_usage)
+        accumulate_usage(state, compiled.summarizer_usage)
         if compiled.compacted:
             await bus.emit(
                 EventType.CONTEXT_COMPACTED,
@@ -874,10 +953,20 @@ class AgentLoop:
         """
         state.turn_count = checkpoint.state.turn_count
         state.total_tokens = checkpoint.state.total_tokens
+        # 用量分解跟着总量一起接续, 否则断点续跑后的记录会出现「总量有值、分解为
+        # 空」这种自相矛盾的行 (两者本来是同一个数的两种记法)
+        state.input_tokens = checkpoint.state.input_tokens
+        state.output_tokens = checkpoint.state.output_tokens
+        state.reasoning_tokens = checkpoint.state.reasoning_tokens
+        state.cache_hit_tokens = checkpoint.state.cache_hit_tokens
+        state.cache_miss_tokens = checkpoint.state.cache_miss_tokens
         state.truncation_count = checkpoint.state.truncation_count
         state.content_parts = list(checkpoint.state.content_parts)
         state.summary = checkpoint.state.summary
         state.summary_covers = checkpoint.state.summary_covers
+        # 身份说明的引用也接续: 这一段历史用的是哪份提示词, 新落的帧就记哪一份
+        # (调用方已经按它把正文补进历史了; 补之前那句护栏见 resume)
+        state.prompt_ref = checkpoint.state.prompt_ref
         # 新落的帧接着这帧长: 从老快照恢复时, 新帧就挂在老快照下面 (新分支)
         state.last_checkpoint_id = checkpoint.checkpoint_id
 
@@ -953,7 +1042,7 @@ class AgentLoop:
 
         存两块东西 (v3 起分开):
         - 进度 (CheckpointState): 接着跑需要什么 —— 完整历史 + 计数器 + 正文片段
-          + 压缩进度 (摘要与它压到第几条, v4 起)
+          + 压缩进度 (摘要与它压到第几条, v4 起) + 身份说明的引用与用量分解 (v5 起)
         - 观察值 (CheckpointMetadata): 这一步发生了什么 —— 来源 / 本轮 token 与
           耗时 / 调了哪些工具 / 答了什么 / 为什么停, 给回放调试看
 
@@ -968,13 +1057,23 @@ class AgentLoop:
             run_id=state.run_id,
             turn_number=state.turn_count,
             state=CheckpointState(
-                messages=list(state.history),
+                # 身份说明的正文在这里被摘掉 (只剩 prompt_ref 那个引用). 摘的动作
+                # 放在**造帧**这一步而不是序列化里: 三个后端里内存版不编码, 放编码
+                # 器里会让「帧里存不存正文」随后端而变 (见 detach_identity)
+                messages=detach_identity(list(state.history), state.prompt_ref),
                 turn_count=state.turn_count,
                 total_tokens=state.total_tokens,
                 truncation_count=state.truncation_count,
                 content_parts=list(state.content_parts),
                 summary=state.summary,
                 summary_covers=state.summary_covers,
+                # 身份说明的引用: 编解码器见到它就把 messages[0] 的正文换掉 (帧 v5)
+                prompt_ref=state.prompt_ref,
+                input_tokens=state.input_tokens,
+                output_tokens=state.output_tokens,
+                reasoning_tokens=state.reasoning_tokens,
+                cache_hit_tokens=state.cache_hit_tokens,
+                cache_miss_tokens=state.cache_miss_tokens,
             ),
             metadata=metadata,
             parent_id=state.last_checkpoint_id,

@@ -74,8 +74,18 @@ def result(
     messages: list | None = None,
     turn_count: int = 1,
     total_tokens: int = 42,
+    input_tokens: int | None = None,
+    output_tokens: int | None = None,
+    reasoning_tokens: int | None = None,
+    cache_hit_tokens: int | None = None,
+    cache_miss_tokens: int | None = None,
+    prompt_ref: dict[str, str] | None = None,
 ) -> LoopResult:
-    """造一个 LoopResult (记录的全部内容都由它派生)."""
+    """造一个 LoopResult (记录的全部内容都由它派生).
+
+    用量分解与引用默认不给 (None): 多数用例只关心「消息与状态写对了吗」, 那两样在
+    各自的用例里显式给 —— 它们的 None 与 0 意思不同, 不该由这个工厂替用例决定.
+    """
     return LoopResult(
         messages=TWO_LINES if messages is None else messages,
         content=content,
@@ -84,6 +94,12 @@ def result(
         turns=[],
         turn_count=turn_count,
         total_tokens=total_tokens,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        reasoning_tokens=reasoning_tokens,
+        cache_hit_tokens=cache_hit_tokens,
+        cache_miss_tokens=cache_miss_tokens,
+        prompt_ref=prompt_ref,
     )
 
 
@@ -123,6 +139,52 @@ async def test_a_normal_turn_writes_a_thread_a_run_and_two_messages() -> None:
     assert messages[0]["created_at"] < messages[1]["created_at"]
     # 这几行属于刚建的那次执行 (审计按它把「哪一次问答产生的」对上)
     assert {row["run_id"] for row in messages} == {run["run_id"]}
+
+
+async def test_the_run_row_carries_the_usage_breakdown_and_the_prompt_version() -> None:
+    """运行行带上用量分解 (#34 归因) 与提示词版本 (#40 版本化).
+
+    这两样都是「顺手带上」的: 分解就在 `LoopResult` 上, 提示词版本就在它带着的引用
+    里 —— 而在此之前 `prompt_version` 那一列从建表起就一直是 NULL.
+    """
+    database = FakeRecordDatabase()
+
+    written = await recorder(database).record(
+        thread_id=THREAD_ID,
+        result=result(
+            total_tokens=4441,
+            input_tokens=4120,
+            output_tokens=321,
+            reasoning_tokens=180,
+            cache_hit_tokens=2048,
+            cache_miss_tokens=2072,
+            prompt_ref={"name": "system/v2", "sha256": "0" * 64},
+        ),
+    )
+
+    assert written is True
+    [run] = database.rows_of("charagent_runs")
+    assert run["prompt_version"] == "system/v2", "取的是引用里的名字, 不是哈希"
+    assert (run["input_tokens"], run["output_tokens"]) == (4120, 321)
+    assert run["reasoning_tokens"] == 180
+    assert (run["cache_hit_tokens"], run["cache_miss_tokens"]) == (2048, 2072)
+    # 分解与总量对得上 —— 它们是同一个 usage 的两种记法
+    assert run["input_tokens"] + run["output_tokens"] == run["total_tokens"]
+    assert run["cache_hit_tokens"] + run["cache_miss_tokens"] == run["input_tokens"]
+
+
+async def test_an_unfinished_turn_leaves_the_usage_breakdown_empty() -> None:
+    """没跑完那一轮: 分解留空 —— NULL 是「没有」, 而 0 是「确实是零」."""
+    database = FakeRecordDatabase()
+
+    await recorder(database).record_unfinished(
+        thread_id=THREAD_ID, question="订单到哪了", status=RunStatus.CANCELLED
+    )
+
+    [run] = database.rows_of("charagent_runs")
+    assert run["input_tokens"] is None
+    assert run["cache_miss_tokens"] is None
+    assert run["prompt_version"] is None
 
 
 async def test_the_hidden_work_of_a_tool_turn_is_recorded_as_hidden() -> None:

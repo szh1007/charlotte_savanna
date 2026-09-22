@@ -20,7 +20,9 @@ agent 答完, 这正好是「一句话的账」. 每轮写一次会让一次带�
 
 | 落库的 | 内容 |
 |--------|------|
-| `runs` 一行 | 这次运行的结局 (`RUN_STATUS_FOR_OUTCOME` 映射的终态) 与轮次 / 用量 |
+| `runs` 一行 | 这次运行的结局 (`RUN_STATUS_FOR_OUTCOME` 映射的终态) 与轮次 / |
+| | 用量 —— 用量含**分解** (输入 / 输出 / 思维链 / 缓存命中 / 未命中) 与 |
+| | 提示词版本, 见 `RunFacts` |
 | 可见消息 | 用户那句提问 + 最终答复正文 (**取 `LoopResult.content`**,
 | | 理由见 conversation.py 那条硬规矩) |
 | 隐藏消息 | 工具回填、带工具调用的中间轮、续写指令、**新压出来的摘要** |
@@ -64,6 +66,7 @@ agent 答完, 这正好是「一句话的账」. 每轮写一次会让一次带�
 from __future__ import annotations
 
 import logging
+from dataclasses import asdict, dataclass
 from typing import Protocol
 
 from CharAgent.agent.utils.types import LoopResult
@@ -79,6 +82,7 @@ from CharAgent.db.repositories.messages import MessagesRepository
 from CharAgent.db.repositories.runs import RunsRepository
 from CharAgent.db.repositories.threads import ThreadsRepository
 from CharAgent.db.state import run_status_for_outcome
+from CharAgent.prompt import ref_name
 
 # 同一棵日志树 (与 checkpoint 那几处同一个做法): 记不上账是**要有人知道**的事,
 # 但它的严重程度不到「打断用户这一句」—— 所以是 warning 而不是异常
@@ -95,6 +99,53 @@ UNFINISHED_TURN_TEXT = "这一轮没答完"
 # 会话标题的长度上限: 标题是给前端左侧列表一行的, 太长会被截成省略号, 不如我们
 # 自己截 —— 完整那句话就是这段会话的第一条消息, 点进去看得到
 TITLE_LIMIT = 60
+
+
+@dataclass(frozen=True, slots=True)
+class RunFacts:
+    """运行行里除了「状态与时刻」之外的那些**账目**字段.
+
+    为什么打成一个包而不是九个参数: 它们同源 (全从 `LoopResult` 派生) 而且必须
+    **同进同出** —— 总量有值而分解为空, 那一行自己就说不通 (读的人会以为这次运行
+    一个缓存命中的 token 都没有, 而真相是「没记」). 打成包之后, `_write` 的签名
+    不必随着列的增加而变长, 而「一次运行的账」长什么样只有一个定义.
+
+    空实例 (`RunFacts()`) 是**没跑完那一轮**的账: 取消 / 失败时确实什么都没有 ——
+    这时五个分解字段都是 None (「没有」, 不是「零」).
+
+    attributes:
+        turn_count / total_tokens: 跑了几轮 / 累计用量 (账单原值).
+        input_tokens / output_tokens / reasoning_tokens / cache_hit_tokens /
+        cache_miss_tokens: 累计用量的**归因拆解** (#34). None = 上游一次都没上报
+            过这个分量 (见 agent/utils/messages.py 的 accumulate_usage).
+        prompt_version: 这一轮用的提示词名 (如 "system/v2"); None 表示装配时没给
+            身份说明的引用 (框架不知道它是什么).
+    """
+
+    turn_count: int = 0
+    total_tokens: int = 0
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    reasoning_tokens: int | None = None
+    cache_hit_tokens: int | None = None
+    cache_miss_tokens: int | None = None
+    prompt_version: str | None = None
+
+    @classmethod
+    def of(cls, result: LoopResult) -> RunFacts:
+        """一次跑完的运行 → 它的账 (字段全部原样取自结果, 不在这里换算)."""
+        return cls(
+            turn_count=result.turn_count,
+            total_tokens=result.total_tokens,
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            reasoning_tokens=result.reasoning_tokens,
+            cache_hit_tokens=result.cache_hit_tokens,
+            cache_miss_tokens=result.cache_miss_tokens,
+            # 提示词名取自已记录的引用: 内联 (老帧) 或没配时是 None —— 那种情况
+            # 运行记录里如实留空, 不编一个名字出来
+            prompt_version=ref_name(result.prompt_ref),
+        )
 
 
 class RunRecorder(Protocol):
@@ -217,8 +268,7 @@ class ConversationRecorder:
             thread_id=thread_id,
             lines=lines,
             status=run_status_for_outcome(result.outcome),
-            turn_count=result.turn_count,
-            total_tokens=result.total_tokens,
+            facts=RunFacts.of(result),
         )
 
     async def record_unfinished(
@@ -234,12 +284,9 @@ class ConversationRecorder:
                 hidden=False,
             ),
         ]
+        # 没跑完那一轮没有账可记: 空实例 = 五个分解字段都是 None (「没有」, 不是「零」)
         return await self._write(
-            thread_id=thread_id,
-            lines=lines,
-            status=status,
-            turn_count=0,
-            total_tokens=0,
+            thread_id=thread_id, lines=lines, status=status, facts=RunFacts()
         )
 
     async def _write(
@@ -248,8 +295,7 @@ class ConversationRecorder:
         thread_id: str,
         lines: list[TranscriptLine],
         status: RunStatus,
-        turn_count: int,
-        total_tokens: int,
+        facts: RunFacts,
     ) -> bool:
         """四步写入 (会话行 / 运行行 / 消息行 / 活动时刻), 失败降级不抛.
 
@@ -266,10 +312,7 @@ class ConversationRecorder:
         try:
             await self._ensure_thread(thread_id, lines)
             run = await self._runs.add_terminal(
-                thread_id=thread_id,
-                status=status,
-                turn_count=turn_count,
-                total_tokens=total_tokens,
+                thread_id=thread_id, status=status, **asdict(facts)
             )
             # 消息行带上 run_id: 它们确实属于刚建的那次执行 —— 审计时「这几条是
             # 哪一次问答产生的」靠它 (列注释: NULL 表示不是 agent 跑出来的)
@@ -359,6 +402,7 @@ __all__ = [
     "TITLE_LIMIT",
     "UNFINISHED_TURN_TEXT",
     "ConversationRecorder",
+    "RunFacts",
     "RunRecorder",
     "title_for",
 ]
