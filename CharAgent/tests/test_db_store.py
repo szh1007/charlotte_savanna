@@ -18,23 +18,22 @@ public 一个字节都不动.
 
 from __future__ import annotations
 
-import asyncio
-from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
-import pytest_asyncio
-from conftest import sqlalchemy_test_url
-from sqlalchemy import create_engine, pool, text
+from conftest import TEST_SCHEMA
+from sqlalchemy import text
 
 from CharAgent.db import (
+    DataConfigError,
     DataStoreError,
     MessagesRepository,
     PgDatabase,
     RunsRepository,
     RunStatus,
     ThreadsRepository,
+    ThreadStatus,
     ToolCallsRepository,
     ToolCallStatus,
     build_tool_call,
@@ -44,62 +43,6 @@ from CharAgent.db import (
 from CharAgent.db.schema import TABLE_NAMES
 
 pytestmark = pytest.mark.pg_db
-
-TEST_SCHEMA = "charagent_test"
-
-
-@pytest.fixture(scope="session")
-def _admin_url():
-    """连到默认 schema 的 URL (用来建 / 删测试 schema)."""
-    return sqlalchemy_test_url()
-
-
-def _run_sql(url, *statements: str) -> None:
-    """同步跑几条 SQL (放进线程里执行, 别卡事件循环).
-
-    用 NullPool: 每次跑完就关连接 —— 建/删 schema 是低频动作, 留着池子没意义.
-    """
-    engine = create_engine(url, poolclass=pool.NullPool)
-    try:
-        with engine.begin() as connection:
-            for statement in statements:
-                connection.execute(text(statement))
-    finally:
-        engine.dispose()
-
-
-@pytest_asyncio.fixture
-async def db(_admin_url) -> AsyncIterator[PgDatabase]:
-    """指向测试 schema 的 PgDatabase, 用完把测试 schema 整个删掉.
-
-    **整个 schema 删掉**是最干净的收尾: 表、索引、外键全没了, 不留任何痕迹,
-    也不担心漏删哪张.
-    """
-    await asyncio.to_thread(
-        _run_sql,
-        _admin_url,
-        f"DROP SCHEMA IF EXISTS {TEST_SCHEMA} CASCADE",
-        f"CREATE SCHEMA {TEST_SCHEMA}",
-    )
-    # 引擎要 SQLAlchemy 的 URL (带 +psycopg 驱动名), 而 `_run_sql` 那条路走
-    # psycopg 需要的文本形式 —— 两种形式各用各的, 别混
-    engine = create_engine(
-        sqlalchemy_test_url(),
-        # 每条连接都先切到测试 schema —— 仓储与迁移写的 SQL 里都不带 schema 前缀,
-        # 于是它们自然落在隔离区里
-        connect_args={"options": f"-csearch_path={TEST_SCHEMA}"},
-    )
-    database = PgDatabase(engine=engine)
-    # 先把表建好: 这是每个用例的起跑线 (刚删过 schema, 表一定是没有的).
-    # 查表建表这件事本身另有用例专门验 (test_create_tables_is_idempotent).
-    await database.create_tables()
-    try:
-        yield database
-    finally:
-        await asyncio.to_thread(engine.dispose)
-        await asyncio.to_thread(
-            _run_sql, _admin_url, f"DROP SCHEMA IF EXISTS {TEST_SCHEMA} CASCADE"
-        )
 
 
 async def _make_thread(db: PgDatabase) -> str:
@@ -758,3 +701,161 @@ async def test_engine_configuration_is_lazy_and_reusable(db: PgDatabase):
     for _ in range(5):
         async with db.connect() as session:
             assert session.execute(text("select 1")).scalar() == 1
+
+
+# ---------------------------------------------------------------------------
+# 记录那条线的读写口 (ticket 17): 会话列表 / 活动时刻 / 已跑完的运行行
+# ---------------------------------------------------------------------------
+
+
+async def _thread_with_a_visible_message(
+    db: PgDatabase,
+    *,
+    tenant_id: str,
+    user_id: str,
+    moment: datetime | None = None,
+    status: ThreadStatus = ThreadStatus.ACTIVE,
+):
+    """建一个「聊过一句」的会话 (会话列表要的正是这种)."""
+    threads = ThreadsRepository(db)
+    thread = await threads.add(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        title="聊过",
+        status=status,
+        created_at=moment,
+    )
+    await MessagesRepository(db).add_lines(
+        thread_id=thread.thread_id,
+        lines=visible_transcript([{"role": "user", "content": "订单到哪了"}]),
+    )
+    return thread
+
+
+async def test_list_active_skips_shells_internals_and_closed_threads(db: PgDatabase):
+    """会话列表只要「还在聊且聊过话」的: 空壳 / 只剩内部件 / 已归档都不进.
+
+    前端左侧那一栏点进去必须有点东西 —— 空壳会话 (刚点了「新建」) 与只有工具
+    回填的会话点开都是空白, 列在那里只是噪音.
+    """
+    threads = ThreadsRepository(db)
+    messages = MessagesRepository(db)
+    tenant = f"tenant-{uuid4().hex}"
+    kept = await _thread_with_a_visible_message(db, tenant_id=tenant, user_id="u-1")
+    await threads.add(tenant_id=tenant, user_id="u-1", title="空壳")
+    internals_only = await threads.add(
+        tenant_id=tenant, user_id="u-1", title="只有内部件"
+    )
+    await messages.add_lines(
+        thread_id=internals_only.thread_id,
+        lines=visible_transcript(
+            [
+                {"role": "tool", "content": "工具回填"},
+                {
+                    "role": "assistant",
+                    "content": "过程中",
+                    "tool_calls": [
+                        {"id": "call_0", "type": "function", "function": {"name": "q"}}
+                    ],
+                },
+            ]
+        ),
+    )
+    closed = await _thread_with_a_visible_message(
+        db, tenant_id=tenant, user_id="u-1", status=ThreadStatus.CLOSED
+    )
+
+    listed = await threads.list_active_with_messages(tenant)
+
+    assert [thread.thread_id for thread in listed] == [kept.thread_id]
+    assert closed.thread_id not in {thread.thread_id for thread in listed}
+
+
+async def test_list_active_is_scoped_to_tenant_and_owner(db: PgDatabase):
+    """会话列表按 (租户, 属主) 过滤 —— 换一个租户或换一个人都看不别人的.
+
+    这是 #32 那条多租户隔离在**记录**这条线上的落点: 用例把别人的数据也插进去,
+    再断言它不出现 (少这一条, 前端列表就漏了别人的会话).
+    """
+    threads = ThreadsRepository(db)
+    tenant = f"tenant-{uuid4().hex}"
+    mine = await _thread_with_a_visible_message(db, tenant_id=tenant, user_id="u-1")
+    await _thread_with_a_visible_message(db, tenant_id=tenant, user_id="u-2")
+    await _thread_with_a_visible_message(
+        db, tenant_id=f"tenant-{uuid4().hex}", user_id="u-1"
+    )
+
+    only_mine = await threads.list_active_with_messages(tenant, user_id="u-1")
+    whole_tenant = await threads.list_active_with_messages(tenant)
+
+    assert [thread.thread_id for thread in only_mine] == [mine.thread_id]
+    assert len(whole_tenant) == 2, "不给 user_id 就是这个租户下所有人的"
+
+
+async def test_list_active_is_ordered_by_last_activity(db: PgDatabase):
+    """按最后活动时刻倒序 —— 刚聊过的排最前 (会话列表的顺序契约)."""
+    threads = ThreadsRepository(db)
+    tenant = f"tenant-{uuid4().hex}"
+    earlier = datetime(2026, 9, 20, 10, 0, tzinfo=UTC)
+    later = datetime(2026, 9, 20, 11, 0, tzinfo=UTC)
+    older = await _thread_with_a_visible_message(
+        db, tenant_id=tenant, user_id="u-1", moment=earlier
+    )
+    newer = await _thread_with_a_visible_message(
+        db, tenant_id=tenant, user_id="u-1", moment=later
+    )
+
+    assert [
+        thread.thread_id for thread in await threads.list_active_with_messages(tenant)
+    ] == [newer.thread_id, older.thread_id]
+
+    # 老的那个又聊了一句 -> 它跳到最前面 (这就是「每轮刷 updated_at」的意义)
+    assert await threads.touch(older.thread_id, moment=later + timedelta(hours=1))
+
+    assert [
+        thread.thread_id for thread in await threads.list_active_with_messages(tenant)
+    ] == [older.thread_id, newer.thread_id]
+
+
+async def test_touch_reports_whether_it_hit_a_row(db: PgDatabase):
+    """`touch` 如实回报「改到了没有」—— 没这个会话时是 False."""
+    threads = ThreadsRepository(db)
+
+    assert await threads.touch("没有这个会话", moment=datetime.now(UTC)) is False
+
+
+async def test_add_terminal_records_a_finished_run_in_one_write(db: PgDatabase):
+    """已跑完的运行**一条 INSERT 落成终态** (不走 created → running → finished).
+
+    记录的是**已经发生的事**: 三步走要求三次往返, 而且中间那两个状态从没真正存在
+    过 —— 更糟的是会在库里留下「状态是终态而 `finished_at` 为空」的行 (NULL 的
+    语义是「还没跑到终点」).
+    """
+    runs = RunsRepository(db)
+    thread_id = await _make_thread(db)
+    moment = datetime(2026, 9, 22, 12, 0, tzinfo=UTC)
+
+    run = await runs.add_terminal(
+        thread_id=thread_id,
+        status=RunStatus.FINISHED,
+        turn_count=3,
+        total_tokens=128,
+        moment=moment,
+    )
+
+    loaded = await runs.get(run.run_id)
+    assert loaded.status == RunStatus.FINISHED
+    assert loaded.is_terminal is True
+    assert loaded.finished_at == moment
+    assert (loaded.turn_count, loaded.total_tokens) == (3, 128)
+    # 成本那几列留给 L3 (本片只把行建起来)
+    assert (loaded.model, loaded.prompt_version, loaded.error) == (None, None, None)
+
+
+async def test_add_terminal_refuses_a_status_that_is_not_an_ending(db: PgDatabase):
+    """非要给个非终态就当场报错 (那是一条没有结局记录, 该走 add + 状态推进)."""
+    runs = RunsRepository(db)
+    thread_id = await _make_thread(db)
+
+    with pytest.raises(DataConfigError):
+        await runs.add_terminal(thread_id=thread_id, status=RunStatus.RUNNING)

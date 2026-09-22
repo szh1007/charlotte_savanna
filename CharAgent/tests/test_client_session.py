@@ -28,7 +28,12 @@ from doubles import FakeRedisClient
 from mock_llm import MockLLM, make_tool_call, text_response, tool_call_response
 
 from CharAgent.agent import TrimAndSummarize
-from CharAgent.checkpoint import InMemoryCheckpointSaver, RedisCheckpointSaver
+from CharAgent.checkpoint import (
+    Checkpoint,
+    CheckpointState,
+    InMemoryCheckpointSaver,
+    RedisCheckpointSaver,
+)
 from CharAgent.client.session import DEMO_TOOLS, ChatSession
 from CharAgent.hooks import Decision, HookPoint, HookRegistry
 from CharAgent.model.utils.types import ModelMessage, ModelResponse
@@ -76,6 +81,8 @@ def make_session(
     hooks: HookRegistry | None = None,
     event_sink: Any | None = None,
     compactor: Any | None = None,
+    hydrate: bool = True,
+    recorder: Any | None = None,
 ) -> ChatSession:
     """造一个会话 (存储不指定时给内存版; 工具不指定时给回显工具).
 
@@ -92,6 +99,8 @@ def make_session(
         hooks=hooks,
         event_sink=event_sink,
         compactor=compactor,
+        hydrate=hydrate,
+        recorder=recorder,
     )
 
 
@@ -477,12 +486,17 @@ async def test_aclose_releases_the_model() -> None:
 
 
 def _compacting_session(
-    model: Any, *, summarizer: Any | None = None, event_sink: Any | None = None
+    model: Any,
+    *,
+    summarizer: Any | None = None,
+    event_sink: Any | None = None,
+    recorder: Any | None = None,
 ) -> ChatSession:
     """一个配了压缩策略的会话: 阈值调到 1, 于是「有得裁」就会压."""
     return make_session(
         model,
         event_sink=event_sink,
+        recorder=recorder,
         compactor=TrimAndSummarize(
             threshold_tokens=1,
             keep_recent_questions=1,
@@ -537,3 +551,291 @@ async def test_the_summary_survives_from_one_question_to_the_next() -> None:
     assert second.summary == "早前聊的是查订单"
     # 第二句问话的视图里带着上一条摘要 (会话把它递回给了 loop)
     assert "早前聊的是查订单" in str(seen[-1][1].get("content"))
+
+
+# ---------------------------------------------------------------------------
+# 水合: 重启之后还认得上一段对话 (ticket 17)
+# ---------------------------------------------------------------------------
+
+
+def requests(model: Any) -> list[list[ModelMessage]]:
+    """每次调用模型时它看到的消息 (逐次请求, 来自 MockLLM 的轨迹记录)."""
+    return [record["messages"] for record in model.calls]
+
+
+def contents(messages: list[ModelMessage]) -> list[str]:
+    """一份消息列表里的正文 (断言「模型看到了哪几句话」用)."""
+    return [str(message.get("content")) for message in messages]
+
+
+async def test_a_restarted_session_picks_up_the_previous_conversation() -> None:
+    """换了进程 (新建会话对象) 之后, 第一次提问就把上一段历史读回来.
+
+    这正是 L2.5 那条验收的机制: 光把快照换成 Postgres 不够 —— 还得有人在第一次
+    提问前**去读它**, 否则模型看不到上一段进程里聊过什么.
+    """
+    saver = InMemoryCheckpointSaver()
+    first = make_session(
+        MockLLM.fixed(text_response("订单已发货")), saver=saver, thread_id="restart-1"
+    )
+    await first.ask("订单到哪了")
+
+    # 新进程: 同一个 saver、同一个会话编号, 但会话对象是全新的 (内存历史为空)
+    model = MockLLM.fixed(text_response("预计明天到"))
+    restarted = make_session(model, saver=saver, thread_id="restart-1")
+    await restarted.ask("那什么时候能到")
+
+    seen = contents(requests(model)[0])
+    assert "订单到哪了" in seen, "上一段对话的问题要读回来"
+    assert "订单已发货" in seen, "上一段的答复也要读回来"
+    assert seen[-1] == "那什么时候能到", "新问的那句接在最后"
+
+
+async def test_hydration_can_be_turned_off() -> None:
+    """`hydrate=False`: 每段新会话从零开始 (不认旧账).
+
+    想彻底开一段全新对话, 换个 thread_id 更直白; 这个开关留给「同一编号、不要
+    旧上下文」的调试场景.
+    """
+    saver = InMemoryCheckpointSaver()
+    first = make_session(
+        MockLLM.fixed(text_response("订单已发货")), saver=saver, thread_id="restart-2"
+    )
+    await first.ask("订单到哪了")
+
+    model = MockLLM.fixed(text_response("你好"))
+    fresh = make_session(model, saver=saver, thread_id="restart-2", hydrate=False)
+    await fresh.ask("那什么时候能到")
+
+    seen = contents(requests(model)[0])
+    assert "订单到哪了" not in seen
+    assert seen[-1] == "那什么时候能到"
+
+
+async def test_hydration_seals_a_tool_call_that_never_got_its_result() -> None:
+    """快照停在「工具调用还没有结果」的半路: 补一条「结果未知」, **不重放**那个工具.
+
+    场景是真实会发生的 (进程死在工具执行中间 / 人工审批挂起点): 那种历史直接喂给
+    模型既不合 wire 规矩 (tool_calls 与 tool 消息必须配对), 也会把模型推向重发 ——
+    而重发写操作就是重复下单.
+    """
+    saver = InMemoryCheckpointSaver()
+    thread_id = "restart-pending"
+    await saver.save(
+        Checkpoint.create(
+            thread_id=thread_id,
+            run_id="run-1",
+            turn_number=1,
+            state=CheckpointState(
+                messages=[
+                    {"role": "system", "content": "你是助手."},
+                    {"role": "user", "content": "回显 hello"},
+                    {
+                        "role": "assistant",
+                        "content": "我调用一下",
+                        "tool_calls": [
+                            {
+                                "id": "call_0",
+                                "type": "function",
+                                "function": {
+                                    "name": "echo",
+                                    "arguments": '{"text": "hello"}',
+                                },
+                            }
+                        ],
+                    },
+                ]
+            ),
+        )
+    )
+    ECHO_CALLS.clear()
+    model = MockLLM.fixed(text_response("这一轮结束了"))
+    session = make_session(model, saver=saver, thread_id=thread_id)
+
+    await session.ask("继续")
+
+    # 那条欠着的调用有了一条结果 (正文说「未知」, 不说「没执行」—— 说后者是撒谎)
+    filled = [
+        message
+        for message in dialogue(session.history)
+        if message.get("role") == "tool"
+    ]
+    assert [message["tool_call_id"] for message in filled] == ["call_0"]
+    assert "结果未知" in str(filled[0]["content"])
+    # 而工具**一次都没跑**: 服务重启不该自动重放写操作
+    assert ECHO_CALLS == []
+    assert "回显 hello" in contents(requests(model)[0])
+
+
+async def test_hydration_only_happens_on_the_first_question() -> None:
+    """水合只认第一次提问: 第二句问话不会再读一遍快照 (否则历史会长出重复)."""
+    model = MockLLM.fixed(text_response("答好了"))
+    session = make_session(model, thread_id="restart-3")
+
+    await session.ask("第一问")
+    await session.ask("第二问")
+
+    second = contents(requests(model)[1])
+    assert second.count("第一问") == 1
+    assert second.count("答好了") == 1
+
+
+async def test_a_hydrated_session_hangs_its_new_frames_on_the_old_chain() -> None:
+    """水合之后落的帧接着**原来那棵树**长 (不是又起一条新根).
+
+    不接着写的话, 同一段对话在快照存储里会变成好几条互不相干的线 —— 内容不丢,
+    但「这段对话的快照」看起来就是散的 (`history_table` 里一眼可见).
+    """
+    saver = InMemoryCheckpointSaver()
+    thread_id = "restart-chain"
+    first = make_session(
+        MockLLM.fixed(text_response("第一次答")), saver=saver, thread_id=thread_id
+    )
+    await first.ask("第一问")
+    frames_before = await saver.list_history(thread_id)
+    last_of_first = frames_before[-1]
+
+    restarted = make_session(
+        MockLLM.fixed(text_response("第二次答")), saver=saver, thread_id=thread_id
+    )
+    await restarted.ask("第二问")
+
+    frames = await saver.list_history(thread_id)
+    added = frames[len(frames_before) :]
+    assert added, "第二段提问应该落了新帧"
+    assert added[0].parent_id == last_of_first.checkpoint_id, (
+        "新帧挂在水合读到的那一帧下面, 而不是当新根"
+    )
+
+
+async def test_the_session_hands_every_run_to_the_recorder() -> None:
+    """记录: 跑完把这一轮交给记录员, 并告诉它「新增从第几条开始」.
+
+    为什么 `since` 要算准: 记录员按它切出**本次新增**的那一段 (老的那一段上一次
+    已经写过了), 算错就会写出重复行或漏行.
+    """
+    calls: list[tuple[str, int, str | None]] = []
+
+    class Recorder:
+        """记下每次被调用的形状 (与 db/recorder.py 的协议同款)."""
+
+        async def record(
+            self,
+            *,
+            thread_id: str,
+            result: Any,
+            since: int = 0,
+            summary: str | None = None,
+        ) -> bool:
+            calls.append((thread_id, since, result.content))
+            return True
+
+        async def record_unfinished(
+            self, *, thread_id: str, question: str, status: Any
+        ) -> bool:
+            calls.append((thread_id, -1, question))
+            return True
+
+    session = make_session(
+        MockLLM.fixed(text_response("答好了")), thread_id="rec-1", recorder=Recorder()
+    )
+
+    await session.ask("第一问")
+    await session.ask("第二问")
+
+    assert calls == [("rec-1", 1, "答好了"), ("rec-1", 3, "答好了")], (
+        "第 0 条是身份说明, 所以第一问的下标是 1; 第二问接在「问+答」后面, 下标是 3"
+    )
+
+
+async def test_an_interrupted_run_is_recorded_as_unfinished() -> None:
+    """取消 / 失败那一轮也要记: 用户确实说过那句话 (记录里不该少一轮)."""
+    calls: list[tuple[str, Any]] = []
+
+    class Recorder:
+        """只关心「没答完」那条路 (record 这一轮走不到)."""
+
+        async def record(
+            self,
+            *,
+            thread_id: str,
+            result: Any,
+            since: int = 0,
+            summary: str | None = None,
+        ) -> bool:
+            calls.append(("finished", result.outcome))
+            return True
+
+        async def record_unfinished(
+            self, *, thread_id: str, question: str, status: Any
+        ) -> bool:
+            calls.append((question, status))
+            return True
+
+    class Exploding:
+        """一调用就炸的模型 (模拟上游挂了)."""
+
+        async def generate(self, *args: Any, **kwargs: Any) -> Any:
+            raise RuntimeError("上游挂了")
+
+        async def aclose(self) -> None:
+            """协议要求 (假模型没有资源)."""
+
+    session = make_session(Exploding(), thread_id="rec-2", recorder=Recorder())
+
+    with pytest.raises(RuntimeError):
+        await session.ask("这一句会失败")
+
+    assert calls, "失败那一轮也要记一笔"
+    assert calls[0][0] == "这一句会失败"
+    assert str(calls[0][1]) == "failed", "失败那一轮的状态应当翻成 failed"
+
+
+async def test_only_a_fresh_summary_is_handed_to_the_recorder() -> None:
+    """压缩出来的摘要交给记录员, 但**只在它是新的时候** (否则每轮写一条重复行).
+
+    判「新不新」只有会话判得了: 比较基准是它手上那份上一轮的摘要, 而记录员拿不到
+    那个基准 (它只看见这一轮的结果). 阈值调到 1 的会话每问一句都会压一遍, 于是
+    第三次提问正好验「压出来的与手上那份一样 -> 不算新的」.
+    """
+    summaries: list[str | None] = []
+
+    class Recorder:
+        """只关心 summary 那一个参数的记录员."""
+
+        async def record(
+            self,
+            *,
+            thread_id: str,
+            result: Any,
+            since: int = 0,
+            summary: str | None = None,
+        ) -> bool:
+            summaries.append(summary)
+            return True
+
+        async def record_unfinished(
+            self, *, thread_id: str, question: str, status: Any
+        ) -> bool:
+            return True
+
+    session = _compacting_session(
+        MockLLM.scripted(
+            [
+                text_response("第一次答"),
+                text_response("第二次答"),
+                text_response("第三次答"),
+            ]
+        ),
+        # 两次压缩给同一段文本
+        summarizer=MockLLM.scripted(
+            [text_response("早前聊的是查订单"), text_response("早前聊的是查订单")]
+        ),
+        recorder=Recorder(),
+    )
+
+    await session.ask("第一次提问")  # 还没裁得动 -> 没有新摘要
+    await session.ask("第二次提问")  # 这一轮压出了摘要
+    await session.ask("第三次提问")  # 压出来的与手上那份一样
+
+    assert summaries == [None, "早前聊的是查订单", None]

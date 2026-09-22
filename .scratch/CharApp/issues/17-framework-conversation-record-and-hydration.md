@@ -1,6 +1,6 @@
 # 17 · 框架侧：会话记录 + 水合 + 会话端点
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Type:** task
 
@@ -132,21 +132,23 @@
 
 ## 验收
 
-- [ ] 真机：聊两句 → **重启 CharApp 进程** → `/history` 拉回原话，且**模型接着上文答**（不是只有前端回来了）
-- [ ] 水合撞上「工具调用没结果」的半路：补一条「结果未知」的 `tool` 结果；**后端工具一次都没被重放**（用例断言写工具没被调用）
-- [ ] 水合后新写的帧挂在上一条链上（`parent_id` 有值，不是新根）
-- [ ] `/history` 只读记录表：把一条消息标成 `hidden=True`，它**不出现在**返回里；记录表为空时返回空列表（不是 404）
-- [ ] `/history` 仍然**不建会话**（既有用例仍绿）
-- [ ] `GET /conversations` 只返回当前 `(tenant, user)` 的、`active` 且有可见消息的会话，按 `updated_at` 倒序
-- [ ] 别的租户 / 别的用户看不到（隔离用例）
-- [ ] 不传 `database=` 时**不注册**那组路由（既有 app 行为零变化）
-- [ ] 记录：一轮正常问答写 1 条 `runs` + 1 条 `user` + 1 条 `assistant`；工具轮与压缩摘要进 `hidden=True`
-- [ ] 取消 / 失败那一轮：`user` 行在、有一条「这一轮没答完」的可见 `system` 行
-- [ ] 记录写入失败：日志 + warning 事件，**这一句照样答得出来**；下一次成功写入时先补一条可见的 `system` 提示行
-- [ ] 会话行懒创建：第一次写入才建，`title` 取首条用户消息；`updated_at` 每轮更新
-- [ ] `RunContext` 的 `tenant_id` / `user_id` 在框架里**只用于分区与过滤**，没有别处解释（用例或注释钉住）
-- [ ] `SessionRegistry` 空闲淘汰：超过 TTL 的会话被释放；**正在跑的会话不被淘汰**；淘汰后再 acquire 能水合回来
-- [ ] `pytest CharAgent` 全绿，**另跑** `pytest -m pg` 与 `pytest -m pg_db`；`ruff` 干净
+- [x] 真机：聊两句 → **重启 CharApp 进程** → `/history` 拉回原话，且**模型接着上文答**（不是只有前端回来了）
+      —— **2026-09-22 跑过**（Claude 代跑，见下「六、真机验收」）
+- [x] 水合撞上「工具调用没结果」的半路：补一条「结果未知」的 `tool` 结果；**后端工具一次都没被重放**（用例断言写工具没被调用）
+- [x] 水合后新写的帧挂在上一条链上（`parent_id` 有值，不是新根）
+- [x] `/history` 只读记录表：把一条消息标成 `hidden=True`，它**不出现在**返回里；记录表为空时返回空列表（不是 404）
+- [x] `/history` 仍然**不建会话**（既有用例仍绿）
+- [x] `GET /conversations` 只返回当前 `(tenant, user)` 的、`active` 且有可见消息的会话，按 `updated_at` 倒序
+- [x] 别的租户 / 别的用户看不到（隔离用例）
+- [x] 不传 `database=` 时**不注册**那组路由（既有 app 行为零变化）
+- [x] 记录：一轮正常问答写 1 条 `runs` + 1 条 `user` + 1 条 `assistant`；工具轮与压缩摘要进 `hidden=True`
+- [x] 取消 / 失败那一轮：`user` 行在、有一条「这一轮没答完」的可见 `system` 行
+- [x] 记录写入失败：日志 + **这一句照样答得出来** + 下一次成功写入时先补一条可见的 `system` 提示行
+      —— 唯一没照做的是「warning **事件**」：记录跑在运行收尾**之后**，那条流已被终局事件关掉（见开放项 ③）
+- [x] 会话行懒创建：第一次写入才建，`title` 取首条用户消息；`updated_at` 每轮更新
+- [x] `RunContext` 的 `tenant_id` / `user_id` 在框架里**只用于分区与过滤**，没有别处解释（用例或注释钉住）
+- [x] `SessionRegistry` 空闲淘汰：超过 TTL 的会话被释放；**正在跑的会话不被淘汰**；淘汰后再 acquire 能水合回来
+- [x] `pytest CharAgent` 全绿，**另跑** `pytest -m pg` 与 `pytest -m pg_db`；`ruff` 干净
 
 ## 备注
 
@@ -155,3 +157,108 @@
 - **为什么不把记录写在 `server/` 层**：CLI 入口就没记录了。也不放在业务侧：那要在框架的运行生命周期里找钩子、靠事件流重建顺序，脆
 - **`checkpoints` 与 `threads` 故意不成外键**：快照是分区键、生命周期与会话行不必耦合（会话行删了，快照留在那儿也不影响续跑）；本片不动这个关系
 - **与 L3 的分工**：本片把 `runs` 行建起来、把 `prompt_version` 那一列**留着空**。谁把实际命中的 prompt 版本写进去、谁算成本，是 L3 的事（PLAN §5 已写明）
+
+
+## 实际开发情况 2026-09-22
+
+**一句话**：四件事全部落地 —— 记录（`ConversationRecorder`，`db/` 的第一个生产调用方）、身份（`RunContext` 加 `tenant_id` / `user_id`）、水合（`ChatSession` 第一次提问前读回快照，含「工具调用没结果」的补回填）、端点与淘汰（`GET /conversations` + `SessionRegistry` 空闲 TTL）。**不配 `database=` / `recorder=` / 关掉 `hydrate` 时行为逐字不变**。
+
+### 一、拍板的开放项（ticket 没定 / 与代码对不上，实现时定下来的）
+
+| 项 | ticket 说的 | 落地的 | 为什么 |
+|----|------------|--------|--------|
+| `/history` 的来源怎么切 | §5「只读记录表，**不留**退回内存的兜底」 + §6「不传 `database=` 时不注册**那组**路由（既有 app 行为零变化）」 | **按装配二选一**：给了库 → 记录表；没给 → 会话内存（老路径原样保留，`conversation_of` 与 `DISPLAY_ROLES` 因此**没退役**） | 两句话合起来只能这么读：没给库时 `/history` 若也消失，那是**既有 app 的行为变化**（旧部署的三条路变两条），与「零变化」直接冲突。禁令的本意是「不许在**运行期**从一条来源退回另一条」（同一段对话刷新两次看到不一样，是最难查的一类 bug）—— 那条照旧守死：装配选定一个来源，中途不换 |
+| 「发 warning 事件」 | §2「失败只记日志 + 发 warning 事件」 | **不发事件**：`logger.warning`（带 traceback）+ 记录表里那条「这里少了一轮」的可见提示行 | 记录跑在运行**收尾之后**，而那条事件流已被终局事件关掉（`stream/bus.py` 第四条不变量；`server/runs.py` 的 `RunStream` 还会把序号记账带偏）。要发就得破坏契约。给用户的信号改走提示行 —— 它比一条转瞬即逝的事件耐久（刷新 / 换台设备都还在） |
+| `run()` 怎么接着写同一条链 | §4「加 `parent_id`，水合时把最新帧的编号传进去」 | 同款，**另加** `LoopResult.last_checkpoint_id` | 只做水合那一半会留下更糟的形态：第二句问话拿着**过期的** parent 写帧 = 在那棵树上凭空岔一根（看着像 time-travel）。有了这个字段，**每一句**问话都接着上一段落，不必让会话自己去查库 |
+| 已跑完的运行怎么落库 | §2「`runs` 一行，`status` 由映射表给」 | 新方法 `RunsRepository.add_terminal`（直接以终态 INSERT，`finished_at` 一起写上） | 走 `add` 再 `try_transition` 要三步三次往返，而 `created → finished` 本就非法（得先 running）；更糟的是会在库里留下「状态是终态而 `finished_at` 是 NULL」的行（NULL 的语义是「还没跑到终点」）。状态机管的是**活着的**运行怎么走，这里写的是它的结局 |
+| 会话列表要的新读法 | §6 只说了语义 | 加 `ThreadsRepository.list_active_with_messages`（`status` + `EXISTS 可见消息` 都在 SQL 里） | 「有可见消息」是个 EXISTS 条件，取回来再逐条查就是 N+1。租户 / 属主过滤跟 `list_for_tenant` 同一条纪律（签名里不给「不带租户查全部」） |
+| `conversation_id` 是什么 | §6「业务侧叫法 = `thread_id` 的第三段」 | 照做，并把这次结构解析单独放进 `server/conversations.py` 的一个函数里 | 这是框架**唯一一次**读会话编号的结构（平时只当它是不透明主键）。放进 db 层就把它变成数据层的事；留在 wire 边界上，将来编号格式变了只动这一处 |
+| `message_count` | §6 标了「可选」 | **不做** | 列表页要它就得再来一条聚合查询（或 `count_visible` 逐条算），而本片没有任何调用方需要它。等前端真要显示「几条消息」时再加 |
+| 「没答完」那条说明只给取消那一轮吗 | §2 只在「取消 / 失败」那一节点了名 | **跑完却没给出可见答复也补**（guard 刹车 / 纯工具收尾） | 用户看到的是「我问了一句、页面上什么都没有」——那和取消那一轮的处境一模一样（`finished` 说的是**运行**跑完了，`content=None` 说的是**没有答复**，两件事不矛盾）。不补的话，刷新之后那一轮在记录里就凭空消失了 |
+| 读记录表读不到怎么办 | 没说 | 两条只读路把 `DbError` 翻译成 **503 + `record_store_unavailable`**（与 `ServerError` 同一套信封） | 库读不了是**可用性**故障而不是 bug：不翻译就会以未处理异常的形式冒出去，客户端拿到一个没有 code 的 500，转发方只能猜「是我请求错了还是它挂了」。写入那条路的降级照旧（日志 + 提示行）—— 读与写的处置本来就不同（读不到可以让调用方重试，写不进去只该记一笔） |
+| 会话编号换了属主 | 没说 | 记录员发现既有会话行属于**别人**时记一笔 warning，但**照样写** | 编号是快照与记录共用的分区键，同一段编号换了属主（业务把两段对话编到了同一个键上）记录就会串在一起。框架不替业务决定该不该写（不写就是静默丢记录），但要让这件事看得见 |
+| 「压缩摘要进 `hidden=True`」怎么落 | 验收行里点名了它 | 记录员多收一个 `summary=` 参数：**新压出来的**摘要才写（隐藏的 system 行） | 摘要不在账本里（压缩只是给模型的视图），所以得单独补一行;而「新不新」只有会话判得了（比较基准是它手上那份上一轮的摘要）—— 不判的话，一段长会话每轮都会攒一条一模一样的行 |
+
+### 二、碰过的文件
+
+| 文件 | 改了什么 |
+|------|---------|
+| `CharAgent/agent/provider.py` | `RunContext` + `tenant_id` / `user_id`（**不给默认值**）；模块与类 docstring 补「框架认识这两个字段，但只当分区键与过滤键」那段（含「它没破 payload 那条规矩」的说明） |
+| `CharAgent/agent/loop.py` · `agent/utils/types.py` | `run(parent_id=)` 写进初始 `LoopState.last_checkpoint_id`；`LoopResult` + `last_checkpoint_id` |
+| `CharAgent/db/recorder.py` | **新增**：`RunRecorder` 协议 + `ConversationRecorder`（会话行懒创建 / 运行行 / 消息行 / 刷活动时刻；取消与失败那一轮；写失败降级 = 日志 + 内存标记 + 下次补提示行）、`title_for`、三段文案常量 |
+| `CharAgent/db/conversation.py` | + `recorded_transcript`（把截断续写的几段答复合回一条、正文取 `LoopResult.content`）与 `has_visible_answer`；模块 docstring 补「两个出口一个规则」 |
+| `CharAgent/db/repositories/threads.py` | + `touch`（刷 `updated_at`）与 `list_active_with_messages`（会话列表那一份读法） |
+| `CharAgent/db/repositories/runs.py` | + `add_terminal` |
+| `CharAgent/db/__init__.py` · `CharAgent/__init__.py` | 门面导出六个新名字（根门面有防漂移用例守着） |
+| `CharAgent/client/session.py` | `ChatSession` + `hydrate`（默认开）与 `recorder=`；`_hydrate_once`（惰性读回历史 + 补「结果未知」的回填 + 接着写链）、`_seal_pending_calls`、`_record` / `_record_unfinished`、`_parent_id` 维护 |
+| `CharAgent/server/app.py` | `create_app` + `database=`（给了才注册 `/conversations`；`/history` 的来源也跟着它切）；`read_limit`（`limit` 查询参数） |
+| `CharAgent/server/conversations.py` | **新增**：路由常量 + `conversation_id_of` + `conversation_row` |
+| `CharAgent/server/history.py` | + `conversation_messages`（记录表那份投影）；`conversation_of` 留着给内存那份；模块 docstring 写清两个来源 |
+| `CharAgent/server/sessions.py` | `SessionRegistry` 空闲淘汰（`DEFAULT_IDLE_TTL_SECONDS` = 30 分钟、`last_used`、`evict_idle`）；`SessionEntry` + `last_used`；模块 docstring 的「不淘汰」一段改写 |
+| `CharAgent/server/__init__.py` · `server/utils/types.py` | 门面导出 + 两个插座文档里「框架不解释 payload」那段（现在认识三个结构字段了） |
+| `CharAgent/tests/*` | 新增 `test_db_recorder.py`（17）· `test_server_conversations.py`（15）；`test_client_session.py` +7（水合 / 记账）· `test_checkpoint_resume.py` +3（parent 链）· `test_server_sessions.py` +7（淘汰与水合）· `test_server_history.py` +5（记录表来源 + 一条 pg_db）· `test_db_conversation.py` +4 · `test_db_store.py` +6（pg_db）；`doubles.py` + `FakeRecordDatabase`（读写都认，三个文件共用）；既有 `RunContext(...)` 调用点全部补上两个身份字段 |
+| `CharApp/minimall/service.py` | `TENANT_WEB` / `TENANT_CLI`；`build_context(..., tenant_id=)`（必填 keyword）；`MinimallService.database` + `_recorder_for`；`aclose` 连库一起收 |
+| `CharApp/minimall/server.py` · `cli.py` | 两个入口都建一个 `PgDatabase` 交给装配（构造不连库，库不在线也不拦启动）；网页端传 `TENANT_WEB`、命令行传 `TENANT_CLI`；`create_minimall_app` 把库交给框架（`/history` 与 `/conversations` 因此走记录表） |
+| `CharApp/tests/test_recording.py` | **新增**（3）：两个入口都记账且分租户、重启后接得上上文、同一买家的两个入口是两个租户 |
+| `CharAgent/tests/conftest.py` · `test_client_app.py` | 测试基建两处（见开放项 ⑤） |
+
+### 三、顺带修掉的两处**既有**测试问题（与本片无关，但被本片跑红）
+
+1. **`test_client_app.py` 跟着本机 `.env` 走**：那几个用例的前提是「新会话没有存档」，而后端在 `.env` 里是 `postgres` —— 跑过一次之后 `client-main` 就有帧了，于是「没有可恢复的快照」这条断言会在**第二次**跑时红。修法：文件级 autouse fixture 把后端钉成内存版（真的验「听环境变量」那条自己 `setenv`，不受影响）。
+   **另**：我自己的两次全量跑往本机 Postgres 的 `charagent_checkpoints` 写了 36 帧（thread `client-main`，全部落在 23:00~23:01），已按 `thread_id='client-main'` 删掉（那张表当时只有这一批）。
+2. **`db` fixture 挪进 `conftest.py`**：新增的那条 pg_db 端点用例要用同一个「独立 schema」夹具，于是把它从 `test_db_store.py` 移到共享位置（顺带 `TEST_SCHEMA` 也一起挪）。
+
+### 四、验收逐条
+
+| 验收 | 证据 |
+|------|------|
+| 真机（留给用户） | 机制：`CharApp/tests/test_recording.py::test_a_restarted_service_picks_up_the_previous_conversation`（换服务对象、同一个 saver 与会话编号，第二个模型看得到上一段）+ `test_client_session.py` 那三条水合 |
+| 水合补「结果未知」且不重放 | `test_hydration_seals_a_tool_call_that_never_got_its_result`（断言 `ECHO_CALLS == []`：工具一次都没跑） |
+| 水合后接着写链 | `test_a_hydrated_session_hangs_its_new_frames_on_the_old_chain` + `test_a_new_run_can_hang_its_first_frame_on_a_given_parent` |
+| `/history` 只读记录表 | 端点侧 `test_the_record_table_is_the_source_when_a_database_is_given`（会话内存里那批**不参与**）· `test_a_visible_system_note_does_reach_the_reader`；真库侧 `test_the_reader_only_hands_out_the_visible_rows`（标 pg_db：`hidden=True` 那行不出现在返回里）· 空表回空列表两条 |
+| `/history` 不建会话 | `test_the_record_reader_never_asks_for_a_session` + 既有的 `test_asking_for_history_does_not_start_a_conversation` |
+| `/conversations` 的语义 | 真库：`test_list_active_skips_shells_internals_and_closed_threads` · `test_list_active_is_ordered_by_last_activity`；端点侧 `test_the_list_comes_back_projected_to_three_fields` · `test_the_query_carries_the_caller_identity_and_the_limit` · `test_without_a_limit_the_default_is_used` |
+| 隔离 | 真库：`test_list_active_is_scoped_to_tenant_and_owner` |
+| 不配库 = 零变化 | `test_the_route_is_not_registered_without_a_database` · `test_the_other_routes_still_work_without_a_database` |
+| 记账的三层 | `test_a_normal_turn_writes_a_thread_a_run_and_two_messages` · `test_the_hidden_work_of_a_tool_turn_is_recorded_as_hidden` · `test_a_fresh_summary_is_recorded_as_a_hidden_line` · `test_without_a_fresh_summary_no_line_is_added` |
+| 取消 / 失败也记 | `test_an_unfinished_turn_is_recorded_with_its_question[cancelled/failed]` · `test_an_unfinished_turn_still_creates_the_thread` · `test_an_interrupted_run_is_recorded_as_unfinished` |
+| 写失败的降级 | `test_a_failed_write_is_logged_and_marked_instead_of_raised`（返回 False + warning 日志）· `test_the_next_write_first_adds_a_visible_notice`（先补提示行）· `test_the_notice_is_added_only_once_per_missed_turn` |
+| 懒创建 / 标题 / 活动时刻 | `test_the_thread_is_created_once_and_reused_afterwards` · `test_a_long_question_is_squashed_into_a_one_line_title` · `test_every_turn_refreshes_the_thread_activity_time` · `test_title_comes_from_the_first_user_message` |
+| 身份只用于分区与过滤 | `RunContext` 的 docstring 与 `agent/provider.py` 那条纪律；`test_the_two_owner_fields_have_no_default`；框架源码扫描用例（业务词一个都不许出现） |
+| 空闲淘汰 | `test_an_idle_session_is_evicted_and_later_rebuilt` · `test_a_session_that_is_still_running_is_never_evicted` · `test_reading_an_entry_refreshes_its_idle_timer` · `test_evict_idle_reports_what_it_dropped_and_keeps_the_rest` · **`test_an_evicted_session_comes_back_with_its_history`**（真会话：淘汰后重新装配，历史水合回来） |
+| 测试与静态检查 | 框架 **954 passed / 72 deselected**（比开工时的 892 多 62：记录员 19 · 会话列表端点 16 · 水合与记账 7 · 淘汰与水合 7 · 历史来源 6 · 分层投影 4 · parent 链 3 …）· 业务 **191 passed**（+5）· 标记集 `-m "pg or redis or pg_db"` **61 passed**（+10，含真库那 8 条）· `ruff check` / `ruff format --check` 干净 |
+
+### 五、代码审查改了什么（两轴各起一个 sub-agent，2026-09-22）
+
+**Standards 轴**（三条 HARD + 两条 smell，改掉四条）：
+
+1. **全角标点**（`CharApp/minimall/server.py` 新增注释里的 `)` `。`）→ 改成 ASCII，与项目 CLAUDE.md §4.9 一致（顺手把那对括号配平了）。
+2. **数错的说明**（`db/repositories/threads.py` 新写的「三个列方法的取舍」下面是**两**行表）→ 改成「两个列方法」。
+3. **DESIGN.md 那条新硬骨头的标签**：`#12` 是「数据模型（六实体 + event sourcing + TTL）」，而记录 / 水合 / 淘汰说的是那几张实体表的**生命周期** —— 标签留着，前半句补上「说的是那几张实体表什么时候写、怎么读回、什么时候能丢」，并把它并回原来的列表（原来被空行切成了松列表）。
+4. **假库里的三套映射**（`tests/doubles.py`：`_ENTITIES` / `_KEYS` / `_rows_of` + `scalars` 里一个内联三元，其中内联那支对 Run 查询会静默返回 threads 那批）→ 收成「表名 → 实体」+「实体 → 那批行」两处，`scalars`/`get`/`_remember` 都走同一个入口；`messages/threads/runs` 的注解也从 `list` 改成 `Sequence`（默认值是元组）。
+5. **两个 `if self._recorder is None: return`**（judgement call，**不改**）：两处各三行，合并要靠一个「有没有记录员」的开关参数，比重复两行更难读。
+6. **`_run(pending, *, question=None, since=None)` 的参数簇**（judgement call，**改了**）：那两样要么一起有（`ask`）要么一起没有（`resume`），挂成两个 Optional 等于把「同生共死」摊成两个空值加一个 `and` 判断；顺手把记账挪回它真正的概念所在（`ask`，那里同时拿着提问、`since` 与跑之前那份摘要），`_run` 回到「只接管会话状态」那一个参数。
+
+**Spec 轴**（一条缺失 + 一条范围外 + 三条「看着实现其实有问题」，四条都处理了）：
+
+1. **业务侧从没验证 `/history` 读记录表**（CharApp 的 app 用例永远不传 `database`）→ 补 `test_server.py::test_the_web_history_reads_the_record_table`（经 HTTP 问一句 → 从记录表读回）+ `test_the_tenant_comes_from_the_entry_not_from_the_request`（租户由入口定死）；为此让假库也认「库里已有 + 刚写进去的」消息行，并模拟**一条**过滤规则（会话历史只给可见的行，真过滤在 SQL 里，由 pg_db 用例守）。
+2. **跑完没答复也补「没答完」行属范围外**（spec 只在取消 / 失败那节点过名）→ 保留，但写进开放项（理由见上）。
+3. **读不到记录表 = 未处理的 500**（两条只读路读的是库，而 `DbError` 不是 `ServerError`，没有任何处理器接它；写入侧的降级不覆盖读取）→ 补 `_record_store_error_response`（503 + `record_store_unavailable`）+ 两条用例。
+4. **属主隔离只做在读上**（记录员按 `thread_id` 复用既有会话行，不比对属主；业务拿 `--conversation-id web` 打字面就能撞进网页端那一段）→ 记录员加一笔 warning（照样写，理由见开放项）+ 一条用例。
+5. **`conversation_id_of` 取的是最后一段，而 spec 写「第三段」** → 行为不变（编号恰好三段时等价，而写死下标 2 会假设前两段不含分隔符），把 docstring 改成同时说清这两件事。
+
+### 六、真机验收（2026-09-22 晚，Claude 代跑）
+
+环境：Django `runserver 8000 --noreload`（新实例）+ CharApp 服务 `python -m CharApp.minimall.server`（新实例）+ 本机 Postgres/MySQL/Redis + 真 DeepSeek；会话编号 `acceptance`，脚本见当时的临时目录（不进仓库）。
+
+| 步骤 | 结果 |
+|------|------|
+| ① 第 1 句（种一个只有靠上文才答得出的信息）：「请记住：我的幸运数字是 47，我叫林小满。只回复「记住了」」 | `final → '记住了'`；`charagent_runs` 落 1 行 (finished, turn_count=1, total_tokens=5680) |
+| ② 第 2 句「我余额还有多少？」（买家 1 在库里不存在 → 工具 404） | 模型据实回「系统出了点问题」；**工具行与中间轮以 `hidden=True` 落库**，`/history` 只回可见那两条 —— 工具失败的降级链在真机上也走得通 |
+| ③ **重启 CharApp 进程**（先确认 1007 只剩 TIME_WAIT、没有 LISTENING，再起新进程） | 新进程、内存全空 |
+| ④ 第 3 句「我叫什么名字？我的幸运数字是几？」 | `final → '林小满47'` —— **只可能来自上一段进程的历史**，证明水合真的把历史喂给了模型（不是只有前端回来了） |
+| ⑤ `/history` | 三轮原话逐条拉回（读的是记录表） |
+| ⑥ 换真实买家（user 2）问「我余额还有多少？」 | 工具真打到商城 → `final → '你的账户余额是 **600000.00 元**。'`；库里可见两行 + 隐藏两行 + 1 条 runs |
+| ⑦ 查库 | 会话行 / 运行行 / 消息行三张表都对：`tenant_id` 网页端是 `minimall`、命令行是 `minimall-cli`；可见行 `hidden=False`、工具与中间轮 `hidden=True`；消息行带 `run_id` |
+
+**这一跑还抓出一个真问题（已修）**：业务的两处用例真的会跑 `cli.main`（`test_cli.py` 全体 + `test_server.py::test_both_entries_go_through_the_same_assembly`），而 CLI 从本片起会记账、用的又是真 `PgDatabase` —— 于是每跑一次业务测试就往**真库**写一轮 MockLLM 的假对话（本机 PG 里攒到 300 行，`minimall:3:cli` / `minimall:7:cli`）。这既违反业务测试「离线可跑、不碰外部服务」的约定（`CharApp/tests/conftest.py` 开头那条），也会让「记录表里有什么」这种排查完全失真。修法照这个文件已有的做法（它本来就 monkeypatch `build_saver_for` 换掉真存储）：CLI 多一个 `build_database()` 注入缝，两处 fixture 各把它换成 `FakeRecordDatabase`；残留行已按 `thread_id` 删干净，再跑两套测试记录表里不再多一行。

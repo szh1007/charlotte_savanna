@@ -5,7 +5,8 @@
 
 装配线 (五步, 每一步归谁一眼看清)::
 
-    买家身份 ──build_context──> RunContext(thread_id, payload={user_id})
+    买家身份 ──build_context──> RunContext(thread_id, tenant_id, user_id,
+                                            payload={user_id})
                                      │  await provider.provide(context)
                                      ▼
                                 tuple[Tool, ...]  (17 个工具, 身份已在闭包里)

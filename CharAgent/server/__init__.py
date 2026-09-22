@@ -7,12 +7,15 @@
 结构总览 (对齐 model / tool / agent 包惯例):
 
 - app.py       应用工厂 create_app: 三条路 (POST /runs 问一句 / POST /runs/{id}/cancel
-               停一次 / GET /history 读这段对话聊过什么) + 两条接缝 + 一套收尾
+               停一次 / GET /history 读这段对话聊过什么) + 一条可选的 (GET
+               /conversations 列我聊过哪几段, 给了 database 才有) + 两条接缝 + 一套收尾
 - sse.py       事件流 → SSE: 字段映射 (纯函数) + 响应体生成器 (收尾时叫停没人听的运行)
-- sessions.py   会话登记表 + 事件路由: 会话按 thread_id 长驻, 同一会话不并发跑
+- sessions.py   会话登记表 + 事件路由: 会话按 thread_id 长驻, 同一会话不并发跑,
+               空闲超时的条目被清掉 (真相在快照与记录里, 内存只是缓存)
 - runs.py       一次运行的流与在册: 事件队列 + 序号记账 + 可取消的任务句柄
-- history.py    会话历史的只读视图: wire 历史 → 能给人看的那一份对话 (滤掉
-               system 与工具消息)
+- history.py    会话历史的只读视图: 记录表的行 (或内存那份 wire 历史) → 能给人看的
+               那一份对话
+- conversations.py 会话列表的只读视图: 会话行 → 前端左栏要的 (对话 ID / 标题 / 时间)
 - utils/        支撑子包: types (两个插座协议 + wire 契约常量) /
                 errors (一族自带状态码的错误)
 
@@ -29,7 +32,12 @@
             if request.headers.get("X-Internal-Token") != token:
                 raise ServerAuthError("认证失败")
             user_id = request.headers["X-User-Id"]
-            return RunContext(thread_id=f"my:{user_id}:1", payload={"user_id": user_id})
+            return RunContext(
+                thread_id=f"my:{user_id}:1",
+                tenant_id="my-app",        # 框架按这两个字符串分区与过滤
+                user_id=user_id,
+                payload={"locale": "zh"},  # 业务私货 (框架不解释)
+            )
 
     class MySessions:                       # 插座二: 上下文 → 会话
         async def provide(self, context, *, event_sink):
@@ -47,13 +55,26 @@
 `import CharAgent` 不许把 fastapi 拖进 sys.modules).
 
 与其他包的关系: server 消费 stream 的事件流 (事件总线 → SSE), 用 agent 的
-RunContext 与 client 的 ChatSession 当装配产物 —— 它不碰 loop / checkpoint /
-db 的内部, 也不改它们任何一行.
+RunContext 与 client 的 ChatSession 当装配产物 —— 它不碰 loop / checkpoint 的
+内部, 也不改它们任何一行.
+
+与 db 的关系只有一条, 而且只走**仓储** (`db/repositories`, 不写 SQL、不碰实体
+之外的内部): `GET /history` 与 `GET /conversations` 这两条只读路在 `database=` 给了
+的时候读记录表. 没给就是 None, 那两条路各自退回「没有记录层」的样子 (历史读会话
+内存 / 列表那条不注册) —— 框架的「不配不改行为」在这里同样成立.
 """
 
 from __future__ import annotations
 
 from CharAgent.server.app import create_app
+from CharAgent.server.conversations import (
+    CONVERSATION_ID_FIELD,
+    CONVERSATIONS_FIELD,
+    CONVERSATIONS_PATH,
+    LIMIT_QUERY,
+    TITLE_FIELD,
+    UPDATED_AT_FIELD,
+)
 from CharAgent.server.history import (
     HISTORY_PATH,
     MESSAGES_FIELD,
@@ -79,13 +100,19 @@ from CharAgent.server.utils.types import (
 
 __all__ = [
     "CANCELLED_CODE",
+    "CONVERSATIONS_FIELD",
+    "CONVERSATIONS_PATH",
+    "CONVERSATION_ID_FIELD",
     "HISTORY_PATH",
+    "LIMIT_QUERY",
     "MESSAGES_FIELD",
     "MESSAGE_FIELD",
     "RUN_FAILED_CODE",
     "RUN_ID_HEADER",
     "SSE_MEDIA_TYPE",
     "THREAD_ID_FIELD",
+    "TITLE_FIELD",
+    "UPDATED_AT_FIELD",
     "ContextProvider",
     "InvalidRequestError",
     "RunNotFoundError",

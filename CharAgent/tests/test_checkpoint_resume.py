@@ -556,3 +556,68 @@ async def test_checkpoint_save_failure_propagates():
 
     with pytest.raises(CheckpointStorageError):
         await loop.run([{"role": "user", "content": "在吗"}])
+
+
+# ---------------------------------------------------------------------------
+# 接着同一段会话往下写 (ticket 17): run(parent_id=) + LoopResult.last_checkpoint_id
+# ---------------------------------------------------------------------------
+
+
+async def test_a_new_run_can_hang_its_first_frame_on_a_given_parent():
+    """`run(parent_id=...)`: 这一段的头一帧挂在指定那帧下面 (而不是当新根).
+
+    为什么要这个参数: 一次 run 从零起一个 LoopState, 于是同一段对话的每一轮提问
+    都写出一条**新根**, 旧链变孤儿 —— 内容不丢, 但那棵树看起来是散的. 会话那侧
+    把上一段的 `last_checkpoint_id` 递回来, 链就接上了 (见 ChatSession.ask).
+    """
+    saver = InMemoryCheckpointSaver()
+    loop = make_loop(
+        ScriptedModel([text_response("第一答"), text_response("第二答")]),
+        [],
+        saver=saver,
+        thread_id="t-chain",
+    )
+    first = await loop.run([{"role": "user", "content": "第一问"}])
+    second = await loop.run(
+        [{"role": "user", "content": "第二问"}],
+        parent_id=first.last_checkpoint_id,
+    )
+
+    frames = await frames_of(saver, "t-chain")
+    assert first.last_checkpoint_id == frames[0].checkpoint_id
+    assert second.last_checkpoint_id == frames[1].checkpoint_id
+    assert frames[0].parent_id is None, "第一段自己起根"
+    assert frames[1].parent_id == frames[0].checkpoint_id, "第二段接着第一段长"
+
+
+async def test_the_result_carries_the_last_frame_id():
+    """`LoopResult.last_checkpoint_id` 就是这一段落下的最后一帧 (没配 saver 时是 None).
+
+    会话靠它把下一轮挂上来, 所以它必须是**最后一帧**的编号而不是随便一帧.
+    """
+    saver = InMemoryCheckpointSaver()
+    loop = make_loop(
+        ScriptedModel(
+            [
+                tool_call_response(make_tool_call("query_order", "{}")),
+                text_response("订单已发货"),
+            ]
+        ),
+        [make_counting_tool().tool],
+        saver=saver,
+    )
+
+    result = await loop.run([{"role": "user", "content": "订单到哪了"}])
+
+    frames = await frames_of(saver, "t-1")
+    assert result.last_checkpoint_id == frames[-1].checkpoint_id
+    assert len(frames) == 2, "两轮 = 两帧, 取的是后一帧"
+
+
+async def test_without_a_saver_the_result_carries_no_frame_id():
+    """没配 saver: 这个字段是 None (没有帧可指) —— 调用方据此知道「接不上链」."""
+    loop = AgentLoop(ScriptedModel([text_response("答")]))
+
+    result = await loop.run([{"role": "user", "content": "问"}])
+
+    assert result.last_checkpoint_id is None

@@ -3,10 +3,21 @@
 一句话理解: 这是**会话柜员**. 上层要一段对话的壳子, 找它; 要「某个用户最近聊了
 哪些」, 也找它.
 
-多租户的落点 (difficulties #32): `list_for_tenant` **强制**带 tenant_id 条件,
+多租户的落点 (difficulties #32): 两个列方法都**强制**带 tenant_id 条件,
 签名里也**不给**「不带租户查全部」的选项 —— 多租户项目里最容易出的事故就是
 某处忘了加这个条件, 把 A 公司的会话列表返回给了 B 公司. 少一个可选参数, 就少
 一条能出这种事的路.
+
+两个列方法的取舍 (别随便挑一个用):
+
+| 方法 | 取的是什么 | 谁用 |
+|------|-----------|------|
+| `list_for_tenant` | 这个租户(这个用户)的**全部**会话 | 管理端 / 排查 / 对账 |
+| `list_active_with_messages` | 其中**聊过话且还活着**的那些 | 前端左侧的会话列表 |
+
+第二个为什么不在调用方过滤 (拿到列表再逐条查消息 = N+1 次往返, 而这件事数据库
+一次就做完了): 「有可见消息」是个 EXISTS 条件, 它同时也是**列表该有什么**的一部分
+—— 没聊过的空壳会话 (前端点「新建」那一刻建的) 不该出现在列表里.
 """
 
 from __future__ import annotations
@@ -14,14 +25,14 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import exists, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from CharAgent.db.entities import Thread, ThreadStatus
 from CharAgent.db.errors import DataStoreError
 from CharAgent.db.repositories.base import PgRepository
-from CharAgent.db.schema import threads
+from CharAgent.db.schema import messages, threads
 
 # 列表查询的默认上限: 不设上限的「列全部」在数据长起来之后会拖垮接口,
 # 要用更多就显式传 limit (让「取多少」是一个被想过的决定).
@@ -115,6 +126,73 @@ class ThreadsRepository(PgRepository):
             statement = statement.where(threads.c.user_id == user_id)
         async with self._session() as session:
             return list(session.scalars(statement))
+
+    async def list_active_with_messages(
+        self,
+        tenant_id: str,
+        *,
+        user_id: str | None = None,
+        limit: int = DEFAULT_LIST_LIMIT,
+    ) -> list[Thread]:
+        """列**还能聊且聊过话**的会话 (最近活动的在前) —— 前端会话列表要的那一份.
+
+        「聊过话」的判据是**有一条可见消息** (`hidden = false`): 空壳会话 (点了
+        「新建」还没开口) 与只剩内部件的会话都不进列表 —— 它们点进去也是一片空白.
+
+        Args:
+            tenant_id: 租户 (必填, 理由见模块 docstring).
+            user_id: 只看这个属主的会话; None 表示这个租户下所有用户的.
+            limit: 最多几条 (<= 0 返回空列表).
+
+        Returns:
+            list[Thread]: 按 updated_at 倒序 (刚聊过的在最前).
+        """
+        if limit <= 0:
+            return []
+        # 状态与「有可见消息」都是**过滤条件**而不是取回来再算的: 让数据库用一条
+        # 查询给出最终列表, 调用方不必为每一行再问一次消息表 (N+1)
+        statement = (
+            select(Thread)
+            .where(threads.c.tenant_id == tenant_id)
+            .where(threads.c.status == ThreadStatus.ACTIVE.value)
+            .where(
+                exists().where(
+                    (messages.c.thread_id == threads.c.thread_id)
+                    & messages.c.hidden.is_(False)
+                )
+            )
+            .order_by(threads.c.updated_at.desc(), threads.c.thread_id.desc())
+            .limit(limit)
+        )
+        if user_id is not None:
+            statement = statement.where(threads.c.user_id == user_id)
+        async with self._session() as session:
+            return list(session.scalars(statement))
+
+    async def touch(self, thread_id: str, *, moment: datetime | None = None) -> bool:
+        """刷新会话的「最后活动时刻」(写完一轮记录时调).
+
+        为什么需要它: 会话列表按 `updated_at` 倒序排, 而那个值只在**建会话**那一
+        刻写过一次 —— 不刷的话, 一段聊了三十轮的会话会永远停在创建时间上, 列表
+        顺序就成了「谁先建的谁在下面」, 与「最近聊过的在最前」正好相反.
+
+        `RunsRepository.set_status` 那条写法的同款 (一条带 WHERE 的 UPDATE,
+        顺手把「改了没改到」如实回报给调用方); 单独开一个方法而不是让调用方自己
+        拼 SQL: 要更新的只有这一列, 而它的语义 (活动时刻) 只有这里说得清.
+
+        Args:
+            thread_id: 哪个会话.
+            moment: 显式时刻 (测试用); None 则取当下 (UTC).
+
+        Returns:
+            bool: 改到了行 True; False = 没有这个会话 (调用方多半是漏建了).
+        """
+        values = {"updated_at": moment if moment is not None else datetime.now(UTC)}
+        statement = (
+            update(threads).where(threads.c.thread_id == thread_id).values(**values)
+        )
+        async with self._session() as session:
+            return bool(session.execute(statement).rowcount)
 
     @staticmethod
     def _params(thread: Thread) -> dict[str, object]:

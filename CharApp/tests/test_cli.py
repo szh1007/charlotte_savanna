@@ -57,10 +57,18 @@ def mall_env(monkeypatch) -> None:
     按框架文档把后端切成 redis / postgres —— 那时这些「离线」用例会在落快照时去
     连真实存储 (挂了, 或往 `minimall:*` 分区里写脏数据). 钉死 memory 才是它们宣称的
     那个「不依赖外部服务」.
+
+    **记录表那条线也一起钉** (ticket 17 起): 命令行入口会记账, 不换的话每跑一次用例
+    都往**真库**写一轮 MockLLM 的假对话 (2026-09-22 撞上: 本机 PG 里攒了 300 行,
+    还让「记录表里有什么」这种排查失真). 换法与 `build_saver_for` 同一处缝 ——
+    `cli.build_database` 就是为这一手留的.
     """
+    from CharAgent.tests.doubles import FakeRecordDatabase
+
     monkeypatch.setenv(ENV_TOKEN, "test-internal-token")
     monkeypatch.setenv(ENV_BASE_URL, AGENT_BASE_URL)
     monkeypatch.setenv(checkpoint_config.ENV_BACKEND, "memory")
+    monkeypatch.setattr(cli, "build_database", FakeRecordDatabase)
 
 
 # ---------------------------------------------------------------------------

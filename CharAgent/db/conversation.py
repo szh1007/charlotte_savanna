@@ -41,12 +41,23 @@
 
 同理, 思维链 (reasoning) 也要**跨段拼起来**: 续写的每一段都可能带自己的
 reasoning, 只留最后一段会丢掉前面的思考过程 (前端折叠展示时就是残缺的).
+
+**两个出口, 一个规则** (ticket 17 起): 本文件的规则有两条用法 ——
+
+| 出口 | 函数 | 写出去的是 |
+|------|------|-----------|
+| 记录表 (持久的那份) | `recorded_transcript` | 可见与隐藏**一起**落库 |
+| 一问一答 (调用方直接消费的形态) | `conversation_turns` | 只有问答两行 |
+
+两条出口共用同一个 `_is_visible`, 于是「哪些该给人看」只有一处判定; 差别只在
+交出去的粒度. 记录表那条比 `visible_transcript` 多做一件事: 把截断续写拆出来的
+几段答复**合回一条** (见 `recorded_transcript`).
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from CharAgent.model.utils.types import ModelMessage
@@ -224,14 +235,16 @@ def assistant_answer(
         - 正文: 原样返回 content; 它是 None (没答出正文) 时也返回 None ——
           会话历史里这时的 assistant 行 content 为空, 前端按「这次没答出来」渲染.
         - 思维链: 把这段里所有 assistant 消息的 reasoning_content 依序拼起来
-          (续写的每一段各有各的思考过程, 只留最后一段会丢前面的).
+          (续写的每一段各有各的思考过程, 只留最后一段会丢前面的). 段与段之间
+          **空一行** (`\n\n`): 拼起来的是好几段各自独立的思考, 紧挨着排会读成
+          一段.
     """
     parts = [
         reasoning
         for reasoning in (_reasoning_of(message) for message in messages)
         if reasoning
     ]
-    return content, ("\n".join(parts) if parts else None)
+    return content, ("\n\n".join(parts) if parts else None)
 
 
 def _reasoning_of(message: ModelMessage) -> str | None:
@@ -304,3 +317,72 @@ def _text_of(message: Any) -> str:
 def count_visible(lines: Sequence[TranscriptLine]) -> int:
     """数一数这些消息里有几条是给前端看的 (前端分页与「这个会话聊了几轮」用)."""
     return sum(1 for line in lines if line.visible)
+
+
+def recorded_transcript(
+    messages: Sequence[ModelMessage],
+    content: str | None,
+    *,
+    since: int = 0,
+) -> list[TranscriptLine]:
+    """一次运行新增的消息 → **该落进记录表的那一份** (可见的与隐藏的一起).
+
+    与 `visible_transcript` 只差一件事, 而那件事是模块 docstring 里那条硬规矩的
+    落地: **最终答复的正文取 `LoopResult.content`, 不从消息数组末尾抄**.
+
+    差别为什么必要 (它不只影响正文那一个字段): 截断续写 (CONTINUE) 会把**一次
+    答复**拆成好几条 assistant 消息 —— 前缀一段、续写一段. 按可见性规则它们
+    每一条都是「不带工具调用的 assistant」, 于是都会被标成可见, 而用户会看到同一
+    段答案被截成两截先后出现在会话记录里. 这里的处理: 最后一条拿拼好的完整正文
+    与**跨段合起来**的思维链, 早先那几段退成隐藏行 (原文仍在, 审计查得到).
+
+    Args:
+        messages: 完整 wire 消息历史 (`LoopResult.messages`).
+        content: `LoopResult.content` —— 框架拼好的权威答复 (没有答复时 None).
+        since: 只从第几条开始算 (0 = 从头); 调用方通常传「跑之前历史有多长」,
+            于是只有本次新增的那一段进记录 (老的那部分上一次已经写过了).
+
+    Returns:
+        list[TranscriptLine]: 与输入顺序一致 (调用方按它逐条落库).
+    """
+    if since < 0:
+        since = 0
+    picked = list(messages[since:]) if since else list(messages)
+    lines = [_line_of(message) for message in picked]
+
+    questions = _question_indexes(picked)
+    # 只认最后一个提问之后的那几条: 前面几问的答复不属本次 (与 conversation_turns
+    # 同一个口径 —— 一段历史里可能有多问, 本次的 content 只对应最后一问)
+    start = questions[-1] if questions else -1
+    fragments = [
+        index
+        for index, line in enumerate(lines)
+        if index > start and line.visible and line.role == _ROLE_ASSISTANT
+    ]
+    if not fragments:
+        return lines
+
+    for index in fragments[:-1]:
+        lines[index] = replace(lines[index], hidden=True)
+    answer, reasoning = assistant_answer(
+        content, picked[questions[-1] :] if questions else picked
+    )
+    tail = fragments[-1]
+    lines[tail] = TranscriptLine(
+        role=lines[tail].role,
+        content=answer,
+        reasoning=reasoning,
+        tool_call_ids=list(lines[tail].tool_call_ids),
+        hidden=False,
+    )
+    return lines
+
+
+def has_visible_answer(lines: Sequence[TranscriptLine]) -> bool:
+    """这批行里有没有一条「给用户看的答复」(可见的 assistant 行).
+
+    给记录层用: 一次运行跑完却没产出任何可见答复 (guard 刹车 / 纯工具收尾) 时,
+    记录里只剩用户那句话 —— 页面上那一轮看起来就像凭空消失了. 调用方据此补一条
+    「没答完」的说明 (见 db/recorder.py), 而不是让那一轮静悄悄地少掉.
+    """
+    return any(line.visible and line.role == _ROLE_ASSISTANT for line in lines)

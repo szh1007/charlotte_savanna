@@ -28,10 +28,33 @@
 
 大白话版: 这是「把零件装成一台机器」的装配台. 装好之后对外只有三个动作:
 问一句 (ask)、接着上次跑 (resume)、看一眼存档 (history_table).
+
+**重启之后还认得上一段对话** (ticket 17): 会话历史本来只在内存里, 进程一换就没了
+—— 于是「重启服务接着聊」这件事, 光把快照换成 Postgres 是不够的, 还得**有人去读
+它**. 这一页读 (`_hydrate_once`: 第一次提问前把最新一帧的历史拿回来), 同时负责把
+这一轮**发生过什么**写进记录表 (`recorder=`, 见 db/recorder.py). 两件事都在**会话**
+这一层, 于是命令行与 HTTP 两个入口同时覆盖, 谁都不必各写一份.
+
+三者分工 (别混):
+
+| | 归谁 | 语义 |
+|---|---|---|
+| 快照 (`checkpoint`) | `_saver` | **接着跑**: 断点续跑 / 回溯; |
+| | | 每轮一帧, 帧只插不改 (存的是全量账本) |
+| 记录 (`charagent_messages`) | `recorder` | **给人看**: 持久、只增不减、永不压缩 |
+| 水合 (`_hydrate_once`) | 本文件 | 重启后把快照的历史**读回**内存, |
+| | | 接着问的话才有上文 |
+
+**压缩不落地** (#7 的纪律, 见 `agent/loop.py` 的 `_record_turn`): 压缩只决定「这一次
+请求送什么」, 账本与按它落盘的每一帧都是全量. 帧里另外带着压缩进度 (summary /
+summary_covers 两个字段, 记的是「压到哪一步了」) —— 那是进度, 不是把历史压掉.
+快照当不了记录另有两条: 它是**给机器接着跑**的形态 (编号 + 全量账本 + 计数器),
+而 Redis 那份还会过期.
 """
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import Awaitable, Sequence
 
@@ -42,6 +65,7 @@ from CharAgent.agent import (
     LoopResult,
     TokenCounter,
 )
+from CharAgent.agent.utils.messages import tool_wire
 from CharAgent.checkpoint import (
     Checkpoint,
     CheckpointCapabilities,
@@ -49,13 +73,16 @@ from CharAgent.checkpoint import (
     CheckpointSaver,
     format_history,
 )
+from CharAgent.checkpoint.utils.pending import pending_tool_calls
 from CharAgent.client.utils.types import DEFAULT_THREAD_ID
+from CharAgent.db.entities import RunStatus
+from CharAgent.db.recorder import RunRecorder
 from CharAgent.hooks import HookRegistry
 from CharAgent.model.protocol import ChatModel
 from CharAgent.model.utils.types import ModelMessage
 from CharAgent.prompt import load_prompt, resolve_model_name
 from CharAgent.stream.utils.types import EventSink
-from CharAgent.tool import Tool
+from CharAgent.tool import Tool, ToolExecution
 from CharAgent.tool.tools_demo import (
     batch_convert_lengths,
     convert_length,
@@ -113,6 +140,12 @@ class ChatSession:
             (默认实现 TrimAndSummarize).
         counter: 估算器 (判阈值用); None 表示用默认的锚式估算. 只在配了
             compactor 时有意义.
+        hydrate: 第一次提问前要不要把快照里的历史读回来 (默认 True). 关掉 =
+            每段新会话都从零开始 (调试 / 想开一段全新对话时用); 想彻底不认旧账
+            就换个 thread_id, 那比关这个开关更直白.
+        recorder: 会话记录员 (db/recorder.py 的实现, 或任何有那两个方法的对象);
+            None (默认) 表示不记账, 行为与从前逐字一样. 记录**是旁挂的**: 它的
+            失败不影响 ask 返回结果 (见 `_run` 的说明).
 
     没跑完的那一轮怎么办 (本类最要紧的一条规矩): loop 干活时用的是自己那份**副本**
     历史, 副本随被取消的任务一起没了 —— 但每一轮结束时落过盘的快照还在. 于是失败
@@ -138,12 +171,17 @@ class ChatSession:
         hooks: HookRegistry | None = None,
         compactor: CompactionPolicy | None = None,
         counter: TokenCounter | None = None,
+        hydrate: bool = True,
+        recorder: RunRecorder | None = None,
     ) -> None:
         self._model = model
         self._saver = saver
         self._thread_id = thread_id
         # 身份说明里要写它, 所以装配时就定下来 (值必须跟实际跑的模型一致)
         self._model_name = resolve_model_name(model_name)
+        # 两个开关原样收下 (会话不解释它们: 一个管「读不读历史」, 一个管「记不记账」)
+        self._hydrate = hydrate
+        self._recorder = recorder
         self._loop = AgentLoop(
             model,
             tools,
@@ -183,6 +221,11 @@ class ChatSession:
         # 但白花一次摘要调用, 滚动摘要的收益也就丢了).
         self._summary: str | None = None
         self._summary_covers = 0
+        # 下一帧快照挂在哪一帧下面: 水合时取最新那一帧的编号 (接着写同一棵树),
+        # 每段 run 结束换成刚落的那一帧. 不维护它的话, 同一段对话每问一句就在
+        # 快照存储里多一条新根 (旧链变孤儿) —— 内容不丢, 但「这段对话的快照」看起来
+        # 就成了好几条互不相干的线.
+        self._parent_id: str | None = None
 
     # ------------------------------------------------------------------
     # 只读属性
@@ -256,20 +299,48 @@ class ChatSession:
         已完成的工作也已从快照收回 (见 `_reclaim_progress`), 所以用户说一句
         「继续」就是**一条普通提问**, 模型看着历史自己接得上.
 
+        「重启之后接着聊」同样不需要特殊入口: 第一次提问前会先把快照里的历史
+        读回来 (`_hydrate_once`), 于是这句提问接的是上一段进程留下的对话.
+
         Raises:
             ModelError: 模型调用失败 (重试耗尽后上抛; 此时不发终局事件).
             CheckpointError: 快照落盘失败 (存不下存档是可靠性故障, 不吞).
             asyncio.CancelledError: 被 Ctrl-C 打断 (CLI 的 kill switch 就是
                 `task.cancel`); 本方法不吞, 由 app.py 接住并提示怎么续跑.
+
+        Note:
+            记账是**旁挂的**: 记录员失败不影响本方法返回结果 (它的正常工作方式是
+            自己记日志 + 返回 False, 见 db/recorder.py 的契约). 理由很直白 ——
+            用户已经看到答复了 (终局事件在 loop 里就发过), 不该因为一行账写不进去
+            把一次跑完的问答变成一次失败.
         """
+        await self._hydrate_once()
+        # 记进记录表时从这里切开: 前面那段历史上一次已经写过了, 重写会写出重复行
+        since = len(self._history)
+        # 摘要「新不新」也在这里判 (比较基准是跑之前那份, 而 _run 会把它覆盖掉)
+        before_summary = self._summary
         self._history.append({"role": "user", "content": question})
-        return await self._run(
-            self._loop.run(
-                self._history,
-                summary=self._summary,
-                summary_covers=self._summary_covers,
+        try:
+            result = await self._run(
+                self._loop.run(
+                    self._history,
+                    summary=self._summary,
+                    summary_covers=self._summary_covers,
+                    # 接着上一段的快照链往下写 (水合之后第一帧就挂在那条链上)
+                    parent_id=self._parent_id,
+                )
             )
+        except BaseException as exc:
+            # 取消与失败那一轮也要记: 用户确实说过那句话, 页面上也显示了它 ——
+            # 记录里不该凭空少一轮 (取消与失败在记录里长得一样, 区别在运行行)
+            await self._record_unfinished(question, exc)
+            raise
+        await self._record(
+            result,
+            since=since,
+            summary=result.summary if result.summary != before_summary else None,
         )
+        return result
 
     async def resume(self) -> LoopResult | None:
         """从最新一帧快照接着跑; 没有可恢复的快照时返回 None.
@@ -341,6 +412,9 @@ class ChatSession:
         随异常一起没了, 但它**已经落盘的快照还在** —— 那里面装着已完成的工作
         (工具结果等), 而会话历史里只有用户那句提问. 不收回来的话, 模型下一轮
         就看不到上一轮做过什么, 只能重做一遍.
+
+        记账不在这里 (见 `ask`): 「这一轮问了什么」「新压出来的摘要」都是那次提问
+        的事, 而 `resume` 根本没有这两项 —— 它们不该双双挂成 Optional 传进来.
         """
         try:
             result = await pending
@@ -352,7 +426,78 @@ class ChatSession:
         # 压缩进度与历史同源: 一起收下, 下一句问话接着用
         self._summary = result.summary
         self._summary_covers = result.summary_covers
+        # 下一帧挂在刚落的那一帧下面 (同一段会话的快照因此串成一条链)
+        self._parent_id = result.last_checkpoint_id
         return result
+
+    async def _hydrate_once(self) -> None:
+        """第一次提问前, 把快照里的历史读回内存 (惰性, 只认那一次).
+
+        这是 ticket 17 补的第三件事: `resume()` 的语义是「**接着跑**」(会把欠着的
+        工具调用补做完、再问模型一次), 而这里要的是「**读历史**, 然后正常 ask」.
+        两者都拿快照, 用处完全不同 —— 混用会让一次普通提问变成一次续跑.
+
+        三个条件都满足才动: 开关打开 / 会话历史还只有那条身份说明 (本进程还没聊
+        过) / 快照里有帧. 于是「同一进程里接着聊」这条老路一步都不多走.
+
+        读完还顺手做两件事 (否则重启之后的行为会前后不一致):
+
+        - **给欠着结果的工具调用补一条回填** (见 `_seal_pending_calls`): 快照可能
+          停在「模型要调工具、结果还没回来」的半路, 那样的历史直接喂给模型会被
+          上游拒掉 (tool_calls 与 tool 消息必须配对), 也会把模型推向重发写操作.
+        - **接着快照的链往下写**: 记下最新那一帧的编号当 `parent_id`, 于是重启
+          之后落的帧挂回原来的那棵树上, 而不是又起一条新根.
+
+        读不到快照 (后端故障) 时静默跳过, 当作「这段会话没有历史」: 拿不到旧账
+        不该拦住用户这一句问话. 这种情形下不必我们自己喊 —— 这一轮落快照时同一个
+        后端会再报一次, 那次是往上抛的 (存不下存档不吞).
+
+        Note:
+            失败之后**不设「已试过」标记**: 历史还是只有一条, 于是下一次提问会再
+            试一次 —— 抖动过去之后自己就好了, 成功之后这条门自然关上.
+        """
+        if not self._hydrate or len(self._history) > 1:
+            return
+        try:
+            checkpoint = await self._saver.load_latest(self._thread_id)
+        except CheckpointError:
+            return
+        if checkpoint is None:
+            return
+        self._history = _seal_pending_calls(list(checkpoint.state.messages))
+        # 压缩进度也一起收 (与 `_reclaim_progress` 同一个口径): 不收的话, 重启后
+        # 那一句问话会把同一段旧历史重压一遍 —— 内容不会错, 但白花一次摘要调用
+        self._summary = checkpoint.state.summary
+        self._summary_covers = checkpoint.state.summary_covers
+        self._parent_id = checkpoint.checkpoint_id
+
+    async def _record(
+        self, result: LoopResult, *, since: int, summary: str | None = None
+    ) -> None:
+        """把这一轮交给记录员 (没配记录员 = 一步都不走)."""
+        if self._recorder is None:
+            return
+        await self._recorder.record(
+            thread_id=self._thread_id, result=result, since=since, summary=summary
+        )
+
+    async def _record_unfinished(self, question: str, error: BaseException) -> None:
+        """把「这一轮没答完」交给记录员 (取消与失败都算).
+
+        取消与失败在记录里**写成同一种样子** (提问 + 一句「这一轮没答完」), 区别
+        落在运行行的状态上 (cancelled / failed): 对看记录的人来说它们是同一件事,
+        而「是谁停的」的用处是排查 —— 那是状态列该回答的.
+        """
+        if self._recorder is None:
+            return
+        status = (
+            RunStatus.CANCELLED
+            if isinstance(error, asyncio.CancelledError)
+            else RunStatus.FAILED
+        )
+        await self._recorder.record_unfinished(
+            thread_id=self._thread_id, question=question, status=status
+        )
 
     async def _reclaim_progress(self) -> None:
         """没跑完时, 把快照里已完成的工作收进会话历史 (**只做加法**).
@@ -389,3 +534,43 @@ class ChatSession:
             self._history = messages
             self._summary = checkpoint.state.summary
             self._summary_covers = checkpoint.state.summary_covers
+        # 下一帧挂到最新那一帧下面: 哪怕这次没收历史, 最新那一帧也是当前进度所在
+        self._parent_id = checkpoint.checkpoint_id
+
+
+# 水合时给「欠着结果的工具调用」补的回填文本.
+#
+# 用「未知」而不是「未执行」: 进程可能死在工具执行的**中间**, 说「没执行」是
+# 撒谎 —— 而模型正是靠这句话判断要不要重发.
+UNKNOWN_RESULT_TEXT = "本次服务中断, 这一步的结果未知"
+
+
+def _seal_pending_calls(messages: list[ModelMessage]) -> list[ModelMessage]:
+    """给历史里「欠着结果」的工具调用补一条「结果未知」的回填 (水合专用).
+
+    为什么必须补 (而不是把那半截丢掉): 丢掉之后模型看到的是「我从没调过这个
+    工具」, 下一轮很可能**重发** —— 而那个工具可能是下单 / 退款, 重发就是重复
+    下单. 补一条「结果未知」会把模型推向**先查状态** (读工具) 而不是重发.
+
+    为什么绝不顺手把欠着的调用执行掉: 那等于服务重启后自动重放写操作 —— 与
+    「高危操作绝不自动执行」是同一条纪律 (见 checkpoint/utils/pending.py).
+
+    Args:
+        messages: 从快照里读回来的历史 (调用方给的是副本, 本函数不改它).
+
+    Returns:
+        list[ModelMessage]: 补好回填的列表; 没有欠账时**原样返回**(不复制).
+    """
+    pending = pending_tool_calls(messages)
+    if not pending:
+        return messages
+    sealed = list(messages)
+    for call in pending:
+        # 复用工具轮那条 wire 构造: 「tool_calls 与 tool 消息怎么配对」只有一处定义
+        sealed.append(
+            tool_wire(
+                call.id,
+                ToolExecution(tool_name=call.name, ok=False, error=UNKNOWN_RESULT_TEXT),
+            )
+        )
+    return sealed

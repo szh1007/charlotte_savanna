@@ -44,7 +44,12 @@ Starlette 读出来是按 latin-1 解码的 str —— 中文令牌 / 中文买�
 顺手关了别人的 (框架的 `server/sessions.py` 明文写着它从不调它).
 
 **不做的事**: 不写面向用户的文案 (框架只转发事实 —— 错误码 + message, 降级话术
-归 Django 那侧, 见框架 `docs/DESIGN.md`); 不接 `db/`; 不做前端 (issue 06).
+归 Django 那侧, 见框架 `docs/DESIGN.md`); 不做前端 (issue 06).
+
+**与记录表那条线的关系** (ticket 17 起): 本进程建一个 `PgDatabase` 交给装配, 于是
+每轮问答的账写进 `charagent_threads` / `runs` / `messages`, 而框架据此把 `/history`
+指向记录表、并多注册一条 `GET /conversations`. 业务这一侧**一行 SQL 都不写** ——
+它只是把库入口递过去 (写什么、怎么分层全在框架的 `db/` 里).
 """
 
 from __future__ import annotations
@@ -69,6 +74,7 @@ from CharAgent.client import (
     load_root_env,
     use_utf8_stdio,
 )
+from CharAgent.db import PgDatabase
 from CharAgent.server import ServerAuthError, create_app
 from CharAgent.stream import EventSink
 from CharApp.minimall.client import HEADER_TOKEN, HEADER_USER_ID
@@ -81,6 +87,7 @@ from CharApp.minimall.config import (
 from CharApp.minimall.redaction import redacting_sink
 from CharApp.minimall.service import (
     STARTUP_ERRORS,
+    TENANT_WEB,
     MinimallService,
     build_context,
     build_model_for,
@@ -164,10 +171,13 @@ class MinimallContexts:
     async def provide(self, request: Request) -> RunContext:
         """认下这次请求: 先认证, 再取身份 (顺序有意: 不认识的人不该看见任何业务信息)."""
         self._require_token(request)
-        # ↓ 身份从哪来: 就这两行, 余下全是共用的 build_context
+        # ↓ 身份从哪来: 就这几点, 余下全是共用的 build_context
         return build_context(
             buyer_id_from_request(request),
             conversation_id_from_request(request),
+            # 这个入口 = 网页端 (命令行那个入口自己传 TENANT_CLI): 同一买家在两条
+            # 来路上的会话因此分开放, 左栏只显示网页里聊过的 (见 service.TENANT_CLI)
+            tenant_id=TENANT_WEB,
         )
 
     def _require_token(self, request: Request) -> None:
@@ -270,6 +280,11 @@ def build_service(writer: Callable[[str], Any]) -> MinimallService:
         model=build_model_for(framework, writer),
         saver=build_saver_for(framework),
         thinking=thinking_from_env(),
+        # 记录表那条线: 连接配置与快照后端同源 (根 .env 的 CHARAGENT_DB_DSN /
+        # PGSQL_*). **构造不连库** (PgDatabase 的引擎是懒建的), 于是没配库 /
+        # 库不在线都不拦住进程启动 —— 真到写记录时连不上就降级 (日志 + 提示行,
+        # 见 db/recorder.py), 买家的问答不受影响.
+        database=PgDatabase(),
     )
 
 
@@ -294,6 +309,10 @@ def create_minimall_app(service: MinimallService, config: ServerConfig) -> FastA
     return create_app(
         context_provider=MinimallContexts(token=config.token),
         session_provider=MinimallSessions(service=service),
+        # 把记录表那条线一并交给框架: 它据此把 /history 指向记录表, 并多注册一条
+        # GET /conversations (前端左侧列表要的). 没配库时这里是 None, 那两条路
+        # 各自退回「没有记录层」的样子 (见 create_app 的说明).
+        database=service.database,
     )
 
 
@@ -360,7 +379,7 @@ def main() -> int:
         return 1
 
     logger.info(
-        "客服服务启动中: http://%s:%d (三条路: 问一句 / 停一次 / 读历史)",
+        "客服服务启动中: http://%s:%d (四条路: 问一句 / 停一次 / 读历史 / 列会话)",
         config.host,
         config.port,
     )

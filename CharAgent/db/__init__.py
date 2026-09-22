@@ -10,7 +10,7 @@
 运行跑成什么样、用户问了什么、模型答了什么、调了哪些工具. P0 的 checkpoint 只
 解决「接着跑」, 不解决「查得到、看得到」. 本包补的就是后者.
 
-八个部分的分工 (行为在上, 静态零件在下):
+九个部分的分工 (行为在上, 静态零件在下):
 
 | 文件 | 管什么 |
 |------|--------|
@@ -22,6 +22,8 @@
 | `config.py` | 连接配置 (环境变量 → 连接串) |
 | `errors.py` | 三类错误 (配置错 / 状态迁移非法 / 库出错) |
 | `repositories/` | 四个取数口 (会话 / 运行 / 消息 / 工具调用) |
+| `recorder.py` | 会话记录: 一次运行收尾把这一轮写进上面几张表 |
+| | (本包**第一个生产调用方** —— 此前那几张表没有任何生产代码在用) |
 
 怎么用 (典型的一段: 跑完一次运行, 把结果落库)::
 
@@ -69,6 +71,8 @@ from CharAgent.db.conversation import (
     assistant_answer,
     conversation_turns,
     count_visible,
+    has_visible_answer,
+    recorded_transcript,
     visible_transcript,
 )
 from CharAgent.db.database import PgDatabase
@@ -89,6 +93,7 @@ from CharAgent.db.errors import (
     DbError,
     InvalidTransitionError,
 )
+from CharAgent.db.recorder import ConversationRecorder, RunRecorder, title_for
 from CharAgent.db.repositories import (
     Database,
     MessagesRepository,
@@ -125,6 +130,7 @@ __all__ = [
     "TABLE_NAMES",
     "TERMINAL_RUN_STATUSES",
     "CheckpointRow",
+    "ConversationRecorder",
     "DataConfigError",
     "DataStoreError",
     "Database",
@@ -136,6 +142,7 @@ __all__ = [
     "PgDatabase",
     "PgRepository",
     "Run",
+    "RunRecorder",
     "RunStatus",
     "RunsRepository",
     "Thread",
@@ -154,13 +161,16 @@ __all__ = [
     "count_visible",
     "echo_enabled",
     "ensure_transition",
+    "has_visible_answer",
     "messages",
     "metadata",
     "model_to_dict",
+    "recorded_transcript",
     "run_status_for_outcome",
     "runs",
     "sqlalchemy_url",
     "threads",
+    "title_for",
     "tool_calls",
     "visible_transcript",
 ]

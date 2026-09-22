@@ -34,6 +34,7 @@ import yaml
 from CharAgent.agent import GuardConfigError, LoopConfigError, LoopGuard, RunContext
 from CharAgent.checkpoint import CheckpointError, CheckpointSaver
 from CharAgent.client import ChatSession, CliOptions, build_model
+from CharAgent.db import ConversationRecorder, PgDatabase
 from CharAgent.hooks import HookRegistry
 from CharAgent.model import ModelError
 from CharAgent.model.protocol import ChatModel
@@ -52,6 +53,16 @@ from CharApp.minimall.provider import (
 # 会话编号的第一段 (PRD §4.11: `业务:买家ID:对话ID`) —— 快照按它分区, 于是
 # 多用户隔离是免费得到的: 换一个买家就是换一个分区, 谁也读不到谁的档.
 CONVERSATION_PREFIX = "minimall"
+
+# 身份里的「租户」两段 (ticket 17): 框架按它分区与过滤, 而这里就是 PRD §4.11 那
+# 三段编号的第一段 —— **同一个买家在网页端与命令行是两个租户**.
+#
+# 为什么要分开 (而不是都用 "minimall"): 两边都是同一个人在说话, 但前端左栏该
+# 显示的是「网页里聊过的会话」—— 命令行里敲的那些是开发者自己的调试痕迹, 不该
+# 混进买家的会话列表. 分租户之后这件事**免费**成立 (框架的列表按 tenant 过滤),
+# 业务侧不必再写一条「把 cli 的过滤掉」的规则.
+TENANT_WEB = CONVERSATION_PREFIX
+TENANT_CLI = f"{CONVERSATION_PREFIX}-cli"
 
 # 一次运行最多几轮模型决策 (LoopGuard) —— 两个入口的默认值同源, 免得一边改了
 # 另一边还是老数字. CLI 的 `--max-turns` 缺省值也读它.
@@ -164,23 +175,32 @@ def thread_id_for(user_id: int, conversation_id: str) -> str:
     return f"{CONVERSATION_PREFIX}:{user_id}:{conversation_id}"
 
 
-def build_context(user_id: int, conversation_id: str) -> RunContext:
+def build_context(user_id: int, conversation_id: str, *, tenant_id: str) -> RunContext:
     """买家身份 → 运行上下文; **买家身份从哪来, 全项目只有这一处**.
 
     CLI 从命令行参数取 (`--user-id`), 服务进程从 Django 转发的请求头取
     (`X-User-Id`) —— 两个入口各自只有一行「从哪取」, 取到之后走的是这里 (PRD
-    §4.2). 框架不解释载荷里是什么, 只认 `thread_id`; 而 `provider.provide` 之后
-    的一切 (工具、闭包、schema) 与身份来自哪儿完全无关.
+    §4.2). `provider.provide` 之后的一切 (工具、闭包、schema) 与身份来自哪儿
+    完全无关; 框架也不解释载荷里是什么 (身份在那个闭包里, 不在参数表上).
 
     Args:
         user_id: 买家在商城里的 User ID.
         conversation_id: 会话编号的第三段 (同一买家的第几段对话).
+        tenant_id: 这次是谁在用这个身份说话 (`TENANT_WEB` / `TENANT_CLI`).
+            **必填 keyword**: 框架按它分租户存放与列出会话, 给个默认值等于让
+            「忘了填」变成一段谁也看不见的会话 —— 与框架不给那两个字段默认值
+            是同一条理由.
 
     Returns:
-        RunContext: 会话编号 + 装着买家身份的载荷 (框架不解释这个载荷).
+        RunContext: 会话编号 + 属主身份 (租户 / 买家) + 装着买家 ID 的载荷.
     """
     return RunContext(
         thread_id=thread_id_for(user_id, conversation_id),
+        tenant_id=tenant_id,
+        # 框架只把这个值当**过滤键** (字符串), 而买家 ID 在本业务里是整数:
+        # 转换就放在这一处接缝上, 别处一律按一种形态说话 (载荷里仍是整数 ——
+        # 那是业务自己的口径, 工具闭包按它取身份).
+        user_id=str(user_id),
         payload={PAYLOAD_USER_ID: user_id},
     )
 
@@ -203,6 +223,10 @@ class MinimallService:
             里问十几句、一个进程里几十个买家, 都只用这一条连接池 (见 client.py).
         model: 模型适配器 (含重试包装), 同样进程级共享.
         saver: 快照后端 (按 thread_id 分区, 一个进程一个).
+        database: 记录表那条线的库入口 (ticket 17); None 表示这个进程不记账 ——
+            会话照常能问答, 只是「重启后拿回历史」与「会话列表」没有落点.
+            给了它就顺便决定了两件事: 每轮问答的账写进记录表 (见 db/recorder.py),
+            以及服务进程多一条 `GET /conversations` 路由.
         model_name: 模型名覆盖; None 表示听 .env 的 DEEPSEEK_MODEL_NAME.
         thinking: 思考模式开关; None 表示不传 (上游默认开启). 服务端从
             `CHARAPP_THINKING` 读, 命令行入口从 `--no-thinking` 读 (两边都不填时
@@ -219,6 +243,7 @@ class MinimallService:
     client: MinimallClient
     model: ChatModel
     saver: CheckpointSaver
+    database: PgDatabase | None = None
     model_name: str | None = None
     thinking: bool | None = None
     max_turns: int = DEFAULT_MAX_TURNS
@@ -228,11 +253,14 @@ class MinimallService:
     async def session_for(
         self, context: RunContext, *, event_sink: EventSink
     ) -> ChatSession:
-        """把零件装成一台能问答的机器: 上下文 → 工具 + 护栏 → 会话 (**唯一一处装配**).
+        """把零件装成一台能问答的机器: 上下文 → 工具 + 护栏 + 记录员 → 会话.
+
+        这是**唯一一处装配**: 命令行与 HTTP 两个入口都经过它, 于是「工具装了、
+        护栏没挂」或「网页版记了账、命令行没记」这类半边生效不会发生.
 
         顺序如实反映依赖: 先拿上下文换工具 (提供者是异步的), 再把工具与护栏一起
         交给会话 —— 框架的 `ChatSession` 至今不知道 `RunContext` 存在 (见
-        `agent/provider.py`); 业务借它的 `hooks=` 参数挂自己的插件.
+        `agent/provider.py`); 业务借它的 `hooks=` 挂插件、借 `recorder=` 记账.
 
         为什么要收一个 `event_sink`: 事件的出口在**会话构造时**就定死了, 而一个
         会话要连续服务很多次运行. HTTP 那侧由框架按运行分流 (它递进来的是一条
@@ -276,12 +304,33 @@ class MinimallService:
             prompt_name=f"{PROMPT_NAME}/{resolve_prompt_version()}",
             prompt_dir=PROMPT_DIR,
             hooks=hooks,
+            # 记账挂在这一处装配上 (与护栏同一个理由): 两个入口都经过这里, 于是
+            # 「网页版记了、命令行没记」这种半边生效不会发生.
+            recorder=self._recorder_for(context),
+        )
+
+    def _recorder_for(self, context: RunContext) -> ConversationRecorder | None:
+        """这个买家的会话记录员 (没配库就是 None = 不记账).
+
+        记录员按 **(租户, 买家)** 绑定: 一个实例只服务一段会话的属主, 写入时不可能
+        把别人的账记到自己名下 (见 db/recorder.py 的类 docstring).
+
+        为什么 None 是「不记账」而不是「报错」: 演示环境可能压根没有 Postgres,
+        而**没有记录不该让助手不能问答** —— 那是本片最要紧的一条 (写记录失败都
+        只降级, 何况没配).
+        """
+        if self.database is None:
+            return None
+        return ConversationRecorder(
+            database=self.database,
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
         )
 
     async def aclose(self) -> None:
-        """进程级收尾: 关掉商城连接池、模型、快照存储 (谁建谁关).
+        """进程级收尾: 关掉商城连接池、模型、快照存储、记录库 (谁建谁关).
 
-        为什么**不**改成逐个关会话: 会话与别的会话共用这三件资源 (进程级), 而
+        为什么**不**改成逐个关会话: 会话与别的会话共用这几件资源 (进程级), 而
         `ChatSession.aclose()` 会把模型与存储一起关掉 —— 关一个会话就顺手把别人
         的也关了. 框架那侧明文写着它从不调它 (`server/sessions.py` 的「谁建谁关」
         一段), 这里同理.
@@ -289,6 +338,8 @@ class MinimallService:
         await self.model.aclose()
         await self.saver.aclose()
         await self.client.aclose()
+        if self.database is not None:
+            await self.database.dispose()
 
 
 __all__ = [
@@ -300,6 +351,8 @@ __all__ = [
     "PROMPT_MANIFEST",
     "PROMPT_NAME",
     "STARTUP_ERRORS",
+    "TENANT_CLI",
+    "TENANT_WEB",
     "MinimallService",
     "build_context",
     "build_model_for",

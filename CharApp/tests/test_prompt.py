@@ -31,6 +31,7 @@ from CharApp.minimall.service import (
     PROMPT_DIR,
     PROMPT_MANIFEST,
     PROMPT_NAME,
+    TENANT_WEB,
     MinimallService,
     build_context,
     resolve_prompt_version,
@@ -219,7 +220,10 @@ async def test_switching_the_manifest_switches_what_the_assembly_loads(
         client=client,
         model=MockLLM.fixed(text_response("好的")),
         saver=InMemoryCheckpointSaver(),
-    ).session_for(build_context(BUYER_ID, "prompt-test"), event_sink=lambda event: None)
+    ).session_for(
+        build_context(BUYER_ID, "prompt-test", tenant_id=TENANT_WEB),
+        event_sink=lambda event: None,
+    )
 
     assert session.history[0]["content"] == "你是 v9 客服.\n"
 

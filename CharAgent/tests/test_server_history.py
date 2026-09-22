@@ -1,15 +1,27 @@
 """会话历史只读端点 (ASGI 端到端): 刷新之后对话还在, 且只交出该交的那一份.
 
-会话活在**进程内存**里 (按 thread_id 长驻), 浏览器刷新会把页面那一份渲染丢光 ——
-这条路由就是那个读口. 用例分三层:
+这条路由就是「浏览器刷新之后把聊过的话再取一遍」的那个读口, 而**取哪儿由装配
+决定** (见 `create_app` 的 `database`):
 
-1. **取回来的是对话**: 问一句之后拉历史, 拿到的是 user / assistant 两段; 中间轮的
-   叙述 (「我查一下」) 也在, 因为那是模型说过的话.
-2. **不该出去的一个都不出去**: system (业务的提示词) 与 tool (工具返回值全文) 被
-   滤掉, 事件的其余字段 (reasoning_content / tool_calls) 一个都不复制. 样本里的
-   区段名与内部编号只出现在**工具那两处** (参数与返回), 于是「整段响应里搜不到
-   它们」就是一条能兑现的断言.
-3. **只读**: 写意图 (POST / DELETE) 被挡在门外, 而且**不产生任何运行**、也不建会话
+| 装配 | 来源 | 过滤规则 |
+|------|------|---------|
+| 给了库 | 记录表 (`charagent_messages`) | 按 `hidden`, 写记录时就定好了 |
+| 没给库 | 会话内存 (`ChatSession.history`) | 按角色 (system / tool 都不出去) |
+
+两套各有一批用例, 而**同一段对话里的两批不一样**正是下面第 4 组要钉住的:
+两个来源不互相兜底, 同一份请求要么一直读库要么一直读内存.
+
+用例分四组:
+
+1. **内存那份**: 问一句之后拉历史, 拿到的是 user / assistant 两段; 中间轮的叙述
+   (「我查一下」) 也在, 因为那是模型说过的话.
+2. **不该出去的一个都不出去** (内存那份): system (业务的提示词) 与 tool (工具返回
+   值全文) 被滤掉, 事件的其余字段 (reasoning_content / tool_calls) 一个都不复制.
+   样本里的区段名与内部编号只出现在**工具那两处** (参数与返回), 于是「整段响应里
+   搜不到它们」就是一条能兑现的断言.
+3. **记录表那份**: 连可见的 system 说明 (「这一轮没答完」) 一起交出去 —— 那正是
+   用户最需要看到的一种消息.
+4. **只读**: 写意图 (POST / DELETE) 被挡在门外, 而且**不产生任何运行**、也不建会话
    —— 拉历史这件事不该有副作用.
 
 业务与电商毫无关系 (与 `test_server_app.py` 同一套玩具业务做法): 框架的用例里
@@ -24,11 +36,14 @@ from typing import Any
 
 import httpx
 import pytest
+from doubles import BrokenRecordDatabase, FakeRecordDatabase, record_message
 from mock_llm import MockLLM, make_tool_call, text_response, tool_call_response
 
 from CharAgent.agent import RunContext
 from CharAgent.checkpoint import InMemoryCheckpointSaver
 from CharAgent.client.session import ChatSession
+from CharAgent.db import MessagesRepository, ThreadsRepository
+from CharAgent.db.conversation import TranscriptLine
 from CharAgent.model.protocol import ChatModel
 from CharAgent.server import (
     HISTORY_PATH,
@@ -69,7 +84,12 @@ class ToyContexts:
         if request.headers.get("X-Toy-Token") != TOKEN:
             raise ServerAuthError()
         user = request.headers.get("X-Toy-User", "anonymous")
-        return RunContext(thread_id=f"toy:{user}:1", payload={"user": user})
+        return RunContext(
+            thread_id=f"toy:{user}:1",
+            tenant_id="toy",
+            user_id=user,
+            payload={"user": user},
+        )
 
 
 @dataclass
@@ -323,3 +343,163 @@ def test_the_display_roles_are_the_two_that_are_a_dialogue() -> None:
     from CharAgent.server.history import DISPLAY_ROLES
 
     assert frozenset({"user", "assistant"}) == DISPLAY_ROLES
+
+
+# ---------------------------------------------------------------------------
+# 记录表那条来源 (装配时给了库): 读的是给人看的那份持久记录
+# ---------------------------------------------------------------------------
+
+
+def build_on_records(records: FakeRecordDatabase, model: ChatModel) -> Any:
+    """起一个**接了记录表**的玩具服务 (与 `build` 只差一个 `database=`)."""
+    return create_app(
+        context_provider=ToyContexts(),
+        session_provider=ToySessions(model=model),
+        database=records,
+    )
+
+
+async def test_the_record_table_is_the_source_when_a_database_is_given() -> None:
+    """给了库就读记录表 —— 而**会话内存里那份不参与** (两个来源不混).
+
+    这条用例的做法是把两边摆成不一样: 先问一句 (会话内存里因此有了这一问一答),
+    再让记录表给出另一批行. 拿到的是记录表那批 —— 「同一段对话刷新两次看到不
+    一样」正是这一条要挡住的.
+    """
+    app = build_on_records(
+        FakeRecordDatabase(
+            messages=[
+                record_message("user", "记录表里的问题"),
+                record_message("assistant", "记录表里的答复"),
+            ]
+        ),
+        MockLLM.scripted(ONE_QUESTION),
+    )
+    await talk(app, "内存里的问题")
+
+    payload = (await history(app)).json()
+
+    assert payload[MESSAGES_FIELD] == [
+        {"role": "user", "content": "记录表里的问题"},
+        {"role": "assistant", "content": "记录表里的答复"},
+    ]
+
+
+async def test_a_visible_system_note_does_reach_the_reader() -> None:
+    """记录里那条可见的 system 说明 (「这一轮没答完」) 要给用户看.
+
+    老实现按角色白名单只放行 user / assistant, 会把这条吞掉 —— 而它恰恰是用户
+    最需要看到的一种消息 (那一轮没了).
+    """
+    app = build_on_records(
+        FakeRecordDatabase(
+            messages=[
+                record_message("user", "这一句没答完"),
+                record_message("system", "这一轮没答完"),
+            ]
+        ),
+        MockLLM.scripted(ONE_QUESTION),
+    )
+
+    messages = (await history(app)).json()[MESSAGES_FIELD]
+
+    assert messages == [
+        {"role": "user", "content": "这一句没答完"},
+        {"role": "system", "content": "这一轮没答完"},
+    ]
+
+
+async def test_the_record_table_source_also_drops_fields_and_keeps_empty() -> None:
+    """交出去的还是那两个键 (白名单); 记录表为空时回空列表, 不是 404."""
+    app = build_on_records(
+        FakeRecordDatabase(messages=[record_message("assistant", None)]),
+        MockLLM.scripted(ONE_QUESTION),
+    )
+
+    single = (await history(app)).json()[MESSAGES_FIELD]
+    empty = (
+        await history(build_on_records(FakeRecordDatabase(), MockLLM.scripted([])))
+    ).json()
+
+    assert single == [{"role": "assistant", "content": None}], (
+        "答复为 None 的那一行照样出现 (如实: 问了没答出来)"
+    )
+    assert empty == {THREAD_ID_FIELD: "toy:u-9f3a:1", MESSAGES_FIELD: []}
+
+
+async def test_a_broken_record_store_answers_with_a_clean_503() -> None:
+    """读不到记录表 → 503 + 机器可读的错误码 (不是未处理异常冒出去).
+
+    为什么值得一条: 只读那两条路读的是库, 而库连不上是**可用性**故障 —— 不翻译的话
+    客户端拿到一个没有 code 的 500, 转发方只能猜「是我请求错了还是它挂了」.
+    """
+    app = create_app(
+        context_provider=ToyContexts(),
+        session_provider=ToySessions(model=MockLLM.scripted(ONE_QUESTION)),
+        database=BrokenRecordDatabase(),
+    )
+
+    response = await history(app)
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "record_store_unavailable"
+
+
+async def test_the_record_reader_never_asks_for_a_session() -> None:
+    """读记录表那条路**连会话都不碰** —— 它读的是库, 与内存里的会话无关."""
+    app = build_on_records(
+        FakeRecordDatabase(messages=[record_message("user", "记录表里的问题")]),
+        MockLLM.scripted(ONE_QUESTION),
+    )
+
+    await history(app)
+
+    assert app.state.session_registry.thread_ids == ()
+
+
+# ---------------------------------------------------------------------------
+# 真库那条路 (标 pg_db): 端点的过滤真的穿过仓储落到 SQL 上
+# ---------------------------------------------------------------------------
+
+# 下面这条需要本机 Postgres (默认被 addopts 排除); 验收时显式跑 `pytest -m pg_db`.
+# 为什么非要有它: 上面那些用例用的是假库 —— 假库直接给出「库里有哪些行」, 于是
+# 「hidden 的行不出现在返回里」这件事在那边是**假设**而不是**验证**. 而这条恰恰
+# 是记录表那条来源最要紧的一条 (把 `list_conversation` 换成不过滤的读法, 假库
+# 用例不会红).
+
+
+@pytest.mark.pg_db
+async def test_the_reader_only_hands_out_the_visible_rows(db: Any) -> None:
+    """真库: 标成 `hidden=True` 的那一行不出现在 `/history` 里.
+
+    做法与生产同一条链: 记录表里放两行 (一行可见 / 一行隐藏), 装配一个接着这个
+    库的 app, 打一次 `/history`.
+    """
+    # 会话行要先在 (消息挂着外键): 生产里那是记录员懒创建的
+    thread_id = "toy:u-9f3a:1"
+    await ThreadsRepository(db).add(
+        thread_id=thread_id, tenant_id="toy", user_id="u-9f3a"
+    )
+    await MessagesRepository(db).add_lines(
+        thread_id=thread_id,
+        lines=[
+            TranscriptLine(role="user", content="看得见的问题", reasoning=None),
+            TranscriptLine(
+                role="system",
+                content="内部件 (不该出去)",
+                reasoning=None,
+                hidden=True,
+            ),
+        ],
+    )
+    app = create_app(
+        context_provider=ToyContexts(),
+        session_provider=ToySessions(model=MockLLM.scripted(ONE_QUESTION)),
+        database=db,
+    )
+
+    payload = (await history(app)).json()
+
+    assert payload[MESSAGES_FIELD] == [
+        {"role": "user", "content": "看得见的问题"},
+    ]

@@ -18,6 +18,8 @@ from CharAgent.db.conversation import (
     assistant_answer,
     conversation_turns,
     count_visible,
+    has_visible_answer,
+    recorded_transcript,
     visible_transcript,
 )
 
@@ -129,8 +131,8 @@ def test_continuation_answer_uses_loop_result_content_not_last_message():
 
     assert answer == joined
     assert answer != wire[-1]["content"], "抄了尾段 —— 这正是要防的错误"
-    # 思维链要跨段拼起来 (两段各有各的思考过程, 只留最后一段就是残缺的)
-    assert reasoning == "先写地理\n续写形态"
+    # 思维链要跨段拼起来, 段间空一行 (两段各有各的思考过程, 只留最后一段就是残缺的)
+    assert reasoning == "先写地理\n\n续写形态"
 
 
 def test_answer_can_be_none_when_nothing_was_produced():
@@ -284,3 +286,77 @@ def test_turn_pair_is_a_plain_dataclass():
 
     assert (turn.question, turn.answer, turn.reasoning) == ("问", "答", "想")
     assert TurnPair(question="问", answer=None).reasoning is None
+
+
+# ---------------------------------------------------------------------------
+# 记录表那条出口 (recorded_transcript): 与上面同一条可见性规则, 多一步「合答复」
+# ---------------------------------------------------------------------------
+
+
+def test_recorded_keeps_hidden_and_visible_lines_together():
+    """记录表那条出口**两类都收**: 可见的给人看, 隐藏的留着审计.
+
+    与 `visible_transcript` 的差别在粒度而不是规则 —— 同一段接线跑出来的两份东西
+    不该有两套「哪条该藏」的判定.
+    """
+    wire = [
+        _user("订单到哪了"),
+        _assistant("让我先查一下", calls=["call_0"]),
+        {"role": "tool", "tool_call_id": "call_0", "content": "已发货"},
+        _assistant("已发货, 明天到", reasoning="按轨迹算"),
+    ]
+
+    lines = recorded_transcript(wire, "已发货, 明天到")
+
+    assert [line.visible for line in lines] == [True, False, False, True]
+    assert lines[0].content == "订单到哪了"
+    assert lines[3].reasoning == "按轨迹算"
+
+
+def test_recorded_merges_the_segments_of_one_truncated_answer():
+    """截断续写拆出来的几段答复**合回一条** (早先那几段退成隐藏行).
+
+    不这么做的话, 用户会在记录里看到同一段答案被截成两截先后出现 —— 而
+    `LoopResult.content` 本来就是拼好的那一份 (模块 docstring 那条硬规矩).
+    """
+    wire = [
+        _user("讲个故事"),
+        _assistant("从前有座山", reasoning="开头"),
+        {"role": "system", "content": "接着上面继续写"},
+        _assistant("山里有座庙", reasoning="接上"),
+    ]
+
+    lines = recorded_transcript(wire, "从前有座山山里有座庙")
+
+    assert [line.visible for line in lines] == [True, False, False, True]
+    assert lines[1].content == "从前有座山", "早先那段原文还在 (审计查得到)"
+    assert lines[3].content == "从前有座山山里有座庙", "答复取拼好的那一份"
+    assert lines[3].reasoning == "开头\n\n接上", "思维链跨段拼起来, 段间空一行"
+
+
+def test_recorded_keeps_the_tail_of_an_unfinished_run_visible():
+    """没给出答复时 (content 为 None) 也**不凭空造一条答复** —— 那一行照实为 None.
+
+    前端据此渲染「这次没答出来」(比什么都没有诚实); 补「没答完」那句说明是记录员
+    的事 (见 db/recorder.py), 不是这一层.
+    """
+    lines = recorded_transcript([_user("问"), _assistant("", calls=["call_0"])], None)
+
+    assert has_visible_answer(lines) is False
+
+
+def test_recorded_only_looks_at_what_this_run_added():
+    """`since` 之后的那一段才进记录 —— 前面那段上一次已经写过了.
+
+    重写一遍会写出重复行, 而「同一段对话刷新两次看到不一样」是最难查的一类 bug.
+    """
+    wire = [
+        _user("第一问"),
+        _assistant("第一答"),
+        _user("第二问"),
+        _assistant("第二答"),
+    ]
+
+    lines = recorded_transcript(wire, "第二答", since=2)
+
+    assert [line.content for line in lines] == ["第二问", "第二答"]

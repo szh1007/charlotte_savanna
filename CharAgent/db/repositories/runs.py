@@ -20,7 +20,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from CharAgent.db.entities import Run, RunStatus
-from CharAgent.db.errors import DataStoreError
+from CharAgent.db.errors import DataConfigError, DataStoreError
 from CharAgent.db.repositories.base import PgRepository
 from CharAgent.db.schema import runs
 from CharAgent.db.state import TERMINAL_RUN_STATUSES, ensure_transition
@@ -87,6 +87,71 @@ class RunsRepository(PgRepository):
                     f"这次运行没能建起来 (request_id={run.request_id!r} 可能已经被"
                     f"用过了): {exc.orig}"
                 ) from exc
+            return self._one(session, run.run_id)
+
+    async def add_terminal(
+        self,
+        *,
+        thread_id: str,
+        status: RunStatus,
+        run_id: str | None = None,
+        turn_count: int = 0,
+        total_tokens: int = 0,
+        moment: datetime | None = None,
+    ) -> Run:
+        """把一次**已经跑完**的运行记成一行 (直接以终态落库).
+
+        与 `add` 的差别只有一条: 这是**记录一个已经发生的事实**, 不是**开始一次
+        执行**. 所以它不做「建 created 再迁状态」那三步 —— `created → running →
+        finished` 每一步都要求一次往返 (每次一个事务), 而这里回放的是一个已知的
+        结局; 它也把 `finished_at` 一并写上, 免得库里出现「状态是终态而 finished_at
+        是 NULL」这种自相矛盾的行 (`state.py` 明说 NULL 表示还没跑到终点).
+
+        状态机 (state.py 的合法迁移表) 管的是**活着的**运行怎么走; 这个方法写的是
+        它的结局, 所以只校验「你给的是不是终态」, 不校验迁移路径.
+
+        Args:
+            thread_id: 属于哪段会话 (会话必须已存在, 否则外键会拦下来).
+            status: 终态之一 (finished / failed / cancelled).
+            run_id: 显式编号 (测试用); None 则生成 uuid4 hex.
+            turn_count: 这次跑了多少轮模型决策.
+            total_tokens: 这次累计用量 (L3 的成本归因接着往这几列上加).
+            moment: 显式时刻 (测试用); None 则取当下 (UTC) —— 建 / 更新 / 结束
+                三个时刻取同一个值: 这是一条**回顾**记录, 不是三个真实时刻.
+
+        Returns:
+            Run: 落好的实体.
+
+        Raises:
+            DataConfigError: 给的状态不是终态 (那是调用方搞错了 —— 一条历史记录
+                不该停在半路, 那种行该由 `add` 建出来再逐条推进).
+            DataStoreError: 写库失败 (会话不存在 / 库连不上).
+        """
+        if status not in TERMINAL_RUN_STATUSES:
+            allowed = ", ".join(sorted(item.value for item in TERMINAL_RUN_STATUSES))
+            raise DataConfigError(
+                f"记录一条已跑完的运行只能给终态 ({allowed}), 实际: {status.value!r}"
+                " —— 记录中的运行本来就该有个结局"
+            )
+        stamp = moment if moment is not None else datetime.now(UTC)
+        run = Run(
+            run_id=run_id if run_id is not None else uuid4().hex,
+            thread_id=thread_id,
+            status=status.value,
+            request_id=None,
+            # 模型名 / prompt 版本 / 花费这几列留给 L3 的成本记账 (本片只把行建起来)
+            model=None,
+            prompt_version=None,
+            total_tokens=total_tokens,
+            total_cost=0,
+            turn_count=turn_count,
+            error=None,
+            created_at=stamp,
+            updated_at=stamp,
+            finished_at=stamp,
+        )
+        async with self._session() as session:
+            session.execute(runs.insert().values(**self._params(run)))
             return self._one(session, run.run_id)
 
     async def get(self, run_id: str) -> Run | None:

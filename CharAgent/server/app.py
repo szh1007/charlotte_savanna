@@ -1,4 +1,5 @@
-"""应用工厂: 三条 HTTP 路 (跑一次 / 停一次 / 读历史), 两条接缝, 一套收尾.
+"""应用工厂: 三条 HTTP 路 (跑一次 / 停一次 / 读历史) + 一条可选的 (列会话),
+两条接缝, 一套收尾.
 
 一句话理解: 客户端问一句话 (`POST /runs`), 服务把这次问答的流式事件推回去
 (SSE); 中间两处属于业务 (认证解析 / 会话装配), 框架只认它们的结果. 框架仍然
@@ -56,9 +57,26 @@ final, 失败与取消有本层补的 error (见 runs.py), 之后流才收线.
       └─ 2. 查登记表 → 200 {"thread_id", "messages": [{role, content}, ...]}
             没聊过的会话编号 → 空列表 (不是 404: 那是「还没聊过」)
 
-它存在的理由只有一个: 会话活在**进程内存**里, 浏览器刷新会把页面那一份渲染丢光.
-取的是会话对象手上那份历史 (不是快照 —— 那是断点续跑用的), 而过滤掉哪些角色、
-交出去哪些字段由 `history.py` 说了算. 本路由不建会话、不占会话、不产生任何运行.
+它存在的理由只有一个: 浏览器刷新会把页面那一份渲染丢光, 得有个地方把聊过的话
+再取一遍. **取哪儿由装配决定** (见 create_app 的 `database`) —— 给了库就读记录表
+(那是给人看的那份**持久**记录, 重启之后照样在, 见 db/recorder.py), 没给就读会话
+对象手上那份内存里的历史. 两条来源**不互相兜底** (理由见 history.py): 同一段对话
+刷新两次看到不一样的东西, 是最难查的一类 bug.
+
+本路由不建会话、不占会话、不产生任何运行.
+
+列会话那条路与它同源, 只是问的是另一个问题 (「我聊过哪几段」而不是「这段聊了
+什么」)::
+
+    GET /conversations[?limit=N]
+      ├─ 1. ContextProvider.provide(request)   <- 与上两条**同一道门**
+      └─ 2. 按 (tenant_id, user_id) 查记录表的会话行 → 200 {"conversations": [...]}
+            只给「还活着且有可见消息」的, 按最后活动时刻倒序
+
+**它只在装配时给了库才存在** (没给 = 这条路由不注册, 404): 会话列表没有「内存里
+的版本」可言 —— 登记表里只有**这个进程**见过的那几段对话, 拿它当列表等于把
+「我聊过哪几段」答成「这个进程见过哪几段」. 与其给一个会骗人的答案, 不如这条路由
+压根不存在 (与框架「不配不改行为」那条纪律同源).
 
 三条边界:
 
@@ -80,10 +98,24 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.responses import Response, StreamingResponse
 
+from CharAgent.db.errors import DbError
+from CharAgent.db.repositories.base import Database
+from CharAgent.db.repositories.messages import MessagesRepository
+from CharAgent.db.repositories.threads import (
+    DEFAULT_LIST_LIMIT,
+    ThreadsRepository,
+)
+from CharAgent.server.conversations import (
+    CONVERSATIONS_FIELD,
+    CONVERSATIONS_PATH,
+    LIMIT_QUERY,
+    conversation_row,
+)
 from CharAgent.server.history import (
     HISTORY_PATH,
     MESSAGES_FIELD,
     THREAD_ID_FIELD,
+    conversation_messages,
     conversation_of,
 )
 from CharAgent.server.runs import (
@@ -120,6 +152,7 @@ def create_app(
     *,
     context_provider: ContextProvider,
     session_provider: SessionProvider,
+    database: Database | None = None,
 ) -> FastAPI:
     """装配一个 agent 服务应用 (业务拿到 app 自己决定怎么跑).
 
@@ -130,13 +163,23 @@ def create_app(
     Args:
         context_provider: 第一个插座 (HTTP 请求 → RunContext).
         session_provider: 第二个插座 (RunContext → ChatSession).
+        database: 记录表那条线的入口 (`db.Database`: 能开一次事务就行). 给了它,
+            `GET /history` 就读记录表, 并且多出 `GET /conversations` 这条路由;
+            None (默认) 表示这个应用没有记录层 —— `/history` 读会话内存, 会话列表
+            那条路由**不注册**. 一次装配选定一个来源, 运行期不互相兜底 (理由见
+            history.py).
 
     Returns:
-        FastAPI: 装好的应用. 业务可以再往上加自己的路由与中间件 (框架只占
-        `POST /runs` / `POST /runs/{run_id}/cancel` / `GET /history` 三条路).
+        FastAPI: 装好的应用. 业务可以再往上加自己的路由与中间件 (框架占
+        `POST /runs` / `POST /runs/{run_id}/cancel` / `GET /history` 三条路,
+        给了 `database` 再多一条 `GET /conversations`).
     """
     registry = SessionRegistry(session_provider)
     runs = RunRegistry()
+    # 记录表那条线: 没给库就是 None, 于是下面两处各自退回「没有记录层」的行为
+    # (历史读会话内存 / 会话列表这条路由不注册) —— 与从前逐字一样
+    messages_repo = None if database is None else MessagesRepository(database)
+    threads_repo = None if database is None else ThreadsRepository(database)
 
     app = FastAPI()
     # 两张表挂到 app.state 上: 排查时看得见「现在有哪些会话 / 哪些运行在跑」,
@@ -145,6 +188,11 @@ def create_app(
     app.state.run_registry = runs
     # server 层错误一律走这一处翻译 (业务抛的与框架抛的同一套规则)
     app.add_exception_handler(ServerError, _server_error_response)
+    if database is not None:
+        # 只读那两条路读的是库, 而库连不上是**可用性**故障不是 bug: 不翻译的话它会
+        # 以未处理异常的形式冒出去 (客户端拿到一个没有 code 的 500, 转发方只能猜).
+        # 只在这条装配线存在时注册: 没给库的 app 里没有一处会碰库
+        app.add_exception_handler(DbError, _record_store_error_response)
 
     @app.post("/runs", response_class=StreamingResponse)
     async def start_run(request: Request) -> Response:
@@ -258,8 +306,9 @@ def create_app(
         2. **只读**: 本路由不建会话, 不占会话, 不产生任何运行. 没聊过的对话编号
            回一个**空的** `messages` —— 那是「还没聊过」, 不是错误 (第一次打开页面
            就是这种情形, 不该让调用方分辨「404 还是空」).
-        3. **过滤在 `history.conversation_of` 里** (哪些角色、哪些字段能出去, 那里
-           写明了理由) —— 本路由只负责取数与包信封.
+        3. **取数与过滤都在 `history.py` 里** (哪个来源、哪些字段能出去, 那里写明
+           了理由) —— 本路由只负责取数与包信封. 来源由装配时的 `database` 定死,
+           本路由**不做**「这个来源读不到就换另一个」的兜底 (理由见 history.py).
         4. **方法**: 只登记 GET. 同一个路径上的别的写意图 (POST / DELETE) 由框架的
            路由层回 405 + `Allow: GET`, 不必在这里手写一段拒绝 —— 但**要有用例钉住**
            (看起来像「什么都不做」, 其实是被别处的机制挡下了).
@@ -271,11 +320,44 @@ def create_app(
             ServerAuthError: 业务那个插座没认下这次请求 (框架翻成 401).
         """
         context = await context_provider.provide(request)
-        entry = registry.entry(context.thread_id)
-        messages = [] if entry is None else conversation_of(entry.session.history)
+        if messages_repo is None:
+            # 没有记录层: 读会话内存那份 (与从前一样), 过滤按角色
+            entry = registry.entry(context.thread_id)
+            messages = [] if entry is None else conversation_of(entry.session.history)
+        else:
+            # 有记录层: 只读记录表 (已经按 hidden 过滤过), 读不到也不退回内存
+            rows = await messages_repo.list_conversation(context.thread_id)
+            messages = conversation_messages(rows)
         return JSONResponse(
             {THREAD_ID_FIELD: context.thread_id, MESSAGES_FIELD: messages}
         )
+
+    if threads_repo is not None:
+
+        @app.get(CONVERSATIONS_PATH)
+        async def list_conversations(request: Request) -> JSONResponse:
+            """列「我聊过哪几段」(只读; 与另三条同一道门).
+
+            判据只有两个, 而且**都只能从认证插座来**: 请求里认出来的 `tenant_id`
+            与 `user_id`. 请求体与查询串影响不了它们 (查询串只认 `limit`) ——
+            「看不到别人的会话」就是这么兑现的.
+
+            Returns:
+                JSONResponse: 200 + `{"conversations": [...]}`. 没聊过 = 空列表
+                (与 `/history` 同一条: 「还没有」不是错误).
+
+            Raises:
+                ServerAuthError: 业务那个插座没认下这次请求 (框架翻成 401).
+                InvalidRequestError: `limit` 不成形 (框架翻成 400).
+            """
+            context = await context_provider.provide(request)
+            limit = read_limit(request)
+            rows = await threads_repo.list_active_with_messages(
+                context.tenant_id, user_id=context.user_id, limit=limit
+            )
+            return JSONResponse(
+                {CONVERSATIONS_FIELD: [conversation_row(row) for row in rows]}
+            )
 
     return app
 
@@ -291,6 +373,28 @@ def _not_running_message(run_id: str) -> str:
         f"运行 {run_id!r} 不在册: 它可能已经结束, 可能不属于这次请求的那段会话, "
         f"也可能压根没有这个编号 —— 本层刻意不区分这三种"
     )
+
+
+def read_limit(request: Request) -> int:
+    """从查询串里取「最多几条」—— 会话列表那条路由唯一的参数.
+
+    只认非负整数; 不成形就 400 (与 `read_message` 同一条规矩: 看不懂的请求当场
+    说清, 不替它猜一个数). **0 是合法的** (「一条都不要」), 仓储会回空列表 ——
+    这里不额外管, 「多少条算零条」的规则只有仓储那一处.
+
+    Raises:
+        InvalidRequestError: 不是整数 / 是负数.
+    """
+    raw = request.query_params.get(LIMIT_QUERY)
+    if raw is None or not raw.strip():
+        return DEFAULT_LIST_LIMIT
+    try:
+        limit = int(raw)
+    except ValueError as exc:
+        raise InvalidRequestError(f"{LIMIT_QUERY} 应是整数, 收到 {raw!r}") from exc
+    if limit < 0:
+        raise InvalidRequestError(f"{LIMIT_QUERY} 不能是负数, 收到 {limit}")
+    return limit
 
 
 async def read_message(request: Request) -> str:
@@ -314,6 +418,26 @@ async def read_message(request: Request) -> str:
     if not isinstance(message, str) or not message.strip():
         raise InvalidRequestError(f"请求体缺少非空字符串字段 {MESSAGE_FIELD!r}")
     return message
+
+
+def _record_store_error_response(request: Request, exc: DbError) -> JSONResponse:
+    """记录表读不到 → 503 的干净 JSON (与 ServerError 那套同一个信封形状).
+
+    503 而不是 500: 「库这会儿读不了」是可用性, 转发方重试或降级都有意义; 而 500
+    意味着「这次请求本身有问题」—— 这两件事对调用方的处置完全不同.
+
+    信封与别的错误一致 (`{"error": {"code", "message"}}`): 同一次失败在响应与
+    事件流两条通道上长得一样, message 只陈述事实, 面向用户的话术归业务.
+    """
+    return JSONResponse(
+        status_code=503,
+        content={
+            "error": {
+                "code": "record_store_unavailable",
+                "message": f"记录表读不到: {type(exc).__name__}: {exc}",
+            }
+        },
+    )
 
 
 def _server_error_response(request: Request, exc: ServerError) -> JSONResponse:

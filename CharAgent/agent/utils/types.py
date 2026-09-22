@@ -165,6 +165,9 @@ class LoopResult:
         summary / summary_covers: 这一段 run 结束时生效的压缩进度 (#7). 要接着
             聊下一段, 就把它们连同 messages 一起递给 AgentLoop.run —— 于是滚动
             摘要跨 run 成立 (不然每段 run 都会把同一段旧历史重压一遍).
+        last_checkpoint_id: 这一段 run 落的**最后一帧**快照编号; None 表示没配
+            saver (或这一帧都没落成). 接着问下一句时把它当 `run(parent_id=...)`
+            递回去, 同一段会话的快照就连成一条链而不是每次提问多一条新根.
     """
 
     messages: list[ModelMessage]
@@ -178,3 +181,4 @@ class LoopResult:
     elapsed_ms: float = 0.0
     summary: str | None = None
     summary_covers: int = 0
+    last_checkpoint_id: str | None = None

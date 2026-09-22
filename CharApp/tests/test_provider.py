@@ -70,7 +70,12 @@ def context_for(
     user_id: Any = BUYER_ID, *, thread: str = "minimall:3:cli"
 ) -> RunContext:
     """造一个运行上下文 (与 `service.build_context` 造的是同一个形状)."""
-    return RunContext(thread_id=thread, payload={PAYLOAD_USER_ID: user_id})
+    return RunContext(
+        thread_id=thread,
+        tenant_id="minimall",
+        user_id=str(user_id),
+        payload={PAYLOAD_USER_ID: user_id},
+    )
 
 
 async def test_a_provider_returns_exactly_seventeen_tools(
@@ -183,7 +188,9 @@ async def test_a_context_without_an_identity_fails_loudly(
     否则它会伪装成「商城没数据」, 排查时从最远的地方开始找.
     """
     provider = MinimallToolProvider(client)
-    context = RunContext(thread_id="minimall:?:cli", payload={})
+    context = RunContext(
+        thread_id="minimall:?:cli", tenant_id="minimall", user_id="?", payload={}
+    )
 
     with pytest.raises(MinimallConfigError) as excinfo:
         await provider.provide(context)

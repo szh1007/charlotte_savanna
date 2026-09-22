@@ -101,7 +101,14 @@ class ToyContexts:
         thread_id = request.headers.get(self._thread_header, "toy:default")
         user = request.headers.get("X-Toy-User", "anonymous")
         self.seen.append((thread_id, user))
-        return RunContext(thread_id=thread_id, payload={"user": user})
+        # 属主那两个字段是框架**认识**的 (会话列表按它们过滤); 玩具业务的
+        # 「用户」就填在这里, payload 仍然留给业务私货
+        return RunContext(
+            thread_id=thread_id,
+            tenant_id="toy",
+            user_id=user,
+            payload={"user": user},
+        )
 
 
 @dataclass

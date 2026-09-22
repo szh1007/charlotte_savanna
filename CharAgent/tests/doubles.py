@@ -1,8 +1,9 @@
 """CharAgent 测试共享替身 (doubles): 时钟 / 睡眠 / 随机源 / 假 Redis / 事件收集.
 
-替身清单 (五个): FakeClock / RecordingSleep / FixedRandom 服务 #61 的确定性
+替身清单 (六个): FakeClock / RecordingSleep / FixedRandom 服务 #61 的确定性
 (时间与随机性可注入) · FakeRedisClient 服务 checkpoint 的 Redis 实现 ·
-EventCollector 服务事件流断言与快照 (#4/#63).
+EventCollector 服务事件流断言与快照 (#4/#63) · FakeRecordDatabase 服务记录表
+那条线 (#17: 记录员写入、接口读回, 三个测试文件共用一份).
 
 与 `tests/helpers.py` 的分工: helpers 放 wire 样本与常量 (「真实响应长什么样」),
 本文件放**测试替身** —— 注入被测代码的缝, 让时间与随机性在测试里完全确定
@@ -31,8 +32,14 @@ EventCollector 服务事件流断言与快照 (#4/#63).
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from typing import Any
+from uuid import uuid4
 
+from CharAgent.db.entities import Message, Run, Thread
+from CharAgent.db.errors import DataStoreError
 from CharAgent.stream.utils.types import EventType, StreamEvent
 
 
@@ -274,3 +281,212 @@ class EventCollector:
             for event in self.events
             if event.type in (EventType.FINAL, EventType.ERROR)
         ]
+
+
+# ---------------------------------------------------------------------------
+# 记录表那条线的替身 (ticket 17): 一个假库, 读写都认
+# ---------------------------------------------------------------------------
+
+# 放进 doubles 的理由与 EventCollector 同源: 三个地方要用它 (db 的记录员用例 /
+# server 的历史与列表用例 / 业务的装配用例), 而它要断的都不是 SQL —— SQL 由标记
+# pg_db 的用例拿真库验.
+
+
+class FakeRecordSession:
+    """假 SQLAlchemy 会话: 写下来的收进「库」, 查的时候按实体交回去.
+
+    读写两半都在这里, 因为记录这条路本来就两头都走 (记录员先写, 接口再读).
+    缺的是**过滤与排序** —— 那是 SQL 的事 (`WHERE hidden IS FALSE` / `ORDER BY
+    updated_at DESC` 这些), 由 pg_db 用例拿真库守; 这里给出的是「库里有这些行」.
+    """
+
+    # 表名 → 实体类: 写入那条路只拿得到表名 (语句里来的), 而仓储插入之后会回读
+    # 一次 (让库补的默认值出现在返回对象里). 消息那张表也一样收进「库」——
+    # 于是「记录员写进去 → 接口读回来」这条端到端用例成立
+    _TABLES = {
+        "charagent_threads": Thread,
+        "charagent_runs": Run,
+        "charagent_messages": Message,
+    }
+    # 实体类 → 主键属性名 (按主键找那一行时用)
+    _KEYS = {Thread: "thread_id", Run: "run_id", Message: "message_id"}
+
+    def __init__(self, database: FakeRecordDatabase) -> None:
+        self._db = database
+        # 写入的每一行: (表名, 那一行的值). 用例按它断言「写了什么」
+        self.rows: list[tuple[str, dict]] = []
+        # 刷过 updated_at 的表名 (只有 touch 走这条路)
+        self.updates: list[str] = []
+        # 查过的语句 (按时间顺序): 用例按它断言「传了什么下去」(身份 / 限额)
+        self.queries: list[Any] = []
+
+    # --- 读 (接口那条路) ---
+
+    def scalars(self, statement: Any) -> list[Any]:
+        """把「库里有的行」交回去 (按语句查的实体分流).
+
+        这里模拟了**一条**过滤规则: 「会话历史只给可见的行」(`list_conversation`
+        的契约). 真过滤在 SQL 的 `WHERE hidden IS FALSE` 里, 由 pg_db 用例拿真库
+        守着 —— 这条模拟是为了让「写进去 → 读回来」的端到端用例成立, 不是替代它.
+        """
+        self.queries.append(statement)
+        entity = statement.column_descriptions[0]["entity"]
+        rows = list(self._rows_of(entity) or [])
+        if entity is Message:
+            rows = [row for row in rows if not row.hidden]
+        return rows
+
+    def get(self, entity: Any, key: Any) -> Any:
+        """按主键取一行 (仓储插入之后会回来读一次).
+
+        假「库」是几个列表, 于是这里扫一遍找主键 —— 真库那边是索引查找, 那是它的
+        事 (SQL 由 pg_db 用例守).
+        """
+        rows = self._rows_of(entity)
+        if rows is None:
+            return None
+        attribute = self._KEYS[entity]
+        return next(
+            (row for row in rows if getattr(row, attribute) == key),
+            None,
+        )
+
+    def _rows_of(self, entity: Any) -> list[Any] | None:
+        """某个实体在假库里的那批行 (认不出来的实体给 None)."""
+        return {
+            Thread: self._db.threads,
+            Run: self._db.runs,
+            Message: self._db.messages,
+        }.get(entity)
+
+    def expire_all(self) -> None:
+        """仓储读前会清一次缓存 —— 假会话没有缓存, 什么都不用做."""
+
+    # --- 写 (记录员那条路) ---
+
+    def execute(self, statement: Any, params: Any = None) -> Any:
+        """落一行 (insert) 或刷一列 (update), 都收进「库」里."""
+        table = statement.table.name
+        if statement.is_insert:
+            # 批量插入走 `params` (消息那批), 单行插入走语句里带的值
+            rows = params if isinstance(params, list) else [statement.compile().params]
+            for row in rows:
+                self._remember(table, dict(row))
+            return _Affected(1)
+        self.updates.append(table)
+        return _Affected(1)
+
+    @property
+    def params(self) -> dict[str, Any]:
+        """最近一次查询绑定的参数 (排查「租户 / 属主 / 限额传下去了吗」用)."""
+        return dict(self.queries[-1].compile().params)
+
+    def _remember(self, table: str, row: dict) -> None:
+        """收下这一行, 并让它在假库里「查得到」(插入后仓储会再读一次)."""
+        self.rows.append((table, row))
+        entity = self._TABLES.get(table)
+        if entity is None:
+            return
+        rows = self._rows_of(entity)
+        assert rows is not None, f"{table} 认得出实体却找不到它的那批行"
+        rows.append(entity(**row))
+
+
+class _Affected:
+    """`execute` 的返回值 (只有 touch 会看 rowcount)."""
+
+    def __init__(self, rowcount: int) -> None:
+        self.rowcount = rowcount
+
+
+class BrokenRecordDatabase:
+    """连不上的假库: 一进事务就抛 (模拟数据库不可用 / 没配).
+
+    给「读不到记录表会怎样」那几条用例用: 写那条路的降级有自己的一批用例, 这个
+    管的是**读**那条路 (两条只读路由该回一个干净的 503, 而不是未处理的异常).
+    """
+
+    @asynccontextmanager
+    async def connect(self) -> AsyncIterator[FakeRecordSession]:
+        raise DataStoreError("库连不上 (测试里故意造的)")
+        yield  # pragma: no cover - 走不到, 只为让这个函数是个生成器
+
+
+class FakeRecordDatabase:
+    """假库入口 (`Database` 协议: 能开一次事务就行).
+
+    用法::
+
+        records = FakeRecordDatabase(
+            messages=[record_message("user", "订单到哪了")],   # 预置「库里已有的」
+            threads=[record_thread("toy:u-9f3a:1", title="订单")],
+        )
+        app = create_app(..., database=records)                # 读那条路
+        service = MinimallService(..., database=records)       # 写那条路
+
+    写下来的东西也进同一批列表 (于是「跑完一轮再看列表」这种用法成立); 要断言
+    「具体写了哪几行」看 `session.rows`.
+    """
+
+    def __init__(
+        self,
+        *,
+        messages: Sequence[Any] = (),
+        threads: Sequence[Any] = (),
+        runs: Sequence[Any] = (),
+    ) -> None:
+        self.messages = list(messages)
+        self.threads = list(threads)
+        self.runs = list(runs)
+        self.session = FakeRecordSession(self)
+
+    @asynccontextmanager
+    async def connect(self) -> AsyncIterator[FakeRecordSession]:
+        yield self.session
+
+    def rows_of(self, table: str) -> list[dict]:
+        """某个表里写进去的那些行 (按写入顺序) —— 断言「写了什么」用."""
+        return [row for name, row in self.session.rows if name == table]
+
+
+def record_message(
+    role: str,
+    content: str | None,
+    *,
+    thread_id: str = "toy:u-9f3a:1",
+    hidden: bool = False,
+) -> Message:
+    """造一条记录表的行 (投影只读 role / content, 其余字段够填满 NOT NULL 即可)."""
+    return Message(
+        message_id=uuid4().hex,
+        thread_id=thread_id,
+        run_id=None,
+        role=role,
+        content=content,
+        reasoning=None,
+        tool_call_ids=[],
+        hidden=hidden,
+        created_at=datetime.now(UTC),
+    )
+
+
+def record_thread(
+    thread_id: str,
+    *,
+    tenant_id: str = "toy",
+    user_id: str = "u-9f3a",
+    title: str = "",
+    status: str = "active",
+    updated_at: datetime | None = None,
+) -> Thread:
+    """造一条会话行 (列表那条路要的东西)."""
+    moment = datetime.now(UTC) if updated_at is None else updated_at
+    return Thread(
+        thread_id=thread_id,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        title=title,
+        status=status,
+        created_at=moment,
+        updated_at=moment,
+    )

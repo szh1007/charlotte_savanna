@@ -45,6 +45,7 @@ from CharAgent.checkpoint import InMemoryCheckpointSaver
 from CharAgent.checkpoint import config as checkpoint_config
 from CharAgent.model.utils.types import ModelMessage, ModelResponse, Usage
 from CharAgent.server import RUN_ID_HEADER
+from CharAgent.tests.doubles import FakeRecordDatabase
 from CharAgent.tests.mock_llm import (
     MockLLM,
     make_tool_call,
@@ -75,7 +76,7 @@ from CharApp.minimall.server import (
     create_minimall_app,
     logger,
 )
-from CharApp.minimall.service import MinimallService, build_context
+from CharApp.minimall.service import TENANT_WEB, MinimallService, build_context
 
 # 测试里给这个服务起的名字: respx 放行这个 host 上的请求 (交给 ASGI app),
 # 其余照旧拦给假商城
@@ -249,10 +250,16 @@ def cli_env(monkeypatch) -> None:
     地址不钉会去连本机 8000 的真 Django; 快照后端不钉可能去连真 Redis / Postgres
     (开发者完全可能按框架文档把 `.env` 里的后端换掉) —— 那这两条用例就不再是
     「离线」的.
+
+    记录表那条线同样要钉 (ticket 17 起命令行入口会记账): 这条用例真的跑了一次
+    `cli.main`, 不换库就会往真库写一轮 MockLLM 的假对话 (2026-09-22 撞上).
     """
+    from CharAgent.tests.doubles import FakeRecordDatabase
+
     monkeypatch.setenv(ENV_TOKEN, TOKEN)
     monkeypatch.setenv(ENV_BASE_URL, AGENT_BASE_URL)
     monkeypatch.setenv(checkpoint_config.ENV_BACKEND, "memory")
+    monkeypatch.setattr(cli, "build_database", FakeRecordDatabase)
 
 
 # ---------------------------------------------------------------------------
@@ -877,7 +884,7 @@ def test_build_service_wires_the_process_level_parts(
     monkeypatch.setenv(ENV_THINKING, "no")  # 顺手断「思考模式开关也接上了」
     service = build_service(writer=logger.info)
 
-    context = build_context(BUYER_ID, "web")
+    context = build_context(BUYER_ID, "web", tenant_id=TENANT_WEB)
     session = asyncio.run(service.session_for(context, event_sink=lambda event: None))
 
     assert isinstance(service.client, MinimallClient)
@@ -981,3 +988,74 @@ def test_the_template_lists_every_variable_the_business_reads() -> None:
         ENV_THINKING,
     ):
         assert name in text, f".env.example 缺少 {name}"
+
+
+# ---------------------------------------------------------------------------
+# 记录表那条线在业务这一侧的样子 (ticket 17)
+# ---------------------------------------------------------------------------
+
+
+def serving_with_records(model: Any, client: Any, records: Any) -> Any:
+    """与 `serving` 同一个 app, 只是**接上了记录表** (装配时给了库).
+
+    差别只有一处, 而那一处决定了 `/history` 读哪儿: 框架按 `database=` 选来源
+    (给了库读记录表, 没给读会话内存). 生产两个入口都走这条 —— 见 `build_service`.
+    """
+    return create_minimall_app(
+        MinimallService(
+            client=client,
+            model=model,
+            saver=InMemoryCheckpointSaver(),
+            database=records,
+        ),
+        ServerConfig(host=DEFAULT_SERVER_HOST, port=DEFAULT_SERVER_PORT, token=TOKEN),
+    )
+
+
+async def test_the_web_history_reads_the_record_table(mall, client) -> None:
+    """网页端的 `/history` 读**记录表** —— 写进去的那一轮, 刷新之后原样读得回来.
+
+    为什么单列一条: 上面那条 `test_the_conversation_can_be_read_back` 走的是「没配
+    记录表」的装配 (读会话内存), 而生产两个入口**都**配了库. 这条把那条路走通:
+    问一句 (记录员写进库) → 拉历史 (从库里读回), 中间不经过会话对象.
+    """
+    allow_app(mall)
+    mock_all(mall)
+    records = FakeRecordDatabase()
+    app = serving_with_records(MockLLM.fixed(balance_dialogue), client, records)
+
+    await ask(app, "我余额还有多少")
+    async with talking_to(app) as http:
+        response = await http.get("/history", headers=headers())
+
+    assert response.status_code == 200
+    messages = response.json()["messages"]
+    assert messages[0] == {"role": "user", "content": "我余额还有多少"}
+    assert messages[-1]["role"] == "assistant"
+    # 而它确实是从库里读的: 记录表里写着这一问一答
+    written = [row["content"] for row in records.rows_of("charagent_messages")]
+    assert "我余额还有多少" in written
+    # 工具那几行 (带工具调用的中间轮 / 工具回填) 是隐藏的 —— 读回来时被过滤掉
+    assert all(row["role"] in {"user", "assistant"} for row in messages), (
+        "可见的只有问答两方"
+    )
+
+
+async def test_the_tenant_comes_from_the_entry_not_from_the_request(
+    mall, client
+) -> None:
+    """租户由**入口**定死 (网页端 = `TENANT_WEB`), 请求影响不了它.
+
+    框架按 (租户, 属主) 列出会话, 于是「命令行里聊的不出现在买家左栏」靠的就是
+    这一行 —— 想伪造也伪造不了: 请求头里没有租户这个字段.
+    """
+    allow_app(mall)
+    mock_all(mall)
+    records = FakeRecordDatabase()
+    app = serving_with_records(MockLLM.fixed(text_response("好的")), client, records)
+
+    await ask(app, "在吗", conversation="web")
+
+    [thread] = records.rows_of("charagent_threads")
+    assert thread["tenant_id"] == TENANT_WEB
+    assert thread["user_id"] == str(BUYER_ID)

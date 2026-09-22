@@ -43,6 +43,20 @@ from CharAgent.retry import RetryingChatModel
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
+@pytest.fixture(autouse=True)
+def _memory_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    """默认把快照后端钉成内存版 (不跟着本机 `.env` 走).
+
+    为什么必须钉: 这几个用例的前提是「一个全新的会话**没有**存档」, 而
+    `CHARAGENT_CHECKPOINT_BACKEND` 在本机 .env 里是 postgres —— 跑过一次之后
+    `client-main` 就有帧了, 于是「没有可恢复的快照」这条断言会在**第二次**跑时
+    红 (2026-09-22 撞上, 排查花的时间比修它长). 这是用例的环境依赖, 不是被测代码
+    的行为: 真的「听环境变量」那一条 (test_build_saver_for_falls_back_to_the_
+    environment) 自己 setenv, 不受这里影响.
+    """
+    monkeypatch.setenv("CHARAGENT_CHECKPOINT_BACKEND", "memory")
+
+
 class ScriptedReader:
     """按剧本吐行的假输入 (用尽后抛 EOFError, 等价于 Ctrl-Z / 管道读完)."""
 

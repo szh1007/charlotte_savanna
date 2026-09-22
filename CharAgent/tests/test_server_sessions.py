@@ -17,8 +17,11 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from mock_llm import MockLLM, text_response
 
 from CharAgent.agent import RunContext
+from CharAgent.checkpoint import InMemoryCheckpointSaver
+from CharAgent.client.session import ChatSession
 from CharAgent.server.runs import RunStream
 from CharAgent.server.sessions import EventRouter, SessionRegistry
 from CharAgent.server.utils.errors import (
@@ -65,8 +68,8 @@ class FakeSessions:
 
 
 def context(thread_id: str = "toy:chat-1") -> RunContext:
-    """造一个最小上下文 (会话编号是登记表唯一认识的东西)."""
-    return RunContext(thread_id=thread_id)
+    """造一个最小上下文 (会话编号是登记表唯一认识的东西; 属主那两个字段登记表不看)."""
+    return RunContext(thread_id=thread_id, tenant_id="toy", user_id="u-1")
 
 
 def queued(stream: RunStream) -> list[StreamEvent]:
@@ -232,3 +235,165 @@ async def test_a_cancelled_assembly_does_not_keep_the_thread_claimed() -> None:
         await pending
 
     assert registry.busy_threads == frozenset()
+
+
+# ---------------------------------------------------------------------------
+# 空闲淘汰 (ticket 17): 真相在快照与记录里, 内存只是缓存
+# ---------------------------------------------------------------------------
+
+
+async def test_an_idle_session_is_evicted_and_later_rebuilt() -> None:
+    """空闲超时的会话被丢掉; 再 acquire 时**重新装配**一个 (它自己会水合).
+
+    为什么敢丢: 会话对象里那点东西 (内存历史) 只是缓存 —— 真相在快照 (接着跑) 与
+    记录表 (给人看) 里, 而新装配出来的会话第一次提问前会把历史读回来 (见
+    client/session.py 的 `_hydrate_once`). 没有水合这一手, 淘汰就是静默丢历史.
+    """
+    provider = FakeSessions()
+    registry = SessionRegistry(provider, idle_ttl_seconds=0.05)
+    first = await registry.acquire(context())
+    registry.release(first.session.thread_id)
+    await asyncio.sleep(0.06)
+
+    second = await registry.acquire(context())
+
+    assert second.session is not first.session, "超时的那个该被丢掉"
+    assert len(provider.sessions) == 2, "重新装配了一次 (装配处会带上水合)"
+    assert registry.thread_ids == ("toy:chat-1",), "登记表里只有新的那个"
+
+
+async def test_a_session_that_is_still_running_is_never_evicted() -> None:
+    """正在跑的 (busy) 一律跳过: 它正干着活, 记忆被丢就是真的丢了."""
+    provider = FakeSessions()
+    registry = SessionRegistry(provider, idle_ttl_seconds=0.05)
+    running = await registry.acquire(context())  # 占着不放 (模拟一次运行中)
+    await asyncio.sleep(0.06)  # 空闲计时早就超了, 但它在忙
+
+    assert registry.evict_idle() == (), "正忙的那个不该出现在淘汰名单里"
+    assert registry.thread_ids == ("toy:chat-1",)
+
+    registry.release(running.session.thread_id)
+    entry = await registry.acquire(context())
+
+    assert entry.session is running.session, "整段运行里它始终是同一个会话"
+    assert len(provider.sessions) == 1, "一次都没重新装配过"
+
+
+async def test_a_fresh_session_survives_the_sweep_while_it_is_idle() -> None:
+    """空闲但还没超时的会话留着 (淘汰不比 TTL 更激进)."""
+    provider = FakeSessions()
+    registry = SessionRegistry(provider, idle_ttl_seconds=30.0)
+    first = await registry.acquire(context())
+    registry.release(first.session.thread_id)
+
+    second = await registry.acquire(context())
+
+    assert second.session is first.session
+
+
+async def test_reading_an_entry_refreshes_its_idle_timer() -> None:
+    """只读查一次也算「用它了」—— `entry` 顺手刷新, 并清掉超时的那些.
+
+    这也是 `/history` 那条路的顺手好处: 有人来看这段对话, 它就被续了命.
+    """
+    provider = FakeSessions()
+    registry = SessionRegistry(provider, idle_ttl_seconds=0.05)
+    first = await registry.acquire(context())
+    registry.release(first.session.thread_id)
+    await asyncio.sleep(0.06)
+
+    assert registry.entry("toy:chat-1") is None, "超时的那条在只读查里被清掉"
+
+    kept = await registry.acquire(context())
+    registry.release(kept.session.thread_id)
+    assert registry.entry("toy:chat-1") is kept, "刚用过的当然还在"
+
+
+async def test_evict_idle_reports_what_it_dropped_and_keeps_the_rest() -> None:
+    """`evict_idle` 如实回报丢了哪几段 (排查与用例的取数口)."""
+    provider = FakeSessions()
+    registry = SessionRegistry(provider, idle_ttl_seconds=0.05)
+    left = await registry.acquire(context("toy:left"))
+    registry.release(left.session.thread_id)
+    right = await registry.acquire(context("toy:right"))
+    registry.release(right.session.thread_id)
+    await asyncio.sleep(0.06)
+
+    dropped = registry.evict_idle()
+
+    assert set(dropped) == {"toy:left", "toy:right"}
+    assert registry.thread_ids == ()
+    assert registry.evict_idle() == (), "再清一次什么都没了 (幂等)"
+
+
+async def test_a_busy_session_is_not_dropped_even_when_it_looks_idle() -> None:
+    """正忙的会话不在 `evict_idle` 的名单里 (即使它的空闲计时已经超了)."""
+    provider = FakeSessions()
+    registry = SessionRegistry(provider, idle_ttl_seconds=0.05)
+    await registry.acquire(context())
+    await asyncio.sleep(0.06)
+
+    dropped = registry.evict_idle()
+
+    assert dropped == ()
+    assert registry.thread_ids == ("toy:chat-1",)
+
+
+# ---------------------------------------------------------------------------
+# 淘汰 + 水合: 两件事一起才成立 (见 sessions.py 的模块 docstring)
+# ---------------------------------------------------------------------------
+
+
+class RealSessions:
+    """装配**真会话**的提供者 (共用一份内存快照: 模拟业务那几件进程级资源).
+
+    与 `FakeSessions` 的分工: 那个测登记表本身 (只认 ask 与 thread_id), 这个用来
+    走通「淘汰 → 重新装配 → 水合回历史」这条路 —— 它需要真的 ChatSession.
+    """
+
+    def __init__(self, saver: InMemoryCheckpointSaver) -> None:
+        self._saver = saver
+        self.sessions: list[ChatSession] = []
+        self.models: list[MockLLM] = []
+
+    async def provide(self, context: RunContext, *, event_sink) -> ChatSession:
+        # 每个会话一个新模型: 用例要看的是「第二段会话第一次提问时模型收到了什么」
+        model = MockLLM.fixed(text_response("答好了"))
+        session = ChatSession(
+            model,
+            saver=self._saver,
+            thread_id=context.thread_id,
+            event_sink=event_sink,
+        )
+        self.sessions.append(session)
+        self.models.append(model)
+        return session
+
+
+def seen_by(model: MockLLM) -> list[str]:
+    """这个模型第一次被调用时看到的正文 (逐条)."""
+    return [str(message.get("content")) for message in model.calls[0]["messages"]]
+
+
+async def test_an_evicted_session_comes_back_with_its_history() -> None:
+    """淘汰之后再 acquire: 重新装配出来的会话把历史**水合回来**.
+
+    这是「可以淘汰」那句话的兑现方式: 登记项只是缓存, 真相在快照里, 而让真相回到
+    内存的是会话第一次提问前的那一步水合 (见 client/session.py).
+    """
+    saver = InMemoryCheckpointSaver()
+    provider = RealSessions(saver)
+    registry = SessionRegistry(provider, idle_ttl_seconds=0.05)
+    first = await registry.acquire(context())
+    await first.session.ask("订单到哪了")
+    registry.release(first.session.thread_id)
+    await asyncio.sleep(0.06)
+
+    second = await registry.acquire(context())
+    await second.session.ask("那什么时候能到")
+
+    assert second.session is not first.session, "超时的那个被丢了"
+    seen = seen_by(provider.models[1])
+    assert "订单到哪了" in seen, "新会话把上一段的提问水合回来了"
+    assert "答好了" in seen, "上一段的答复也在"
+    assert seen[-1] == "那什么时候能到"

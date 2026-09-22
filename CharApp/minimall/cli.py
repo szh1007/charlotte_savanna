@@ -54,12 +54,14 @@ from CharAgent.client import (
     report_result,
     use_utf8_stdio,
 )
+from CharAgent.db import PgDatabase
 from CharAgent.model import ModelError
 from CharAgent.model.protocol import ChatModel
 from CharApp.minimall.config import client_from_env
 from CharApp.minimall.service import (
     DEFAULT_MAX_TURNS,
     STARTUP_ERRORS,
+    TENANT_CLI,
     MinimallService,
     build_context,
     build_model_for,
@@ -229,8 +231,26 @@ def parse_argv(argv: list[str] | None = None) -> MinimallCliOptions:
 # ---------------------------------------------------------------------------
 
 
+def build_database() -> PgDatabase:
+    """造这个进程的记录库入口 (**唯一一处**; 也是用例的注入缝).
+
+    为什么单独一个函数而不是在 `main` 里直接 `PgDatabase()`: 与 `build_saver_for`
+    同一条理由 —— 用例要能把它换掉. 不换的话, 每一次跑 CLI 用例都会往**真库**写
+    记录 (2026-09-22 撞上: 本机 PG 里攒了 300 行 MockLLM 的假对话), 而业务测试的
+    约定是「离线可跑、不碰外部服务」(见 CharApp/tests/conftest.py 的开头).
+
+    构造**不连库** (引擎懒建): 没配库 / 库不在线都不拦住这次会话, 真到写记录时
+    连不上就降级 (日志 + 下次写入补提示行, 见框架的 db/recorder.py).
+    """
+    return PgDatabase()
+
+
 def service_for(
-    options: MinimallCliOptions, model: ChatModel, client: Any
+    options: MinimallCliOptions,
+    model: ChatModel,
+    client: Any,
+    *,
+    database: PgDatabase | None = None,
 ) -> MinimallService:
     """命令行选项 → 一份装配好的零件 (进程级那三件 + 运行时开关).
 
@@ -247,6 +267,7 @@ def service_for(
         client=client,
         model=model,
         saver=build_saver_for(options.framework_options()),
+        database=database,
         model_name=options.model_name,
         thinking=options.thinking,
         max_turns=options.max_turns,
@@ -258,6 +279,8 @@ async def build_session(
     model: ChatModel,
     client: Any,
     printer: EventPrinter,
+    *,
+    database: PgDatabase | None = None,
 ) -> ChatSession:
     """把零件装成一台能问答的机器 (装配本身在 `service.py`, 这里只补 CLI 特有的几项).
 
@@ -265,8 +288,12 @@ async def build_session(
     `MinimallService.session_for` —— HTTP 入口走的是同一个函数, 有一条测试从两个
     入口各打一次来钉住这件事.
     """
-    context = build_context(options.user_id, options.conversation_id)
-    return await service_for(options, model, client).session_for(
+    # 身份带上 `TENANT_CLI`: 这个入口聊出来的会话与网页端分开放, 于是它不会
+    # 出现在买家的会话列表里 (那是开发者自己的调试痕迹, 见 service.TENANT_CLI)
+    context = build_context(
+        options.user_id, options.conversation_id, tenant_id=TENANT_CLI
+    )
+    return await service_for(options, model, client, database=database).session_for(
         context, event_sink=printer
     )
 
@@ -390,10 +417,14 @@ def main(
     asyncio.set_event_loop(loop)
     runner = KillSwitch(loop)
     client = None
+    database = None
     session: ChatSession | None = None
     try:
         # 连接池一个进程一个: 一次会话里问十几句也只建一次 (见 client.py)
         client = client_from_env()
+        # 记录表那条线 (ticket 17): 命令行也记账 —— 这段对话因此刷新得到、重启
+        # 接得上 (造库这一手单独一个函数, 用例换得掉, 见 build_database)
+        database = build_database()
         session = runner.run(
             build_session(
                 options,
@@ -402,6 +433,7 @@ def main(
                 else build_model_for(options.framework_options(), writer),
                 client,
                 printer,
+                database=database,
             )
         )
         return _dispatch(runner, session, options, reader or input, writer)
@@ -424,6 +456,9 @@ def main(
         if client is not None:
             with contextlib.suppress(Exception, KeyboardInterrupt):
                 runner.run(client.aclose())
+        if database is not None:
+            with contextlib.suppress(Exception, KeyboardInterrupt):
+                runner.run(database.dispose())
         loop.close()
 
 

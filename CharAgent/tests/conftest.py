@@ -24,10 +24,12 @@ import pytest
 import pytest_asyncio
 from dotenv import load_dotenv
 from helpers import API_KEY, BASE_URL
+from sqlalchemy import create_engine, pool, text
 
 from CharAgent.checkpoint.config import postgres_dsn
 from CharAgent.checkpoint.postgres import PostgresCheckpointSaver
 from CharAgent.checkpoint.utils.errors import CheckpointConfigError
+from CharAgent.db import PgDatabase
 from CharAgent.db.schema import CHECKPOINTS_TABLE_NAME as CHECKPOINTS_TABLE
 from CharAgent.model import HttpXChatModel
 
@@ -103,6 +105,71 @@ def sqlalchemy_test_url(env=None):
     """
     dsn = postgres_test_dsn()
     return dsn.set(drivername="postgresql+psycopg")
+
+
+# ---------------------------------------------------------------------------
+# db 层的测试 schema (ticket 17 起两个文件共用: 仓储用例与「端点读记录表」那条路)
+# ---------------------------------------------------------------------------
+
+# 开发机是共享库 (本项目各子项目共用), 而 db 用例要建表、要跑迁移、还要删表 ——
+# 挤在 public 里会与手工建的表互相干扰, 也会让 alembic 撞上「表已存在」. 于是
+# 每个用例在**独立 schema** 里干活, 用完整个删掉 (表 / 索引 / 外键全没, 不留痕迹).
+TEST_SCHEMA = "charagent_test"
+
+
+@pytest.fixture(scope="session")
+def _admin_url():
+    """连到默认 schema 的 URL (用来建 / 删测试 schema)."""
+    return sqlalchemy_test_url()
+
+
+def _run_sql(url, *statements: str) -> None:
+    """同步跑几条 SQL (放进线程里执行, 别卡事件循环).
+
+    用 NullPool: 每次跑完就关连接 —— 建/删 schema 是低频动作, 留着池子没意义.
+    """
+    engine = create_engine(url, poolclass=pool.NullPool)
+    try:
+        with engine.begin() as connection:
+            for statement in statements:
+                connection.execute(text(statement))
+    finally:
+        engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def db(_admin_url) -> AsyncIterator[PgDatabase]:
+    """指向测试 schema 的 PgDatabase, 用完把测试 schema 整个删掉.
+
+    **整个 schema 删掉**是最干净的收尾: 表、索引、外键全没了, 不留任何痕迹,
+    也不担心漏删哪张. 拿不到 PG 时代码在 `_admin_url` 那里就跳过 (见
+    `postgres_test_dsn`) —— 用例不必自己判环境.
+    """
+    await asyncio.to_thread(
+        _run_sql,
+        _admin_url,
+        f"DROP SCHEMA IF EXISTS {TEST_SCHEMA} CASCADE",
+        f"CREATE SCHEMA {TEST_SCHEMA}",
+    )
+    # 引擎要 SQLAlchemy 的 URL (带 +psycopg 驱动名), 而 `_run_sql` 那条路走
+    # psycopg 需要的文本形式 —— 两种形式各用各的, 别混
+    engine = create_engine(
+        sqlalchemy_test_url(),
+        # 每条连接都先切到测试 schema —— 仓储与迁移写的 SQL 里都不带 schema 前缀,
+        # 于是它们自然落在隔离区里
+        connect_args={"options": f"-csearch_path={TEST_SCHEMA}"},
+    )
+    database = PgDatabase(engine=engine)
+    # 先把表建好: 这是每个用例的起跑线 (刚删过 schema, 表一定是没有的).
+    # 查表建表这件事本身另有用例专门验 (test_create_tables_is_idempotent).
+    await database.create_tables()
+    try:
+        yield database
+    finally:
+        await asyncio.to_thread(engine.dispose)
+        await asyncio.to_thread(
+            _run_sql, _admin_url, f"DROP SCHEMA IF EXISTS {TEST_SCHEMA} CASCADE"
+        )
 
 
 def _delete_thread_frames(pg_dsn, thread_id: str) -> None:

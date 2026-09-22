@@ -369,6 +369,7 @@ class AgentLoop:
         run_id: str | None = None,
         summary: str | None = None,
         summary_covers: int = 0,
+        parent_id: str | None = None,
     ) -> LoopResult:
         """执行一次 agent run: while 循环直到自然结束或 guard 触发.
 
@@ -398,6 +399,11 @@ class AgentLoop:
                 于是**滚动摘要**跨 run 成立 —— 不然每段运行都会把同一段旧历史
                 重压一遍 (内容不会错, 但白花一次摘要调用).
             summary_covers: 那份摘要覆盖到 messages 的第几条 (默认 0).
+            parent_id: 本次运行写的第一帧快照挂在哪一帧下面 (默认 None = 新根).
+                给「接着同一段会话的下一轮提问」用 (见 ChatSession 的 parent_id
+                说明): 一次 run 从零起一个 LoopState, 于是同一段对话在快照存储里
+                本来会**每次提问多一条新根**, 旧链变孤儿. 传上一轮的
+                `LoopResult.last_checkpoint_id` 就把它们串回一条链.
 
         Returns:
             LoopResult: 完整消息历史 + 结束原因 + 每轮快照.
@@ -418,6 +424,7 @@ class AgentLoop:
             run_id=run_id,
             summary=summary,
             summary_covers=summary_covers,
+            parent_id=parent_id,
         )
 
     async def resume(
@@ -474,6 +481,7 @@ class AgentLoop:
         run_id: str | None,
         summary: str | None = None,
         summary_covers: int = 0,
+        parent_id: str | None = None,
     ) -> LoopResult:
         """run 与 resume 的共同实现 (差别只在起点, 以及是否补做挂起的工具调用)."""
         state = LoopState(
@@ -483,6 +491,9 @@ class AgentLoop:
             # 从快照续跑则由 _seed_from_checkpoint 覆盖掉
             summary=summary,
             summary_covers=summary_covers,
+            # 第一帧挂在哪一帧下面 (None = 新根); resume 那条路会由
+            # _seed_from_checkpoint 覆盖成快照自己的编号
+            last_checkpoint_id=parent_id,
         )
         if resume is not None:
             self._seed_from_checkpoint(state, resume)
@@ -552,6 +563,9 @@ class AgentLoop:
             # 压缩进度随结果交回调用方: 续接下一段时连同历史一起递进来 (见 run)
             summary=state.summary,
             summary_covers=state.summary_covers,
+            # 最后一帧的编号: 下一轮提问拿它当 parent_id, 同一段会话的快照
+            # 就串成一条链 (没配 saver 时恒为 None)
+            last_checkpoint_id=state.last_checkpoint_id,
         )
         # 终局事件从 LoopResult 派生 (同一份 outcome / content / tokens /
         # elapsed_ms): 事件流与返回值不会各说各话, 且终局事件恰好一个

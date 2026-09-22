@@ -2,8 +2,9 @@
 
 被测的是「业务怎么接进框架」这条约定, 以及它**真的够通用**:
 
-1. 运行上下文只装两样东西 —— 会话编号 + 一块**框架不解释**的载荷; 框架从不读
-   载荷里的字段, 也不规定它必须有什么.
+1. 运行上下文装四样东西 —— 会话编号 + 一对属主身份 (框架只拿它们做分区与
+   过滤) + 一块**框架不解释**的载荷 (框架从不读载荷里的字段, 也不规定它必须
+   有什么).
 2. 工具提供者是一个 `async def provide(运行上下文) -> 工具列表` 的形状, 把
    「这次运行该拿哪些工具」从框架里挪出去 —— 框架只认形状, 不认业务.
 3. **通用性测试 (本文件的重点)**: 用**同一套装配代码**装两个毫不相干的业务,
@@ -22,6 +23,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
 from mock_llm import MockLLM, make_tool_call, text_response, tool_call_response
 from trace_assertions import trace_of
 
@@ -205,20 +207,36 @@ def write_prompt(directory: Path, name: str, body: str) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def test_run_context_carries_a_thread_id_and_an_opaque_payload() -> None:
-    """上下文只有两样东西: 会话编号 + 载荷; 载荷原样躺着, 框架不碰它."""
-    payload = {"user_id": "u-9f3a", "tenant": "acme", "nested": {"roles": ["buyer"]}}
+def test_run_context_carries_a_conversation_two_owners_and_a_payload() -> None:
+    """上下文四样东西: 会话编号 + 两个属主 + 载荷; 载荷原样躺着, 框架不碰它."""
+    payload = {"locale": "zh", "nested": {"roles": ["buyer"]}}
 
-    context = RunContext(thread_id="shop:u-9f3a:chat-1", payload=payload)
+    context = RunContext(
+        thread_id="shop:u-9f3a:chat-1",
+        tenant_id="acme",
+        user_id="u-9f3a",
+        payload=payload,
+    )
 
     assert context.thread_id == "shop:u-9f3a:chat-1"
+    assert (context.tenant_id, context.user_id) == ("acme", "u-9f3a")
     assert context.payload == payload
     assert context.payload is payload, "载荷要原样透传, 不是拷一份出来"
 
 
 def test_run_context_payload_defaults_to_empty() -> None:
     """不装业务数据时不必写 payload (纯聊天场景)."""
-    assert RunContext(thread_id="t-1").payload == {}
+    assert RunContext(thread_id="t-1", tenant_id="t-1", user_id="u-1").payload == {}
+
+
+def test_the_two_owner_fields_have_no_default() -> None:
+    """`tenant_id` / `user_id` **不给默认值**: 忘了填当场报错, 不是悄悄变空租户.
+
+    这是 ticket 17 那个判断题的落点 —— 空串租户会让这段会话谁也看不见, 而且没有
+    任何地方报错; 少一个默认值, 每个装配处就必须当面说清「这段会话属于谁」.
+    """
+    with pytest.raises(TypeError):
+        RunContext(thread_id="t-1")  # type: ignore[call-arg]
 
 
 async def test_the_framework_never_reads_inside_the_payload(tmp_path: Path) -> None:
@@ -228,7 +246,12 @@ async def test_the_framework_never_reads_inside_the_payload(tmp_path: Path) -> N
     哪儿偷读过某个约定字段 (比如假定必有 user_id), 这里就会炸.
     """
     toy_dir = write_prompt(tmp_path / "toy", "toy", "你是玩具助手 A.")
-    opaque = RunContext(thread_id="t-opaque", payload={"租户": "甲", "轮次": 3})
+    opaque = RunContext(
+        thread_id="t-opaque",
+        tenant_id="租户-甲",
+        user_id="某人",
+        payload={"租户": "甲", "轮次": 3},
+    )
     model = MockLLM.scripted(
         [
             tool_call_response(make_tool_call("reverse_text", '{"text": "abc"}')),
@@ -272,7 +295,7 @@ async def test_the_framework_never_reads_inside_the_annotations(tmp_path: Path) 
     session, result = await assemble(
         model,
         provider,
-        RunContext(thread_id="marked:chat-1"),
+        RunContext(thread_id="marked:chat-1", tenant_id="toy", user_id="u-1"),
         prompt_name="marked",
         prompt_dir=toy_dir,
         question="跟甲打个招呼",
@@ -290,7 +313,7 @@ async def test_the_framework_never_reads_inside_the_annotations(tmp_path: Path) 
 async def test_a_provider_is_anything_with_the_right_shape() -> None:
     """提供者是结构化协议: 有那个方法就算, 不要求继承谁 (与 ChatModel 同款)."""
     provider = ToyProvider()
-    context = RunContext(thread_id="t-1")
+    context = RunContext(thread_id="t-1", tenant_id="toy", user_id="u-1")
 
     tools = await provider.provide(context)
 
@@ -305,7 +328,12 @@ async def test_the_identity_stays_out_of_every_tool_schema() -> None:
     (名字 + 说明 + 参数表), 那里面没有的东西, 它看不见、也无从填别人的值.
     """
     provider = ShopProvider()
-    context = RunContext(thread_id="shop:u-9f3a:chat-1", payload={"user_id": "u-9f3a"})
+    context = RunContext(
+        thread_id="shop:u-9f3a:chat-1",
+        tenant_id="shop",
+        user_id="u-9f3a",
+        payload={"user_id": "u-9f3a"},
+    )
 
     tools = await provider.provide(context)
 
@@ -357,7 +385,7 @@ async def test_one_assembly_serves_two_unrelated_businesses(tmp_path: Path) -> N
     toy_session, toy_result = await assemble(
         toy_model,
         ToyProvider(),
-        RunContext(thread_id="toy:chat-1"),
+        RunContext(thread_id="toy:chat-1", tenant_id="toy", user_id="u-1"),
         prompt_name="toy",
         prompt_dir=toy_dir,
         question="2 加 3 是多少",
@@ -365,7 +393,12 @@ async def test_one_assembly_serves_two_unrelated_businesses(tmp_path: Path) -> N
     shop_session, shop_result = await assemble(
         shop_model,
         ShopProvider(),
-        RunContext(thread_id="shop:u-9f3a:chat-1", payload={"user_id": "u-9f3a"}),
+        RunContext(
+            thread_id="shop:u-9f3a:chat-1",
+            tenant_id="shop",
+            user_id="u-9f3a",
+            payload={"user_id": "u-9f3a"},
+        ),
         prompt_name="shop",
         prompt_dir=shop_dir,
         question="有什么手机推荐吗",
@@ -403,7 +436,12 @@ async def test_the_identity_actually_reaches_the_tool(tmp_path: Path) -> None:
     _, result = await assemble(
         model,
         ShopProvider(),
-        RunContext(thread_id="shop:u-9f3a:chat-1", payload={"user_id": "u-9f3a"}),
+        RunContext(
+            thread_id="shop:u-9f3a:chat-1",
+            tenant_id="shop",
+            user_id="u-9f3a",
+            payload={"user_id": "u-9f3a"},
+        ),
         prompt_name="shop",
         prompt_dir=shop_dir,
         question="我余额还有多少",
@@ -422,7 +460,7 @@ async def test_a_provider_driven_session_still_writes_checkpoints(
     session, _ = await assemble(
         MockLLM.fixed(text_response("好的")),
         ToyProvider(),
-        RunContext(thread_id="toy:checkpoint-1"),
+        RunContext(thread_id="toy:checkpoint-1", tenant_id="toy", user_id="u-1"),
         prompt_name="toy",
         prompt_dir=toy_dir,
         question="随便说点什么",
