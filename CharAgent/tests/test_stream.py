@@ -1,7 +1,7 @@
 """stream 包单元测试 (#4): 事件类型 / seq 编号 / 状态机不变量.
 
 场景 → 断言:
-- EventType 六类齐全 (事件名与 API 契约一一对应)
+- EventType 七类齐全 (事件名与 API 契约一一对应)
 - seq: 每 run 从 1 起单调递增 (断点续拉的事件 id)
 - 状态机不变量 (违反即 EventSequenceError, 语义见 bus.EventBus docstring):
   1) tool_result 必须匹配一条未闭合 tool_call (按 tool_call_id 配对)
@@ -15,7 +15,7 @@
 被测对象是纯状态机 (不接 loop); loop 接线集成见 test_loop_events.py.
 
 大白话版 (这份「验货单」在验什么):
-- 喊话规范对不对: 6 种句式齐全.
+- 喊话规范对不对: 7 种句式齐全.
 - 场记的编号对不对: 每句话从 1 开始往上涨.
 - 纪律委员真的会拦人吗: 没说「要去查」就喊「查回来了」要报错; 同一句话没
   收到回音就重喊要报错; 工具还没回结果就喊「答完了」要报错; 喊完「答完了」
@@ -58,12 +58,13 @@ async def _open_and_close(bus: EventBus, call_id: str = "call_1") -> None:
 
 
 def test_event_types_cover_contract() -> None:
-    """六类事件与 API 契约的事件名一致 (P1 阶段另加 approval_required)."""
+    """七类事件与 API 契约的事件名一致 (P1 阶段另加 approval_required)."""
     assert [t.value for t in EventType] == [
         "thinking",
         "tool_call",
         "tool_result",
         "reasoning",
+        "context_compacted",
         "final",
         "error",
     ]
@@ -195,6 +196,25 @@ async def test_reasoning_is_side_channel() -> None:
     await bus.emit(EventType.TOOL_RESULT, tool_call_id="call_1", status="ok")
     await bus.emit(EventType.REASONING, delta="可以作答了")
     assert (await bus.emit(EventType.FINAL, content="答案")).seq == 6
+
+
+async def test_context_compacted_is_side_channel() -> None:
+    """上下文压缩 (#7) 同样是旁路: 不参与工具配对, 也不会因「压过」被拦住."""
+    bus = EventBus()
+    await bus.emit(EventType.CONTEXT_COMPACTED, turn=1, dropped=3)
+    await _open_and_close(bus)
+    await bus.emit(EventType.CONTEXT_COMPACTED, turn=2, dropped=2)
+
+    assert (await bus.emit(EventType.FINAL, content="答案")).seq == 5
+
+
+async def test_context_compacted_rejected_after_terminal() -> None:
+    """压缩事件也受不变量 4 管: 终局之后不得再发任何事件."""
+    bus = EventBus()
+    await bus.emit(EventType.FINAL, content="答案")
+
+    with pytest.raises(EventSequenceError, match="终局"):
+        await bus.emit(EventType.CONTEXT_COMPACTED, turn=1, dropped=3)
 
 
 # ---------------------------------------------------------------------------

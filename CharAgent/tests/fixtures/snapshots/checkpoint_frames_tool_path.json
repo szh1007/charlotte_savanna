@@ -1,6 +1,6 @@
 [
   {
-    "schema_version": 3,
+    "schema_version": 4,
     "checkpoint_id": "<id>",
     "thread_id": "snapshot-thread",
     "run_id": "run-snapshot",
@@ -37,7 +37,9 @@
       "total_tokens": 426,
       "truncation_count": 0,
       "content_parts": [],
-      "suspension": null
+      "suspension": null,
+      "summary": null,
+      "summary_covers": 0
     },
     "metadata": {
       "source": "loop",
@@ -52,7 +54,7 @@
     }
   },
   {
-    "schema_version": 3,
+    "schema_version": 4,
     "checkpoint_id": "<id>",
     "thread_id": "snapshot-thread",
     "run_id": "run-snapshot",
@@ -93,7 +95,9 @@
       "total_tokens": 965,
       "truncation_count": 0,
       "content_parts": [],
-      "suspension": null
+      "suspension": null,
+      "summary": null,
+      "summary_covers": 0
     },
     "metadata": {
       "source": "loop",

@@ -12,7 +12,7 @@
 单测里自洽.
 
 三件事在这里各有一处落地:
-1. **带工具问答端到端** —— `--question` 或交互模式, 走完整 loop + 六类事件实时打印
+1. **带工具问答端到端** —— `--question` 或交互模式, 走完整 loop + 七类事件实时打印
 2. **重试包装接线** —— `build_model` 里那一行 `RetryingChatModel(chat_model_from_env())`
    就是重试包一直缺的那个接线点; `--no-retry` 可关掉做对照
 3. **断点续跑 + 存储切换** —— Ctrl-C 打断 (kill switch) 与 `/resume`; `--backend`

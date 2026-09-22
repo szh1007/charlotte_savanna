@@ -63,7 +63,7 @@ MESSAGE_FIELD = "message"
 
 # 事件流响应的头: 客户端从它拿到本次运行的编号 (取消与排查都靠它).
 # 放在响应头而不是第一个事件里: 头在第一个字节之前就发出去了, 客户端不必
-# 等一个「开场事件」 —— 而事件类型是封闭的六类, 不该为本层另开一种.
+# 等一个「开场事件」 —— 而事件类型是封闭的七类, 不该为本层另开一种.
 RUN_ID_HEADER = "X-Run-Id"
 
 # SSE 的 media type (text/event-stream; EventSource 与 curl 都按它认).

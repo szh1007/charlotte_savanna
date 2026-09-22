@@ -56,6 +56,7 @@
 - run()          只做编排: guard 判定 → 决策 → 分支分派 → 轮次收尾 → 终局
 - _decide()      一次模型决策 (before_turn / on_model_call 前后 hook + 记账
                  + reasoning 事件)
+- _compile_view() 这一轮送给模型的视图 (配了压缩策略才投影; 见下)
 - _handle_tool_turn()           工具轮: 并行执行 + 回填 + 事件 + hook
 - _handle_truncation()          length 截断: 续写 / 精简 / 重试超限放弃
 - _handle_server_interrupted()  上游中断: 半截内容不当答复
@@ -63,6 +64,14 @@
 - _record_turn()  每轮历史快照 (供 checkpoint 落盘) + after_turn hook
 - emit_terminal() 单一终局出口 (在 utils/events.py): final / error
 可变状态统一收在 LoopState (utils/types.py), 逐 run 独立, 不再散落局部变量
+
+上下文压缩线 (#7, 配了 compactor 才走, 见 compaction.py):
+- 账本 (state.history) append-only, 一字不改; 每次模型调用前把账本**投影**成
+  一份视图 (system + 摘要 + 最近几轮) 交给 generate. 于是会话越聊越长, 而发
+  出去的请求不会跟着无限长
+- 压缩不落地: 快照 / 续跑 / 回溯看到的仍是全量账本
+- 真压了才发 context_compacted 事件; 摘要那一次调用的 token 计入运行预算,
+  但不占 max_turns (它不是一次模型决策)
 
 三条输出通道 (一次 run 同时喂三条, 互不干扰):
 1. wire 历史 (messages): 发给模型的对话, 含 reasoning_content (#11)
@@ -107,9 +116,15 @@ import asyncio
 from collections.abc import Iterable, Sequence
 from uuid import uuid4
 
+from CharAgent.agent.compaction import (
+    AnchorTokenCounter,
+    CompactionPolicy,
+    TokenCounter,
+)
 from CharAgent.agent.guard import LoopGuard
 from CharAgent.agent.utils.errors import LoopConfigError
 from CharAgent.agent.utils.events import (
+    context_compacted_data,
     emit_terminal,
     tool_call_data,
     tool_result_data,
@@ -181,10 +196,17 @@ class AgentLoop:
         reasoning_effort: 思考强度透传 (low/high/max, 兼容别名由上游归一;
             "none" 关闭思考模式), None 走上游默认 (high). 与 thinking 同时
             显式传入且方向相反时, 模型调用期报 ModelConfigError.
+        compactor: 上下文压缩策略 (#7). 给了它, 每次模型调用前先把账本投影成
+            一份**视图** (摘要 + 最近几轮) 再发出去 —— 账本本身一个字不动, 于是
+            快照 / 续跑 / 回溯看到的仍是全量. None (默认) 表示不投影: 送给模型的
+            就是账本本体, 行为与从前逐字一样.
+        counter: 估算器 (判阈值与水位线用). 默认 AnchorTokenCounter (锚 = 上游给
+            的 input_tokens). 只在配了 compactor 时有意义 —— 只给 counter 不给
+            compactor 属配置写错, 构造期报 LoopConfigError.
         event_sink: 流式事件出口 (同步或异步回调): 运行过程逐个推
-            事件 (thinking / tool_call / tool_result / reasoning / final /
-            error), 供 SSE 推送 / CLI 打印 / 测试收集. 每个 run 独立编号
-            (seq 从 1 起), 终局事件恰好一个.
+            事件 (thinking / tool_call / tool_result / reasoning /
+            context_compacted / final / error), 供 SSE 推送 / CLI 打印 /
+            测试收集. 每个 run 独立编号 (seq 从 1 起), 终局事件恰好一个.
             None 表示不接出口 (事件仍会触发 hooks 的 on_event).
         hooks: hook 注册表 (扩展点), 六个触发点与载荷见
             HookRegistry docstring; 空注册零开销. None 表示无扩展点 (内部用
@@ -210,6 +232,8 @@ class AgentLoop:
         max_tokens: int | None = None,
         thinking: bool | None = None,
         reasoning_effort: str | None = None,
+        compactor: CompactionPolicy | None = None,
+        counter: TokenCounter | None = None,
         event_sink: EventSink | None = None,
         hooks: HookRegistry | None = None,
         saver: CheckpointSaver | None = None,
@@ -219,6 +243,11 @@ class AgentLoop:
             guard = LoopGuard()
         if max_truncations < 1:
             raise LoopConfigError(f"max_truncations 必须 >= 1, 实际: {max_truncations}")
+        if counter is not None and compactor is None:
+            raise LoopConfigError(
+                "counter 只在配了 compactor 时才有用 (没人会去问它估算); "
+                "要压缩就两个一起给, 不压缩就一个都别给"
+            )
         if (saver is None) != (thread_id is None):
             raise LoopConfigError(
                 "saver 与 thread_id 必须成对给 (存到哪儿 + 属于哪段对话), "
@@ -243,6 +272,13 @@ class AgentLoop:
         self._event_sink = event_sink
         self._saver = saver
         self._thread_id = thread_id
+
+        self._compactor = compactor
+        # 估算器是压缩的零件: 没配策略就不建 (也不会有谁来问它) —— 于是「不配
+        # compactor 时一个字节都不多花」这条对构造也成立
+        self._counter: TokenCounter | None = None
+        if compactor is not None:
+            self._counter = counter if counter is not None else AnchorTokenCounter()
 
         # 未传注册表时用空实例 (对齐 guard=None -> LoopGuard() 的惯例):
         # 后续触发点不必逐处判空, 空注册的 fire 立即返回
@@ -331,13 +367,15 @@ class AgentLoop:
         messages: Sequence[ModelMessage],
         *,
         run_id: str | None = None,
+        summary: str | None = None,
+        summary_covers: int = 0,
     ) -> LoopResult:
         """执行一次 agent run: while 循环直到自然结束或 guard 触发.
 
         本方法只做**编排** (按功能拆分后的结构, 便于逐段审查):
 
             guard 判定 (软限制刹车)
-              → self._decide          模型决策 + before/after hook + reasoning 事件
+              → self._decide          模型决策 (先投影视图) + hook + reasoning 事件
               → 按 finish_reason 分派:
                     self._handle_tool_turn           工具轮 (并行 + 回填 + 事件)
                     self._handle_truncation          length 截断 (续写 / 精简 / 放弃)
@@ -347,13 +385,19 @@ class AgentLoop:
               → emit_terminal         单一终局出口 (final / error)
 
         可变状态收在 LoopState (agent/utils/types.py), 逐 run 独立.
-        与 resume() 的区别只在起点: 这里是全新的历史, 那边是一帧快照.
+        与 resume() 的区别只在起点: 这里是全新的历史 (加上调用方递进来的压缩进度),
+        那边是一帧快照.
 
         Args:
             messages: 初始消息历史 (wire dict, 通常为 [user] 或上次 run 的
                 返回值续接); 内部拷贝, 调用方列表不被修改.
             run_id: 本次运行的编号 (存快照时写进每帧记录). None 表示生成一个
                 (uuid4 hex) —— 同一个 loop 反复 run 时每次都是新编号.
+            summary: 上一段运行留下的上下文摘要 (配了 compactor 才有意义);
+                None 表示没有 (从头开始压). 续接上一段对话时把它一起递进来,
+                于是**滚动摘要**跨 run 成立 —— 不然每段运行都会把同一段旧历史
+                重压一遍 (内容不会错, 但白花一次摘要调用).
+            summary_covers: 那份摘要覆盖到 messages 的第几条 (默认 0).
 
         Returns:
             LoopResult: 完整消息历史 + 结束原因 + 每轮快照.
@@ -368,7 +412,13 @@ class AgentLoop:
                 —— 本模块捕获后不做吞没处理, 直接传播 (difficulties #3);
                 取消收尾的 error(cancelled) 事件由服务层产出.
         """
-        return await self._run(messages, resume=None, run_id=run_id)
+        return await self._run(
+            messages,
+            resume=None,
+            run_id=run_id,
+            summary=summary,
+            summary_covers=summary_covers,
+        )
 
     async def resume(
         self, checkpoint: Checkpoint, *, run_id: str | None = None
@@ -422,9 +472,18 @@ class AgentLoop:
         *,
         resume: Checkpoint | None,
         run_id: str | None,
+        summary: str | None = None,
+        summary_covers: int = 0,
     ) -> LoopResult:
         """run 与 resume 的共同实现 (差别只在起点, 以及是否补做挂起的工具调用)."""
-        state = LoopState(history=list(messages), run_id=run_id or uuid4().hex)
+        state = LoopState(
+            history=list(messages),
+            run_id=run_id or uuid4().hex,
+            # 压缩进度也是「接着跑要用的」: 新 run 由调用方递进来 (跨 run 续接),
+            # 从快照续跑则由 _seed_from_checkpoint 覆盖掉
+            summary=summary,
+            summary_covers=summary_covers,
+        )
         if resume is not None:
             self._seed_from_checkpoint(state, resume)
 
@@ -490,6 +549,9 @@ class AgentLoop:
             truncation_count=state.truncation_count,
             total_tokens=state.total_tokens,
             elapsed_ms=guard.elapsed_ms,
+            # 压缩进度随结果交回调用方: 续接下一段时连同历史一起递进来 (见 run)
+            summary=state.summary,
+            summary_covers=state.summary_covers,
         )
         # 终局事件从 LoopResult 派生 (同一份 outcome / content / tokens /
         # elapsed_ms): 事件流与返回值不会各说各话, 且终局事件恰好一个
@@ -503,11 +565,15 @@ class AgentLoop:
     async def _decide(
         self, state: LoopState, bus: EventBus, tool_specs: list[ToolSpec] | None
     ) -> ModelResponse:
-        """一次模型决策: hook 前后 → generate → 记账 → reasoning 事件.
+        """一次模型决策: hook 前后 → (投影视图) → generate → 记账 → reasoning 事件.
 
         触发点: before_turn → on_model_call(before) → generate →
         on_model_call(after); kill switch 可在此 await 内即时打断
         (CancelledError 不吞, 由 run 传播).
+
+        压缩 (#7) 就在这一处接上: 送给 generate 的是**视图** (配了 compactor 时),
+        而账本 state.history 一个字不动 —— 快照落盘、续跑、回溯看到的都是全量.
+        两个 hook 拿到的仍是账本本体 (载荷契约没变: 「插件看到的是完整历史」).
 
         Returns:
             ModelResponse: 本轮响应; state 上的轮次 / 累计用量 / finish_reason
@@ -527,8 +593,9 @@ class AgentLoop:
             messages=state.history,
             tools=tool_specs,
         )
+        view = await self._compile_view(state, bus)
         response = await self._model.generate(
-            state.history,
+            view,
             tool_specs,
             temperature=self._temperature,
             top_p=self._top_p,
@@ -540,6 +607,10 @@ class AgentLoop:
         state.turn_count = turn
         state.total_tokens += count_tokens(response.usage)
         state.finish_reason = response.finish_reason
+        if self._counter is not None:
+            # 权威值回灌 (锚): 上游说的 input_tokens 才是真的, 它记的是**账本**
+            # 长度 —— 下一次估算 = 这个锚 + 之后新增那几条的启发式
+            self._counter.note_usage(response.usage, message_count=len(state.history))
         await self._hooks.fire(
             HookPoint.ON_MODEL_CALL,
             phase=ModelCallPhase.AFTER,
@@ -555,6 +626,38 @@ class AgentLoop:
             # 不混入正文; 但它同样回填 wire 历史 (模型侧上下文, 另一条通道)
             await bus.emit(EventType.REASONING, delta=response.reasoning, turn=turn)
         return response
+
+    async def _compile_view(
+        self, state: LoopState, bus: EventBus
+    ) -> list[ModelMessage]:
+        """算这一轮送给模型的视图 (配了压缩策略才投影; 否则原样返回账本).
+
+        视图是投影出来的**副本**: 压缩只影响这一次请求, `state.history` 一个字
+        不动 (它仍是 append-only 的账本). 三件事顺带在这里做完:
+
+        - 新摘要与「压到第几条」写回 state (它们是进度, 要跟着快照落盘)
+        - 摘要那一次调用的 token 计入本次运行预算 (确实花了钱), 但**不加**
+          turn_count —— 它不是一次模型决策, 不该占 max_turns 的额度
+        - 真压了才发 context_compacted 事件 (没压就不该在前端留痕迹)
+        """
+        if self._compactor is None or self._counter is None:
+            return state.history
+        compiled = await self._compactor.apply(
+            state.history,
+            summary=state.summary,
+            summary_covers=state.summary_covers,
+            counter=self._counter,
+            summarizer=self._model,
+        )
+        state.summary = compiled.summary
+        state.summary_covers = compiled.summary_covers
+        state.total_tokens += count_tokens(compiled.summarizer_usage)
+        if compiled.compacted:
+            await bus.emit(
+                EventType.CONTEXT_COMPACTED,
+                **context_compacted_data(compiled, turn=state.turn_count + 1),
+            )
+        return compiled.messages
 
     async def _handle_tool_turn(
         self, state: LoopState, bus: EventBus, response: ModelResponse
@@ -748,7 +851,7 @@ class AgentLoop:
         """把快照里的进度灌进本次 run 的工作数据 (计数器接续 + 分支起点).
 
         只接「接着跑要用的」: 历史已经作为输入传进来了 (resume 用
-        checkpoint.state.messages 调 _run), 这里补的是计数器与分支链.
+        checkpoint.state.messages 调 _run), 这里补的是计数器 / 分支链 / 压缩进度.
         刻意**不**恢复的两种值:
         - done: 从一帧「已结束」的快照恢复, 意思是「基于那一刻的历史再问一次」
           (续写 / 追问), 不是「什么都不做」—— 想跳过就别调 resume
@@ -759,6 +862,8 @@ class AgentLoop:
         state.total_tokens = checkpoint.state.total_tokens
         state.truncation_count = checkpoint.state.truncation_count
         state.content_parts = list(checkpoint.state.content_parts)
+        state.summary = checkpoint.state.summary
+        state.summary_covers = checkpoint.state.summary_covers
         # 新落的帧接着这帧长: 从老快照恢复时, 新帧就挂在老快照下面 (新分支)
         state.last_checkpoint_id = checkpoint.checkpoint_id
 
@@ -834,8 +939,12 @@ class AgentLoop:
 
         存两块东西 (v3 起分开):
         - 进度 (CheckpointState): 接着跑需要什么 —— 完整历史 + 计数器 + 正文片段
+          + 压缩进度 (摘要与它压到第几条, v4 起)
         - 观察值 (CheckpointMetadata): 这一步发生了什么 —— 来源 / 本轮 token 与
           耗时 / 调了哪些工具 / 答了什么 / 为什么停, 给回放调试看
+
+        注意存的是**账本** (state.history) 而不是这一轮送出去的视图: 压缩不落地
+        (它是「这次请求送什么」的投影), 于是存档永远是全量, 回溯也永远是全量.
 
         存成功后把编号记进 state.last_checkpoint_id: 下一帧的 parent_id 指向它,
         同一会话的快照就串成一条链 (从老快照恢复时链从那里岔开, #5 time-travel).
@@ -850,6 +959,8 @@ class AgentLoop:
                 total_tokens=state.total_tokens,
                 truncation_count=state.truncation_count,
                 content_parts=list(state.content_parts),
+                summary=state.summary,
+                summary_covers=state.summary_covers,
             ),
             metadata=metadata,
             parent_id=state.last_checkpoint_id,

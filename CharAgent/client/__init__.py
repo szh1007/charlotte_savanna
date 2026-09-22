@@ -15,7 +15,7 @@ agent 带着工具去查去算, 过程实时打在屏幕上, 中途 Ctrl-C 能�
 - app.py      进程入口: 参数解析 + 装配 (模型 / 存储 / 会话) + 常驻事件循环 +
               交互与一次性两条路 (Ctrl-C 打断也在这里, 见 KillSwitch)
 - session.py  ChatSession: 一次会话的三个动作 —— 问一句 / 接着跑 / 看存档
-- render.py   终端渲染: 六类事件各画一行, 外加结果摘要与答复正文
+- render.py   终端渲染: 七类事件各画一行, 外加结果摘要与答复正文
 - utils/      支撑子包: types (CliOptions) + commands (交互命令解析)
 
 **别的 CLI 入口也能用这一层** (2026-09-19 从私有改成公开): `KillSwitch` /

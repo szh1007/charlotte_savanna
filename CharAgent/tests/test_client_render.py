@@ -1,7 +1,7 @@
-"""client 终端渲染测试: 六类事件怎么画成一行字.
+"""client 终端渲染测试: 七类事件怎么画成一行字.
 
 场景 → 断言:
-- 六类事件各有一行版式, 标签是 `[thinking]` 这类方括号词 (可 grep)
+- 七类事件各有一行版式, 标签是 `[thinking]` 这类方括号词 (可 grep)
 - tool_call 的 arguments 是原始 JSON 字符串: 能解析就压成紧凑一行, 畸形就
   原样打并标注 (畸形本身是要给用户看的信息, #2)
 - tool_result 成功给「名字 ok (耗时): 摘要」, 失败给可操作错误
@@ -47,7 +47,7 @@ def rendered(event_type: EventType, *, color: bool = False, **data: Any) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 六类事件各一行
+# 七类事件各一行
 # ---------------------------------------------------------------------------
 
 
@@ -141,6 +141,41 @@ def test_reasoning_line_keeps_short_text_as_is() -> None:
     assert rendered(EventType.REASONING, delta="核对订单号", turn=1) == (
         "[reasoning] 核对订单号"
     )
+
+
+def test_context_compacted_line_reports_what_was_squeezed() -> None:
+    """context_compacted: 压了多少 / 省了多少 / 走没走摘要 (#7)."""
+    line = rendered(
+        EventType.CONTEXT_COMPACTED,
+        turn=2,
+        dropped=8,
+        truncated=1,
+        estimated_tokens=1200,
+        saved_tokens=4300,
+        summarized=True,
+        warning=None,
+    )
+    assert line.startswith("[context_compacted] ")
+    assert "裁掉 8 条" in line
+    assert "截短 1 条" in line
+    assert "省 4300" in line
+    assert "摘要已更新" in line
+
+
+def test_context_compacted_line_reports_the_degradation() -> None:
+    """摘要失败时把原因也打出来: 那是「这轮为什么没有摘要」的唯一线索."""
+    line = rendered(
+        EventType.CONTEXT_COMPACTED,
+        turn=1,
+        dropped=3,
+        truncated=0,
+        estimated_tokens=900,
+        saved_tokens=1200,
+        summarized=False,
+        warning="摘要没能生成 (ModelTimeoutError), 本次只做裁剪",
+    )
+    assert "只裁剪" in line
+    assert "ModelTimeoutError" in line
 
 
 def test_final_line_reports_end_state_not_the_body() -> None:

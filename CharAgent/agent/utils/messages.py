@@ -10,9 +10,15 @@ token」分离:
   指令来自框架而非用户, 防止模型把它当新请求; OpenAI/DeepSeek 兼容端点
   均允许中间 system 消息)
 - count_tokens: 单次响应的 token 消耗 (guard 的 token 预算按其累计)
+- estimate_tokens + SUMMARY_*: 上下文压缩 (#7) 用到的字符启发式估算与文案
+  (摘要指令 / 摘要进视图时的前缀 / 摘要材料渲染). count_tokens 与它的区别是
+  「量的是什么」: 前者量**一次响应的用量** (来自 API), 后者量**一份消息列表
+  有多大** (本地猜) —— 权威值只有 API 给的 usage, 估算只用来判阈值.
 """
 
 from __future__ import annotations
+
+from collections.abc import Sequence
 
 from CharAgent.model.utils.types import ModelMessage, ModelResponse, Usage
 from CharAgent.tool import ToolExecution
@@ -83,3 +89,129 @@ TRUNCATION_CONDENSE_TEXT = (
     "请以更精炼的方式重新回答, 聚焦关键信息并控制篇幅, "
     "确保能在长度限制内完成."
 )
+
+
+# ---------------------------------------------------------------------------
+# 上下文压缩 (#7): 估算与文案
+# ---------------------------------------------------------------------------
+
+# 每条消息的固定开销 (role 标记与结构分隔符): 上游计费里这部分一直都在,
+# 启发式漏掉它会把「一屏短消息」的请求估小
+MESSAGE_OVERHEAD_TOKENS = 4
+
+# 汉字的 Unicode 区段 (估算口径: 汉字一字 ≈ 一 token, 其余四字符 ≈ 一 token).
+# 只用区段判断, 不引分词器 —— 中文分词器算中文同样不准, 多一个依赖只换来假精度
+_CJK_RANGES: tuple[tuple[str, str], ...] = (
+    ("　", "〿"),  # U+3000 ~ U+303F: CJK 标点
+    ("一", "鿿"),  # U+4E00 ~ U+9FFF: CJK 统一表意文字
+    ("＀", "￯"),  # U+FF00 ~ U+FFEF: 全角字母 / 数字 / 标点
+)
+
+
+def estimate_tokens(messages: Sequence[ModelMessage]) -> int:
+    """一份消息列表**大致**多大 (字符启发式, 不调上游也不引分词器).
+
+    只用来判阈值与水位线 —— 真正权威的输入 token 数只有上游给的 usage (#7),
+    见 agent/compaction.py 的 AnchorTokenCounter.
+    """
+    return sum(_message_tokens(message) for message in messages)
+
+
+def truncate_text(text: str, *, limit: int) -> str:
+    """把一段文本截到 limit 个字符 (超出时附一句「省略了多少字」的说明).
+
+    为什么留说明而不是只加省略号: 模型看到 \"...\" 会以为工具就返回了这么点,
+    读到「省略 N 字」才知道这里被压缩过 (需要全文就再查一次, 而不是硬猜).
+    """
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}...(已截断, 省略 {len(text) - limit} 字)"
+
+
+def message_text(message: ModelMessage, *, tool_limit: int) -> str:
+    """一条 wire 消息 → 摘要材料里的一行文本 (工具正文按 tool_limit 截短).
+
+    渲染成**纯文本**交给摘要模型: 摘要只关心「发生了什么」, 不必看懂 wire 结构,
+    于是也不必保持配对 —— 这里丢掉的正是压缩要丢掉的东西.
+    """
+    role = str(message.get("role") or "?")
+    calls = list(message.get("tool_calls") or [])
+    parts: list[str] = []
+    content = message.get("content")
+    if isinstance(content, str) and content:
+        parts.append(
+            truncate_text(content, limit=tool_limit) if role == "tool" else content
+        )
+    for call in calls:
+        function = call.get("function") or {}
+        parts.append(f"{function.get('name')}({function.get('arguments')})")
+    label = f"{role}:调用工具" if calls else role
+    return f"[{label}] {' '.join(parts)}"
+
+
+# 摘要指令 (滚动摘要的 system 段): 只说「保留什么 / 丢掉什么」, 不教它格式 ——
+# 摘要的消费者是模型自己 (进视图当 system 消息), 不是给人看的报告
+SUMMARY_INSTRUCTION_TEXT = (
+    "把下面的对话压成一份要点摘要, 供后续轮次回顾. "
+    "保留: 用户的目标与约束、已经确认的事实 (订单号 / 金额 / 结论 / 时间)、"
+    "做过的决定与原因、还没做完的事. "
+    "丢掉: 寒暄与重复表述、工具返回里的格式噪音. "
+    "只输出摘要正文, 不要复述这条指令, 不要加标题."
+)
+
+# 摘要进视图时的前缀: 让模型知道这段是**压缩过的** (不是某个人说的原话),
+# 也让它知道更早的内容只能以此为准 (原文已不在上下文里)
+SUMMARY_PREFIX_TEXT = "【更早对话的摘要 (原文已不在上下文里, 需要时以此为准)】\n"
+
+
+def summary_request(
+    previous_summary: str | None,
+    dropped: Sequence[ModelMessage],
+    *,
+    tool_limit: int,
+) -> list[ModelMessage]:
+    """摘要那一次模型调用的输入: 指令 + (上一条摘要 + 这次新裁掉的段).
+
+    两条都带上才是**滚动**摘要: 只压新掉的那段, 更早的信息会被逐次稀释 ——
+    每次压缩都只看见一小段, 压个三五次, 开头的来龙去脉就没了.
+    """
+    parts: list[str] = []
+    if previous_summary:
+        parts.append(f"已有的摘要 (更早的对话已经压在这里):\n{previous_summary}")
+    parts.append(
+        "这次要压进摘要的对话:\n"
+        + "\n".join(message_text(m, tool_limit=tool_limit) for m in dropped)
+    )
+    return [
+        {"role": "system", "content": SUMMARY_INSTRUCTION_TEXT},
+        {"role": "user", "content": "\n\n".join(parts)},
+    ]
+
+
+def summary_view_message(summary: str) -> ModelMessage:
+    """摘要 → 视图里的那条 system 消息 (与截断指令同一条通道约定: 框架的话)."""
+    return {"role": "system", "content": SUMMARY_PREFIX_TEXT + summary}
+
+
+def _message_tokens(message: ModelMessage) -> int:
+    """单条消息的估算 (正文 + 工具调用参数 + 固定开销)."""
+    total = MESSAGE_OVERHEAD_TOKENS
+    content = message.get("content")
+    if isinstance(content, str):
+        total += _text_tokens(content)
+    for call in message.get("tool_calls") or []:
+        function = call.get("function") or {}
+        total += _text_tokens(str(function.get("name") or ""))
+        total += _text_tokens(str(function.get("arguments") or ""))
+    return total
+
+
+def _text_tokens(text: str) -> int:
+    """一段文本 → 估算 token 数 (汉字按字算, 其余按四字符一 token 算)."""
+    cjk = sum(1 for char in text if _is_cjk(char))
+    return cjk + (len(text) - cjk + 3) // 4
+
+
+def _is_cjk(char: str) -> bool:
+    """这个字符算不算「一字一 token」的汉字 (区段见 _CJK_RANGES)."""
+    return any(low <= char <= high for low, high in _CJK_RANGES)

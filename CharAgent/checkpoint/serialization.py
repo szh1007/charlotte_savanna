@@ -407,6 +407,8 @@ class CheckpointCodec:
                 "truncation_count": checkpoint.state.truncation_count,
                 "content_parts": checkpoint.state.content_parts,
                 "suspension": self._suspension_payload(checkpoint.state.suspension),
+                "summary": checkpoint.state.summary,
+                "summary_covers": checkpoint.state.summary_covers,
             },
             "metadata": {
                 "source": checkpoint.metadata.source.value,
@@ -449,7 +451,7 @@ class CheckpointCodec:
         )
 
     def _build_state(self, payload: Any) -> CheckpointState:
-        """进度字典 -> CheckpointState."""
+        """进度字典 -> CheckpointState (缺失字段取默认值, 见 fields.py)."""
         if not isinstance(payload, dict):
             raise CheckpointSerializationError(
                 f"state 应当是字典, 实际为 {type(payload).__name__}: {payload!r}"
@@ -461,6 +463,8 @@ class CheckpointCodec:
             truncation_count=read_int(payload, "truncation_count"),
             content_parts=read_str_list(payload, "content_parts"),
             suspension=self._read_suspension(payload.get("suspension")),
+            summary=read_optional_str(payload, "summary"),
+            summary_covers=read_int(payload, "summary_covers"),
         )
 
     def _build_metadata(self, payload: Any) -> CheckpointMetadata:

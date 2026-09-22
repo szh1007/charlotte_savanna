@@ -35,7 +35,13 @@ from __future__ import annotations
 import os
 from collections.abc import Awaitable, Sequence
 
-from CharAgent.agent import AgentLoop, LoopGuard, LoopResult
+from CharAgent.agent import (
+    AgentLoop,
+    CompactionPolicy,
+    LoopGuard,
+    LoopResult,
+    TokenCounter,
+)
 from CharAgent.checkpoint import (
     Checkpoint,
     CheckpointCapabilities,
@@ -102,6 +108,11 @@ class ChatSession:
         hooks: hook 注册表 (扩展点); None 表示不挂任何插件, 行为与从前一字不变.
             业务侧挂插件走**这条路**, 而不是自己建 `AgentLoop` —— 会话是装配的
             唯一入口, 绕开它建 loop 就等于把快照 / 提示词 / 历史那几件事各做一遍.
+        compactor: 上下文压缩策略 (#7); None (默认) 表示不压 —— 每轮把整段历史
+            原样发出去, 行为与从前一字不变. 业务按自己的窗口配阈值与保留轮数
+            (默认实现 TrimAndSummarize).
+        counter: 估算器 (判阈值用); None 表示用默认的锚式估算. 只在配了
+            compactor 时有意义.
 
     没跑完的那一轮怎么办 (本类最要紧的一条规矩): loop 干活时用的是自己那份**副本**
     历史, 副本随被取消的任务一起没了 —— 但每一轮结束时落过盘的快照还在. 于是失败
@@ -125,6 +136,8 @@ class ChatSession:
         prompt_name: str = "system",
         prompt_dir: str | os.PathLike[str] | None = None,
         hooks: HookRegistry | None = None,
+        compactor: CompactionPolicy | None = None,
+        counter: TokenCounter | None = None,
     ) -> None:
         self._model = model
         self._saver = saver
@@ -137,6 +150,9 @@ class ChatSession:
             guard=guard,
             max_tokens=max_tokens,
             thinking=thinking,
+            # 压缩策略原样转交 (会话不解释参数; 不配就与从前一样)
+            compactor=compactor,
+            counter=counter,
             # 事件出口与快照存储一起接上: 前者让用户边跑边看, 后者让中断可续
             event_sink=event_sink,
             saver=saver,
@@ -161,6 +177,12 @@ class ChatSession:
         self._history: list[ModelMessage] = [
             {"role": "system", "content": system_prompt}
         ]
+        # 上下文压缩的进度 (摘要 + 它压到第几条): 与 history 一样是**会话状态** ——
+        # 每段 run 结束时从结果里收下, 下一段连同历史一起递回去. 不收的话, 每次
+        # 提问都是一个全新的压缩进度, 于是同一段旧历史会被反复重压 (内容不会错,
+        # 但白花一次摘要调用, 滚动摘要的收益也就丢了).
+        self._summary: str | None = None
+        self._summary_covers = 0
 
     # ------------------------------------------------------------------
     # 只读属性
@@ -241,7 +263,13 @@ class ChatSession:
                 `task.cancel`); 本方法不吞, 由 app.py 接住并提示怎么续跑.
         """
         self._history.append({"role": "user", "content": question})
-        return await self._run(self._loop.run(self._history))
+        return await self._run(
+            self._loop.run(
+                self._history,
+                summary=self._summary,
+                summary_covers=self._summary_covers,
+            )
+        )
 
     async def resume(self) -> LoopResult | None:
         """从最新一帧快照接着跑; 没有可恢复的快照时返回 None.
@@ -321,6 +349,9 @@ class ChatSession:
             await self._reclaim_progress()
             raise
         self._history = result.messages
+        # 压缩进度与历史同源: 一起收下, 下一句问话接着用
+        self._summary = result.summary
+        self._summary_covers = result.summary_covers
         return result
 
     async def _reclaim_progress(self) -> None:
@@ -341,6 +372,9 @@ class ChatSession:
         不走 time-travel 分叉), 所以「快照的历史」永远是「会话历史」的前缀,
         比长度就是比进度. P1 若接 time-travel, 这里要换成显式的版本比较.
 
+        压缩进度 (摘要) 与历史同在那一帧里, 于是**一起收**: 只收历史不收摘要的话,
+        下一句问话会把同一段旧历史重压一遍.
+
         读快照失败不上抛: 收不回来是小事, 把真正的失败原因 (模型错 / 存储错)
         盖掉是大事.
         """
@@ -353,3 +387,5 @@ class ChatSession:
         messages = list(checkpoint.state.messages)
         if len(messages) > len(self._history):
             self._history = messages
+            self._summary = checkpoint.state.summary
+            self._summary_covers = checkpoint.state.summary_covers

@@ -1,0 +1,494 @@
+"""上下文压缩 (difficulties #7): 账本 / 视图分离 —— 摘要 + 截断, 但不拆散 tool_calls.
+
+一句话理解: 一个会话聊得越久, 每一轮都要把**全量历史**重发一遍 (会话 ID 在
+前端标签页里是固定的, 历史只增不减), 成本与首字延迟随轮数线性上涨, 直到撞上
+模型窗口. 本模块把「记下来的」与「送出去的」分开:
+
+    账本 (LoopState.history)   append-only, 一字不改 —— 断点续跑与回溯靠它
+       ↓ 投影 (每次模型调用前算一次, 不落地)
+    视图 (送给模型的)          system + 摘要 + 最近 N 轮完整对话 —— 越聊越短
+
+**为什么不动账本**: ① 落盘的仍是全量历史 (只多了「压到哪一步」那两个字段) ——
+于是断点续跑、time-travel 回溯、快照表格视图看到的都还是完整过程, 压缩掉的只是
+这一次请求的输入; ② 「恢复不重跑」的前提是「做过的事都在历史里」, 原地删历史
+就等于把那个前提拆了; ③ 投影是**纯函数**, 同样的账本 + 同样的参数 → 同样的视图,
+好测也好解释.
+
+三件套 (默认实现 TrimAndSummarize), 从省得多到省得细:
+
+1. **窗口裁剪** —— 保 system (第 0 条) 与最近 N 轮, 单位是**轮**. 切的刀口只落在
+   「一个提问」的位置, 于是被裁掉的那段总是完整对话 (提问 + 为它做的全部决策),
+   保留的那段也总是完整对话.
+2. **工具结果截断** —— 留着但已经很旧的工具正文截到阈值 (最新一轮不截). 工具返回
+   往往是大头, 截它比再多丢一轮划算 —— 骨架 (调过什么、结论是什么) 都还在.
+3. **滚动摘要** —— 被裁掉的那段压成一段摘要, 下次压缩时**连上一条摘要一起重压**
+   (不是只压新掉的那段: 那样更早的信息会被逐次稀释到消失).
+
+四条硬不变量 (上游对消息配对的规矩是硬的, 破了直接 400 —— 见 #10):
+
+- 绝不拆散 `assistant(tool_calls)` 与它的 `tool` 消息 (切点只落在提问处)
+- 第 0 条 (system) 永不裁
+- 至少保留最近 1 轮完整 (裁到只剩 system 等于把这段对话删了)
+- 裁完的序列仍是合法的 wire 序列
+
+触发与水位线: 估算 ≥ `threshold_tokens` 才压; 压完要落到阈值乘水位线比例以下才
+停手 (到不了就逐轮多丢一轮). 水位线是**滞回** —— 只按下限压的话, 下一轮立刻又
+超线, 于是每轮都压一次, 摘要调用也就每轮都花一次钱.
+
+与 LoopGuard 的分工 (两个数各自算, 都要留): guard 是**运行级刹车** (这次运行总共
+别烧太多 → 直接停), 本模块是**单请求治理** (别让这一次请求变大 → 压完继续).
+
+压掉的信息没有丢: 旧帧还在快照里 (`list_history` 可回溯). 真正的「长期记忆 +
+按需检索」是另一个组件 (难点 #4 的情景记忆), 本模块不做 —— 边界写在这里, 免得
+把「上下文里看不见」误当成「已经不存在了」.
+
+为什么不挂在 BEFORE_TURN 钩子上 (它拿到的 messages 就是活引用, 原地改真的能改):
+① 那是 fire 类点, 契约原话是「忽略, 没人看」—— 把「改变下一步输入」的逻辑塞进
+观察点, 等于让 hook 契约变成「某些点其实可以改载荷」; ② 压缩需要**框架保证的
+不变量** (配对 / system 不裁 / 至少留 1 轮), 这是通用知识, 不该每个业务各写一遍;
+③ 摘要是一次真实模型调用, 它的 usage 要计入运行预算, 钩子点拿不到那个回写口.
+
+本模块只放行为 (估算器 / 策略 / 投影产物); 字符启发式与摘要文案在
+utils/messages.py, 账本字段 (summary / summary_covers) 在 LoopState 与
+CheckpointState 上 (v4 起随快照一起存).
+"""
+
+from __future__ import annotations
+
+import logging
+from collections.abc import Sequence
+from dataclasses import dataclass, field
+from typing import Protocol
+
+from CharAgent.agent.utils.errors import CompactionConfigError
+from CharAgent.agent.utils.messages import (
+    estimate_tokens,
+    summary_request,
+    summary_view_message,
+    truncate_text,
+)
+from CharAgent.model.protocol import ChatModel
+from CharAgent.model.utils.types import ModelMessage, Usage
+
+logger = logging.getLogger("charagent.agent")
+
+# 默认值 (业务按自己的窗口与账单调, 见 CharApp 的 CHARAPP_CONTEXT_*):
+# 单请求 2.4 万 token 上下开始压 —— 对 6 万 token 的运行预算来说留了足够余量,
+# 又远在 12.8 万窗口之下; 老工具结果截到 800 字够留住结论, 又不至于把长表格
+# 整段背进下一次请求.
+DEFAULT_THRESHOLD_TOKENS = 24_000
+DEFAULT_KEEP_RECENT_TURNS = 2
+DEFAULT_WATERMARK_RATIO = 0.6
+DEFAULT_TOOL_RESULT_LIMIT = 800
+DEFAULT_SUMMARY_MAX_TOKENS = 512
+
+
+@dataclass(frozen=True, slots=True)
+class CompiledView:
+    """一次投影的产物: 送给模型的消息 + 新摘要 + 「这次做了什么」.
+
+    后一组字段是给事件与调试看的 (loop 拿它发 context_compacted, 也是「压缩到底
+    省没省下来」的唯一数据源). 它们都是**估算**: 权威值仍然只有上游给的 usage.
+
+    attributes:
+        messages: 送给模型的这份消息列表 (账本的副本; 没压时内容与账本一致).
+        summary: 新的摘要正文; None 表示还没有摘要 (没压过 / 摘要没生成出来).
+        summary_covers: 摘要覆盖到账本的第几条 (前 summary_covers 条的信息已压进
+            摘要). 第 0 条是 system, 永远不进摘要也不被裁.
+        dropped: 这次裁掉几条消息.
+        truncated: 这次截短几条工具结果.
+        estimated_tokens: 压后估算 (这份视图作为一次请求大概多大).
+        saved_tokens: 省下的估算量 (同一把尺子量的账本与视图之差; 压后反而更大
+            时为负 —— 如实报, 不夹到 0).
+        summarized: 这次走没走摘要 (False = 只做了裁剪).
+        summarizer_usage: 摘要那一次调用的 usage (要计入本次运行预算, 但不占
+            max_turns 的额度 —— 它不是一次模型决策).
+        warning: 降级原因 (没有摘要模型 / 摘要失败); None 表示这次没出岔子.
+    """
+
+    messages: list[ModelMessage]
+    summary: str | None = None
+    summary_covers: int = 0
+    dropped: int = 0
+    truncated: int = 0
+    estimated_tokens: int = 0
+    saved_tokens: int = 0
+    summarized: bool = False
+    summarizer_usage: Usage | None = None
+    warning: str | None = None
+
+    @property
+    def compacted(self) -> bool:
+        """这次真的压了吗 —— 决定发不发 context_compacted 事件.
+
+        判据是「有没有东西变了」而不是「试没试过」: 没超阈值、或者压不动
+        (只有一轮), 都不该在前端留一条「压缩过」的痕迹.
+        """
+        return self.dropped > 0 or self.truncated > 0
+
+
+class TokenCounter(Protocol):
+    """SPI: 估算「这份消息列表作为一次请求, 上游会算多少输入 token」.
+
+    两个方法都属于契约 (不是可选增强):
+
+    - `count` 是纯查询, 策略拿它判阈值与水位线;
+    - `note_usage` 是**权威值回灌** —— 上游的 usage 到了, 请更新你的锚. 真正
+      权威的输入 token 数只有 API 给的 usage, 估算只用来判阈值; 真分词器
+      (tiktoken / 官方 tokenizer) 不需要锚, 把这一条写成空实现即可. 框架刻意
+      不做 isinstance 嗅探 (既有协议约定是结构性协议, 不用 runtime_checkable,
+      见 agent/provider.py), 于是这条回灌口明写在协议上.
+    """
+
+    def count(self, messages: Sequence[ModelMessage]) -> int:
+        """这份消息列表有多大 (估算).
+
+        Args:
+            messages: 待估算的消息 (账本或视图, 甚至是别的列表).
+
+        Returns:
+            int: 估算的输入 token 数 (含上游固定开销; 认不出来就给字符启发式).
+        """
+        ...
+
+    def note_usage(self, usage: Usage | None, *, message_count: int) -> None:
+        """上游给了这一轮的真实用量, 更新估算的锚.
+
+        Args:
+            usage: 这一轮响应的 usage; None 或没有 input_tokens 时锚不动
+                (没有权威值就继续用上一个锚, 或退回启发式).
+            message_count: 这一轮请求发出**当时账本有几条** (账本是 append-only
+                的, 于是「锚 + 之后新增那几条」永远算得回来).
+        """
+        ...
+
+
+@dataclass(slots=True)
+class AnchorTokenCounter:
+    """默认估算器: 锚式估算 —— 锚 = 最近一次请求的真实 input_tokens.
+
+    为什么拿上次的大小当基准, 而不是每次重新猜一遍整份历史: 上游给的 input_tokens
+    里含**启发式看不见的固定开销** (工具 schema / 系统提示的模板部分), 那部分
+    每次请求都差不多; 真正在变的只有新追加的几条消息. 于是估算 = 锚 + 增量, 增量
+    才用字符启发式.
+
+    锚记的是「当时**账本**有几条」(不是送出去视图有几条): 账本 append-only, 两次
+    请求之间多出来的正好是账本尾部新增的那些, 一句话就能对上. 压缩过也算得回来 ——
+    那时锚本身就是压完之后的值, 于是刚压完不会立刻再压一次 (滞回的另一半).
+    """
+
+    _anchor_tokens: int | None = field(default=None, init=False, repr=False)
+    _anchor_count: int = field(default=0, init=False, repr=False)
+
+    def note_usage(self, usage: Usage | None, *, message_count: int) -> None:
+        """记下权威锚 (没有 input_tokens 就什么都不做, 见 TokenCounter)."""
+        if usage is None or usage.input_tokens is None:
+            return
+        self._anchor_tokens = usage.input_tokens
+        self._anchor_count = message_count
+
+    def count(self, messages: Sequence[ModelMessage]) -> int:
+        """锚 + 新增部分的启发式; 没锚 (或量的是更短的列表) 时整份走启发式."""
+        if self._anchor_tokens is None or len(messages) < self._anchor_count:
+            return estimate_tokens(messages)
+        return self._anchor_tokens + estimate_tokens(messages[self._anchor_count :])
+
+
+class CompactionPolicy(Protocol):
+    """SPI: 把账本投影成这一次要发出去的视图 (业务可换自己的策略).
+
+    默认实现见 TrimAndSummarize. `apply` 是**异步**的 —— 默认策略里有一次真实的
+    模型调用 (摘要), 所以这条接缝只能是 async; 不调模型的策略照写 async 返回即可.
+
+    两处纪律: ① **不得改动传进来的 history** (它是账本, 只读; 要改就返回副本);
+    ② 实现自己抛的异常**会中断这次 run** (策略是框架能力的一部分, 不是旁挂插件;
+    默认策略里唯一被容忍的失败是「摘要那一次模型调用」, 它降级不抛).
+    """
+
+    async def apply(
+        self,
+        history: Sequence[ModelMessage],
+        *,
+        summary: str | None,
+        summary_covers: int,
+        counter: TokenCounter,
+        summarizer: ChatModel | None = None,
+    ) -> CompiledView:
+        """算这一次的视图 (纯投影: 不改 history, 不落盘).
+
+        Args:
+            history: 账本 (append-only 的消息历史); 实现不得改动它.
+            summary: 上一条摘要 (滚动摘要要连它一起重压); None 表示还没摘要.
+            summary_covers: 上一条摘要覆盖到账本的第几条.
+            counter: 估算器 (判阈值与水位线都用它).
+            summarizer: 摘要用哪个模型 (默认策略优先用自己注入的那个,
+                None 时用这个 —— 主模型). None 表示没有可用的摘要模型.
+
+        Returns:
+            CompiledView: 视图 + 新摘要 + 「这次做了什么」.
+        """
+        ...
+
+
+@dataclass(slots=True)
+class TrimAndSummarize:
+    """默认策略: 窗口裁剪 + 工具结果截断 + 滚动摘要 (difficulties #7).
+
+    attributes:
+        threshold_tokens: 估算达到它就压 (压完要落到水位线以下).
+        keep_recent_turns: 至少留几轮完整对话 (轮 = 一个提问及其后续决策);
+            到不了水位线时从它开始逐轮往下压, 但不会低于 1 轮.
+        watermark_ratio: 水位线比例 —— 压到阈值的这个倍数以下才停手.
+        tool_result_limit: 老工具结果的正文截到多少字符 (最新一轮不截).
+        summary_max_tokens: 摘要那次调用的 max_tokens (只影响摘要本身).
+        summarizer: 摘要模型; None 表示用 apply 传进来的那个 (通常是主模型).
+    """
+
+    threshold_tokens: int = DEFAULT_THRESHOLD_TOKENS
+    keep_recent_turns: int = DEFAULT_KEEP_RECENT_TURNS
+    watermark_ratio: float = DEFAULT_WATERMARK_RATIO
+    tool_result_limit: int = DEFAULT_TOOL_RESULT_LIMIT
+    summary_max_tokens: int = DEFAULT_SUMMARY_MAX_TOKENS
+    summarizer: ChatModel | None = None
+
+    def __post_init__(self) -> None:
+        """配置校验 (与 LoopGuard / AgentLoop 同一条纪律: 配置错在装配时报)."""
+        if self.threshold_tokens < 1:
+            raise CompactionConfigError(
+                f"threshold_tokens 必须 >= 1, 实际: {self.threshold_tokens}"
+            )
+        if self.keep_recent_turns < 1:
+            raise CompactionConfigError(
+                f"keep_recent_turns 必须 >= 1 (至少留一轮), 实际: "
+                f"{self.keep_recent_turns}"
+            )
+        if not 0 < self.watermark_ratio < 1:
+            raise CompactionConfigError(
+                f"watermark_ratio 必须在 0 与 1 之间 (它是阈值的比例), 实际: "
+                f"{self.watermark_ratio}"
+            )
+        if self.tool_result_limit < 1:
+            raise CompactionConfigError(
+                f"tool_result_limit 必须 >= 1, 实际: {self.tool_result_limit}"
+            )
+        if self.summary_max_tokens < 1:
+            raise CompactionConfigError(
+                f"summary_max_tokens 必须 >= 1, 实际: {self.summary_max_tokens}"
+            )
+
+    async def apply(
+        self,
+        history: Sequence[ModelMessage],
+        *,
+        summary: str | None,
+        summary_covers: int,
+        counter: TokenCounter,
+        summarizer: ChatModel | None = None,
+    ) -> CompiledView:
+        """算视图: 不超阈值原样返回; 超了则裁剪 + 截断 (+ 重压摘要).
+
+        顺序是有讲究的: **先判要不要压** (锚值最可信的一步) → **再算切点** (逐轮
+        往回收, 直到估算落到水位线以下) → **最后才压摘要** (真裁掉了东西才有得压,
+        而且这一步要花钱). 摘要失败只降级、不抛 —— 那是一次「压得更好看」的调用,
+        不是这条链路成立的必需件.
+        """
+        before = counter.count(history)
+        unchanged = CompiledView(
+            messages=list(history),
+            summary=summary,
+            summary_covers=summary_covers,
+            estimated_tokens=before,
+        )
+        if before < self.threshold_tokens:
+            return unchanged
+
+        cut = self._choose_cut(history, summary=summary, counter=counter)
+        if not cut:
+            # 压不动 (只有一轮 / 没有可切的提问): 如实报告什么都没做
+            return unchanged
+
+        new_summary, usage, warning = await self._summarize(
+            history[max(summary_covers, 1) : cut], previous=summary, model=summarizer
+        )
+        summarized = new_summary is not None
+        final_summary = new_summary if summarized else summary
+        view, truncated = self._view(
+            history,
+            cut=cut,
+            summary=final_summary,
+            latest_start=_latest_turn_start(history),
+        )
+        return CompiledView(
+            messages=view,
+            summary=final_summary,
+            # 摘要没生成出来就不推进 covers: 那段还没进过摘要, 下次压还得带上它
+            summary_covers=cut if summarized else summary_covers,
+            dropped=cut - 1,
+            truncated=truncated,
+            estimated_tokens=counter.count(view),
+            saved_tokens=estimate_tokens(history) - estimate_tokens(view),
+            summarized=summarized,
+            summarizer_usage=usage,
+            warning=warning,
+        )
+
+    # ------------------------------------------------------------------
+    # 切点与视图 (纯计算)
+    # ------------------------------------------------------------------
+
+    def _choose_cut(
+        self,
+        history: Sequence[ModelMessage],
+        *,
+        summary: str | None,
+        counter: TokenCounter,
+    ) -> int:
+        """定切点: 从 keep_recent_turns 起逐轮往回收, 直到估算落到水位线以下.
+
+        全都不达标时取最后一刀 (keep = 1, 还留着一轮) —— 压不到水位线也得压,
+        否则一份长期过大的账本会永远不动 (滞回是为了少压, 不是为了不压).
+
+        Returns:
+            int: 账本从第几条开始保留; 0 表示没得裁 (此时一个字都不动).
+        """
+        target = int(self.threshold_tokens * self.watermark_ratio)
+        latest_start = _latest_turn_start(history)
+        chosen = 0
+        for keep in range(self.keep_recent_turns, 0, -1):
+            cut = _cut_index(history, keep)
+            if not cut:
+                continue
+            trial, _ = self._view(
+                history,
+                cut=cut,
+                summary=summary,
+                latest_start=latest_start,
+                summary_slot=True,
+            )
+            chosen = cut
+            if counter.count(trial) <= target:
+                break
+        return chosen
+
+    def _view(
+        self,
+        history: Sequence[ModelMessage],
+        *,
+        cut: int,
+        summary: str | None,
+        latest_start: int,
+        summary_slot: bool = False,
+    ) -> tuple[list[ModelMessage], int]:
+        """切出视图: 第 0 条 + (摘要) + 第 cut 条起, 其中老工具正文截短.
+
+        Args:
+            summary: 放进视图的摘要正文.
+            summary_slot: 没有摘要时也占一个空位 —— 给**试算**用. 压完摘要那条
+                消息一定会在位 (它是「被裁掉那段」的唯一记录), 试算时漏掉它,
+                水位线就会卡在边上 (压完刚好又超一点).
+
+        Returns:
+            tuple: (视图消息, 这次截短了几条工具结果).
+        """
+        view: list[ModelMessage] = [history[0]]
+        if summary or summary_slot:
+            view.append(summary_view_message(summary or ""))
+        truncated = 0
+        for index in range(cut, len(history)):
+            message = history[index]
+            content = message.get("content")
+            if (
+                message.get("role") == "tool"
+                and index < latest_start  # 最新一轮不截
+                and isinstance(content, str)
+                and len(content) > self.tool_result_limit
+            ):
+                message = {
+                    **message,
+                    "content": truncate_text(content, limit=self.tool_result_limit),
+                }
+                truncated += 1
+            view.append(message)
+        return view, truncated
+
+    # ------------------------------------------------------------------
+    # 摘要 (唯一会花钱的一步)
+    # ------------------------------------------------------------------
+
+    async def _summarize(
+        self,
+        dropped_messages: Sequence[ModelMessage],
+        *,
+        previous: str | None,
+        model: ChatModel | None,
+    ) -> tuple[str | None, Usage | None, str | None]:
+        """把「上一条摘要 + 这次新裁掉的段」压成新摘要 (失败降级, 不抛).
+
+        Args:
+            dropped_messages: 这次新裁掉的那些消息 (要被压进摘要的材料).
+            previous: 上一条摘要 (滚动摘要连它一起重压).
+            model: 没注入 summarizer 时用哪个模型 (通常是主模型).
+
+        Returns:
+            tuple: (新摘要正文, 那一次调用的 usage, 降级原因). 正文为 None
+            表示没生成出来, 此时原因非 None (拿不到正文就没摘要可更新, 二者
+            是同一个事实, 不另设一个布尔).
+        """
+        if not dropped_messages:
+            return None, None, None
+        chosen = self.summarizer or model
+        if chosen is None:
+            logger.warning("没有可用的摘要模型, 本次压缩降级为纯裁剪")
+            return None, None, "没有可用的摘要模型, 本次只做裁剪"
+        request = summary_request(
+            previous, dropped_messages, tool_limit=self.tool_result_limit
+        )
+        try:
+            response = await chosen.generate(
+                request, None, max_tokens=self.summary_max_tokens
+            )
+        except Exception as exc:
+            # 摘要只是「压得更好看」, 不是必需件: 它失败不该让用户这一句问不出来
+            # (降级纯裁剪; 留痕两处: 日志 + 视图上的 warning). 刻意不吞
+            # CancelledError —— 它继承 BaseException, kill switch 照样打得断.
+            logger.warning("摘要生成失败, 本次压缩降级为纯裁剪: %r", exc)
+            reason = f"摘要没能生成 ({type(exc).__name__}), 本次只做裁剪"
+            return None, None, reason
+        text = (response.content or "").strip()
+        if not text:
+            logger.warning("摘要模型没给出正文, 本次压缩降级为纯裁剪")
+            return None, response.usage, "摘要模型没有给出正文, 本次只做裁剪"
+        return text, response.usage, None
+
+
+def _cut_index(history: Sequence[ModelMessage], keep: int) -> int:
+    """保留最近 keep 轮时, 账本从第几条开始保留 (也是摘要覆盖的前缀长度).
+
+    切点只落在**提问**处: 于是保留段与被裁掉的段各自都是完整对话 —— assistant 与
+    它的 tool 结果永远同进退 (#10 的配对规矩, 破了上游直接 400).
+
+    Returns:
+        int: 切点下标; 0 表示没得裁 —— 不够 keep 轮, 或者切完只剩 system 一条,
+        或者被裁掉的那段里根本没有一次完整的模型决策 (光秃秃的提问不算) .
+    """
+    starts = [i for i, m in enumerate(history) if m.get("role") == "user"]
+    if len(starts) < keep:
+        return 0
+    cut = starts[-keep]
+    if cut <= 1:
+        return 0
+    if not any(m.get("role") == "assistant" for m in history[1:cut]):
+        return 0
+    return cut
+
+
+def _latest_turn_start(history: Sequence[ModelMessage]) -> int:
+    """最新一轮的起点 (最后一个提问的下标); 一条提问都没有时返回 len(history).
+
+    它的用处只有一个: 「最新一轮不截」—— 模型正拿着这份工具结果答这一句,
+    截了就是答非所问. 返回 len(history) 表示没有受保护的一轮 (全都可以截).
+    """
+    for index in range(len(history) - 1, -1, -1):
+        if history[index].get("role") == "user":
+            return index
+    return len(history)

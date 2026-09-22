@@ -24,9 +24,11 @@ Postgres 的 state 列 + metadata 列).
 - **v2**: state 变成结构化字典 (messages + 计数器 + 正文片段), 并带上 content /
   finish_reason / outcome 三个「当时答成什么样」的字段 —— 它们当时和进度混在
   一起, 回头看是没分清「恢复要用的」与「给人看的」.
-- **v3 (当前)**: 把上面那三个观察值搬进 metadata, 并补上 source / turn_tokens /
+- **v3**: 把上面那三个观察值搬进 metadata, 并补上 source / turn_tokens /
   turn_elapsed_ms / tool_names 四个调试字段 (「哪一步最贵、这一步是怎么来的」).
   于是 state 只剩「接着跑必需的输入」, metadata 专管「这一步发生了什么」.
+- **v4 (当前)**: 进度多两样上下文压缩 (#7) 的账 —— summary (摘要正文) 与
+  summary_covers (它压到第几条). 老帧没有摘要, 补 None / 0, 那正是当时的事实.
 """
 
 from __future__ import annotations
@@ -138,5 +140,28 @@ def _v2_to_v3(body: dict[str, Any]) -> dict[str, Any]:
     return upgraded
 
 
+# v4 给进度补的两个压缩字段默认值: 老帧一律「那时候还没压过」
+_V4_STATE_DEFAULTS: dict[str, Any] = {
+    "summary": None,
+    "summary_covers": 0,
+}
+
+
+def _v3_to_v4(body: dict[str, Any]) -> dict[str, Any]:
+    """v3 -> v4: 进度里补上上下文压缩的两个字段 (老帧没有摘要, 填「没有」).
+
+    这是最常见的一类向后兼容迁移 —— **纯加字段**: 老记录缺的那两个字段用当时
+    的事实填上 (那时候确实没压过), 读回来之后与新写的记录结构一致, 上层代码
+    不必为「老数据」多写一个分支.
+    """
+    upgraded = dict(body)
+    state = dict(upgraded["state"])
+    for key, default in _V4_STATE_DEFAULTS.items():
+        state.setdefault(key, default)
+    upgraded["state"] = state
+    return upgraded
+
+
 MIGRATIONS[1] = _v1_to_v2
 MIGRATIONS[2] = _v2_to_v3
+MIGRATIONS[3] = _v3_to_v4

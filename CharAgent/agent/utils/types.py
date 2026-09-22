@@ -9,6 +9,11 @@
 - LoopState: AgentLoop 一次 run 的内存工作数据 (run 与其分支方法之间传递,
   内部零件; 注意与 RunState = 运行状态机不同, 见类 docstring)
 - LoopResult: run 的完整结果 (历史 + 结束原因 + 每轮快照)
+
+上下文压缩 (#7) 的两个字段 (summary / summary_covers) 也挂在 LoopState 上:
+它们描述的是「账本被压到哪一步」, 与 turn_count 一样属于跨轮累积的进度, 要跟着
+快照一起落盘 (于是续跑不必从头再压一遍). 视图本身 (CompiledView) 不在这里 ——
+它每次模型调用前现算, 不落地, 见 agent/compaction.py.
 """
 
 from __future__ import annotations
@@ -95,6 +100,12 @@ class LoopState:
         last_checkpoint_id: 最近落盘那一帧快照的编号. 下一帧的 parent_id 指向它,
             于是同一会话的快照串成一条链; 从老快照恢复时链就从那里岔出去, 形成
             新分支 (#5 time-travel).
+        summary: 当前生效的上下文摘要 (#7); None 表示还没压过摘要. 它**不是**
+            history 的一部分 —— 账本 (history) 永远是全量原文, 摘要只是「送给
+            模型的视图」里那一段的替身; 跟着快照一起存, 于是续跑不必从头再压.
+        summary_covers: 摘要覆盖到 history 的第几条 (前 summary_covers 条已被
+            摘要取代). 第 0 条是 system, 永不裁也不进摘要. 压缩时靠它算出「哪些
+            是这次新裁掉的」(滚动摘要要把上一条摘要连新段一起重压).
     """
 
     history: list[ModelMessage]
@@ -109,6 +120,8 @@ class LoopState:
     done: bool = False
     run_id: str | None = None
     last_checkpoint_id: str | None = None
+    summary: str | None = None
+    summary_covers: int = 0
 
 
 @dataclass(slots=True)
@@ -146,8 +159,12 @@ class LoopResult:
             (含续跑前已完成的轮数), 那时它 >= len(turns) —— 预算判定要的正是这个
             累计口径 (轮数上限不因断点重启).
         truncation_count: 发生的 length 截断处理次数.
-        total_tokens: 全 run 累计 usage (无 usage 的调用计 0).
+        total_tokens: 全 run 累计 usage (无 usage 的调用计 0; 摘要那几次调用也
+            计在内 —— 它确实花了钱, 只是不占轮数).
         elapsed_ms: 墙钟总耗时.
+        summary / summary_covers: 这一段 run 结束时生效的压缩进度 (#7). 要接着
+            聊下一段, 就把它们连同 messages 一起递给 AgentLoop.run —— 于是滚动
+            摘要跨 run 成立 (不然每段 run 都会把同一段旧历史重压一遍).
     """
 
     messages: list[ModelMessage]
@@ -159,3 +176,5 @@ class LoopResult:
     truncation_count: int = 0
     total_tokens: int = 0
     elapsed_ms: float = 0.0
+    summary: str | None = None
+    summary_covers: int = 0

@@ -7,6 +7,8 @@
 - LoopConfigError: AgentLoop 构造参数错误 (工具名重复 / max_truncations
   非法等).
 - GuardConfigError: LoopGuard 构造参数错误 (上限非法等).
+- CompactionConfigError: TrimAndSummarize 构造参数错误 (阈值 / 水位线 /
+  保留轮数非法等).
 """
 
 from __future__ import annotations
@@ -22,3 +24,7 @@ class LoopConfigError(AgentError):
 
 class GuardConfigError(AgentError):
     """LoopGuard 构造参数错误 (上限非法, 面向开发者)."""
+
+
+class CompactionConfigError(AgentError):
+    """上下文压缩策略的构造参数错误 (阈值 / 水位线 / 保留轮数非法, 面向开发者)."""

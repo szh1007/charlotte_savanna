@@ -1,6 +1,6 @@
 """终端渲染: 把事件流与运行结果画成人能看懂的文本.
 
-一句话理解: 事件流 (stream 包产出的六类事件) 是**给机器读**的结构化数据 ——
+一句话理解: 事件流 (stream 包产出的七类事件) 是**给机器读**的结构化数据 ——
 类型 + 编号 + 载荷; 本文件负责把它翻成终端上一行行文字, 就像前端把同一份事件流
 渲染成聊天气泡. 差别只在画布: 那边是浏览器, 这边是终端.
 
@@ -31,7 +31,7 @@ from CharAgent.agent.utils.types import LoopOutcome, LoopResult
 from CharAgent.stream.utils.types import EventType, StreamEvent
 
 # ANSI 颜色码 (只在 color=True 时拼接; 关掉时文本与不加色完全一样).
-# 只列用到的: 加粗与黄色没有用武之地 (六类事件各占一色, 再分就是噪音)
+# 只列用到的: 加粗与黄色没有用武之地 (七类事件各占一色, 再分就是噪音)
 _RESET = "\033[0m"
 _DIM = "\033[2m"
 _CYAN = "\033[36m"
@@ -49,15 +49,17 @@ _TAGS: dict[EventType, str] = {
     EventType.TOOL_CALL: "tool_call",
     EventType.TOOL_RESULT: "tool_result",
     EventType.REASONING: "reasoning",
+    EventType.CONTEXT_COMPACTED: "context_compacted",
     EventType.FINAL: "final",
     EventType.ERROR: "error",
 }
 
-# 每类事件的颜色 (thinking / reasoning 是过程信息, 调暗; 工具与结论分别用青 / 绿;
-# 出错用红)
+# 每类事件的颜色 (thinking / reasoning / 压缩是过程信息, 调暗; 工具与结论分别用
+# 青 / 绿; 出错用红)
 _COLORS: dict[EventType, str] = {
     EventType.THINKING: _DIM,
     EventType.REASONING: _DIM,
+    EventType.CONTEXT_COMPACTED: _DIM,
     EventType.TOOL_CALL: _CYAN,
     EventType.TOOL_RESULT: _GREEN,
     EventType.FINAL: _GREEN,
@@ -99,7 +101,7 @@ class EventPrinter:
     """事件出口 (EventSink 协议): 每来一个事件就往终端画一行.
 
     注入方式与 P1 的 SSE 出口、测试里的收集器完全一样 —— 它就是一个同步回调:
-    `AgentLoop(model=..., event_sink=EventPrinter())`. 六类事件各有各的版式,
+    `AgentLoop(model=..., event_sink=EventPrinter())`. 七类事件各有各的版式,
     见 `format_event`.
 
     Args:
@@ -133,7 +135,7 @@ class EventPrinter:
     def format_event(self, event: StreamEvent) -> str:
         """一个事件 -> 一行文本 (不直接输出, 好单测).
 
-        分派用 match 而不是查表: 六类事件的版式各有各的取值, 摆在这里一眼能
+        分派用 match 而不是查表: 七类事件的版式各有各的取值, 摆在这里一眼能
         对着各自的载荷逐条核. 新增事件类型 (如 approval_required) 时忘了加
         分支会走 `case _`, 原样吐出而不是静默丢掉.
         """
@@ -147,6 +149,8 @@ class EventPrinter:
                 body = self._line_tool_result(data)
             case EventType.REASONING:
                 body = self._line_reasoning(data)
+            case EventType.CONTEXT_COMPACTED:
+                body = self._line_context_compacted(data)
             case EventType.FINAL:
                 body = self._line_final(data)
             case EventType.ERROR:
@@ -191,6 +195,21 @@ class EventPrinter:
             return delta
         head = delta[:REASONING_LIMIT]
         return f"{head}... (共 {len(delta)} 字, 终端只打前 {REASONING_LIMIT} 字)"
+
+    def _line_context_compacted(self, data: dict[str, Any]) -> str:
+        """context_compacted: 这一轮的输入被压过 (#7) —— 压了多少 / 省了多少.
+
+        摘要失败时把降级原因也打出来 (那是「为什么这轮突然没有摘要」的唯一线索);
+        正常时只报数, 不啰嗦. 数字都是估算, 与上游账单不是一回事 (见事件载荷).
+        """
+        summarized = "摘要已更新" if data.get("summarized") else "只裁剪"
+        line = (
+            f"上下文已压缩: 裁掉 {data.get('dropped')} 条 / 截短 "
+            f"{data.get('truncated')} 条, 估算 {data.get('estimated_tokens')} tokens "
+            f"(省 {data.get('saved_tokens')}), {summarized}"
+        )
+        warning = data.get("warning")
+        return line if not warning else f"{line} —— {warning}"
 
     def _line_final(self, data: dict[str, Any]) -> str:
         """final: 只报「怎么结束的」, 正文由调用方从 LoopResult.content 打印.

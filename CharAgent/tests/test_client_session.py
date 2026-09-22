@@ -27,11 +27,13 @@ import pytest
 from doubles import FakeRedisClient
 from mock_llm import MockLLM, make_tool_call, text_response, tool_call_response
 
+from CharAgent.agent import TrimAndSummarize
 from CharAgent.checkpoint import InMemoryCheckpointSaver, RedisCheckpointSaver
 from CharAgent.client.session import DEMO_TOOLS, ChatSession
 from CharAgent.hooks import Decision, HookPoint, HookRegistry
 from CharAgent.model.utils.types import ModelMessage, ModelResponse
 from CharAgent.prompt import load_prompt
+from CharAgent.stream.utils.types import EventType
 from CharAgent.tool import Tool, tool
 
 # 工具调用记录 (数「工具到底跑了几次」—— 续跑用例的关键证据)
@@ -72,6 +74,8 @@ def make_session(
     prompt_name: str = "system",
     prompt_dir: Path | None = None,
     hooks: HookRegistry | None = None,
+    event_sink: Any | None = None,
+    compactor: Any | None = None,
 ) -> ChatSession:
     """造一个会话 (存储不指定时给内存版; 工具不指定时给回显工具).
 
@@ -86,6 +90,8 @@ def make_session(
         prompt_name=prompt_name,
         prompt_dir=prompt_dir,
         hooks=hooks,
+        event_sink=event_sink,
+        compactor=compactor,
     )
 
 
@@ -460,3 +466,74 @@ async def test_aclose_releases_the_model() -> None:
     await session.aclose()
 
     assert closed == [True]
+
+
+# ---------------------------------------------------------------------------
+# 上下文压缩接缝 (#7)
+
+# ---------------------------------------------------------------------------
+# 上下文压缩接缝 (#7)
+# ---------------------------------------------------------------------------
+
+
+def _compacting_session(
+    model: Any, *, summarizer: Any | None = None, event_sink: Any | None = None
+) -> ChatSession:
+    """一个配了压缩策略的会话: 阈值调到 1, 于是「有得裁」就会压."""
+    return make_session(
+        model,
+        event_sink=event_sink,
+        compactor=TrimAndSummarize(
+            threshold_tokens=1,
+            keep_recent_turns=1,
+            watermark_ratio=0.5,
+            tool_result_limit=20,
+            summary_max_tokens=64,
+            summarizer=summarizer,
+        ),
+    )
+
+
+async def test_compaction_is_wired_through_the_session() -> None:
+    """会话把压缩策略原样转交给 loop: 配了就压, 事件也经会话的出口透出去.
+
+    第一句没有可裁的东西 (只有一轮), 第二句才裁得动 —— 于是恰好一条压缩事件.
+    """
+    events: list[Any] = []
+    session = _compacting_session(
+        MockLLM.scripted([text_response("第一次答"), text_response("第二次答")]),
+        summarizer=MockLLM.scripted([text_response("早前聊的是查订单")]),
+        event_sink=events.append,
+    )
+
+    await session.ask("第一次提问")
+    second = await session.ask("第二次提问")
+
+    assert second.summary == "早前聊的是查订单"
+    assert [event.type for event in events].count(EventType.CONTEXT_COMPACTED) == 1
+
+
+async def test_the_summary_survives_from_one_question_to_the_next() -> None:
+    """摘要跟着**会话**走: 第二句问话复用第一句压出来的那份, 不从零再压.
+
+    会话对象横跨很多次提问 (每句一次 run), 所以压缩进度不能只活在单次 run 里 ——
+    否则每句问话都要把同一段旧历史重压一遍 (内容不会错, 白花一次摘要调用).
+    """
+    seen: list[list[ModelMessage]] = []
+    summarizer = MockLLM.scripted([text_response("早前聊的是查订单")])
+
+    async def capture(messages: list[ModelMessage]) -> ModelResponse:
+        seen.append(list(messages))
+        return text_response("答完了")
+
+    session = _compacting_session(
+        MockLLM.scripted([capture, capture]), summarizer=summarizer
+    )
+
+    await session.ask("第一次提问")
+    second = await session.ask("第二次提问")
+
+    assert len(summarizer.calls) == 1  # 只压过一次
+    assert second.summary == "早前聊的是查订单"
+    # 第二句问话的视图里带着上一条摘要 (会话把它递回给了 loop)
+    assert "早前聊的是查订单" in str(seen[-1][1].get("content"))

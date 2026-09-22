@@ -38,7 +38,7 @@ from uuid import uuid4
 from CharAgent.checkpoint.utils.errors import CheckpointConfigError
 from CharAgent.model.utils.types import ModelMessage, ModelToolCall
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 """当前快照格式的版本号 (difficulties #5 向前兼容).
 
 改字段结构的**不兼容**变化就 +1, 并在 utils/migrations.py 写一个「老版本 → 新
@@ -46,8 +46,10 @@ SCHEMA_VERSION = 3
 
 - v1: 只有消息列表 (state 就是裸列表, 早期原型)
 - v2: state 变成结构化字典 (messages + 计数器 + 正文片段 + 结束原因)
-- v3 (当前): 观察值从 state 搬进 metadata (content / finish_reason / outcome),
+- v3: 观察值从 state 搬进 metadata (content / finish_reason / outcome),
   并新增 source / turn_tokens / turn_elapsed_ms / tool_names 四个调试字段
+- v4 (当前): 进度多两样「上下文压缩」的账 —— summary (摘要正文) 与
+  summary_covers (它压到第几条). 老帧没有摘要, 补 None / 0 = 「那时候还没压过」
 """
 
 # 标识别符 (thread_id / run_id) 的长度上限与禁用字符 (见 check_identifier)
@@ -153,6 +155,12 @@ class CheckpointState:
         content_parts: 截断续写 (CONTINUE 策略) 已写出的正文片段 —— 接着跑时
             要和后面写出来的段落拼在一起, 才是一份完整答复.
         suspension: 卡在等人批准的地方; None 表示没卡 (正常跑完或跑一半).
+        summary / summary_covers: 上下文压缩 (#7, v4 起) 的进度 —— 当前生效的
+            摘要正文, 以及它覆盖到 messages 的第几条. 它们是**接着压**要用的
+            输入 (滚动摘要要连上一条一起重压), 所以属进度而不是观察值. 老帧
+            (v3 及更早) 缺这两个字段, 补 None / 0 = 「那时候还没压过」.
+            注意 messages 存的是**全量账本** (压缩不落地), 摘要只是送模型那份
+            视图里的替身.
 
     注意这里**没有** content / finish_reason / outcome: 那三个是「当时答成什么
     样、为什么停」的观察值, 属 CheckpointMetadata (v3 起从 state 搬过去).
@@ -164,6 +172,8 @@ class CheckpointState:
     truncation_count: int = 0
     content_parts: list[str] = field(default_factory=list)
     suspension: Suspension | None = None
+    summary: str | None = None
+    summary_covers: int = 0
 
 
 @dataclass(slots=True)

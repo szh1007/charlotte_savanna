@@ -12,7 +12,7 @@
 | `model` | 薄 ChatModel 协议 + httpx 裸调 / openai SDK 双适配器 |
 | `tool` | @tool 装饰器 + JSON schema 自动生成 + 可操作错误语义 |
 | `agent` | 手写 agent loop (并行工具 / 错误自纠错 / 循环防护 / 截断处理) |
-| `stream` | 流式事件总线 (六类事件 + seq + 四条状态机不变量) |
+| `stream` | 流式事件总线 (七类事件 + seq + 四条状态机不变量) |
 | `hooks` | hook 注册表骨架 (六个触发点, 空注册零开销; 工具执行前那个可拒绝) |
 | `retry` | 重试退避 + 幂等键 (包在 ChatModel 协议层, loop 零改动) |
 | `checkpoint` | 快照序列化协议 + 内存 / Redis / Postgres 三实现 + 断点续跑 |
@@ -42,16 +42,22 @@ model + tool —— 各处都记着「agent / stream / hooks / retry / checkpoin
 
 from __future__ import annotations
 
-# --- agent: 手写 agent loop + 循环防护 ------------------------------------
+# --- agent: 手写 agent loop + 循环防护 + 上下文压缩 ------------------------
 from CharAgent.agent import (
     AgentLoop,
+    AnchorTokenCounter,
+    CompactionConfigError,
+    CompactionPolicy,
+    CompiledView,
     GuardConfigError,
     LoopConfigError,
     LoopGuard,
     LoopOutcome,
     LoopResult,
     RunContext,
+    TokenCounter,
     ToolProvider,
+    TrimAndSummarize,
     TruncationStrategy,
     TurnRecord,
 )
@@ -234,6 +240,7 @@ __all__ = [
     "TERMINAL_TYPES",
     "TOOL_RESULT_SUMMARY_LIMIT",
     "AgentLoop",
+    "AnchorTokenCounter",
     "ChatModel",
     "Checkpoint",
     "CheckpointCapabilities",
@@ -251,6 +258,9 @@ __all__ = [
     "CheckpointStorageError",
     "ClaimResult",
     "ClaimStatus",
+    "CompactionConfigError",
+    "CompactionPolicy",
+    "CompiledView",
     "DataConfigError",
     "DataStoreError",
     "Database",
@@ -316,6 +326,7 @@ __all__ = [
     "Thread",
     "ThreadStatus",
     "ThreadsRepository",
+    "TokenCounter",
     "Tool",
     "ToolActionableError",
     "ToolCall",
@@ -328,6 +339,7 @@ __all__ = [
     "ToolSchemaInfo",
     "ToolSpec",
     "TranscriptLine",
+    "TrimAndSummarize",
     "TruncationStrategy",
     "TurnPair",
     "TurnRecord",

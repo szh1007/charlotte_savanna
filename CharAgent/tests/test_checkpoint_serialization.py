@@ -491,20 +491,31 @@ def test_v2_migration_moves_non_null_observation_values():
     assert upgraded["metadata"]["content"] == "上一段答的"
     assert upgraded["metadata"]["finish_reason"] == "stop"
     assert upgraded["metadata"]["outcome"] == "finished"
-    # 搬完 state 里那三个字段就没了 (同一份数据只有一个家)
-    assert set(upgraded["state"]) == {"messages"}
+    # 搬完 state 里那三个字段就没了 (同一份数据只有一个家); 顺流升到 v4 时
+    # 又补上压缩的两个字段 —— 那是 v4 的加法, 与这次搬家无关
+    assert set(upgraded["state"]) == {"messages", "summary", "summary_covers"}
 
 
 def test_old_snapshots_report_current_schema_version():
     """读回来的老快照在内存里已是当前版本 (升级过就不再是老的)."""
-    for name in ("checkpoint_v1.json", "checkpoint_v2.json", "checkpoint_v3.json"):
+    for name in (
+        "checkpoint_v1.json",
+        "checkpoint_v2.json",
+        "checkpoint_v3.json",
+        "checkpoint_v4.json",
+    ):
         checkpoint = DEFAULT_CODEC.decode_record(read_fixture(name))
         assert checkpoint.schema_version == SCHEMA_VERSION
 
 
-def test_v3_progress_keeps_only_resume_inputs():
-    """v3 起进度里不再有观察值: state 只有「接着跑要用的」那几个字段."""
-    checkpoint = DEFAULT_CODEC.decode_record(read_fixture("checkpoint_v3.json"))
+def test_v4_progress_keeps_only_resume_inputs():
+    """进度里不再有观察值 (v3), 且带上了压缩的账 (v4).
+
+    v3 起 state 只剩「接着跑要用的」; v4 又加了 summary / summary_covers ——
+    它们是「压到哪一步」的进度 (滚动摘要要接着滚), 不是「当时答成什么样」的
+    观察值, 所以归 state 而不是 metadata.
+    """
+    checkpoint = DEFAULT_CODEC.decode_record(read_fixture("checkpoint_v4.json"))
 
     assert set(checkpoint.state.__slots__) == {
         "messages",
@@ -513,7 +524,18 @@ def test_v3_progress_keeps_only_resume_inputs():
         "truncation_count",
         "content_parts",
         "suspension",
+        "summary",
+        "summary_covers",
     }
+
+
+def test_a_v3_snapshot_reads_back_without_a_summary():
+    """老快照 (v3, 那时候还没有压缩) 原样读回: 缺的字段填「那时候没有」."""
+    checkpoint = DEFAULT_CODEC.decode_record(read_fixture("checkpoint_v3.json"))
+
+    assert checkpoint.state.summary is None
+    assert checkpoint.state.summary_covers == 0
+    assert checkpoint.state.messages  # 历史照旧读得回来
 
 
 # ---------------------------------------------------------------------------
@@ -522,14 +544,15 @@ def test_v3_progress_keeps_only_resume_inputs():
 
 
 def test_serialized_record_matches_fixture():
-    """序列化产物与 fixtures/checkpoint_v3.json 逐字一致 (改格式必须是有意的).
+    """序列化产物与 fixtures/checkpoint_v4.json 逐字一致 (改格式必须是有意的).
 
     这个用例红了怎么办: 先确认格式变更是有意为之, 再重新生成 fixture —— 顺手
     也要判断「老快照还读得回来吗」, 读不回来就得加一个迁移函数并把
-    SCHEMA_VERSION +1 (见 utils/migrations.py).
+    SCHEMA_VERSION +1 (见 utils/migrations.py). v3 的 fixture 留着不删: 它是
+    「老快照读得回来」那条用例的样本 (见上面两条).
     """
-    expected = (FIXTURES / "checkpoint_v3.json").read_text(encoding="utf-8")
-    checkpoint = DEFAULT_CODEC.decode_record(read_fixture("checkpoint_v3.json"))
+    expected = (FIXTURES / "checkpoint_v4.json").read_text(encoding="utf-8")
+    checkpoint = DEFAULT_CODEC.decode_record(read_fixture("checkpoint_v4.json"))
 
     assert DEFAULT_CODEC.dumps(
         DEFAULT_CODEC.encode_record(checkpoint), indent=2

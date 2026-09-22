@@ -2,7 +2,7 @@
 
 对齐 model/utils 与 tool/utils 惯例 —— 顶层 (bus.py) 放行为模块, 静态支撑
 按主题收进子包:
-- types.py   EventType (六类事件) / StreamEvent (事件对象 + to_dict) /
+- types.py   EventType (七类事件) / StreamEvent (事件对象 + to_dict) /
              EventSink (出口回调形态) / TERMINAL_TYPES /
              TOOL_RESULT_SUMMARY_LIMIT
 - errors.py  异常语义: StreamError 基类 + EventSequenceError (状态机不变量)

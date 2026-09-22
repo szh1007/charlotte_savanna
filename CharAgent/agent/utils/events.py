@@ -17,6 +17,8 @@
 分离:
 - tool_call_data / tool_result_data: 工具调用与结果 → 事件载荷 (参数保真为
   原始 JSON 字符串不预解析 #10; 成功结果只带截断摘要, 全文不进事件流)
+- context_compacted_data: 一次上下文压缩 → 事件载荷 (#7; 数值由策略算好,
+  这里只搬运)
 - emit_terminal: run 的**单一终局出口** —— 从 LoopResult 派生恰好一个终局
   事件 (正常结束 final / 异常结束 error), 避免调用方各写一份判定
 - TERMINAL_ERROR_TEXT / terminal_error_code: 异常结束的 error 事件契约 ——
@@ -26,7 +28,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from CharAgent.agent.utils.types import LoopOutcome, LoopResult
 from CharAgent.model.utils.types import (
@@ -39,6 +41,9 @@ from CharAgent.stream.utils.types import (
     EventType,
 )
 from CharAgent.tool import ToolExecution
+
+if TYPE_CHECKING:  # 只为类型标注: 运行时 import 会把 agent 与 compaction 绕成环
+    from CharAgent.agent.compaction import CompiledView
 
 # 终局 error 事件的 code → 事实性说明 (非用户话术; 降级文案归服务层).
 # code 取 LoopOutcome 值, 另加 content_filter —— 它在 loop 语义上属 FINISHED
@@ -92,6 +97,32 @@ def tool_result_data(
     else:
         data["error"] = execution.error or "工具执行失败"
     return data
+
+
+def context_compacted_data(compiled: CompiledView, *, turn: int) -> dict[str, Any]:
+    """一次上下文压缩 → context_compacted 事件载荷 (#7).
+
+    「压了什么 / 省了多少」由策略自己算 (见 CompiledView) —— 事件层只搬运,
+    不重新猜一遍: 两处各算一次迟早会各说各话.
+
+    两个 token 数**不是同一把尺子**, 别相加: `estimated_tokens` 是「这份视图
+    作为一次请求大概多大」(锚在上游给的 input_tokens 上, 含工具 schema 这类
+    固定开销), `saved_tokens` 是账本与视图用**同一个字符启发式**量出来的差
+    (相对量; 压后反而更大时为负). 两者都与上游账单不是同一个数 —— 要精确的
+    输入 token 只有上游的 usage.
+
+    warning 恒在 (正常时是 None): 字段恒定比「有时多一个键」好消费, 前端不必
+    为它写两种分支.
+    """
+    return {
+        "turn": turn,
+        "dropped": compiled.dropped,
+        "truncated": compiled.truncated,
+        "estimated_tokens": compiled.estimated_tokens,
+        "saved_tokens": compiled.saved_tokens,
+        "summarized": compiled.summarized,
+        "warning": compiled.warning,
+    }
 
 
 def terminal_error_code(

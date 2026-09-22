@@ -5,9 +5,9 @@
 消费方 (P1 server SSE 层) 共享.
 
 大白话版 (本文件 = 喊话规范表):
-- 规定现场能喊哪 6 种话: 我在想 (thinking) / 我要去查 (tool_call) / 查回来了
-  (tool_result) / 我的心理活动 (reasoning) / 我答完了 (final) / 我出问题了
-  (error).
+- 规定现场能喊哪 7 种话: 我在想 (thinking) / 我要去查 (tool_call) / 查回来了
+  (tool_result) / 我的心理活动 (reasoning) / 我把旧对话压了一下
+  (context_compacted) / 我答完了 (final) / 我出问题了 (error).
 - 规定每声喊话长什么样 (StreamEvent: 句式 + 编号 seq + 内容), 以及「话往哪儿
   递」的回调形状 (EventSink: 交给谁就由谁拿去显示).
 - 顺带一个小约定: reasoning 是「心理活动」—— 前端折叠起来给人看, 绝不混进
@@ -34,6 +34,7 @@ class EventType(StrEnum):
     TOOL_CALL = "tool_call"  # 发起工具调用 (同一轮多条即并行)
     TOOL_RESULT = "tool_result"  # 工具返回 (status ok / error, 错误须可操作 #2)
     REASONING = "reasoning"  # 思维链增量 (旁路通道, 折叠展示 #11)
+    CONTEXT_COMPACTED = "context_compacted"  # 这一轮的上下文被压缩过 (#7)
     FINAL = "final"  # 最终答复 (content 为权威值)
     ERROR = "error"  # 异常终止 (code + message)
 
