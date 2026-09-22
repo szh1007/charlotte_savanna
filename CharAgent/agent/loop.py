@@ -67,7 +67,7 @@
 
 上下文压缩线 (#7, 配了 compactor 才走, 见 compaction.py):
 - 账本 (state.history) append-only, 一字不改; 每次模型调用前把账本**投影**成
-  一份视图 (system + 摘要 + 最近几轮) 交给 generate. 于是会话越聊越长, 而发
+  一份视图 (system + 摘要 + 最近几个提问) 交给 generate. 于是会话越聊越长, 而发
   出去的请求不会跟着无限长
 - 压缩不落地: 快照 / 续跑 / 回溯看到的仍是全量账本
 - 真压了才发 context_compacted 事件; 摘要那一次调用的 token 计入运行预算,
@@ -197,7 +197,7 @@ class AgentLoop:
             "none" 关闭思考模式), None 走上游默认 (high). 与 thinking 同时
             显式传入且方向相反时, 模型调用期报 ModelConfigError.
         compactor: 上下文压缩策略 (#7). 给了它, 每次模型调用前先把账本投影成
-            一份**视图** (摘要 + 最近几轮) 再发出去 —— 账本本身一个字不动, 于是
+            一份**视图** (摘要 + 最近几个提问) 再发出去 —— 账本本身一个字不动, 于是
             快照 / 续跑 / 回溯看到的仍是全量. None (默认) 表示不投影: 送给模型的
             就是账本本体, 行为与从前逐字一样.
         counter: 估算器 (判阈值与水位线用). 默认 AnchorTokenCounter (锚 = 上游给

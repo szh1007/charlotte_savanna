@@ -485,7 +485,7 @@ def _compacting_session(
         event_sink=event_sink,
         compactor=TrimAndSummarize(
             threshold_tokens=1,
-            keep_recent_turns=1,
+            keep_recent_questions=1,
             watermark_ratio=0.5,
             tool_result_limit=20,
             summary_max_tokens=64,
@@ -497,7 +497,7 @@ def _compacting_session(
 async def test_compaction_is_wired_through_the_session() -> None:
     """会话把压缩策略原样转交给 loop: 配了就压, 事件也经会话的出口透出去.
 
-    第一句没有可裁的东西 (只有一轮), 第二句才裁得动 —— 于是恰好一条压缩事件.
+    第一句没有可裁的东西 (只有一段对话), 第二句才裁得动 —— 于是恰好一条压缩事件.
     """
     events: list[Any] = []
     session = _compacting_session(

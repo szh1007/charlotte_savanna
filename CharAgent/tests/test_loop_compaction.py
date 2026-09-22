@@ -4,16 +4,17 @@
 - **估算** (AnchorTokenCounter): 锚 (上游给的 input_tokens) 赢了就用锚, 否则
   字符启发式 —— 权威值只有 API 给的 usage, 估算只用来判阈值
 - **策略** (TrimAndSummarize): 三件套 (窗口裁剪 / 工具结果截断 / 滚动摘要) 与
-  四条硬不变量 (整轮裁 / system 不裁 / 至少留 1 轮 / 视图仍是合法 wire 序列)
+  四条硬不变量 (切点只落在提问处 / system 不裁 / 至少留 1 个提问 /
+  视图仍是合法 wire 序列)
 - **接缝** (AgentLoop + ChatSession): `state.history` 一个字不动, 送给模型的
   是投影出来的副本; 事件与快照按压缩前后的真实情况落
 
-断言「第 N 轮实际送进 generate 的 messages」靠 MockLLM 的异步工厂
+断言「第 N 次调用实际送进 generate 的 messages」靠 MockLLM 的异步工厂
 (脚本元素可以是 `async (messages) -> ModelResponse`), 而不是看返回值 ——
 视图是内部产物, 只有从模型的视角才看得见.
 
 大白话版 (这份「验货单」在验什么):
-- 越聊越短: 老轮次被摘要取代、老工具结果被截短, 而最近一轮原样保留.
+- 越聊越短: 老的那几段被摘要取代、老工具结果被截短, 而最近那个提问原样保留.
 - 结构没坏: 裁的刀口永远落在「一个提问」的位置, 绝不会出现「assistant 的
   tool_calls 留下了、它的 tool 消息被裁掉」这种会让上游报 400 的序列.
 - 账本没动: 压缩只影响送模型的那一份 (视图); 历史 (账本) 照旧 append-only,
@@ -62,7 +63,7 @@ BIG_TOOL = tool(_long_lookup, name="query_order")
 
 
 def _user(text: str) -> ModelMessage:
-    """一条用户提问 (也是「一轮」的分界: 切点只落在这里)."""
+    """一条用户提问 (也是「一段对话」的分界: 切点只落在这里)."""
     return {"role": "user", "content": text}
 
 
@@ -93,7 +94,7 @@ def _tool_decision(text: str, *, call_id: str) -> list[ModelMessage]:
 
 
 def _unit(index: int, *, size: int) -> list[ModelMessage]:
-    """一轮对话: 提问 + 为该提问做的两次决策 (先查订单, 再作答)."""
+    """一段对话: 提问 + 为该提问做的两次决策 (先查订单, 再作答)."""
     call_id = f"call_{index}"
     return [
         _user(f"第 {index} 个问题: 订单到哪了"),
@@ -103,7 +104,7 @@ def _unit(index: int, *, size: int) -> list[ModelMessage]:
 
 
 def _history(*sizes: int) -> list[ModelMessage]:
-    """一段账本: system + 每个 size 造一轮对话 (轮数 = 参数个数)."""
+    """一段账本: system + 每个 size 造一段对话 (段数 = 参数个数)."""
     history = [SYSTEM]
     for index, size in enumerate(sizes, start=1):
         history.extend(_unit(index, size=size))
@@ -138,7 +139,7 @@ def _policy(**overrides: Any) -> TrimAndSummarize:
     """一档测试参数 (阈值小、水位线低, 便于用小样本造出压缩)."""
     fields: dict[str, Any] = {
         "threshold_tokens": 400,
-        "keep_recent_turns": 1,
+        "keep_recent_questions": 1,
         "watermark_ratio": 0.5,
         "tool_result_limit": 20,
         "summary_max_tokens": 128,
@@ -185,7 +186,7 @@ def test_estimate_counts_cjk_per_char_and_ascii_per_quarter() -> None:
 
 
 def test_estimate_counts_tool_call_arguments_as_text() -> None:
-    """工具调用的参数也是要发出去的文本 (算漏了会低估每一轮的真实开销)."""
+    """工具调用的参数也是要发出去的文本 (算漏了会低估每一次调用的真实开销)."""
     plain = [_answer("")]
     calling = _tool_decision("", call_id="c1")[0]  # 带 tool_calls 的那条 assistant
 
@@ -242,8 +243,8 @@ async def test_under_the_threshold_nothing_is_touched() -> None:
     assert compiled.summary is None
 
 
-async def test_trimming_keeps_whole_turns_and_stays_wire_legal() -> None:
-    """裁剪单位是**轮**: 刀口落在提问的位置, tool 消息永远跟着它的 assistant.
+async def test_trimming_keeps_whole_questions_and_stays_wire_legal() -> None:
+    """裁剪单位是**提问**: 刀口落在提问的位置, tool 消息永远跟着它的 assistant.
 
     这条是本片最要紧的不变量 —— 拆散配对, 上游直接 400 (见 #10).
     """
@@ -253,57 +254,57 @@ async def test_trimming_keeps_whole_turns_and_stays_wire_legal() -> None:
     assert compiled.dropped > 0
     assert compiled.messages[0] == SYSTEM  # system 永不裁
     assert _wire_legal(compiled.messages)
-    # 最新一轮完整保留 (工具结果一个字不少)
+    # 最新那个提问完整保留 (工具结果一个字不少)
     assert compiled.messages[-1] == history[-1]
-    # 裁掉的段里不留「半轮」: 活着的工具结果只剩最后那轮提问的
+    # 裁掉的段里不留「半截」: 活着的工具结果只剩最后一个提问的
     assert _tool_bodies(compiled.messages) == ["订" * 200]
 
 
 async def test_the_first_message_is_never_dropped() -> None:
     """第 0 条 (system 提示) 永不裁 —— 裁了模型就不知道自己是干什么的."""
     history = _history(200, 200, 200, 200)
-    compiled = await _apply(_policy(keep_recent_turns=3), history)
+    compiled = await _apply(_policy(keep_recent_questions=3), history)
 
     assert compiled.messages[0] is history[0]
 
 
-async def test_at_least_one_turn_is_kept() -> None:
-    """极端参数下也至少留最近 1 轮 (裁到只剩 system, 等于把这段对话删了)."""
+async def test_at_least_one_question_is_kept() -> None:
+    """极端参数下也至少留最近 1 个提问 (裁到只剩 system, 等于把这段对话删了)."""
     history = _history(*([300] * 6))
     compiled = await _apply(
-        _policy(keep_recent_turns=99, watermark_ratio=0.01), history
+        _policy(keep_recent_questions=99, watermark_ratio=0.01), history
     )
 
     assert _tool_bodies(compiled.messages)  # 还有工具结果活着
     assert compiled.messages[-1] == history[-1]
 
 
-async def test_tool_results_outside_the_latest_turn_are_truncated() -> None:
+async def test_tool_results_outside_the_latest_question_are_truncated() -> None:
     """老工具结果被截到阈值: 省 token 的主力在这里 (工具正文往往是大头)."""
     history = _history(500, 500, 500)
     compiled = await _apply(
-        _policy(threshold_tokens=1000, keep_recent_turns=2, watermark_ratio=0.7),
+        _policy(threshold_tokens=1000, keep_recent_questions=2, watermark_ratio=0.7),
         history,
     )
 
     bodies = _tool_bodies(compiled.messages)
     assert len(bodies) == 2
-    assert bodies[-1] == "订" * 500  # 最新一轮不截
+    assert bodies[-1] == "订" * 500  # 正在回答的那个提问不截
     assert bodies[0].startswith("订" * 20)  # 老的那条截到阈值
     assert len(bodies[0]) < 500
     assert compiled.truncated == 1
 
 
-async def test_the_latest_turn_tool_result_is_kept_whole() -> None:
-    """最新一轮不截: 模型正要拿它答这一句, 截了就是答非所问."""
+async def test_the_latest_question_tool_result_is_kept_whole() -> None:
+    """正在回答的那个提问不截: 模型正要拿它答这一句, 截了就是答非所问."""
     history = _history(500, 500)
-    compiled = await _apply(_policy(keep_recent_turns=1), history)
+    compiled = await _apply(_policy(keep_recent_questions=1), history)
 
     assert compiled.messages[-1] == history[-1]
 
 
 async def test_nothing_to_drop_means_no_compaction() -> None:
-    """只有一轮时压不动 (没得裁): 如实报告没压, 不凭空发事件."""
+    """只有一个提问时压不动 (没得裁): 如实报告没压, 不凭空发事件."""
     history = _history(400)
     compiled = await _apply(_policy(threshold_tokens=10), history)
 
@@ -312,9 +313,11 @@ async def test_nothing_to_drop_means_no_compaction() -> None:
 
 
 async def test_trimming_stops_under_the_watermark() -> None:
-    """压到水位线以下才停手 (压完还超线的话, 下一轮又得压 = 白花钱)."""
+    """压到水位线以下才停手 (压完还超线的话, 下一次调用又得压 = 白花钱)."""
     history = _history(*([400] * 6))
-    policy = _policy(threshold_tokens=1000, keep_recent_turns=1, watermark_ratio=0.5)
+    policy = _policy(
+        threshold_tokens=1000, keep_recent_questions=1, watermark_ratio=0.5
+    )
 
     compiled = await _apply(policy, history)
 
@@ -322,27 +325,31 @@ async def test_trimming_stops_under_the_watermark() -> None:
     assert compiled.estimated_tokens <= 1000 * 0.5
 
 
-async def test_keeps_the_most_turns_that_fit_the_watermark() -> None:
-    """能多留一轮就多留一轮: 到不了水位线才逐轮往下压 (少压一点是一点)."""
+async def test_keeps_the_most_questions_that_fit_the_watermark() -> None:
+    """能多留一个提问就多留一个: 到不了水位线才一个一个往下丢 (少压一点是一点)."""
     history = _history(*([400] * 6))
-    policy = _policy(threshold_tokens=1000, keep_recent_turns=4, watermark_ratio=0.57)
+    policy = _policy(
+        threshold_tokens=1000, keep_recent_questions=4, watermark_ratio=0.57
+    )
     summarizer = MockLLM.scripted([text_response("早前聊的是查订单")])
 
     compiled = await _apply(policy, history, summarizer=summarizer)
 
-    # 保留轮数被逐轮往下压: 既不是配置的 4 轮, 也不是兜底的 1 轮
+    # 保留提问数被一个一个往下丢: 既不是配置的 4 个, 也不是兜底的 1 个
     assert 1 < len(_tool_bodies(compiled.messages)) < 4
 
 
 async def test_compacting_twice_in_a_row_does_not_happen() -> None:
-    """连压两次的用例: 刚压完紧接着的下一轮不该再压.
+    """连压两次的用例: 刚压完紧接着的下一次调用不该再压.
 
     这一条同时钉住两件事 —— 水位线 (压完确实变小了) 与**锚** (上游回的是压完之后
     那个小请求的用量, 于是锚跟着落到小值; 只按启发式算的话, 一份很长的账本会
-    每轮都判定超阈值).
+    每次都判定超阈值).
     """
     counter = AnchorTokenCounter()
-    policy = _policy(threshold_tokens=1000, keep_recent_turns=1, watermark_ratio=0.5)
+    policy = _policy(
+        threshold_tokens=1000, keep_recent_questions=1, watermark_ratio=0.5
+    )
     summarizer = MockLLM.scripted(
         [text_response("第一段摘要"), text_response("第二段摘要")]
     )
@@ -356,13 +363,13 @@ async def test_compacting_twice_in_a_row_does_not_happen() -> None:
         summarizer=summarizer,
     )
     assert first.compacted is True
-    # 这一轮真的发出去了: 上游回的是压完之后那个小请求的用量 (锚就此落到小值)
+    # 这一次真的发出去了: 上游回的是压完之后那个小请求的用量 (锚就此落到小值)
     counter.note_usage(
         Usage(input_tokens=first.estimated_tokens), message_count=len(history)
     )
 
     grown = [*history, *_unit(9, size=100)]
-    # 没有锚的话, 这份逐轮变长的账本每轮都会被判定超阈值 (启发式只看总量)
+    # 没有锚的话, 这份逐步变长的账本每次都会被判定超阈值 (启发式只看总量)
     assert AnchorTokenCounter().count(grown) >= 1000
 
     second = await policy.apply(
@@ -386,7 +393,7 @@ async def test_scrolling_summary_feeds_the_previous_summary_back() -> None:
     summarizer = MockLLM.scripted(
         [text_response("第一段摘要"), text_response("第二段摘要")]
     )
-    policy = _policy(keep_recent_turns=1)
+    policy = _policy(keep_recent_questions=1)
 
     first = await _apply(policy, history, summarizer=summarizer)
     assert first.summary == "第一段摘要"
@@ -446,7 +453,7 @@ def test_policy_rejects_a_nonsense_configuration() -> None:
     with pytest.raises(CompactionConfigError):
         TrimAndSummarize(threshold_tokens=0)
     with pytest.raises(CompactionConfigError):
-        TrimAndSummarize(keep_recent_turns=0)
+        TrimAndSummarize(keep_recent_questions=0)
     with pytest.raises(CompactionConfigError):
         TrimAndSummarize(watermark_ratio=1.0)
     with pytest.raises(CompactionConfigError):
@@ -471,7 +478,7 @@ class _SpyCounter(AnchorTokenCounter):
 
 
 def _capturing_model(seen: list[Any], answer: str = "答完了") -> MockLLM:
-    """把「每一轮模型实际收到的 messages」记进 seen 的脚本模型.
+    """把「每一次模型调用实际收到的 messages」记进 seen 的脚本模型.
 
     视图是内部产物, 从返回值看不出来 —— 只有站在模型的位置才看得见 (异步工厂
     拿到的第一个参数就是这次请求的 messages). 存的是**那个列表本身** (不拷贝):
@@ -498,8 +505,8 @@ def _summary_then_answer(
 
 
 def _seam_policy(**overrides: Any) -> TrimAndSummarize:
-    """接缝用例常用的一档: 阈值 1000 (小账本也能压), 只留最近 1 轮."""
-    fields: dict[str, Any] = {"threshold_tokens": 1000, "keep_recent_turns": 1}
+    """接缝用例常用的一档: 阈值 1000 (小账本也能压), 只留最近 1 个提问."""
+    fields: dict[str, Any] = {"threshold_tokens": 1000, "keep_recent_questions": 1}
     fields.update(overrides)
     return _policy(**fields)
 
@@ -524,7 +531,7 @@ async def test_the_model_gets_the_view_while_the_ledger_stays_whole() -> None:
 
 
 async def test_the_authoritative_usage_is_fed_back_into_the_counter() -> None:
-    """每轮把 usage 回灌给估算器 (锚就是从这里来的), 条数是**账本**的长度."""
+    """每次调用把 usage 回灌给估算器 (锚就是从这里来的), 条数是**账本**的长度."""
     history = _history(400, 400, 400, 400)
     usage = Usage(input_tokens=123, total_tokens=150)
     counter = _SpyCounter()
@@ -563,7 +570,7 @@ async def test_the_summary_call_uses_the_main_model_by_default() -> None:
     model = MockLLM.scripted([text_response("早前查过订单"), text_response("答完了")])
     loop = AgentLoop(
         model=model,
-        compactor=_policy(threshold_tokens=1000, keep_recent_turns=1),
+        compactor=_policy(threshold_tokens=1000, keep_recent_questions=1),
     )
 
     await loop.run(history)
@@ -585,7 +592,7 @@ async def test_summarizer_tokens_count_toward_the_budget_but_not_the_turns() -> 
     )
     loop = AgentLoop(
         model=model,
-        compactor=_policy(threshold_tokens=1000, keep_recent_turns=1),
+        compactor=_policy(threshold_tokens=1000, keep_recent_questions=1),
         guard=LoopGuard(max_turns=3),
     )
 
@@ -602,7 +609,7 @@ async def test_the_compaction_event_carries_what_happened() -> None:
     model = MockLLM.scripted([text_response("早前查过订单"), text_response("答完了")])
     loop = AgentLoop(
         model=model,
-        compactor=_policy(threshold_tokens=1000, keep_recent_turns=1),
+        compactor=_policy(threshold_tokens=1000, keep_recent_questions=1),
         event_sink=collector,
     )
 
@@ -620,7 +627,7 @@ async def test_the_compaction_event_carries_what_happened() -> None:
     assert payload["estimated_tokens"] > 0
     assert payload["saved_tokens"] > 0
     assert payload["warning"] is None
-    # 顺序: 压缩在决策之前 (它就是「这一轮送什么」的一部分)
+    # 顺序: 压缩在决策之前 (它就是「这一次调用送什么」的一部分)
     assert collector.events.index(compacted[0]) < collector.events.index(
         next(e for e in collector.events if e.type is EventType.FINAL)
     )
@@ -749,14 +756,14 @@ async def test_a_resumed_run_does_not_re_compact_what_was_already_summarized() -
 
 
 async def test_frames_before_the_compaction_stay_as_they_were() -> None:
-    """压缩只影响**之后**落的帧: 之前那些帧一字不变, 帧数照旧一轮一帧.
+    """压缩只影响**之后**落的帧: 之前那些帧一字不变, 帧数照旧一次决策一帧.
 
     这条是「账本 / 视图分离」在存档线上的样子 —— 压的是这次请求的输入, 存的
     仍是全量过程; 于是回放时既看得见「当时压过」, 也看得见压之前发生过什么.
     """
     saver = InMemoryCheckpointSaver()
     thread_id = "thread-mid-run-compaction"
-    # 阈值卡在「第一轮之后、第二轮之前」: 第一轮不压, 工具结果把它顶过线
+    # 阈值卡在「第一次决策之后、第二次决策之前」: 第一次不压, 工具结果把它顶过线
     loop = AgentLoop(
         model=MockLLM.scripted(
             [
@@ -776,8 +783,8 @@ async def test_frames_before_the_compaction_stay_as_they_were() -> None:
     await loop.run(history, run_id="run-compaction")
 
     frames = await saver.list_history(thread_id)
-    assert len(frames) == 2  # 一轮一帧, 没多也没少
-    # 第一帧落盘时还没压过: 它记的是那一轮结束时账本的样子 (全量, 带工具结果)
+    assert len(frames) == 2  # 一次决策一帧, 没多也没少
+    # 第一帧落盘时还没压过: 它记的是那一次决策结束时账本的样子 (全量)
     assert frames[0].state.summary is None
     assert frames[0].turn_number == 1
     assert frames[1].state.summary == "压过一段"  # 第二帧才带上压缩的账
@@ -818,7 +825,9 @@ async def test_odd_tool_counts_do_not_break_the_cut() -> None:
         _user("现在呢"),
         {"role": "assistant", "content": "刚刚查过"},
     ]
-    compiled = await _apply(_policy(threshold_tokens=100, keep_recent_turns=1), short)
+    compiled = await _apply(
+        _policy(threshold_tokens=100, keep_recent_questions=1), short
+    )
 
     assert compiled.dropped > 0
     assert compiled.messages[0] is SYSTEM
@@ -835,14 +844,16 @@ async def test_odd_tool_counts_do_not_break_the_cut() -> None:
         _user("现在呢"),
         {"role": "assistant", "content": "刚刚查过"},
     ]
-    compiled = await _apply(_policy(threshold_tokens=100, keep_recent_turns=1), orphan)
+    compiled = await _apply(
+        _policy(threshold_tokens=100, keep_recent_questions=1), orphan
+    )
 
     assert compiled.dropped > 0
     assert _wire_legal(compiled.messages)
     assert "c9" not in {m.get("tool_call_id") for m in compiled.messages}
 
 
-async def test_the_kept_turn_survives_an_unmatched_call() -> None:
+async def test_the_kept_question_survives_an_unmatched_call() -> None:
     """保留段里有欠着结果的调用时, 它原样留着 (压缩不该替它补一条或删一条)."""
     history = [
         SYSTEM,
@@ -862,9 +873,11 @@ async def test_the_kept_turn_survives_an_unmatched_call() -> None:
         },
         {"role": "tool", "tool_call_id": "c1", "content": "订" * 300},
     ]
-    compiled = await _apply(_policy(threshold_tokens=100, keep_recent_turns=1), history)
+    compiled = await _apply(
+        _policy(threshold_tokens=100, keep_recent_questions=1), history
+    )
 
     assert compiled.dropped > 0
-    # 最新那一轮 (含它那条工具结果) 原样保留, 一字未改
+    # 最新那个提问 (含它那条工具结果) 原样保留, 一字未改
     assert compiled.messages[-1] == history[-1]
     assert compiled.messages[-2] == history[-2]

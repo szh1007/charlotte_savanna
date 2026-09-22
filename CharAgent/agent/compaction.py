@@ -6,7 +6,7 @@
 
     账本 (LoopState.history)   append-only, 一字不改 —— 断点续跑与回溯靠它
        ↓ 投影 (每次模型调用前算一次, 不落地)
-    视图 (送给模型的)          system + 摘要 + 最近 N 轮完整对话 —— 越聊越短
+    视图 (送给模型的)          system + 摘要 + 最近 N 个提问 —— 越聊越短
 
 **为什么不动账本**: ① 落盘的仍是全量历史 (只多了「压到哪一步」那两个字段) ——
 于是断点续跑、time-travel 回溯、快照表格视图看到的都还是完整过程, 压缩掉的只是
@@ -16,11 +16,12 @@
 
 三件套 (默认实现 TrimAndSummarize), 从省得多到省得细:
 
-1. **窗口裁剪** —— 保 system (第 0 条) 与最近 N 轮, 单位是**轮**. 切的刀口只落在
-   「一个提问」的位置, 于是被裁掉的那段总是完整对话 (提问 + 为它做的全部决策),
-   保留的那段也总是完整对话.
-2. **工具结果截断** —— 留着但已经很旧的工具正文截到阈值 (最新一轮不截). 工具返回
-   往往是大头, 截它比再多丢一轮划算 —— 骨架 (调过什么、结论是什么) 都还在.
+1. **窗口裁剪** —— 保 system (第 0 条) 与最近 N 个**提问**, 单位就是提问 (不是
+   「一次模型决策」那个 turn). 刀口只落在提问的位置, 于是被裁掉的那段总是完整
+   对话 (提问 + 为它做的全部决策), 保留的那段也总是完整对话.
+2. **工具结果截断** —— 留着但已经很旧的工具正文截到阈值 (正在回答的那个提问
+   之后的内容不截). 工具返回往往是大头, 截它比再丢一个提问划算 —— 骨架 (调过
+   什么、结论是什么) 都还在.
 3. **滚动摘要** —— 被裁掉的那段压成一段摘要, 下次压缩时**连上一条摘要一起重压**
    (不是只压新掉的那段: 那样更早的信息会被逐次稀释到消失).
 
@@ -28,12 +29,13 @@
 
 - 绝不拆散 `assistant(tool_calls)` 与它的 `tool` 消息 (切点只落在提问处)
 - 第 0 条 (system) 永不裁
-- 至少保留最近 1 轮完整 (裁到只剩 system 等于把这段对话删了)
+- 至少保留最近 1 个提问完整 (裁到只剩 system 等于把这段对话删了)
 - 裁完的序列仍是合法的 wire 序列
 
 触发与水位线: 估算 ≥ `threshold_tokens` 才压; 压完要落到阈值乘水位线比例以下才
-停手 (到不了就逐轮多丢一轮). 水位线是**滞回** —— 只按下限压的话, 下一轮立刻又
-超线, 于是每轮都压一次, 摘要调用也就每轮都花一次钱.
+停手 (到不了就再丢一个提问, 一路丢到只剩最近 1 个). 水位线是**滞回** —— 只按
+下限压的话, 下一次调用立刻又超线, 于是每次调用都压一次, 摘要调用也就每次都
+花一次钱.
 
 与 LoopGuard 的分工 (两个数各自算, 都要留): guard 是**运行级刹车** (这次运行总共
 别烧太多 → 直接停), 本模块是**单请求治理** (别让这一次请求变大 → 压完继续).
@@ -45,7 +47,7 @@
 为什么不挂在 BEFORE_TURN 钩子上 (它拿到的 messages 就是活引用, 原地改真的能改):
 ① 那是 fire 类点, 契约原话是「忽略, 没人看」—— 把「改变下一步输入」的逻辑塞进
 观察点, 等于让 hook 契约变成「某些点其实可以改载荷」; ② 压缩需要**框架保证的
-不变量** (配对 / system 不裁 / 至少留 1 轮), 这是通用知识, 不该每个业务各写一遍;
+不变量** (配对 / system 不裁 / 至少留 1 个提问), 这是通用知识, 不该每个业务各写一遍;
 ③ 摘要是一次真实模型调用, 它的 usage 要计入运行预算, 钩子点拿不到那个回写口.
 
 本模块只放行为 (估算器 / 策略 / 投影产物); 字符启发式与摘要文案在
@@ -77,7 +79,7 @@ logger = logging.getLogger("charagent.agent")
 # 又远在 12.8 万窗口之下; 老工具结果截到 800 字够留住结论, 又不至于把长表格
 # 整段背进下一次请求.
 DEFAULT_THRESHOLD_TOKENS = 24_000
-DEFAULT_KEEP_RECENT_TURNS = 2
+DEFAULT_KEEP_RECENT_QUESTIONS = 2
 DEFAULT_WATERMARK_RATIO = 0.6
 DEFAULT_TOOL_RESULT_LIMIT = 800
 DEFAULT_SUMMARY_MAX_TOKENS = 512
@@ -122,7 +124,7 @@ class CompiledView:
         """这次真的压了吗 —— 决定发不发 context_compacted 事件.
 
         判据是「有没有东西变了」而不是「试没试过」: 没超阈值、或者压不动
-        (只有一轮), 都不该在前端留一条「压缩过」的痕迹.
+        (只有一个提问), 都不该在前端留一条「压缩过」的痕迹.
         """
         return self.dropped > 0 or self.truncated > 0
 
@@ -152,12 +154,12 @@ class TokenCounter(Protocol):
         ...
 
     def note_usage(self, usage: Usage | None, *, message_count: int) -> None:
-        """上游给了这一轮的真实用量, 更新估算的锚.
+        """上游给了这一次调用的真实用量, 更新估算的锚.
 
         Args:
-            usage: 这一轮响应的 usage; None 或没有 input_tokens 时锚不动
+            usage: 这一次响应的 usage; None 或没有 input_tokens 时锚不动
                 (没有权威值就继续用上一个锚, 或退回启发式).
-            message_count: 这一轮请求发出**当时账本有几条** (账本是 append-only
+            message_count: 这一次请求发出**当时账本有几条** (账本是 append-only
                 的, 于是「锚 + 之后新增那几条」永远算得回来).
         """
         ...
@@ -236,16 +238,18 @@ class TrimAndSummarize:
 
     attributes:
         threshold_tokens: 估算达到它就压 (压完要落到水位线以下).
-        keep_recent_turns: 至少留几轮完整对话 (轮 = 一个提问及其后续决策);
-            到不了水位线时从它开始逐轮往下压, 但不会低于 1 轮.
+        keep_recent_questions: 至少留几个完整的提问 (一个提问连同为它做的全部
+            决策; 不是「一次模型决策」那个 turn). 到不了水位线时从它开始一个一个
+            往下丢, 但不会低于 1 个.
         watermark_ratio: 水位线比例 —— 压到阈值的这个倍数以下才停手.
-        tool_result_limit: 老工具结果的正文截到多少字符 (最新一轮不截).
+        tool_result_limit: 老工具结果的正文截到多少字符 (正在回答的那个提问的
+            内容不截).
         summary_max_tokens: 摘要那次调用的 max_tokens (只影响摘要本身).
         summarizer: 摘要模型; None 表示用 apply 传进来的那个 (通常是主模型).
     """
 
     threshold_tokens: int = DEFAULT_THRESHOLD_TOKENS
-    keep_recent_turns: int = DEFAULT_KEEP_RECENT_TURNS
+    keep_recent_questions: int = DEFAULT_KEEP_RECENT_QUESTIONS
     watermark_ratio: float = DEFAULT_WATERMARK_RATIO
     tool_result_limit: int = DEFAULT_TOOL_RESULT_LIMIT
     summary_max_tokens: int = DEFAULT_SUMMARY_MAX_TOKENS
@@ -257,10 +261,10 @@ class TrimAndSummarize:
             raise CompactionConfigError(
                 f"threshold_tokens 必须 >= 1, 实际: {self.threshold_tokens}"
             )
-        if self.keep_recent_turns < 1:
+        if self.keep_recent_questions < 1:
             raise CompactionConfigError(
-                f"keep_recent_turns 必须 >= 1 (至少留一轮), 实际: "
-                f"{self.keep_recent_turns}"
+                f"keep_recent_questions 必须 >= 1 (至少留 1 个提问), 实际: "
+                f"{self.keep_recent_questions}"
             )
         if not 0 < self.watermark_ratio < 1:
             raise CompactionConfigError(
@@ -304,7 +308,7 @@ class TrimAndSummarize:
 
         cut = self._choose_cut(history, summary=summary, counter=counter)
         if not cut:
-            # 压不动 (只有一轮 / 没有可切的提问): 如实报告什么都没做
+            # 压不动 (只有一个提问 / 没有可切的提问): 如实报告什么都没做
             return unchanged
 
         new_summary, usage, warning = await self._summarize(
@@ -316,7 +320,7 @@ class TrimAndSummarize:
             history,
             cut=cut,
             summary=final_summary,
-            latest_start=_latest_turn_start(history),
+            latest_start=_latest_question_start(history),
         )
         return CompiledView(
             messages=view,
@@ -343,18 +347,19 @@ class TrimAndSummarize:
         summary: str | None,
         counter: TokenCounter,
     ) -> int:
-        """定切点: 从 keep_recent_turns 起逐轮往回收, 直到估算落到水位线以下.
+        """定切点: 从 keep_recent_questions 起一个提问一个提问往回收,
+        直到估算落到水位线以下.
 
-        全都不达标时取最后一刀 (keep = 1, 还留着一轮) —— 压不到水位线也得压,
+        全都不达标时取最后一刀 (keep = 1, 还留着最近那个提问) —— 压不到也得压,
         否则一份长期过大的账本会永远不动 (滞回是为了少压, 不是为了不压).
 
         Returns:
             int: 账本从第几条开始保留; 0 表示没得裁 (此时一个字都不动).
         """
         target = int(self.threshold_tokens * self.watermark_ratio)
-        latest_start = _latest_turn_start(history)
+        latest_start = _latest_question_start(history)
         chosen = 0
-        for keep in range(self.keep_recent_turns, 0, -1):
+        for keep in range(self.keep_recent_questions, 0, -1):
             cut = _cut_index(history, keep)
             if not cut:
                 continue
@@ -399,7 +404,7 @@ class TrimAndSummarize:
             content = message.get("content")
             if (
                 message.get("role") == "tool"
-                and index < latest_start  # 最新一轮不截
+                and index < latest_start  # 正在回答的那段不截
                 and isinstance(content, str)
                 and len(content) > self.tool_result_limit
             ):
@@ -462,13 +467,13 @@ class TrimAndSummarize:
 
 
 def _cut_index(history: Sequence[ModelMessage], keep: int) -> int:
-    """保留最近 keep 轮时, 账本从第几条开始保留 (也是摘要覆盖的前缀长度).
+    """保留最近 keep 个提问时, 账本从第几条开始保留 (也是摘要覆盖的前缀长度).
 
     切点只落在**提问**处: 于是保留段与被裁掉的段各自都是完整对话 —— assistant 与
     它的 tool 结果永远同进退 (#10 的配对规矩, 破了上游直接 400).
 
     Returns:
-        int: 切点下标; 0 表示没得裁 —— 不够 keep 轮, 或者切完只剩 system 一条,
+        int: 切点下标; 0 表示没得裁 —— 不够 keep 个提问, 或者切完只剩 system 一条,
         或者被裁掉的那段里根本没有一次完整的模型决策 (光秃秃的提问不算) .
     """
     starts = [i for i, m in enumerate(history) if m.get("role") == "user"]
@@ -482,11 +487,11 @@ def _cut_index(history: Sequence[ModelMessage], keep: int) -> int:
     return cut
 
 
-def _latest_turn_start(history: Sequence[ModelMessage]) -> int:
-    """最新一轮的起点 (最后一个提问的下标); 一条提问都没有时返回 len(history).
+def _latest_question_start(history: Sequence[ModelMessage]) -> int:
+    """正在回答的那个提问的下标 (最后一个 user 消息的位置); 没有提问时返回 len(history).
 
-    它的用处只有一个: 「最新一轮不截」—— 模型正拿着这份工具结果答这一句,
-    截了就是答非所问. 返回 len(history) 表示没有受保护的一轮 (全都可以截).
+    用处只有一个: 「正在回答的那段不截」—— 模型正拿着这份工具结果答这一句,
+    截了就是答非所问. 返回 len(history) 表示没有受保护的那段 (全都可以截).
     """
     for index in range(len(history) - 1, -1, -1):
         if history[index].get("role") == "user":

@@ -140,6 +140,7 @@
 | 「发一条 warning 事件」 | §4「摘要失败 → 降级 + 发一条 warning 事件」 | **不新开事件类型**：降级原因挂在 `context_compacted` 的 `warning` 字段上（正常时是 `None`，字段恒在） | 事件类型是**给前端渲染的契约**：多一类就逼前端多写一个分支（而 CharApp 前端对认不出的类型是直接忽略，等于静默）。「走没走摘要」本来就已经在 `summarized` 字段里，`warning` 补的是**为什么没走**。另外框架侧同时 `logger.warning` 留痕（不静默吞） |
 | `AgentLoop` 加几个参数 | §2「加 `compactor=`」 | **`compactor=` + `counter=`**（只给 counter 不给 compactor 报 `LoopConfigError`） | §1 自己写了「业务可注入自己的实现（真分词器）」，那就得有个注入口；只给一半属配置写错，装配期报错（与 `saver` / `thread_id` 成对给同一条纪律） |
 | 摘要跨不跨 run | §3 只写了「`resume` 路径要回灌」 | **跨 run 也不断链**：`LoopResult` 多出 `summary` / `summary_covers`，`run()` 多两个入口参数，`ChatSession` 自己收着、下一句问话递回去 | 会话真正的用法是「一个 `ChatSession` 横跨很多次 `ask()`」，每次 `ask()` 都是一次新 run；只做 resume 回灌的话，第二句问话就是个全新进度 → 同一段旧历史被重压一遍（内容不会错，但白花一次摘要调用，滚动摘要的收益也丢一半）。这是本片唯一一处公共 API 增长，理由记在这里 |
+| 参数叫什么 | 「保 system 与最近 N 轮」（原文里的「轮」） | `keep_recent_questions`（原定 `keep_recent_turns`，**用户读代码时点名改的**） | 它数的其实是**提问个数**（`starts[-keep]`），而框架自己的术语里 `turn` = 一次模型决策（`turn_count` / `TurnRecord` / `max_turns` 全是这个含义）—— 叫 `turns` 会读成「留最后 N 次决策」，歧义。改名时连带把文档与测试里的「轮」统一成「提问」（`_latest_turn_start` → `_latest_question_start`），并把「最新一轮不截」这类说法写准成「正在回答的那个提问的内容不截」。注：PLAN.md 与 issue 21 里的「最近 N 轮」是规划期的白话，未改（不是参数名） |
 | 「压后估算」与「省下多少」 | §4 要求两个数 | 两个数**不是同一把尺子** | `estimated_tokens` 是「这份视图作为一次请求大概多大」（锚在上游给的 `input_tokens`，含工具 schema 这类固定开销）；`saved_tokens` 是账本与视图用**同一个字符启发式**量的差。凑成同一口径就得放弃锚（那是「这次请求真实多大」的唯一近似），所以**不凑**，改为在 `CompiledView` docstring 与 `context_compacted_data` 里写明「别相加」 |
 
 ### 二、碰过的文件
@@ -178,7 +179,7 @@
 | 不配 `compactor=` 时逐字一样 | `test_without_a_compactor_the_ledger_itself_goes_to_the_model`（送给 `generate` 的**就是账本本体**，身份断言）、`test_a_counter_without_a_compactor_is_a_configuration_error`、既有 892 条零改动、事件序列快照原样通过 |
 | 第 N 轮实际送模型的 messages | `_capturing_model`（`MockLLM` 的异步工厂）在 9 条接缝用例里记下「模型看到的」，如 `test_the_model_gets_the_view_while_the_ledger_stays_whole` |
 | 裁剪按整轮 / 边界 | `test_trimming_keeps_whole_turns_and_stays_wire_legal`、`test_odd_tool_counts_do_not_break_the_cut`（工具结果**少于**调用数、**多于**调用数两种畸形账本各一遍）、`test_the_kept_turn_survives_an_unmatched_call` |
-| system 不裁 / 留最近 1 轮 | `test_the_first_message_is_never_dropped`（身份断言 `is history[0]`）、`test_at_least_one_turn_is_kept`（`keep_recent_turns=99` + 极小水位线） |
+| system 不裁 / 留最近 1 轮 | `test_the_first_message_is_never_dropped`（身份断言 `is history[0]`）、`test_at_least_one_question_is_kept`（`keep_recent_questions=99` + 极小水位线） |
 | 工具结果截断 / 最新一轮不截 | `test_tool_results_outside_the_latest_turn_are_truncated`、`test_the_latest_turn_tool_result_is_kept_whole` |
 | 不压 / 压到水位线 / 不每轮都压 | `test_under_the_threshold_nothing_is_touched`、`test_trimming_stops_under_the_watermark`、`test_keeps_the_most_turns_that_fit_the_watermark`、**`test_compacting_twice_in_a_row_does_not_happen`**（同时钉住水位线与锚：同一份账本用无锚估算器会判超阈值，用过锚的不会） |
 | 滚动摘要 | `test_scrolling_summary_feeds_the_previous_summary_back`（断言送进 summarizer 的**文本**里含上一条摘要）、`test_a_summary_from_the_previous_run_keeps_scrolling`（跨 run）、`test_the_summary_rides_along_with_the_checkpoint`（跨快照 resume 回灌） |
