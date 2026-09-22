@@ -1,6 +1,6 @@
 # 14 · 收尾：文档修订与遗留清理
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Type:** task
 

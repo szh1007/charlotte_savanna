@@ -132,15 +132,47 @@ class OrderServiceTest(TestCase):
         self.assertIsNotNone(order.paid_at)
 
     def test_cancel_restores_stock(self):
+        """待付款的单: 取消即刻回滚库存 (钱没动过, 也就没有退款这回事)."""
         ci = self._cart_item(5)
         order = create_order(self.user, [ci.id], self.addr.id)
         self.prod.refresh_from_db()
         stock_after_order = self.prod.stock
+        balance_before = self.user.minimall_profile.balance
+
         cancel_order(order)
+
         self.prod.refresh_from_db()
         self.assertEqual(self.prod.stock, stock_after_order + 5)
         order.refresh_from_db()
         self.assertEqual(order.status, Order.Status.CANCELLED)
+        self.assertEqual(
+            Profile.objects.get(pk=self.user.minimall_profile.pk).balance,
+            balance_before,
+            "没付过款, 余额不该动",
+        )
+
+    def test_cannot_cancel_paid(self):
+        """付过款就不能取消 (2026-09-22 改判): 钱已经出去, 该走的是退款.
+
+        判据从「订单处于什么状态」换成「买家说的是哪个动词」之后, `paid` 不再可取消
+        —— 拒绝时状态 / 余额 / 库存一个都不许动 (旧实现会退钱并回滚库存).
+        """
+        ci = self._cart_item(2)
+        order = create_order(self.user, [ci.id], self.addr.id)
+        pay_order(order, "123456")
+        order.refresh_from_db()
+        stock = Product.objects.get(pk=self.prod.pk).stock
+        balance = Profile.objects.get(pk=self.user.minimall_profile.pk).balance
+
+        with self.assertRaises(InvalidOrderStatusError):
+            cancel_order(order)
+
+        order.refresh_from_db()
+        self.assertEqual(order.status, Order.Status.PAID)
+        self.assertEqual(Product.objects.get(pk=self.prod.pk).stock, stock)
+        self.assertEqual(
+            Profile.objects.get(pk=self.user.minimall_profile.pk).balance, balance
+        )
 
     def test_cannot_cancel_shipped(self):
         ci = self._cart_item(1)
@@ -194,17 +226,21 @@ class OrderServiceTest(TestCase):
         )
         self.assertEqual(Order.objects.get(pk=order.pk).status, Order.Status.PAID)
 
-    def test_cancel_with_stale_instance_rejects_shipped(self):
-        """陈旧实例取消一张**已发货**订单 → 拒绝, 不退钱也不回滚库存.
+    def test_cancel_with_stale_instance_rejects_paid(self):
+        """陈旧实例取消一张**已付款**订单 → 拒绝, 不退钱也不回滚库存.
 
-        老实现读的是传入实例的 status (它看到的还是 paid) —— 于是钱退了, 库存
-        也加回去了, 而货其实已经发出去了.
+        传进来的那份还停在 `pending` (本来放行的那个状态), 信它就会把一张付过款的
+        订单取消掉 —— 改判之后那种单要走退款. 锁内 re-fetch 出来的才是 `paid`, 于是
+        被拒.
+
+        陈旧实例必须挑「信它就会放行」的那个形状, 这条才钉得住「判据取锁内的值」:
+        拿一个 `shipped` 的陈旧实例来测是假绿灯 —— 那种状态在新规则下**怎么读都被拒**
+        (`test_cannot_cancel_shipped` 覆盖的就是那一半).
         """
         ci = self._cart_item(2)
         order = create_order(self.user, [ci.id], self.addr.id)
-        pay_order(order, "123456")
-        stale = Order.objects.get(pk=order.pk)  # 这一刻它还是 paid
-        ship_order(Order.objects.get(pk=order.pk))
+        stale = Order.objects.get(pk=order.pk)  # 这一刻它还是 pending
+        pay_order(Order.objects.get(pk=order.pk), "123456")
         stock = Product.objects.get(pk=self.prod.pk).stock
         balance = Profile.objects.get(pk=self.user.minimall_profile.pk).balance
 
@@ -215,13 +251,14 @@ class OrderServiceTest(TestCase):
         self.assertEqual(
             Profile.objects.get(pk=self.user.minimall_profile.pk).balance, balance
         )
-        self.assertEqual(Order.objects.get(pk=order.pk).status, Order.Status.SHIPPED)
+        self.assertEqual(Order.objects.get(pk=order.pk).status, Order.Status.PAID)
 
     def test_cancel_rejected_for_refunding_order(self):
-        """退款中的订单自动不可取消: 取消的白名单只有 pending / paid.
+        """退款中的订单自动不可取消: 取消的白名单只有 `pending`.
 
         09 写这条时 `refunding` 还不是枚举值, 用的是字面量; 10 加上枚举后改成
-        枚举 (值没变, 断言照旧成立).
+        枚举, 15 把白名单收成 `pending` —— 断言三次都没变 (它测的是"不在白名单里
+        就拒"这件事本身).
         """
         ci = self._cart_item(1)
         order = create_order(self.user, [ci.id], self.addr.id)
@@ -670,20 +707,49 @@ class RefundServiceTest(TestCase):
 
         self.assertEqual(self._balance(), Decimal("9900.00"), "取消没被执行, 钱不该动")
 
-    def test_refund_never_touches_stock(self):
-        """整条退款流程前后库存一字不变.
+    def test_settling_an_unshipped_refund_restocks(self):
+        """未发货的退款: 申请与批准都不动库存, **打款**那一步才回滚.
 
-        与 `cancel_order` 不对称, 且这条不对称是**对的**: 取消时货还没出去
-        (只认 pending / paid), 退款时货已经在买家手里 —— 把库存加回来等于凭空造货.
+        回滚落在打款而不是申请时: 申请时货还在这一单手上 (订单是 `refunding`),
+        提前放回库存等于让同一单同时占着货和钱.
         """
-        order = self._paid_order(quantity=2)
+        order = self._paid_order(quantity=2)  # 还没发货
         stock_before = Product.objects.get(pk=self.prod.pk).stock
 
         refund = request_refund(order)
         approve_refund(refund, amount=Decimal("70.00"))
+        self.assertEqual(
+            Product.objects.get(pk=self.prod.pk).stock,
+            stock_before,
+            "还没打款, 货还被这一单占着",
+        )
+
         settle_refund(refund)
 
-        self.assertEqual(Product.objects.get(pk=self.prod.pk).stock, stock_before)
+        self.assertEqual(Product.objects.get(pk=self.prod.pk).stock, stock_before + 2)
+
+    def test_settling_a_shipped_refund_keeps_stock(self):
+        """已发货的退款: 货已经在买家手里, 打款也不回滚 (加回来等于凭空造货).
+
+        判据是**申请前的快照**, 所以发过货的那三个起始状态各来一遍 —— 之后又推了
+        多少步都不影响.
+        """
+        for status in (
+            Order.Status.SHIPPED,
+            Order.Status.RECEIVED,
+            Order.Status.COMPLETED,
+        ):
+            with self.subTest(status=status):
+                order = self._paid_order(status, quantity=2)
+                stock_before = Product.objects.get(pk=self.prod.pk).stock
+
+                refund = request_refund(order)
+                approve_refund(refund, amount=Decimal("70.00"))
+                settle_refund(refund)
+
+                self.assertEqual(
+                    Product.objects.get(pk=self.prod.pk).stock, stock_before
+                )
 
     def test_amounts_stay_decimal_end_to_end(self):
         """全程 Decimal —— 金额一旦沾上 float, 账就对不上分了."""

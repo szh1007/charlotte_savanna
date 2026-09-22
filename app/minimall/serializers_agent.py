@@ -298,13 +298,17 @@ class AgentRefundSerializer(serializers.ModelSerializer):
 
 
 class AgentOrderCancelSerializer(AgentOrderDetailSerializer):
-    """取消订单的回执: 订单详情 + 这次动作干了两件什么事.
+    """取消订单的回执: 订单详情 + 这次动作回滚了几件库存.
 
-    取消有**两个**副作用 (回滚库存, 退款给余额), 而买家问的正是这两件事
-    「钱退了吗, 货退了吗」—— 所以它们必须出现在响应里, 别只回一句 ok.
-    余额那笔只在**已付款**的订单上发生 (`pending` 还没扣钱, 退 0): 判据是
-    `paid_at` —— 它是付款那一刻写下的记录, 取消不会清掉它 (`cancel_order` 只
-    改 status / cancelled_at), 而与它对应的那条规则写在 `cancel_order` 里.
+    `restocked_count` 是买家最关心的那件事之一 (「货退了吗」), 所以它必须出现在
+    响应里, 别只回一句 ok. 改判之后取消**永远**回滚全部明细 (`cancel_order` 只认
+    `pending`), 于是它就是整张订单的件数之和 —— 不再需要按付款时间戳去猜「哪几件
+    是扣过的」.
+
+    `balance_returned` 改判后**恒为 "0.00"**: 只有未付款的订单能取消, 那种单从没
+    扣过钱 (取消不再有退还余额这一支). 留着一个恒 0 的字段是为了回执形状不变 ——
+    它是 issue 11 定下的写端点契约, 客户端与用例都按这个形状解析, 为一个不存在的
+    金额去改契约不划算.
     """
 
     balance_returned = serializers.SerializerMethodField()
@@ -318,8 +322,12 @@ class AgentOrderCancelSerializer(AgentOrderDetailSerializer):
         ]
 
     def get_balance_returned(self, obj) -> str:
-        """退回余额的金额 (2 位小数字符串); 未付款的订单是 "0.00"."""
-        return f"{obj.total_amount:.2f}" if obj.paid_at else "0.00"
+        """退回余额的金额 —— 恒定 "0.00", 见类 docstring.
+
+        改判之前这里按 `paid_at` 判 (已付款的取消要退钱), 那一支现在走不到了: 只有
+        未付款的订单能取消, 而它从没扣过钱. 破例留下一个恒定的字段, 理由在类 docstring.
+        """
+        return "0.00"
 
     def get_restocked_count(self, obj) -> int:
         """这次回滚了几件库存 —— 数字来自订单明细 (它就是当初扣掉的那批)."""

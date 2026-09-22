@@ -39,7 +39,7 @@ from typing import Annotated, Any
 
 from pydantic import Field
 
-from CharAgent.tool import Tool, tool
+from CharAgent.tool import Tool, ToolActionableError, tool
 from CharApp.minimall.client import (
     MinimallClient,
     MinimallNotFoundError,
@@ -96,12 +96,38 @@ async def _fetch(
     return json.dumps(data, ensure_ascii=False)
 
 
-async def _act(call: Callable[..., Awaitable[Any]], **kwargs: Any) -> str:
-    """调一次**写**接口, 把结果翻成回填给模型的文本 (与 `_fetch` 的写侧对照).
+class RefusedActionError(ToolActionableError):
+    """商城按业务规则拒了这次动作 —— 文案照旧, 变的是框架给这次执行记的 `status`.
 
-    失败那一支不同: 写操作没有「查无此物」这种答案, 有的是**商城按业务规则说不**
-    (库存不够 / 状态不允许 / 没有默认地址). 商城给的那句中文就是最准的, 照读;
-    只有它没说清**下一步**时才按错误码补一句 (`_REFUSAL_HINTS`).
+    **抛而不返回** (2026-09-22 改): 返回一句「操作没有完成 …」的话, 框架把它当成
+    正常结果 (`status=ok`), 页面按**成功**话术渲染 —— 买家看到「订单已取消」, 而
+    订单根本没动. 抛出去才走失败那条路 (executor 把消息原文透传, 页面换 failed
+    话术), 而**模型收到的文本一个字不变**.
+
+    借的是 `ToolActionableError` 的**透传**语义 (executor 认出它就照原样把消息回填
+    模型, 见 `CharAgent/tool/executor.py`); 它文档里那句「消息必须让模型能修正重试」
+    在这里要反着读 —— `_REFUSAL_HINTS` 补的那句多半是「不要重试同一个动作」, 而框架
+    自己的重试策略也把这类异常判成不可重试.
+
+    `code` 保留商城那份错误码 (`views_agent.ERROR_CODES` 的键), 留给将来的插件看.
+    """
+
+    def __init__(self, message: str, *, code: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+async def _act(call: Callable[..., Awaitable[Any]], **kwargs: Any) -> str:
+    """调一次接口并把结果翻成回填给模型的文本 —— 与 `_fetch` 相对的**动作侧**.
+
+    叫它「写」那一档并不准: 用它的一共 8 个工具, 7 个写 + `list_my_refunds` 这个
+    **只读**的. 那个只读工具走这条路, 是因为它要的失败语义与写工具一样 —— 商城按规则
+    拒了就如实报 failed, 而不是像 `_fetch` 那样翻成一句答案. 被拒的读也显示 failed,
+    这是对的.
+
+    失败那一支: 商城按业务规则说不时 (库存不够 / 状态不允许 / 没有默认地址), 它给的
+    那句中文就是最准的, 照读; 只有它没说清**下一步**时才按错误码补一句
+    (`_REFUSAL_HINTS`).
 
     没有 `missing` 参数: 写端点的 404 是带码的拒绝 (`order_not_found`), 走的是
     `MinimallRefusalError` 那条路, 与只读端点「404 是答案」不是一回事. 与 `_fetch`
@@ -109,13 +135,14 @@ async def _act(call: Callable[..., Awaitable[Any]], **kwargs: Any) -> str:
     换来的是两个可选参数与两个只有一半用得上的分支, 不划算.
 
     Raises:
+        RefusedActionError: 商城按业务规则拒了这次动作 (消息面向买家).
         MinimallError: 商城故障 (连不上 / 超时 / 5xx / 不带码的 4xx) —— 交给框架
             统一的内部错误文案, 与 `_fetch` 同一条.
     """
     try:
         data = await call(**kwargs)
     except MinimallRefusalError as exc:
-        return _refusal_text(exc)
+        raise RefusedActionError(_refusal_text(exc), code=exc.code) from exc
     return json.dumps(data, ensure_ascii=False)
 
 
@@ -397,7 +424,8 @@ def _list_my_addresses(client: MinimallClient, user_id: int) -> Tool:
 # ---------------------------------------------------------------------------
 # 这一节与上面两节的差别只有一条: 它们**改**数据 (最后一个除外). 其余照旧 —— 身份
 # 照样只在闭包里, 参数表里照样没有买家; 失败照样翻成模型看得懂的话 (只是写操作的
-# 失败多了「商城按规则说了不行」这一族, 见 `_act`).
+# 失败多了「商城按规则说了不行」这一族, 见 `_act` —— 那一族是**抛**出去的, 好让框架
+# 把它记成失败).
 #
 # 购物车四个工具没带 my 前缀, 而 cancel_my_order / list_my_refunds 带了: 判据是
 # 那句话读起来指代的是什么 —— 「把购物车里这件事改了」说的是**车里那件东西**,
@@ -544,13 +572,12 @@ def _cancel_my_order(client: MinimallClient, user_id: int) -> Tool:
             ),
         ],
     ) -> str:
-        """取消**当前买家自己**的一笔还没发货的订单 (待付款 / 已付款的订单可以
-        取消; 已发货之后的不能). 买家说「取消订单」「这单不要了」时使用 —— 它
-        **即刻生效, 不用任何人审批**: 已付款的订单会当场把钱退回余额, 商品也
-        回滚库存, 回执里就写着退了多少, 回滚了几件, 照读即可.
-        **取消与退款不是一回事**: 货已经出去了 (已发货 / 已收货 / 已完成的订单)
-        就取消不了, 那种情况改用 request_refund —— 那个要管理员审批, 而且不退
-        库存. 买家说「退钱」而订单还没发货时, 用这个更快 (当场到账).
+        """取消**当前买家自己**的一笔**还没付款**的订单 (只有待付款的能取消).
+        买家说「取消订单」「这单不要了」时使用 —— 它**即刻生效, 不用任何人审批**,
+        商品库存当场回滚; 这一单还没付过钱, 所以没有钱要退.
+        **付过款就不能取消**: 已付款 / 已发货 / 已收货 / 已完成的订单都得走
+        request_refund. 买家说的是「退款」时就申请退款, **不要因为"更快"就替他
+        换一个动作** —— 两个动作的结果不一样, 换了他要的那件事就没做.
         """
         return await _act(client.cancel_order, user_id=user_id, order_no=order_no)
 
@@ -572,12 +599,12 @@ def _request_refund(client: MinimallClient, user_id: int) -> Tool:
             ),
         ],
     ) -> str:
-        """为**当前买家自己**的一笔订单申请退款 (申请之后订单显示「退款中」).
-        买家说「我要退款」「这单退钱」时使用. **退多少钱不在这一步定, 也不要问
-        买家想退多少** —— 金额由管理员审批时协商, 所以这个工具不收金额参数.
-        **退款与取消不是一回事**: 退款要等管理员审批; 商城也没有「退货退款」这
-        回事 (不需要把货寄回来), 不要描述任何寄回流程. 还没发货的订单用
-        cancel_my_order 更快 (即刻到账). 申请之后用 list_my_refunds 看进度.
+        """为**当前买家自己**的一笔**付过款**的订单申请退款 (申请之后订单显示
+        「退款中」). 买家说「我要退款」「这单退钱」时使用 —— **付款之后一律走这条
+        路**, 货发没发出去都一样. **退多少钱不在这一步定, 也不要问买家想退多少**
+        —— 金额由管理员审批时协商, 所以这个工具不收金额参数. 商城也没有「退货退款」
+        这回事 (不需要把货寄回来), 不要描述任何寄回流程. 申请之后用 list_my_refunds
+        看进度.
         """
         return await _act(client.request_refund, user_id=user_id, order_no=order_no)
 
@@ -644,7 +671,8 @@ def build_tools(client: MinimallClient, user_id: int) -> tuple[Tool, ...]:
     return tuple(builder(client, user_id) for builder in _BUILDERS)
 
 
-# 出去两个名字: 工具集, 以及**写操作的标记键** —— 后者是跨模块的约定 (护栏插件与
-# 测试都要拿它去读工具身上的注解), 所以它虽然是个常量也在门面上. `SLUG_PATTERN`
-# 不是: 它只在本模块里用, 出去只会让「还有谁在用它」变得难查.
-__all__ = ["WRITE_ANNOTATION_KEY", "build_tools"]
+# 出去三个名字: 工具集, **写操作的标记键**, 以及「商城按规则拒了」那个异常. 前两个是
+# 跨模块的约定 (护栏插件与测试都要拿标记键去读工具身上的注解), 第三个是用例要断言的
+# 类型 —— 所以它虽然只在 `_act` 里抛, 也在门面上. `SLUG_PATTERN` 不是: 它只在本模块
+# 里用, 出去只会让「还有谁在用它」变得难查.
+__all__ = ["WRITE_ANNOTATION_KEY", "RefusedActionError", "build_tools"]

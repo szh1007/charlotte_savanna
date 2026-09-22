@@ -485,8 +485,9 @@ class AgentCartClearView(AgentEndpointView):
 class AgentOrderCancelView(AgentEndpointView):
     """取消订单 (POST orders/<order_no>/cancel/).
 
-    取消**即刻生效**: 不用审批 (要审批的是退款), 所以回执里直接给买家最关心的
-    两件事 —— 退回余额多少, 回滚了几件库存.
+    取消**即刻生效**: 不用审批 (要审批的是退款), 所以回执里直接给买家最关心的那件
+    事 —— 回滚了几件库存. 只有未付款的订单走得通 (付款之后一律走退款), 所以回执里
+    没有「退回余额」这回事.
     """
 
     def post(self, request, order_no):

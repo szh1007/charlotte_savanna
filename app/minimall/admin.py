@@ -388,7 +388,14 @@ class RefundRequestAdmin(admin.ModelAdmin):
         return self._render_action_form(request, queryset, form, "驳回退款")
 
     def _render_action_form(self, request, queryset, form, title: str):
-        """渲染中间页 —— 表单填错时回到这里重填, 填对了才执行."""
+        """渲染中间页 —— 表单填错时回到这里重填, 填对了才执行.
+
+        动作名**取第一个** `action` (`getlist[0]`), 与 Django 自己的
+        `response_action` 同一条语义: 请求体里有两个同名 `action` (项目注入的按钮
+        一个, 被藏起来的 select 一个), `QueryDict.get` 拿的是**最后一个** —— 那正是
+        空 select 的值, 中间页的 hidden 会带着它回来, 第二次提交就没了动作可执行.
+        (按钮排在前是模板保证的: 它插在 `#changelist-form` 的第一个子节点上.)
+        """
         return TemplateResponse(
             request,
             "admin/minimall/refund_action.html",
@@ -399,7 +406,7 @@ class RefundRequestAdmin(admin.ModelAdmin):
                 "form": form,
                 "opts": self.model._meta,
                 "action_checkbox_name": helpers.ACTION_CHECKBOX_NAME,
-                "action_name": request.POST.get("action", ""),
+                "action_name": request.POST.getlist("action")[0],
             },
         )
 

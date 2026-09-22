@@ -79,15 +79,14 @@
             </div>
           </div>
 
-          <div x-show="['pending','paid','shipped','received'].includes(order.status)" style="background:#fff;border-radius:12px;padding:24px;box-shadow:0 2px 12px rgba(0,0,0,.06);">
+          <!-- 已付款的订单不在这里: 它既不能取消 (2026-09-22 改判后只有待付款能取消),
+               也没有别的主动作 —— 该做的就是等发货, 要退款走下面那块「申请退款」 -->
+          <div x-show="['pending','shipped','received'].includes(order.status)" style="background:#fff;border-radius:12px;padding:24px;box-shadow:0 2px 12px rgba(0,0,0,.06);">
             <template x-if="order.status === 'pending'">
               <div>
                 <button @click="openPayModal" style="width:100%;padding:12px;background:#ff6b6b;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:15px;font-weight:600;">确认支付</button>
                 <button @click="doCancel" style="width:100%;margin-top:8px;padding:12px;background:#f1f3f5;color:#666;border:none;border-radius:8px;cursor:pointer;font-size:15px;">取消订单</button>
               </div>
-            </template>
-            <template x-if="order.status === 'paid'">
-              <button @click="doCancel" style="width:100%;padding:12px;background:#f1f3f5;color:#666;border:none;border-radius:8px;cursor:pointer;font-size:15px;">取消订单</button>
             </template>
             <template x-if="order.status === 'shipped'">
               <button @click="doReceive" style="width:100%;padding:12px;background:#ff6b6b;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:15px;font-weight:600;">确认收货</button>
@@ -259,12 +258,10 @@ document.addEventListener('alpine:init', () => {
       var self = this;
       this.confirmModal = {show: true, title: '申请退款', message: '确定要为该订单申请退款吗？退款金额由管理员与您协商。', onConfirm: function() { self.doAction('/api/minimall/orders/'+self.orderNo+'/refund/'); }};
     },
-    // 比服务层的 REFUNDABLE_STATUSES 少一个 `paid`（2026-09-21 拍板）: 未发货的订单
-    // 走"取消"就够 —— 取消即刻全额退回并回滚库存, 同一状态上的退款按钮严格更差
-    // （要等审批, 还不回库存）. 端点本身没跟着收窄: 助手与直接调用仍按服务层那份
-    // 白名单放行, 这里少给一个入口, 只是页面不为难买家二选一.
+    // 与服务层的 REFUNDABLE_STATUSES 一致（2026-09-22 改判后把 `paid` 补回来）:
+    // 付款之后一律走退款 —— 那时「取消」这条路已经没了, 未发货的订单也不例外.
     // 不用另判"有没有进行中的申请" —— 有申请时订单必然已经是 refunding.
-    canRefund: function() { return ['shipped','received','completed'].indexOf(this.order.status) !== -1; },
+    canRefund: function() { return ['paid','shipped','received','completed'].indexOf(this.order.status) !== -1; },
     refundLabel: function() {
       if (!this.order.refund) return '';
       var m = {requested:'退款申请已提交，等待管理员处理', approved:'管理员已批准，正在打款', rejected:'退款申请未通过', refunded:'退款已完成'};

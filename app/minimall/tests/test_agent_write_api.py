@@ -395,24 +395,31 @@ class AgentOrderWriteTest(AgentWriteTestBase):
         detail = self.get("order_detail", {"order_no": placed.data["order_no"]})
         self.assertEqual(detail.data["total_amount"], "20.00")
 
-    def test_cancel_returns_balance_and_restocked_count(self):
-        order = self._paid_order()
+    def test_cancel_paid_order_409(self):
+        """付过款的订单取消不了 (2026-09-22 改判) —— 助手那条路照样被挡.
+
+        判据从「订单处于什么状态」换成「买家说的是哪个动词」之后, `paid` 不再可取消:
+        钱已经出去了, 要退就走退款申请. 状态 / 余额 / 库存一个都不许动.
+        """
+        order = self._paid_order()  # 20.00, 付款后余额 9980.00
+        self.product.refresh_from_db()
+        stock_before = self.product.stock
 
         response = self.call("post", "order_cancel", {"order_no": order.order_no})
 
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data["status"], Order.Status.CANCELLED)
-        self.assertEqual(response.data["balance_returned"], "20.00")
-        self.assertEqual(response.data["restocked_count"], 2)
-
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(self.code(response), "invalid_order_status")
         order.refresh_from_db()
-        self.assertEqual(order.status, Order.Status.CANCELLED)
+        self.assertEqual(order.status, Order.Status.PAID)
+        self.assertEqual(self._balance(), Decimal("9980.00"))
         self.product.refresh_from_db()
-        self.assertEqual(self.product.stock, 10)
-        self.assertEqual(self._balance(), Decimal("10000.00"))
+        self.assertEqual(self.product.stock, stock_before)
 
     def test_cancel_unpaid_order_returns_zero_balance(self):
-        """没付过款的单: 库存照样回滚, 但退给余额的是 0."""
+        """没付过款的单: 库存回滚, 退给余额的是 0.
+
+        改判之后这是取消**唯一**的回执形状 (只有待付款的单能取消).
+        """
         self._add_item(2)
         order = create_order(self.buyer, [CartItem.objects.get().id], self.address.id)
 
@@ -421,9 +428,11 @@ class AgentOrderWriteTest(AgentWriteTestBase):
         self.assertEqual(response.data["balance_returned"], "0.00")
         self.assertEqual(response.data["restocked_count"], 2)
         self.assertEqual(self._balance(), Decimal("10000.00"))
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.stock, 10, "货还在仓库里, 库存加回去")
 
     def test_cancel_refunding_order_409(self):
-        """退款中的订单不能取消 —— `refunding` 不在取消的白名单里."""
+        """退款中的订单不能取消 —— `refunding` 不在白名单里 (改判后只有 `pending`)."""
         order = self._paid_order()
         self.call("post", "refunds", body={"order_no": order.order_no})
 

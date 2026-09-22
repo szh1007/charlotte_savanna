@@ -458,10 +458,10 @@ class MinimallClient:
         )
 
     async def cancel_order(self, *, user_id: int, order_no: str) -> dict:
-        """取消订单 (不用审批, 即刻生效).
+        """取消订单 (不用审批, 即刻生效) —— 只有**还没付款**的订单走得通.
 
-        回执里带着两件买家最关心的事: 退回余额多少 (`balance_returned`), 回滚了
-        几件库存 (`restocked_count`).
+        回执里带着买家最关心的那件事: 回滚了几件库存 (`restocked_count`).
+        `balance_returned` 恒为 "0.00" (取消只认待付款的单, 那种单从没扣过钱).
         """
         return await self._write("POST", f"orders/{order_no}/cancel/", user_id=user_id)
 

@@ -33,7 +33,7 @@
 
 两个附带结论，都写进服务函数的 docstring：
 
-- **`refunding` 自动挡住了不该发生的事**：`cancel_order` 只认 `pending` / `paid`，Admin 发货 action 只认 `paid`，`receive_order` 只认 `shipped` —— 退款中的订单自动不能被取消 / 发货 / 收货，三个地方一行都不用改。
+- **`refunding` 自动挡住了不该发生的事**：`cancel_order` 只认 `pending`（2026-09-22 改判：付款之后一律走退款，改判前它认 `pending` / `paid`），Admin 发货 action 只认 `paid`，`receive_order` 只认 `shipped` —— 退款中的订单自动不能被取消 / 发货 / 收货，三个地方一行都不用改。
 - **驳回必须"恢复"而不是"推到某个终点"**：驳回意味着「这笔退款不成立」，订单应当继续正常流转（该发货发货、该收货收货）。把它推到 `cancelled` 是错的 —— 取消是买家终止订单，驳回不是。
 
 ## 考虑过的替代方案

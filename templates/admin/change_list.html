@@ -17,6 +17,11 @@ document.addEventListener('DOMContentLoaded', function() {
   var select = actionsBox.querySelector('select');
   if (!select) return;
   actionsBox.style.display = 'none';
+  // 藏起来还不够, 得**禁用**: 只藏的话这个(空的) select 仍然随表单提交, 而下面
+  // 插进来的按钮叫同一个名字, 请求体里就有两个 `action`. Django 取第一个 (按钮
+  // 那个, 所以动作能派发), 但项目代码用 `QueryDict.get` 拿的是**最后一个** ——
+  // 空串, 于是中间页的 hidden 带着空动作名回来, 第二次提交变成「未选择动作」.
+  select.disabled = true;
 
   // 找到 changelist-form
   var changelistForm = document.querySelector('#changelist-form');

@@ -399,9 +399,8 @@ class OrderRefundAPITest(TestCase):
         return self.client.get("/api/minimall/orders/active-count/").data["count"]
 
     def test_request_refund_marks_order_refunding(self):
-        # 注意这里的起点是 `paid` —— **端点**按服务层的 REFUNDABLE_STATUSES 放行四个
-        # 状态, 页面只是少给 `paid` 一个入口 (未发货走取消更划算, 2026-09-21 拍板).
-        # 这条用例钉住的就是"端点没跟着页面收窄".
+        # 起点是 `paid` —— 2026-09-22 改判之后它正是「该走退款」的那个状态: 付过款
+        # 就不能取消了, 页面与端点都把 `paid` 算进可退款 (同一份 REFUNDABLE_STATUSES).
         r = self.client.post(self._refund_url())
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.data["status"], "refunding")
@@ -413,8 +412,12 @@ class OrderRefundAPITest(TestCase):
         # 金额这一步还是不填的 —— 它由管理员批准时协商
         self.assertIsNone(refund.amount)
 
-    def test_refund_does_not_restore_stock(self):
-        """退款与取消的关键差别: 货已经出去了, 库存不回滚."""
+    def test_request_refund_does_not_restore_stock(self):
+        """**申请**这一步不动库存 —— 回滚落在打款那一步 (判据见服务层用例).
+
+        申请时货还被这一单占着 (订单是 `refunding`), 提前放回库存等于让同一单同时
+        占着货和钱; 打款时才按「申请前发没发货」决定回不回滚.
+        """
         self.prod.refresh_from_db()
         stock_before = self.prod.stock
         self.client.post(self._refund_url())

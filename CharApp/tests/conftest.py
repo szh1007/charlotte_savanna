@@ -196,8 +196,14 @@ CANCELLED_ORDER: dict[str, Any] = {
     **ORDER_DETAIL,
     "status": "cancelled",
     "status_display": "已取消",
+    # 取消只发生在**付款之前** (2026-09-22 改判), 所以这份样本里没有付款与发货的
+    # 时间戳, 退给余额的金额恒为 "0.00" —— 待付款的订单从没扣过钱. 样本要是留着
+    # 已发货 + 退款 1899.00, 它描述的就是一个不可能存在的状态了.
+    "paid_at": None,
+    "shipped_at": None,
+    "status_timeline": [ORDER_DETAIL["status_timeline"][0]],
     "cancelled_at": "2026-09-21T10:00:00+08:00",
-    "balance_returned": "1899.00",
+    "balance_returned": "0.00",
     "restocked_count": 1,
 }
 

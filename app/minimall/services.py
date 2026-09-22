@@ -429,8 +429,35 @@ def pay_order(order, payment_password) -> Order:
     return locked
 
 
+def _restock_items(order) -> None:
+    """把这张订单的明细逐件加回库存 (取消与退款打款共用).
+
+    抽出来**不是**为了 DRY (只有两处, 够不上 CLAUDE.md 那条「重复 ≥ 3 次才抽取」的
+    线), 而是为了保住一条可审计的性质: 全仓写库存只有这一条路径 —— 加库存流水、
+    对账、预警都改这一处.
+
+    调用方必须已在事务里, 并且已经锁住订单行 (锁序 `Order → Product → ...`); 这里
+    只负责锁商品行并把件数加回去.
+    """
+    items = list(order.items.all())
+    product_ids = [item.product_id for item in items]
+    products = list(Product.objects.select_for_update().filter(id__in=product_ids))
+    product_map = {p.id: p for p in products}
+
+    for item in items:
+        product = product_map.get(item.product_id)
+        if product:
+            product.stock += item.quantity
+            product.save(update_fields=["stock"])
+
+
 def cancel_order(order) -> Order:
-    """Cancel an order and restore stock.
+    """取消订单并回滚库存 —— **只有未付款 (`pending`) 的订单能取消**.
+
+    付款之后一律走退款 (2026-09-22 改判): 判据从「订单处于什么状态」换成「买家说的
+    是哪个动词」—— 买家说「取消」才取消, 说「退款」就走退款申请. 取消是买家单方、
+    即刻生效; 退款要管理员审批. 因此这里没有「退还余额」那一支: `pending` 的单从没
+    扣过钱.
 
     Args:
         order: Order instance, used for locating only (状态一律以锁内的为准)
@@ -443,30 +470,15 @@ def cancel_order(order) -> Order:
         InvalidOrderStatusError: order cannot be cancelled in current status
     """
     with transaction.atomic():
-        # 锁内 re-fetch: 传入的实例可能还停在发货前, 拿它判状态就会把已发货的
-        # 订单当已付款的取消掉 (钱退了, 货却在路上)
+        # 锁内 re-fetch: 传入的实例可能还停在付款前, 拿它判状态就会把已付款的订单
+        # 当未付款的取消掉 (那种单该走退款, 货与钱的去向都不一样)
         locked = Order.objects.select_for_update().get(pk=order.pk)
-        if locked.status not in (Order.Status.PENDING, Order.Status.PAID):
+        if locked.status != Order.Status.PENDING:
             raise InvalidOrderStatusError(
                 f"Cannot cancel order in '{locked.status}' status"
             )
 
-        items = list(locked.items.all())
-        product_ids = [item.product_id for item in items]
-        products = list(Product.objects.select_for_update().filter(id__in=product_ids))
-        product_map = {p.id: p for p in products}
-
-        for item in items:
-            product = product_map.get(item.product_id)
-            if product:
-                product.stock += item.quantity
-                product.save(update_fields=["stock"])
-
-        # 已付款的订单取消后退还金额
-        if locked.status == Order.Status.PAID:
-            profile = Profile.objects.select_for_update().get(user_id=locked.user_id)
-            profile.balance += locked.total_amount
-            profile.save(update_fields=["balance"])
+        _restock_items(locked)
 
         locked.status = Order.Status.CANCELLED
         locked.cancelled_at = timezone.now()
@@ -532,8 +544,10 @@ def complete_order(order):
 # 两个状态机的四个转换点 (ADR-0004): RefundRequest.status 与 Order.status 必须
 # 一起变. 四个转换一律走下面四个函数, 别在别处直接改订单或退款单的状态.
 #
-# 退款一律**不动库存**: cancel_order 回滚库存是因为货还没出去 (只认 pending /
-# paid); 退款发生在货已经出去之后, 把库存加回来等于凭空造库存.
+# **库存回滚以发货为界** (2026-09-22 改判, 原「退款一律不动库存」作废): 货还没出去
+# 就回滚, 出去了就不回滚 —— 与走取消还是走退款无关. 判据是申请那一刻的快照
+# (`RefundRequest.order_status_before`), 所以回滚落在**打款**那一步, 不在申请时:
+# 申请时货还在这一单手上, 提前放回库存等于让同一单同时占着货和钱.
 
 # 能发起退款的订单状态: 钱已经出去的那四个. `pending` 还没扣钱 —— 走取消就行.
 REFUNDABLE_STATUSES = (
@@ -547,9 +561,13 @@ REFUNDABLE_STATUSES = (
 def request_refund(order) -> RefundRequest:
     """买家申请退款: 建一条申请, 订单置 `refunding`.
 
-    与 `cancel_order` 的差别就是这套流程存在的理由: 取消是买家单方、无需审批、即刻
-    退钱**并回滚库存**; 退款要管理员批准、**不回滚库存**. 同一张已付款订单走这两条
-    路, 库存结果不一样 —— 这不是缺陷, 是货有没有出去决定的.
+    与 `cancel_order` 的差别: 取消是买家单方、无需审批、即刻生效, 而且**只有未付款
+    的订单能取消**; 付款之后一律走这条路 (要管理员批准, 退多少由管理员协商).
+
+    退款流程进行中的订单**不允许发货** —— 现状已经如此, 两处都拦 (`action_ship_orders`
+    只扫 `paid`, `ship_order` 也只认 `paid`), 写在这里免得以后被当成漏洞修: 货一旦
+    发出去, 申请时取的那份 `order_status_before` 快照就与事实脱节, 打款那步会按
+    「还没出去」把库存加回来.
 
     判据取锁内重新读的值 (与订单那三个函数同一条规矩): 调用方手里那份可能还停在
     `paid`. 锁订单行同时兼作**防并发双提** —— 两个请求同时申请时会在这行上排队,
@@ -661,6 +679,16 @@ def settle_refund(refund) -> RefundRequest:
     出账金额只认批准时定下的 `refund.amount`, 不是订单总额 —— 部分退款靠的就是这两
     者的差 (申请全退 100, 协商退 70, 出账就是 70).
 
+    **货没出去就把库存加回来**: 判据是申请那一刻的快照 `order_status_before` —— 它是
+    `paid` (还没发货) 才回滚, `shipped` / `received` / `completed` 一律不动. 用快照
+    而不是 `shipped_at` 推断, 与 `reject_refund` 恢复状态是同一条纪律.
+
+    回滚落在打款这步而不在申请时: 申请时货还在这一单手上, 提前放回库存等于让同一单
+    同时占着货和钱.
+
+    锁序 `Order → RefundRequest → Product → Profile` 与 `cancel_order` 那条一致 ——
+    改判之后两条路径都会动库存, 顺序不一致就是并发退款与取消撞在一起时的死锁.
+
     Args:
         refund: 退款申请实例, 只用来定位.
 
@@ -674,6 +702,9 @@ def settle_refund(refund) -> RefundRequest:
         locked_order, locked = _locked_refund(
             refund, expected=RefundRequest.Status.APPROVED, action="打款"
         )
+
+        if locked.order_status_before == Order.Status.PAID:
+            _restock_items(locked_order)
 
         now = timezone.now()
         profile = Profile.objects.select_for_update().get(user_id=locked_order.user_id)
@@ -697,6 +728,8 @@ def reject_refund(refund, *, note: str = "") -> RefundRequest:
     恢复而不是推到某个终点: 驳回意味着「这笔退款不成立」, 订单该继续正常流转 (该
     发货发货, 该收货收货). 推到 `cancelled` 是错的 —— 取消是买家终止订单, 驳回不是.
     恢复取的是申请那一刻的快照 (`order_status_before`), 不靠时间戳推断.
+
+    库存不用补偿: 回滚只发生在打款那一步, 申请与驳回都不动它.
 
     驳回后可以再提一条新申请, 所以「同一时刻只有一条」是应用层校验, 不是唯一约束.
 

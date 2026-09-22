@@ -1,6 +1,6 @@
 # 13 · 展示层：工具事件去字段化 + 会话历史
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Type:** task
 

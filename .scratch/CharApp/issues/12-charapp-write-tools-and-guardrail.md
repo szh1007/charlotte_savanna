@@ -1,6 +1,6 @@
 # 12 · 业务侧：8 个写工具、护栏插件、提示词清单
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Type:** task
 

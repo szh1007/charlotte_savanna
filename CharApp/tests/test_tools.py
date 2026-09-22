@@ -4,8 +4,9 @@
 
 - 名字与参数 (模型看到的就是这些)
 - 结果: 商城返回什么, 模型就看到什么 (金额照原样, 不做 float 转换)
-- 失败: 只读的 404 翻成人话 (「没有查到」), 写操作被商城按规则拒了也翻成人话
-  (码 + 中文原话 + 一句下一步), 其余上抛给框架统一的内部错误文案
+- 失败: 只读的 404 翻成人话 (「没有查到」), 写操作被商城按规则拒了抛
+  `RefusedActionError` (码 + 中文原话 + 一句下一步 —— 框架把它记成 `status=error`),
+  其余上抛给框架统一的内部错误文案
 
 身份 (user_id) 的守卫不在这里, 在 `test_provider.py` —— 那是提供者契约的一部分;
 护栏 (写预算 / 金额上限) 在 `test_guardrail.py`, 那是插件的事, 不是工具的.
@@ -21,9 +22,11 @@ import httpx
 import pytest
 from conftest import BUYER_ID, TOOL_NAMES, agent_url
 
-from CharAgent.tool import Tool
+from CharAgent.agent.utils.events import tool_result_data
+from CharAgent.tests.mock_llm import make_tool_call
+from CharAgent.tool import Tool, execute_tool
 from CharApp.minimall.client import MinimallClient, MinimallError
-from CharApp.minimall.tools import build_tools
+from CharApp.minimall.tools import RefusedActionError, build_tools
 
 
 def tools_of(client: MinimallClient, user_id: int = BUYER_ID) -> dict[str, Tool]:
@@ -404,13 +407,17 @@ async def test_every_write_tool_carries_the_current_buyer(
 
 
 async def test_cancelling_reports_what_it_gave_back(client, mall) -> None:
-    """取消的回执带着两个副作用数字, 工具原样转达 (模型要念的就是这两句)."""
+    """取消的回执带着回滚件数, 工具原样转达 (模型要念的就是这个数).
+
+    余额恒为 "0.00" (只有待付款的订单能取消, 那种单从没扣过钱) —— 一并断言是为了
+    钉住「工具不改商城给的数字」这件事: 原样转达, 不做 float 转换也不做四舍五入.
+    """
     mall.request("POST", agent_url("orders/202609191230450000031234/cancel/")).mock(
         return_value=httpx.Response(
             200,
             json={
                 "status": "cancelled",
-                "balance_returned": "1899.00",
+                "balance_returned": "0.00",
                 "restocked_count": 1,
             },
         )
@@ -420,17 +427,20 @@ async def test_cancelling_reports_what_it_gave_back(client, mall) -> None:
         await call(client, "cancel_my_order", order_no="202609191230450000031234")
     )
 
-    assert payload["balance_returned"] == "1899.00"
+    assert payload["balance_returned"] == "0.00"
     assert payload["restocked_count"] == 1
 
 
-async def test_a_refused_write_becomes_a_sentence_with_the_next_step(
+async def test_a_refused_write_carries_the_sentence_and_the_next_step(
     client, mall
 ) -> None:
-    """商城按规则拒了 → 工具回一句话 (原话 + 按码补的"下一步"), 而不是抛异常.
+    """商城按规则拒了 → 抛 `RefusedActionError`, 消息是「原话 + 按码补的下一步」.
 
-    这是写工具与只读工具在失败上的**分界**: 「库存不足」是答案, 模型该把它告诉
-    买家; 上抛出去只会变成框架那句「内部错误, 请勿重试」, 而重试恰恰是错的.
+    文案与从前**一字不差** (模型收到的文本没变), 变的是它抛出去而不是当返回值:
+    返回的话框架把这次执行记成成功 (`status=ok`), 页面按完成态话术渲染 —— 买家看到
+    「订单已提交」而订单根本没动 (缺陷 C, 2026-09-22 真机验收点出).
+
+    「库存不足」是商城给**买家**的答案, 不等于这次调用成功 —— 两者是两件事.
     """
     mall.request("POST", agent_url("orders/")).mock(
         return_value=httpx.Response(
@@ -444,17 +454,20 @@ async def test_a_refused_write_becomes_a_sentence_with_the_next_step(
         )
     )
 
-    text = await call(client, "place_order")
+    with pytest.raises(RefusedActionError) as excinfo:
+        await call(client, "place_order")
 
+    text = str(excinfo.value)
     assert "库存不足" in text, "商城的原话要照传 (它比我们更清楚发生了什么)"
     assert "改小数量" in text, "这句话商城没说, 得由按码补的那张表给"
     assert not text.startswith("{"), "不能把错误体当数据回填给模型"
+    assert excinfo.value.code == "insufficient_stock", "错误码留给将来的插件看"
 
 
 async def test_a_refusal_without_a_known_code_still_says_something(
     client, mall
 ) -> None:
-    """码认不出来时只回商城的原话 —— 少一句提示, 不能说错话 (也不抛)."""
+    """码认不出来时只带商城的原话 —— 少一句提示, 不能说错话."""
     mall.request("POST", agent_url("refunds/")).mock(
         return_value=httpx.Response(
             409,
@@ -462,9 +475,36 @@ async def test_a_refusal_without_a_known_code_still_says_something(
         )
     )
 
-    text = await call(client, "request_refund", order_no="202609191230450000031234")
+    with pytest.raises(RefusedActionError) as excinfo:
+        await call(client, "request_refund", order_no="202609191230450000031234")
 
-    assert text == "操作没有完成: 这个操作现在做不了"
+    assert str(excinfo.value) == "操作没有完成: 这个操作现在做不了"
+    assert excinfo.value.code == "brand_new_code"
+
+
+async def test_a_refused_write_is_recorded_as_an_error(client, mall) -> None:
+    """被拒的写操作在框架那边必须是 `status=error` —— 缺陷 C 的守卫.
+
+    这条走框架的**执行入口** (`execute_tool`) 而不是直接调工具函数: 页面上出现
+    failed 话术、模型收到哪个文案, 都取决于这里怎么判定. 少了它, 哪天把「抛」改回
+    「返回」也不会有人发现 —— 那次真机验收就是这么漂过去的.
+    """
+    mall.request("POST", agent_url("orders/")).mock(
+        return_value=httpx.Response(
+            409, json={"error": {"code": "insufficient_stock", "message": "库存不足"}}
+        )
+    )
+    tool_call = make_tool_call("place_order", "{}")
+
+    execution = await execute_tool(tools_of(client)["place_order"], arguments="{}")
+    payload = tool_result_data(tool_call, execution, turn=1)
+
+    assert execution.ok is False, "被拒的调用不能记成成功"
+    assert "库存不足" in execution.error
+    assert payload["status"] == "error"
+    # 页面上出现的是按 `status` 选的那句中文 (脱敏层换掉 `error`, 见 ADR-0003), 而
+    # 模型读到的就是这句 error —— 两者同源, 所以这里断言的是"文案没在事件里丢".
+    assert payload["error"] == execution.error
 
 
 async def test_a_write_fault_is_raised_not_swallowed(client, mall) -> None:

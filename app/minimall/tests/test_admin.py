@@ -5,6 +5,7 @@
 **金额校验发生在提交之前**: 填错当场看见, 不用提交两次才知道.
 """
 
+import re
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
@@ -68,12 +69,52 @@ class RefundAdminTest(TestCase):
         pay_order(order, "123456")
         return Order.objects.get(pk=order.pk)
 
-    def _post_action(self, name, refunds, **extra):
+    def _post_action(self, name, refunds, *, action=None, **extra):
+        """发一个动作请求 —— 默认只带**一个** `action` 键.
+
+        这个形状在真实浏览器里**不存在**: admin 的 `.actions` 里那个 select 与模板
+        注入的按钮同名, 请求体里因此有两个 `action` (要保真的形状用
+        `_post_like_a_browser`). 单键的请求体测不到「动作名取第几个」这件事 ——
+        缺陷 B (中间页 hidden 的动作名拿到空串, 第二次提交变成「未选择动作」) 就是在
+        这样的用例下全绿活到真机验收的.
+
+        Args:
+            action: 覆盖请求体里 `action` 键的值 (默认就是动作名).
+        """
         follow = extra.pop("follow", False)
         return self.client.post(
             reverse(CHANGELIST),
-            {"action": name, "_selected_action": [r.pk for r in refunds], **extra},
+            {
+                "action": name if action is None else action,
+                "_selected_action": [r.pk for r in refunds],
+                **extra,
+            },
             follow=follow,
+        )
+
+    def _post_like_a_browser(self, name, refunds, **extra):
+        """照真实浏览器的请求体发: **两个**同名 `action`, 按钮在前, 隐藏的 select 在后.
+
+        取第一个是 Django 自己的语义 (`response_action` 用
+        `getlist("action")[action_index]`, index 默认 0); `QueryDict.get` 取的是
+        **最后一个**, 那正是空 select 的值.
+        """
+        return self._post_action(name, refunds, action=[name, ""], **extra)
+
+    def _submit_middle_page(self, action, refund, **fields):
+        """按中间页的形状提交第二步: 单个 `action` (值取自那页的 hidden) + 选中项.
+
+        与真实浏览器发出来的那个请求体同形 —— 所以第一步要是把动作名写空了, 这一步
+        就没有动作可执行 (Django 重渲染列表, 不返回 302).
+        """
+        return self.client.post(
+            reverse(CHANGELIST),
+            {
+                "action": action,
+                "_selected_action": [refund.pk],
+                "confirm": "yes",
+                **fields,
+            },
         )
 
     def _amount_field(self) -> str:
@@ -210,6 +251,67 @@ class RefundAdminTest(TestCase):
         self.assertEqual(self.refund.status, RefundRequest.Status.REJECTED)
         self.assertEqual(self.refund.admin_note, "商品没问题")
         self.assertEqual(self.order.status, Order.Status.PAID)
+
+    # ------------------------------------------------------------------
+    # 两段式在**真实请求体**下走得通 (缺陷 B: 2026-09-22 真机验收点出,
+    # 「测试全绿而人点不动」—— 就是上面 `_post_action` 那个单键的形状漏掉的)
+    # ------------------------------------------------------------------
+
+    def test_the_middle_page_carries_the_action_of_the_clicked_button(self):
+        """两个同名 `action` 时, 中间页 hidden 里写的是按钮那个, 不是空串.
+
+        写空串的后果在下一步: 浏览器提交中间页时带回去的 `action` 是空的, Django
+        找不到动作就重渲染列表, 管理员的「批准 / 驳回」永远走不到执行那一步.
+        """
+        response = self._post_like_a_browser("action_approve_refunds", [self.refund])
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(
+            response,
+            'name="action" value="action_approve_refunds"',
+            msg_prefix="中间页没拿到动作名 (提交回来会变成「未选择动作」)",
+        )
+
+    def test_approve_takes_both_steps_a_browser_takes(self):
+        """批准: 第一步渲染表单 → 第二步拿**中间页自己的**动作名回发 → 金额真定下来.
+
+        第二步不手写动作名, 而是从中间页的 hidden 里读 —— 手写的话这个用例在缺陷 B
+        下也会是绿的 (它替浏览器把那个空串补对了), 那正是假绿灯的形状.
+        """
+        middle = self._post_like_a_browser("action_approve_refunds", [self.refund])
+
+        response = self._submit_middle_page(
+            self._hidden_action(middle),
+            self.refund,
+            **{self._amount_field(): "70.00", "note": "协商一致退 70 元"},
+        )
+
+        self.assertEqual(response.status_code, 302, "执行完回列表页, 免得刷新重放")
+        self.refund.refresh_from_db()
+        self.assertEqual(self.refund.status, RefundRequest.Status.APPROVED)
+        self.assertEqual(self.refund.amount, Decimal("70.00"))
+
+    @staticmethod
+    def _hidden_action(response) -> str:
+        """中间页里那个 hidden `action` 的值 —— 浏览器第二步就是拿它回发的."""
+        match = re.search(r'name="action" value="([^"]*)"', response.content.decode())
+        assert match is not None, "中间页没渲染出 hidden action"
+        return match.group(1)
+
+    def test_reject_takes_both_steps_a_browser_takes(self):
+        """驳回: 同样的两段式 (它与批准共用 `_render_action_form`)."""
+        middle = self._post_like_a_browser("action_reject_refunds", [self.refund])
+
+        response = self._submit_middle_page(
+            self._hidden_action(middle), self.refund, note="商品没问题"
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.refund.refresh_from_db()
+        self.order.refresh_from_db()
+        self.assertEqual(self.refund.status, RefundRequest.Status.REJECTED)
+        self.assertEqual(self.refund.admin_note, "商品没问题")
+        self.assertEqual(self.order.status, Order.Status.PAID, "订单恢复申请前的状态")
 
     # ------------------------------------------------------------------
     # 入口本身的约束
