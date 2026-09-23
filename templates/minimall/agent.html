@@ -1048,6 +1048,19 @@ function itemOf(conversationId) {
   });
 }
 
+// 搜索在飞的那一小段: 列表摆一个转圈. **复用聊天区那个类** —— 同一个动作 (等一次
+// 拉取) 在两处该长一个样, 不该为了"左栏窄一点"再造一份.
+function showListLoading() {
+  list.replaceChildren(el('div', 'agent-loading'));
+}
+
+// 搜索失败: 把转圈收掉, 并且**不能说「没搜到」**—— 那说的是另一件事 (后端确实筛过了,
+// 只是没有命中的). 重试的路没堵: 搜索框还在, 再按一次就是重试 (而且不再因"词没变"
+// 被挡掉, 见 `submitSearch`).
+function showListFailed() {
+  list.replaceChildren(el('div', 'agent-empty', '列表没加载出来, 再按一次搜索'));
+}
+
 function renderList(rows) {
   list.replaceChildren();
   if (!rows.length) {
@@ -1084,11 +1097,24 @@ function lockSwitching(locked) {
 
 // 谁发的那一次列表请求 (下面那个闸门用). 列表会被好几个地方拉: 首屏 / 每轮答完 /
 // 按下搜索 (或清空输入框) / 三个管理动作之后的刷新 —— 而这些**可以重叠** (搜着搜着,
-// 上一轮答完的那次刷新正好回来), 于是**慢的那一份会把快的那一份盖掉**.
+// 上一轮答完的那次刷新正好回来), 于是**慢的那一份会把快的那一份盖掉**. 那一份要是
+// 失败的, 也不能拿它的一行失败去盖掉已经画好的结果 (见 `loadConversations` 里的
+// `failed`).
 let listRequests = 0;
 
-async function loadConversations() {
+async function loadConversations(options) {
+  // `searching`: 这一次是不是**搜索那一行**发起的 (按下搜索 / 清空输入框)? 只有它
+  // 要摆转圈 —— 别的时候列表是在**原地**重拉 (每轮答完 / 三个管理动作之后), 每拉
+  // 一次都摆一下转圈就是闪, 而用户并没有在看列表.
+  const searching = Boolean(options && options.searching);
   const ticket = ++listRequests;
+  if (searching) showListLoading();
+  // 失败时要在两个前提下才动画面: 这一次确实是搜索发起的, 而且**手上这份还是最新的**
+  // (慢的那一次失败回来时, 新的那次可能已经把结果画好了 —— 那时盖上去就是把好结果
+  // 换成一行失败. 与下面那道 `ticket !== listRequests` 同一条纪律).
+  const failed = function () {
+    if (searching && ticket === listRequests) showListFailed();
+  };
   let response;
   try {
     // 与另几条一样 POST + CSRF: 读的是私人数据 (我聊过哪几段), 而 GET + cookie
@@ -1103,13 +1129,18 @@ async function loadConversations() {
       body: JSON.stringify({ query: searchTerm }),
     });
   } catch (err) {
+    failed();
     return;   // 拉不到就留空, 不打扰用户 (与 loadHistory 同一条)
   }
-  if (!response.ok) return;
+  if (!response.ok) {
+    failed();
+    return;
+  }
   let payload;
   try {
     payload = await response.json();
   } catch (err) {
+    failed();
     return;
   }
   // 手上这份是**旧的**就丢掉: 后面还有一次请求在路上, 它带的是更新的条件
@@ -1133,14 +1164,15 @@ function submitSearch() {
   // 而他再按一次的理由常常是"上次没搜出来" —— 而列表这条路失败是**静默**的
   // (`loadConversations` 的 catch 直接 return), 挡掉之后按钮看着就像坏了.
   searchTerm = searchBox.value.trim();
-  loadConversations();
+  loadConversations({ searching: true });
 }
 
 function onSearchInput() {
-  // 只有"从有词变成空"才立刻重拉; 别的输入一律等按钮或回车
+  // 只有"从有词变成空"才立刻重拉; 别的输入一律等按钮或回车.
+  // 它也算"搜索那一行发起的" —— 清空是搜索这个手势的一半, 同样要对着一圈转圈等.
   if (!searchBox.value.trim() && searchTerm) {
     searchTerm = '';
-    loadConversations();
+    loadConversations({ searching: true });
   }
 }
 
