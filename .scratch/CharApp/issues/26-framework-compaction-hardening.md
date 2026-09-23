@@ -152,7 +152,7 @@
 
 - [x] ADR 落盘（0011 / 0012 / 0013，含被放弃的方案与代价）、`PLAN` §6.3 十条 → **十三条**
 - [x] `CONTEXT.md` 词条落盘（加在「上下文视图」下：压缩降级 / 紧急压缩 / 视图第 0 条与账本同一对象）
-- [x] `.scratch/CharApp/interview/` 两份材料落盘（`INTERVIEW.md` 题典 + `context-compaction-notes.md` 底稿）
+- [x] `.scratch/CharApp/interview/` **三份**材料落盘（`INTERVIEW.md` 题典 7 题 + `context-compaction-notes.md` 行业素材与映射 + `estimator-and-trigger.md` 原理底稿 —— 最后这份是 2026-09-24 真机之后补的，把「token 怎么估、怎么比、压缩怎么被触发」从头讲了一遍，含两张流程图与那两帧的实测数字）
 - [x] `pytest CharAgent` 全绿：**1052 passed, 84 deselected**；`-m "pg or pg_db"`：**70 passed**
 - [x] `pytest CharApp` 全绿：**198 passed**
 - [x] `ruff check CharApp CharAgent` 干净（`ruff format --check` 也干净：195 文件）
@@ -250,7 +250,7 @@ CharAgent 覆盖到的：**摘要压缩 ✓**（且是滚动摘要，比「压�
 | `CharAgent/tests/` | `test_loop_compaction.py`（+15 用例）· `test_model_protocol.py`（+4）· `test_checkpoint_serialization.py`（+4）· `test_model_client_httpx.py`（+1）· `test_client_session.py`（数据适配）· `fixtures/checkpoint_v7.json`（新）· `fixtures/snapshots/*.json`（版本号） |
 | `CharApp/minimall/service.py` · `tests/test_compaction.py` | 估算器改名；`ask_twice` 数据适配 |
 | `CharApp/CONTEXT.md` · `docs/PLAN.md` · `docs/adr/0011~0013` | 词条 / ADR 索引 / 三篇 ADR |
-| `.scratch/CharApp/interview/` | `INTERVIEW.md`（题典）+ `context-compaction-notes.md`（底稿） |
+| `.scratch/CharApp/interview/` | `INTERVIEW.md`（题典）+ `context-compaction-notes.md`（行业素材与映射）+ `estimator-and-trigger.md`（原理底稿，610 行合计） |
 
 ### 五、质量位
 

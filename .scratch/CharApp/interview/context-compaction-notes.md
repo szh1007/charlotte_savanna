@@ -1,6 +1,6 @@
 # 上下文压缩 · 专题底稿
 
-> `INTERVIEW.md` 是题典（题 + 五段），这一份是**那一章的素材**：行业一手做法、本项目的逐条映射、可能被追问的点。
+> 这一组一共三份：`INTERVIEW.md`（题典：题 + 五段结构）· **本份**（行业一手做法 + 本项目的逐条映射 + 可能被追问的点）· [`estimator-and-trigger.md`](./estimator-and-trigger.md)（原理底稿：token 怎么估、怎么比、压缩怎么被触发 —— 想「学习」就从那一份开始）。
 > 来源全部在 2026-09 由 `/mattpocock-skills:grill-with-docs` 那一轮调研抓取，链接在 §1。
 
 ---
