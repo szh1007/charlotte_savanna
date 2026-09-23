@@ -168,7 +168,7 @@ async def test_branch_parent_is_preserved():
     await saver.save(make_checkpoint(checkpoint_id="ck-1", turn_number=1))
     await saver.save(
         make_checkpoint(
-            checkpoint_id="ck-2", turn_number=1, parent_id="ck-1", run_id="run-2"
+            checkpoint_id="ck-2", turn_number=1, parent_id="ck-1", loop_id="run-2"
         )
     )
 

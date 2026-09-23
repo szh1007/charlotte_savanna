@@ -45,6 +45,10 @@ from CharAgent.tool import ToolExecution
 if TYPE_CHECKING:  # 只为类型标注: 运行时 import 会把 agent 与 compaction 绕成环
     from CharAgent.agent.compaction import CompiledView
 
+# 计数那六个键由 compaction 定义 (唯一出处); 本模块只在运行时借它拼事件载荷 ——
+# 方向是 events → compaction, 与上面那条标注 import 不冲突 (compaction 不 import 本模块)
+from CharAgent.agent.compaction import compiled_counts
+
 # 终局 error 事件的 code → 事实性说明 (非用户话术; 降级文案归服务层).
 # code 取 LoopOutcome 值, 另加 content_filter —— 它在 loop 语义上属 FINISHED
 # (拦截语义归调用方), 但既然输出被安全策略拦下, 事件层就不该把它当
@@ -114,15 +118,7 @@ def context_compacted_data(compiled: CompiledView, *, turn: int) -> dict[str, An
     warning 恒在 (正常时是 None): 字段恒定比「有时多一个键」好消费, 前端不必
     为它写两种分支.
     """
-    return {
-        "turn": turn,
-        "dropped": compiled.dropped,
-        "truncated": compiled.truncated,
-        "estimated_tokens": compiled.estimated_tokens,
-        "saved_tokens": compiled.saved_tokens,
-        "summarized": compiled.summarized,
-        "warning": compiled.warning,
-    }
+    return {"turn": turn, **compiled_counts(compiled)}
 
 
 def terminal_error_code(

@@ -183,6 +183,9 @@ class Run(Base):
             一个均价 (那会把三类不同价的 token 混成一个数).
         turn_count: 已执行的 Turn 数 (断点续跑时是累计值).
         error: 失败原因 (结构化 JSONB: code + message), 供审计与降级判断.
+        last_checkpoint_id: 这一段运行落的**最后一帧**快照 (票 22); 顺它的
+            parent_id 往回走就是本次运行落的每一帧 —— 「当时它看到了什么」与
+            「花了多少」由此能对到同一件事上. NULL = 没配快照存储 (或一帧都没落成).
         created_at / updated_at / finished_at: 建 / 最后更新 / 结束的时刻;
             finished_at 为 NULL 表示还没跑到终点.
     """
@@ -311,9 +314,12 @@ class CheckpointRow(Base):
     那是两侧唯一的交汇点.
 
     attributes:
-        checkpoint_id / thread_id / run_id / turn_number / schema_version /
+        checkpoint_id / thread_id / loop_id / run_id / turn_number / schema_version /
         state / metadata / parent_id / created_at: 语义见
             checkpoint/utils/types.py 的 Checkpoint 数据类 (两边字段一一对应).
+            **两个编号别混** (票 22 改的): `loop_id` 是「哪一次循环执行落下的」
+            (一次循环执行的几帧共享), `run_id` 是「属于本表所属的哪一行账」
+            (指向 charagent_runs, 可空).
     """
 
     __table__ = checkpoints

@@ -23,8 +23,10 @@ from uuid import uuid4
 
 import pytest
 from conftest import TEST_SCHEMA
-from sqlalchemy import text
+from sqlalchemy import delete, text
 
+from CharAgent.checkpoint.postgres import PostgresCheckpointSaver
+from CharAgent.checkpoint.utils.types import Checkpoint, CheckpointState
 from CharAgent.db import (
     DataConfigError,
     DataStoreError,
@@ -40,7 +42,8 @@ from CharAgent.db import (
     conversation_turns,
     visible_transcript,
 )
-from CharAgent.db.schema import TABLE_NAMES
+from CharAgent.db.schema import TABLE_NAMES, checkpoints
+from CharAgent.db.schema import runs as runs_table
 
 pytestmark = pytest.mark.pg_db
 
@@ -817,6 +820,95 @@ async def test_list_active_is_ordered_by_last_activity(db: PgDatabase):
     ] == [older.thread_id, newer.thread_id]
 
 
+async def test_the_saver_creates_the_tables_it_depends_on(db: PgDatabase) -> None:
+    """saver 的「自己建表」要连**依赖**一起建 (ticket 22).
+
+    帧表的 `run_id` 外键指着 `charagent_runs`, 后者又指着 `charagent_threads` ——
+    只建帧表的话 Postgres 当场拒绝建表 (被引用的表不存在). 正式环境的表结构归
+    alembic 管, 这条路是「没跑迁移也想自己起来」的那条 (框架 CLI 演示、单测);
+    少了它, 现象是**第一次存帧**才炸, 而且报的是「表不存在」这种离原因很远的错.
+
+    先把三张表删干净再让 saver 建 —— 不删的话 `create_all` 见到表已存在就跳过,
+    这条用例反而什么都验不到.
+    """
+    async with db.connect() as session:
+        for table in (
+            "charagent_checkpoints",
+            "charagent_runs",
+            "charagent_threads",
+        ):
+            session.execute(text(f"DROP TABLE IF EXISTS {table} CASCADE"))
+
+    await PostgresCheckpointSaver(engine=db.engine()).ensure_schema()
+
+    async with db.connect() as session:
+        present = session.execute(
+            text(
+                "SELECT to_regclass('charagent_checkpoints') IS NOT NULL AS frames,"
+                " to_regclass('charagent_runs') IS NOT NULL AS runs,"
+                " to_regclass('charagent_threads') IS NOT NULL AS threads"
+            )
+        ).one()
+    assert all(present), f"三张表 (帧 / 运行 / 会话) 都该被建出来: {present}"
+
+
+async def test_frames_and_runs_point_at_each_other_and_unlink_on_delete(
+    db: PgDatabase,
+):
+    """ticket 22 的三列在**真库**上对得上, 两条外键都是 `ON DELETE SET NULL`.
+
+    假库那条路 (`test_frame_run_linkage.py`) 断的是「装配把编号传对了」; 这里断的是
+    **库这一层**: 外键真的建出来了 (只在 no-migration 的环境里才需要连依赖一起建,
+    见 saver 的 `_create_table`), 而且删掉一头时另一头**置空而不是跟着消失** ——
+    帧比账目行活得久 (快照是断点续跑的依据), 运行行比帧活得久 (账目是审计用的),
+    互相删对方都不该毁掉。
+    """
+    threads = ThreadsRepository(db)
+    runs = RunsRepository(db)
+    thread = await threads.add(tenant_id="toy-linkage", user_id="u-1", title="联表")
+    run = await runs.add(thread_id=thread.thread_id, status=RunStatus.RUNNING)
+    saver = PostgresCheckpointSaver(engine=db.engine())
+    frame = Checkpoint.create(
+        thread_id=thread.thread_id,
+        loop_id="loop-linkage",
+        run_id=run.run_id,
+        turn_number=1,
+        state=CheckpointState(messages=[{"role": "user", "content": "在吗"}]),
+    )
+    await saver.save(frame)
+    assert await runs.finish(
+        run.run_id, status=RunStatus.FINISHED, last_checkpoint_id=frame.checkpoint_id
+    )
+
+    # 帧 → 运行行, 运行行 → 帧
+    loaded_frame = await saver.load(frame.checkpoint_id)
+    loaded_run = await runs.get(run.run_id)
+    assert loaded_frame.run_id == run.run_id
+    assert loaded_run.last_checkpoint_id == frame.checkpoint_id
+
+    # 情形一 —— 删掉**帧**: 运行行还在, 只是那一列置空 (SET NULL, 不跟着删行)
+    async with db.connect() as session:
+        session.execute(
+            delete(checkpoints).where(
+                checkpoints.c.checkpoint_id == frame.checkpoint_id
+            )
+        )
+    assert (await runs.get(run.run_id)).last_checkpoint_id is None
+
+    # 情形二 —— 删掉**运行行**: 帧还在, 它那一列同样置空 (各用一组自己的行)
+    frame2 = Checkpoint.create(
+        thread_id=thread.thread_id,
+        loop_id="loop-linkage-2",
+        run_id=run.run_id,
+        turn_number=2,
+        state=CheckpointState(messages=[{"role": "user", "content": "还在吗"}]),
+    )
+    await saver.save(frame2)
+    async with db.connect() as session:
+        session.execute(delete(runs_table).where(runs_table.c.run_id == run.run_id))
+    assert (await saver.load(frame2.checkpoint_id)).run_id is None
+
+
 async def test_touch_reports_whether_it_hit_a_row(db: PgDatabase):
     """`touch` 如实回报「改到了没有」—— 没这个会话时是 False."""
     threads = ThreadsRepository(db)
@@ -824,19 +916,22 @@ async def test_touch_reports_whether_it_hit_a_row(db: PgDatabase):
     assert await threads.touch("没有这个会话", moment=datetime.now(UTC)) is False
 
 
-async def test_add_terminal_records_a_finished_run_in_one_write(db: PgDatabase):
-    """已跑完的运行**一条 INSERT 落成终态** (不走 created → running → finished).
+async def test_finish_settles_the_row_that_begin_created(db: PgDatabase):
+    """已跑完的运行**推进那一行**到终态 (行是 `add` 先建出来的, ticket 22).
 
-    记录的是**已经发生的事**: 三步走要求三次往返, 而且中间那两个状态从没真正存在
-    过 —— 更糟的是会在库里留下「状态是终态而 `finished_at` 为空」的行 (NULL 的
-    语义是「还没跑到终点」).
+    为什么不再是一条 INSERT 落成终态: 快照帧在运行**中途**逐轮落盘, 而
+    `checkpoints.run_id` 是指向这一行的外键 —— 行必须在跑之前就在 (见 `begin` /
+    `add`), 于是收尾必然是一次带 WHERE 的 UPDATE. 终态与 `finished_at` 一起写,
+    库里因此不会出现「状态是终态而 `finished_at` 为空」的行 (NULL 的语义是「还没跑
+    到终点」).
     """
     runs = RunsRepository(db)
     thread_id = await _make_thread(db)
     moment = datetime(2026, 9, 22, 12, 0, tzinfo=UTC)
 
-    run = await runs.add_terminal(
-        thread_id=thread_id,
+    run = await runs.add(thread_id=thread_id, status=RunStatus.RUNNING)
+    assert await runs.finish(
+        run.run_id,
         status=RunStatus.FINISHED,
         turn_count=3,
         total_tokens=128,
@@ -854,7 +949,7 @@ async def test_add_terminal_records_a_finished_run_in_one_write(db: PgDatabase):
     assert (loaded.input_tokens, loaded.cache_hit_tokens) == (None, None)
 
 
-async def test_add_terminal_writes_the_usage_breakdown(db: PgDatabase) -> None:
+async def test_finish_writes_the_usage_breakdown(db: PgDatabase) -> None:
     """真库往返: 用量分解五列与提示词版本都写得进去、读得回来.
 
     真正要验的是**列本身** (0002 那条迁移建出来的类型与可空性): 单元测试用的是假
@@ -863,8 +958,9 @@ async def test_add_terminal_writes_the_usage_breakdown(db: PgDatabase) -> None:
     runs = RunsRepository(db)
     thread_id = await _make_thread(db)
 
-    run = await runs.add_terminal(
-        thread_id=thread_id,
+    run = await runs.add(thread_id=thread_id, status=RunStatus.RUNNING)
+    await runs.finish(
+        run.run_id,
         status=RunStatus.FINISHED,
         total_tokens=4441,
         input_tokens=4120,
@@ -883,10 +979,11 @@ async def test_add_terminal_writes_the_usage_breakdown(db: PgDatabase) -> None:
     assert loaded.input_tokens + loaded.output_tokens == loaded.total_tokens
 
 
-async def test_add_terminal_refuses_a_status_that_is_not_an_ending(db: PgDatabase):
-    """非要给个非终态就当场报错 (那是一条没有结局记录, 该走 add + 状态推进)."""
+async def test_finish_refuses_a_status_that_is_not_an_ending(db: PgDatabase):
+    """非要给个非终态就当场报错 (那是一次还没结束的运行, 该走状态推进那几条)."""
     runs = RunsRepository(db)
     thread_id = await _make_thread(db)
+    run = await runs.add(thread_id=thread_id, status=RunStatus.RUNNING)
 
     with pytest.raises(DataConfigError):
-        await runs.add_terminal(thread_id=thread_id, status=RunStatus.RUNNING)
+        await runs.finish(run.run_id, status=RunStatus.RUNNING)

@@ -164,8 +164,8 @@ def test_normalize_checkpoint_record_swaps_identity_fields() -> None:
 # ---------------------------------------------------------------------------
 
 
-# 固定的 run 编号: 不给的话 loop 每次生成一个新 uuid, 会跟着快照落盘并让它变偶发
-SNAPSHOT_RUN_ID = "run-snapshot"
+# 固定的循环编号: 不给的话 loop 每次生成一个新 uuid, 会跟着快照落盘并让它变偶发
+SNAPSHOT_LOOP_ID = "loop-snapshot"
 
 
 async def run_replay_loop(
@@ -179,7 +179,9 @@ async def run_replay_loop(
     """
     model = MockLLM.replay("tool_path")
     loop = make_loop(model, tools=TOOLS, event_sink=collector, **loop_kwargs)
-    await loop.run([{"role": "user", "content": USER_QUESTION}], run_id=SNAPSHOT_RUN_ID)
+    await loop.run(
+        [{"role": "user", "content": USER_QUESTION}], loop_id=SNAPSHOT_LOOP_ID
+    )
     return model
 
 

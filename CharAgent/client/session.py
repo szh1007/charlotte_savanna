@@ -160,7 +160,8 @@ class ChatSession:
         hydrate: 第一次提问前要不要把快照里的历史读回来 (默认 True). 关掉 =
             每段新会话都从零开始 (调试 / 想开一段全新对话时用); 想彻底不认旧账
             就换个 thread_id, 那比关这个开关更直白.
-        recorder: 会话记录员 (db/recorder.py 的实现, 或任何有那两个方法的对象);
+        recorder: 会话记录员 (db/recorder.py 的实现, 或任何有那三个方法的对象:
+            `begin` / `record` / `record_unfinished`);
             None (默认) 表示不记账, 行为与从前逐字一样. 记录**是旁挂的**: 它的
             失败不影响 ask 返回结果 (见 `_run` 的说明).
 
@@ -354,10 +355,15 @@ class ChatSession:
         # 摘要「新不新」也在这里判 (比较基准是跑之前那份, 而 _run 会把它覆盖掉)
         before_summary = self._summary
         self._history.append({"role": "user", "content": question})
+        # 开账: 这一轮的运行行**先建出来** (ticket 22). 帧是在运行中途逐轮落盘的,
+        # 而它的 `run_id` 是指向那一行的外键 —— 行不在, 帧就盖不上编号. 编号定下来
+        # 之后一路带着: 交给 loop (盖到每帧) 与收尾的 `_record`
+        run_id = await self._begin_run(question)
         try:
             result = await self._run(
                 self._loop.run(
                     self._history,
+                    run_id=run_id,
                     # 身份说明的引用**逐次给**: 历史可能是刚从快照读回来的那一段,
                     # 它用的也许是另一版提示词 (引用跟着历史一起换, 见 _hydrate_once)
                     prompt_ref=self._prompt_ref,
@@ -370,10 +376,11 @@ class ChatSession:
         except BaseException as exc:
             # 取消与失败那一轮也要记: 用户确实说过那句话, 页面上也显示了它 ——
             # 记录里不该凭空少一轮 (取消与失败在记录里长得一样, 区别在运行行)
-            await self._record_unfinished(question, exc)
+            await self._record_unfinished(question, exc, run_id=run_id)
             raise
         await self._record(
             result,
+            run_id=run_id,
             since=since,
             summary=result.summary if result.summary != before_summary else None,
         )
@@ -527,10 +534,33 @@ class ChatSession:
         self._summary_covers = checkpoint.state.summary_covers
         self._parent_id = checkpoint.checkpoint_id
 
+    async def _begin_run(self, title: str = "") -> str | None:
+        """开这一轮的账, 拿回运行行的编号 (没配记录员 = None, 一步都不走).
+
+        为什么记账要走两拍 (ticket 22): 快照帧在运行中途落盘, 而帧上的 `run_id`
+        是指向运行行的外键 —— 行必须先存在, 于是编号由这里提前定下, 一路交给
+        loop (盖到每帧) 与收尾的 `_record`.
+
+        `title` 是会话标题的候选 (这次提问): 会话行也得在跑之前建出来 (运行行有
+        外键指着它), 而那时标题还没有别的来源.
+        """
+        if self._recorder is None:
+            return None
+        return await self._recorder.begin(thread_id=self._thread_id, title=title)
+
     async def _record(
-        self, result: LoopResult, *, since: int, summary: str | None = None
+        self,
+        result: LoopResult,
+        *,
+        run_id: str | None,
+        since: int,
+        summary: str | None = None,
     ) -> None:
-        """把这一轮交给记录员 (没配记录员 = 一步都不走)."""
+        """把这一轮交给记录员 (没配记录员 = 一步都不走).
+
+        `run_id` 是 `_begin_run` 那一步建出来的行 —— 收尾是**推进**它, 不是另起
+        一行 (帧上的编号已经指向它了).
+        """
         if self._recorder is None:
             return
         # 模型名由**会话**告诉记录员: loop 手上是个薄协议的模型对象 (没有名字属性),
@@ -538,12 +568,15 @@ class ChatSession:
         await self._recorder.record(
             thread_id=self._thread_id,
             result=result,
+            run_id=run_id,
             since=since,
             summary=summary,
             model=self._model_name,
         )
 
-    async def _record_unfinished(self, question: str, error: BaseException) -> None:
+    async def _record_unfinished(
+        self, question: str, error: BaseException, *, run_id: str | None
+    ) -> None:
         """把「这一轮没答完」交给记录员 (取消与失败都算).
 
         取消与失败在记录里**写成同一种样子** (提问 + 一句「这一轮没答完」), 区别
@@ -561,6 +594,7 @@ class ChatSession:
             thread_id=self._thread_id,
             question=question,
             status=status,
+            run_id=run_id,
             model=self._model_name,
         )
 

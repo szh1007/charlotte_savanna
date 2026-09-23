@@ -194,6 +194,32 @@ class ThreadsRepository(PgRepository):
         async with self._session() as session:
             return bool(session.execute(statement).rowcount)
 
+    async def set_title(self, thread_id: str, title: str) -> bool:
+        """给会话补上标题 (首条用户消息来的那一刻).
+
+        为什么要单独一个方法 (ticket 22): 运行行有外键指着会话行, 于是记录员在
+        **跑之前**就得把会话行建出来, 而那一拍未必带着标题 (protocol 里 `title`
+        的默认值就是空串) —— 先建一个空标题的, 收尾那拍用首条用户消息补上.
+        `touch` 那条写法的同款 (一条带 WHERE 的 UPDATE, 如实回报改没改到).
+
+        **只补空标题**: 标题的语义是「首条用户消息」(见 `title_for`), 已有标题的
+        会话再给也不覆盖 —— 否掉「聊到一半标题被换成最新那句」这种漂移.
+
+        Args:
+            thread_id: 哪个会话.
+            title: 规范化后的标题 (调用方 `normalize_title` 过).
+
+        Returns:
+            bool: 改到了行 True; False = 没有这个会话, 或它已经有标题了.
+        """
+        statement = (
+            update(threads)
+            .where(threads.c.thread_id == thread_id, threads.c.title == "")
+            .values(title=title, updated_at=datetime.now(UTC))
+        )
+        async with self._session() as session:
+            return bool(session.execute(statement).rowcount)
+
     @staticmethod
     def _params(thread: Thread) -> dict[str, object]:
         """实体 → 插入参数 (放在这里而不是通用工具里: 只有本仓储写这张表)."""

@@ -38,6 +38,7 @@ class RunsRepository(PgRepository):
         request_id: str | None = None,
         model: str | None = None,
         prompt_version: str | None = None,
+        last_checkpoint_id: str | None = None,
         created_at: datetime | None = None,
     ) -> Run:
         """建一次运行 (编号与时刻默认自动生成).
@@ -46,6 +47,9 @@ class RunsRepository(PgRepository):
             thread_id: 属于哪段会话 (会话必须已存在, 否则外键会拦下来).
             run_id: 显式编号 (测试用); None 则生成 uuid4 hex.
             status: 初始状态 (默认 created).
+            last_checkpoint_id: 这一段运行落的最后一帧快照; 建行时通常还没有
+                (帧是跑的过程中落的), 由 `finish` 补上 —— 这个参数是给「事后补录」
+                与测试用的.
             request_id: 幂等键 (#17); 同一个键只能建一次运行 —— 库里对它有唯一
                 约束, 重复插入会**报错** (而不是悄悄建出第二条运行).
             model / prompt_version: 这次用的模型与 prompt 版本 (#40).
@@ -78,6 +82,7 @@ class RunsRepository(PgRepository):
             total_cost=0,
             turn_count=0,
             error=None,
+            last_checkpoint_id=last_checkpoint_id,
             created_at=moment,
             updated_at=moment,
             finished_at=None,
@@ -96,12 +101,11 @@ class RunsRepository(PgRepository):
                 ) from exc
             return self._one(session, run.run_id)
 
-    async def add_terminal(
+    async def finish(
         self,
+        run_id: str,
         *,
-        thread_id: str,
         status: RunStatus,
-        run_id: str | None = None,
         model: str | None = None,
         turn_count: int = 0,
         total_tokens: int = 0,
@@ -111,27 +115,26 @@ class RunsRepository(PgRepository):
         cache_hit_tokens: int | None = None,
         cache_miss_tokens: int | None = None,
         prompt_version: str | None = None,
+        last_checkpoint_id: str | None = None,
         moment: datetime | None = None,
-    ) -> Run:
-        """把一次**已经跑完**的运行记成一行 (直接以终态落库).
+    ) -> bool:
+        """把一次跑完的运行**落定**: 推进 `add` 建的那一行到终态, 账目一起写上.
 
-        与 `add` 的差别只有一条: 这是**记录一个已经发生的事实**, 不是**开始一次
-        执行**. 所以它不做「建 created 再迁状态」那三步 —— `created → running →
-        finished` 每一步都要求一次往返 (每次一个事务), 而这里回放的是一个已知的
-        结局; 它也把 `finished_at` 一并写上, 免得库里出现「状态是终态而 finished_at
-        是 NULL」这种自相矛盾的行 (`state.py` 明说 NULL 表示还没跑到终点).
+        它替换掉了 `add_terminal` (2026-09-23, ticket 22), 因为编号的产生时机变了:
+        快照帧在运行**中途**逐轮落盘, 而 `charagent_checkpoints.run_id` 是指向这一行
+        的**外键** —— 行必须在跑之前就建出来 (`add`), 终态这一笔于是成了一条带
+        WHERE 的 UPDATE, 而不是回来补一条 INSERT.
 
-        状态机 (state.py 的合法迁移表) 管的是**活着的**运行怎么走; 这个方法写的是
-        它的结局, 所以只校验「你给的是不是终态」, 不校验迁移路径.
+        状态校验分两半: 「给的是不是终态」当场判 (一条历史记录不该停在半路),
+        「这个终态合不合法」交给状态机 (`ensure_transition`, 从 running 出发).
 
         Args:
-            thread_id: 属于哪段会话 (会话必须已存在, 否则外键会拦下来).
+            run_id: 哪一行 (`add` 那一步返回的编号).
             status: 终态之一 (finished / failed / cancelled).
-            run_id: 显式编号 (测试用); None 则生成 uuid4 hex.
             model: 这次用的模型名 —— 与发给 API 的那个**逐字一致** (取
                 `prompt/load.py` 的 `resolve_model_name`); None 表示调用方没给
                 (框架自己不知道模型对象的名字, 见 `ChatModel` 那份薄协议).
-            turn_count: 这次跑了多少轮模型决策.
+            turn_count: 这次跑了多少轮模型决策 (断点续跑时是累计值).
             total_tokens: 这次累计用量 (账单原值: 上游 usage 的总数).
             input_tokens / output_tokens / reasoning_tokens / cache_hit_tokens /
             cache_miss_tokens: total_tokens 的**归因拆解** (#34). None 表示上游
@@ -139,50 +142,49 @@ class RunsRepository(PgRepository):
                 这几个参数默认是 None 而不是 0.
             prompt_version: 这次用的提示词名 (如 "system/v2"); None 表示装配时
                 没给身份说明 (框架不知道它是什么).
-            moment: 显式时刻 (测试用); None 则取当下 (UTC) —— 建 / 更新 / 结束
-                三个时刻取同一个值: 这是一条**回顾**记录, 不是三个真实时刻.
+            last_checkpoint_id: 这一段运行落的最后一帧快照; None = 这一列不动
+                (没配快照存储 / 一帧都没落成).
+            moment: 显式时刻 (测试用); None 则取当下 (UTC) —— 更新与结束两个时刻
+                取同一个值: 这是一次落定, 不是两个真实时刻.
 
         Returns:
-            Run: 落好的实体.
+            bool: 改到了行 True; False = 没有这个编号 —— 说明 `add` 那一步没成,
+            这一次的运行行不在库里 (调用方按「这一轮没记上账」处理, 别再插一条).
 
         Raises:
-            DataConfigError: 给的状态不是终态 (那是调用方搞错了 —— 一条历史记录
-                不该停在半路, 那种行该由 `add` 建出来再逐条推进).
-            DataStoreError: 写库失败 (会话不存在 / 库连不上).
+            DataConfigError: 给的状态不是终态 (那是调用方搞错了).
+            InvalidTransitionError: 这个终态不是 running 的合法去向.
         """
         if status not in TERMINAL_RUN_STATUSES:
             allowed = ", ".join(sorted(item.value for item in TERMINAL_RUN_STATUSES))
             raise DataConfigError(
-                f"记录一条已跑完的运行只能给终态 ({allowed}), 实际: {status.value!r}"
+                f"落定一次运行只能给终态 ({allowed}), 实际: {status.value!r}"
                 " —— 记录中的运行本来就该有个结局"
             )
+        ensure_transition(RunStatus.RUNNING, status)
         stamp = moment if moment is not None else datetime.now(UTC)
-        run = Run(
-            run_id=run_id if run_id is not None else uuid4().hex,
-            thread_id=thread_id,
-            status=status.value,
-            request_id=None,
+        values: dict[str, object] = {
+            "status": status.value,
             # 模型名与提示词版本都是**版本归因** (#40): 回答质量掉了要能查出「是换了
             # 模型还是换了 prompt」—— 两样都由调用方递进来; 花费那一列仍留给 L3 的
             # 成本记账
-            model=model,
-            prompt_version=prompt_version,
-            total_tokens=total_tokens,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            reasoning_tokens=reasoning_tokens,
-            cache_hit_tokens=cache_hit_tokens,
-            cache_miss_tokens=cache_miss_tokens,
-            total_cost=0,
-            turn_count=turn_count,
-            error=None,
-            created_at=stamp,
-            updated_at=stamp,
-            finished_at=stamp,
-        )
+            "model": model,
+            "prompt_version": prompt_version,
+            "total_tokens": total_tokens,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "reasoning_tokens": reasoning_tokens,
+            "cache_hit_tokens": cache_hit_tokens,
+            "cache_miss_tokens": cache_miss_tokens,
+            "turn_count": turn_count,
+            "updated_at": stamp,
+            "finished_at": stamp,
+        }
+        if last_checkpoint_id is not None:
+            values["last_checkpoint_id"] = last_checkpoint_id
+        statement = update(runs).where(runs.c.run_id == run_id).values(**values)
         async with self._session() as session:
-            session.execute(runs.insert().values(**self._params(run)))
-            return self._one(session, run.run_id)
+            return bool(session.execute(statement).rowcount)
 
     async def get(self, run_id: str) -> Run | None:
         """按编号取一次运行 (没有则 None)."""
@@ -299,6 +301,7 @@ class RunsRepository(PgRepository):
             "total_cost": run.total_cost,
             "turn_count": run.turn_count,
             "error": run.error,
+            "last_checkpoint_id": run.last_checkpoint_id,
             "created_at": run.created_at,
             "updated_at": run.updated_at,
             "finished_at": run.finished_at,

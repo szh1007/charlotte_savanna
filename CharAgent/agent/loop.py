@@ -126,6 +126,7 @@ from CharAgent.agent.compaction import (
     AnchorTokenCounter,
     CompactionPolicy,
     TokenCounter,
+    view_payload,
 )
 from CharAgent.agent.guard import LoopGuard
 from CharAgent.agent.utils.errors import LoopConfigError
@@ -397,6 +398,7 @@ class AgentLoop:
         self,
         messages: Sequence[ModelMessage],
         *,
+        loop_id: str | None = None,
         run_id: str | None = None,
         prompt_ref: dict[str, str] | None = None,
         summary: str | None = None,
@@ -424,8 +426,11 @@ class AgentLoop:
         Args:
             messages: 初始消息历史 (wire dict, 通常为 [user] 或上次 run 的
                 返回值续接); 内部拷贝, 调用方列表不被修改.
-            run_id: 本次运行的编号 (存快照时写进每帧记录). None 表示生成一个
-                (uuid4 hex) —— 同一个 loop 反复 run 时每次都是新编号.
+            loop_id: 本次**循环执行**的编号 (存快照时写进每帧记录). None 表示
+                生成一个 (uuid4 hex) —— 同一个 loop 反复 run 时每次都是新编号.
+            run_id: 本次运行在**记录层**是哪一行 (由会话层在建行时定下); None 表示
+                这一轮没记账. 框架不解释它, 只是原样盖到每一帧上 (帧的 `run_id`),
+                于是「这一帧属于哪一行账」可以直接查.
             prompt_ref: 身份说明的引用 (名字 + 正文 sha256, 见 prompt/ref.py) ——
                 `messages` 的第 0 条就是它描述的那条消息时传进来, 于是落盘时那几千
                 字正文被摘掉换成这个引用 (帧 v5), 读回来由会话层按引用补. **loop
@@ -461,6 +466,7 @@ class AgentLoop:
         return await self._run(
             messages,
             resume=None,
+            loop_id=loop_id,
             run_id=run_id,
             prompt_ref=_checked_prompt_ref(prompt_ref),
             summary=summary,
@@ -469,7 +475,11 @@ class AgentLoop:
         )
 
     async def resume(
-        self, checkpoint: Checkpoint, *, run_id: str | None = None
+        self,
+        checkpoint: Checkpoint,
+        *,
+        loop_id: str | None = None,
+        run_id: str | None = None,
     ) -> LoopResult:
         """从一帧快照接着跑 (断点续跑 / time-travel 的入口, #5).
 
@@ -485,8 +495,9 @@ class AgentLoop:
 
         Args:
             checkpoint: 起点快照 (通常来自 saver.load_latest / saver.load).
-            run_id: 本次运行的编号; None 表示沿用快照里的那个 —— 「还是同一次
-                运行接着跑」(想另起一次运行就显式传新编号).
+            loop_id: 本次循环执行的编号; None 表示沿用快照里的那个 —— 「还是
+                同一次执行接着跑」(想另起一次就显式传新的). 与 `run_id` 不是一个
+                东西: 后者是记录层那一行账的编号, 由调用方给 (见 `run`).
 
         Returns:
             LoopResult: 本次执行的结果 —— turns 只含本次的轮次, turn_count 是
@@ -528,7 +539,10 @@ class AgentLoop:
         return await self._run(
             checkpoint.state.messages,
             resume=checkpoint,
-            run_id=run_id or checkpoint.run_id,
+            # 循环编号沿用快照里那个 (「还是同一次执行接着跑」); 记录层的编号由
+            # 调用方给 (本次续跑自己那一行账), 没给就是 None
+            loop_id=loop_id or checkpoint.loop_id,
+            run_id=run_id,
             # 引用从帧里来 (上面那条护栏保证了它已经被还原进历史), 不由调用方给
             prompt_ref=None,
         )
@@ -538,7 +552,8 @@ class AgentLoop:
         messages: Sequence[ModelMessage],
         *,
         resume: Checkpoint | None,
-        run_id: str | None,
+        loop_id: str | None,
+        run_id: str | None = None,
         prompt_ref: dict[str, str] | None = None,
         summary: str | None = None,
         summary_covers: int = 0,
@@ -547,7 +562,8 @@ class AgentLoop:
         """run 与 resume 的共同实现 (差别只在起点, 以及是否补做挂起的工具调用)."""
         state = LoopState(
             history=list(messages),
-            run_id=run_id or uuid4().hex,
+            loop_id=loop_id or uuid4().hex,
+            run_id=run_id,
             # 压缩进度也是「接着跑要用的」: 新 run 由调用方递进来 (跨 run 续接),
             # 从快照续跑则由 _seed_from_checkpoint 覆盖掉
             summary=summary,
@@ -731,6 +747,9 @@ class AgentLoop:
         - 真压了才发 context_compacted 事件 (没压就不该在前端留痕迹)
         """
         if self._compactor is None or self._counter is None:
+            # 没配压缩策略: 这一轮没有「投影产物」可言 —— 显式置 None, 免得上一轮
+            # 那份留在 state 上被下一帧顺手记进去 (挂起补做那轮同理, 它不投影)
+            state.view = None
             return state.history
         compiled = await self._compactor.apply(
             state.history,
@@ -739,6 +758,11 @@ class AgentLoop:
             counter=self._counter,
             summarizer=self._model,
         )
+        # 这一轮的投影产物留在 state 上 (装成可落盘的观察值), 落帧时进
+        # metadata.view (ticket 22 第 4 件). **「视图与账本是否相同」必须在这里判**:
+        # 此刻的 state.history 正是刚投影的那份输入; 等到落帧时 (轮末) 账本已经长了
+        # 一条 (模型这轮的答复), 再比就会永远判成「不一样」
+        state.view = view_payload(compiled, state.history)
         state.summary = compiled.summary
         state.summary_covers = compiled.summary_covers
         # 摘要那一次调用同样记两笔 (与 _decide 同一个口径): 总数与分解必须同进
@@ -922,6 +946,9 @@ class AgentLoop:
         字段见 CheckpointMetadata 的 docstring. 两个条件取值的说明:
         - content / outcome 只在 run 真结束的那一帧写: 跑一半时它们还不成立
         - tool_names 取本轮响应的 tool_calls (并行调多个时按模型给的顺序记)
+        - view 是本轮**真的发出去**的那份 (有模型调用才有): 挂起补做那一轮没投影
+          (state.view 是 None), 记 None 是本轮的**事实** —— 别把上一轮那份顺手
+          抄进来
         """
         return CheckpointMetadata(
             source=source,
@@ -933,6 +960,7 @@ class AgentLoop:
                 None if state.finish_reason is None else state.finish_reason.value
             ),
             outcome=state.outcome.value if state.done else None,
+            view=state.view,
         )
 
     # ------------------------------------------------------------------
@@ -1047,13 +1075,16 @@ class AgentLoop:
           耗时 / 调了哪些工具 / 答了什么 / 为什么停, 给回放调试看
 
         注意存的是**账本** (state.history) 而不是这一轮送出去的视图: 压缩不落地
-        (它是「这次请求送什么」的投影), 于是存档永远是全量, 回溯也永远是全量.
+        (它是「这次请求送什么」的投影), 于是**账本**永远是全量, 回溯也永远是全量;
+        这一轮真发出去的那份由 metadata.view 单独记下 (ticket 22 第 4 件) ——
+        「存的是全量」说的是进度那一块, 不是整个帧.
 
         存成功后把编号记进 state.last_checkpoint_id: 下一帧的 parent_id 指向它,
         同一会话的快照就串成一条链 (从老快照恢复时链从那里岔开, #5 time-travel).
         """
         checkpoint = Checkpoint.create(
             thread_id=thread_id,
+            loop_id=state.loop_id,
             run_id=state.run_id,
             turn_number=state.turn_count,
             state=CheckpointState(

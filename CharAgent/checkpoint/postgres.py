@@ -55,7 +55,7 @@ from CharAgent.checkpoint.utils.types import (
     CheckpointCapabilities,
 )
 from CharAgent.db.database import PgDatabase
-from CharAgent.db.schema import checkpoints
+from CharAgent.db.schema import checkpoints, runs, threads
 
 
 class PostgresCheckpointSaver:
@@ -130,6 +130,7 @@ class PostgresCheckpointSaver:
             .values(
                 checkpoint_id=checkpoint.checkpoint_id,
                 thread_id=checkpoint.thread_id,
+                loop_id=checkpoint.loop_id,
                 run_id=checkpoint.run_id,
                 turn_number=checkpoint.turn_number,
                 schema_version=checkpoint.schema_version,
@@ -234,8 +235,15 @@ class PostgresCheckpointSaver:
     # ------------------------------------------------------------------
 
     async def _create_table(self) -> None:
-        """真的去建表 (注入引擎时走的就是注入的那个)."""
-        await self._database.create_tables([checkpoints])
+        """真的去建表 (注入引擎时走的就是注入的那个).
+
+        建的是一小撮表 (ticket 22 起): `charagent_checkpoints` 的 `run_id` 外键
+        指着 `charagent_runs`, 而后者又指着 `charagent_threads` —— 只建帧表的话,
+        Postgres 会以「被引用的表不存在」当场拒绝建表. 三张一起建, 依赖顺序交给
+        `create_all` (它按外键排; 两表之间的那条环由 `use_alter` 推迟成 ALTER,
+        见 `db/schema.py` 的说明).
+        """
+        await self._database.create_tables([threads, runs, checkpoints])
 
     async def _one(self, statement: Select) -> Checkpoint | None:
         """查一帧 (没有则 None)."""
@@ -268,10 +276,13 @@ class PostgresCheckpointSaver:
         return Checkpoint(
             checkpoint_id=row["checkpoint_id"],
             thread_id=row["thread_id"],
-            run_id=row["run_id"],
+            loop_id=row["loop_id"],
             turn_number=row["turn_number"],
             state=state,
             metadata=metadata,
+            # 两个编号各读各的列 (ticket 22): 老行里那个 `run_id` 列已被迁移改名成
+            # `loop_id`, 而新的 `run_id` 列是记录层的外键 (老行为 NULL)
+            run_id=row["run_id"],
             parent_id=row["parent_id"],
             created_at=_aware(row["created_at"]),
         )

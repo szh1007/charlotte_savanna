@@ -311,12 +311,17 @@ class CheckpointCodec:
     # ------------------------------------------------------------------
 
     def encode_record(self, checkpoint: Checkpoint) -> dict[str, Any]:
-        """整条快照 -> 可写成 JSON 文本的字典 (Redis 的流条目 / 键值)."""
+        """整条快照 -> 可写成 JSON 文本的字典 (Redis 的流条目 / 键值).
+
+        两个编号都在: `loop_id` 是「哪一次循环执行落下的」(一个 run 的几帧共享),
+        `run_id` 是「属于记录层的哪一行账」(可空, 见 `Checkpoint.run_id`).
+        """
         return self.encode_payload(
             {
                 "schema_version": checkpoint.schema_version,
                 "checkpoint_id": checkpoint.checkpoint_id,
                 "thread_id": checkpoint.thread_id,
+                "loop_id": checkpoint.loop_id,
                 "run_id": checkpoint.run_id,
                 "turn_number": checkpoint.turn_number,
                 "parent_id": checkpoint.parent_id,
@@ -347,18 +352,26 @@ class CheckpointCodec:
                 f"快照缺少整数 schema_version, 实际为 {version!r}"
             )
         decoded = self.decode_payload(payload)
-        state, metadata = self._build_body(decoded, schema_version=version)
+        # **整条记录**过一遍迁移 (不只是主体): Redis 那边记录级字段也在这份字典里,
+        # 而 v6 的改名 (`run_id` → `loop_id`) 正落在它们身上 —— PG 那边这些字段是
+        # 表列 (改名由 SQL 迁移管), 同一个迁移函数因此要两边都吃得下 (见
+        # migrations._v5_to_v6). 迁移只跑一次: 下面 _build_body 拿到的已经是当前
+        # 版本 (版号传当前值, 链上不会再动它) —— 跑两遍会让「键在就改」的改名
+        # 第二次读到补出来的那个 `run_id=None`, 反而把编号抹掉
+        upgraded = migrate_body(decoded, from_version=version)
+        state, metadata = self._build_body(upgraded, schema_version=SCHEMA_VERSION)
         # 读取路径不走 Checkpoint.create(): 编号与时刻来自存储, 不该在这里被重新
         # 生成; 字段类型上面已经逐个查过, 直接建对象
         return Checkpoint(
-            checkpoint_id=read_str(decoded, "checkpoint_id"),
-            thread_id=read_str(decoded, "thread_id"),
-            run_id=read_str(decoded, "run_id"),
-            turn_number=read_int(decoded, "turn_number"),
+            checkpoint_id=read_str(upgraded, "checkpoint_id"),
+            thread_id=read_str(upgraded, "thread_id"),
+            loop_id=read_str(upgraded, "loop_id"),
+            turn_number=read_int(upgraded, "turn_number"),
             state=state,
             metadata=metadata,
-            parent_id=read_optional_str(decoded, "parent_id"),
-            created_at=self._read_created_at(decoded.get("created_at")),
+            run_id=read_optional_str(upgraded, "run_id"),
+            parent_id=read_optional_str(upgraded, "parent_id"),
+            created_at=self._read_created_at(upgraded.get("created_at")),
             schema_version=SCHEMA_VERSION,
         )
 
@@ -438,6 +451,8 @@ class CheckpointCodec:
                 "content": checkpoint.metadata.content,
                 "finish_reason": checkpoint.metadata.finish_reason,
                 "outcome": checkpoint.metadata.outcome,
+                # 这一轮真的发出去的那份 (ticket 22 第 4 件); None = 没投影过
+                "view": checkpoint.metadata.view,
             },
         }
 
@@ -544,7 +559,25 @@ class CheckpointCodec:
             content=read_optional_str(payload, "content"),
             finish_reason=read_optional_str(payload, "finish_reason"),
             outcome=read_optional_str(payload, "outcome"),
+            # 老帧 (v5 及更早) 没有这一块 —— 缺就是 None, 语义是「那会儿还没记它」
+            view=self._read_view(payload.get("view")),
         )
+
+    @staticmethod
+    def _read_view(payload: Any) -> dict[str, Any] | None:
+        """读「这一轮发出去的那份」(见 CheckpointMetadata.view).
+
+        原样交给上层 (它是**观察值**, 恢复不读它): 只挡一下明显的畸形 (不是字典 /
+        不是 None) —— 里面的键以后可能会加, 这里不做逐字段校验, 免得「加一个
+        计数就得改两处」.
+        """
+        if payload is None:
+            return None
+        if not isinstance(payload, dict):
+            raise CheckpointSerializationError(
+                f"metadata.view 应当是字典或 None, 实际为 {type(payload).__name__}"
+            )
+        return payload
 
     @staticmethod
     def _read_source(payload: dict[str, Any]) -> CheckpointSource:

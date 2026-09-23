@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from typing import Any
 
 import pytest
 from doubles import BrokenRecordDatabase, FakeRecordDatabase, record_thread
@@ -103,6 +104,34 @@ def result(
     )
 
 
+async def record_turn(
+    rec: ConversationRecorder, *, thread_id: str = THREAD_ID, **kwargs: Any
+) -> bool:
+    """走完一次运行的两拍: 先开账 (`begin`), 再落定 (`record`).
+
+    记录员从 ticket 22 起是两段式的 (编号在跑之前就定下来, 帧才盖得上), 而多数用例
+    关心的是「收尾那一下写了什么」—— 于是这两拍在测试里也收成一处, 免得每个用例
+    自己拼. 需要检查 `begin` 本身 (失败 / 编号) 的用例直接用那两个方法.
+    """
+    run_id = await rec.begin(thread_id=thread_id, title=kwargs.pop("title", ""))
+    return await rec.record(thread_id=thread_id, run_id=run_id, **kwargs)
+
+
+async def record_unfinished_turn(
+    rec: ConversationRecorder,
+    *,
+    question: str,
+    status: RunStatus,
+    thread_id: str = THREAD_ID,
+    **kwargs: Any,
+) -> bool:
+    """同上, 走「没答完」那一拍 (标题就是那句提问 —— 会话行的标题按首条用户消息定)."""
+    run_id = await rec.begin(thread_id=thread_id, title=question)
+    return await rec.record_unfinished(
+        thread_id=thread_id, run_id=run_id, question=question, status=status, **kwargs
+    )
+
+
 # ---------------------------------------------------------------------------
 # 写什么
 # ---------------------------------------------------------------------------
@@ -112,7 +141,7 @@ async def test_a_normal_turn_writes_a_thread_a_run_and_two_messages() -> None:
     """一轮正常问答: 1 条会话行 + 1 条运行行 + 2 条可见消息 (问答各一条)."""
     database = FakeRecordDatabase()
 
-    written = await recorder(database).record(thread_id=THREAD_ID, result=result())
+    written = await record_turn(recorder(database), result=result())
 
     assert written is True
     [thread] = database.rows_of("charagent_threads")
@@ -149,8 +178,8 @@ async def test_the_run_row_carries_the_usage_breakdown_and_the_prompt_version() 
     """
     database = FakeRecordDatabase()
 
-    written = await recorder(database).record(
-        thread_id=THREAD_ID,
+    written = await record_turn(
+        recorder(database),
         result=result(
             total_tokens=4441,
             input_tokens=4120,
@@ -177,8 +206,8 @@ async def test_an_unfinished_turn_leaves_the_usage_breakdown_empty() -> None:
     """没跑完那一轮: 分解留空 —— NULL 是「没有」, 而 0 是「确实是零」."""
     database = FakeRecordDatabase()
 
-    await recorder(database).record_unfinished(
-        thread_id=THREAD_ID, question="订单到哪了", status=RunStatus.CANCELLED
+    await record_unfinished_turn(
+        recorder(database), question="订单到哪了", status=RunStatus.CANCELLED
     )
 
     [run] = database.rows_of("charagent_runs")
@@ -198,17 +227,15 @@ async def test_the_run_row_carries_the_model_name_on_both_paths() -> None:
     """
     finished = FakeRecordDatabase()
 
-    await recorder(finished).record(
-        thread_id=THREAD_ID, result=result(), model="deepseek-flash"
-    )
+    await record_turn(recorder(finished), result=result(), model="deepseek-flash")
 
     [run] = finished.rows_of("charagent_runs")
     assert run["model"] == "deepseek-flash"
 
     unfinished = FakeRecordDatabase()
 
-    await recorder(unfinished).record_unfinished(
-        thread_id=THREAD_ID,
+    await record_unfinished_turn(
+        recorder(unfinished),
         question="订单到哪了",
         status=RunStatus.CANCELLED,
         model="deepseek-flash",
@@ -240,8 +267,8 @@ async def test_the_hidden_work_of_a_tool_turn_is_recorded_as_hidden() -> None:
         {"role": "assistant", "content": "已发货, 明天到"},
     ]
 
-    await recorder(database).record(
-        thread_id=THREAD_ID, result=result(content="已发货, 明天到", messages=wire)
+    await record_turn(
+        recorder(database), result=result(content="已发货, 明天到", messages=wire)
     )
 
     messages = database.rows_of("charagent_messages")
@@ -260,8 +287,8 @@ async def test_a_run_that_gave_no_answer_gets_a_notice_line() -> None:
     database = FakeRecordDatabase()
     wire = [{"role": "user", "content": "订单到哪了"}]
 
-    await recorder(database).record(
-        thread_id=THREAD_ID,
+    await record_turn(
+        recorder(database),
         result=result(content=None, outcome=LoopOutcome.MAX_TURNS, messages=wire),
     )
 
@@ -286,8 +313,8 @@ async def test_only_what_this_run_added_is_written() -> None:
         {"role": "assistant", "content": "第二答"},
     ]
 
-    await recorder(database).record(
-        thread_id=THREAD_ID, result=result(content="第二答", messages=wire), since=2
+    await record_turn(
+        recorder(database), result=result(content="第二答", messages=wire), since=2
     )
 
     messages = database.rows_of("charagent_messages")
@@ -317,11 +344,11 @@ async def test_a_thread_owned_by_somebody_else_is_flagged_not_ignored(
     )
 
     with caplog.at_level(logging.WARNING, logger="charagent.db"):
-        written = await recorder(database).record(thread_id=THREAD_ID, result=result())
+        written = await record_turn(recorder(database), result=result())
 
     assert written is True, "照样写: 不写就是静默丢一轮记录"
     assert "已经属于" in caplog.text
-    assert len(database.rows_of("charagent_threads")) == 0, "不会另建一行"
+    assert database.written_rows_of("charagent_threads") == [], "不会另建一行"
 
 
 async def test_the_thread_is_created_once_and_reused_afterwards() -> None:
@@ -329,8 +356,8 @@ async def test_the_thread_is_created_once_and_reused_afterwards() -> None:
     database = FakeRecordDatabase()
     rec = recorder(database)
 
-    await rec.record(thread_id=THREAD_ID, result=result())
-    await rec.record(thread_id=THREAD_ID, result=result())
+    await record_turn(rec, result=result())
+    await record_turn(rec, result=result())
 
     assert len(database.rows_of("charagent_threads")) == 1
 
@@ -340,8 +367,8 @@ async def test_a_long_question_is_squashed_into_a_one_line_title() -> None:
     database = FakeRecordDatabase()
     long_question = "第一行\n第二行\n" + "很长" * TITLE_LIMIT
 
-    await recorder(database).record(
-        thread_id=THREAD_ID,
+    await record_turn(
+        recorder(database),
         result=result(
             messages=[
                 {"role": "user", "content": long_question},
@@ -356,14 +383,20 @@ async def test_a_long_question_is_squashed_into_a_one_line_title() -> None:
 
 
 async def test_every_turn_refreshes_the_thread_activity_time() -> None:
-    """每轮都刷一次会话的活动时刻 —— 会话列表按它倒序排."""
+    """每轮都刷一次会话的活动时刻 —— 会话列表按它倒序排.
+
+    断的是**效果** (那个时刻真的往后走了), 不是「发了几条 UPDATE」: ticket 22 起
+    一轮里有三笔写 (开账的行 / 补标题 / 刷时刻), 数语句已经说明不了「刷没刷」.
+    """
     database = FakeRecordDatabase()
     rec = recorder(database)
 
-    await rec.record(thread_id=THREAD_ID, result=result())
-    await rec.record(thread_id=THREAD_ID, result=result())
+    await record_turn(rec, result=result())
+    first = database.rows_of("charagent_threads")[0]["updated_at"]
+    await record_turn(rec, result=result())
+    second = database.rows_of("charagent_threads")[0]["updated_at"]
 
-    assert database.session.updates == ["charagent_threads"] * 2
+    assert second > first, "第二轮之后活动时刻要比第一轮晚"
 
 
 # ---------------------------------------------------------------------------
@@ -378,8 +411,8 @@ async def test_an_unfinished_turn_is_recorded_with_its_question(
     """取消 / 失败那一轮: 提问还在, 加一条可见的「这一轮没答完」+ 对应状态."""
     database = FakeRecordDatabase()
 
-    written = await recorder(database).record_unfinished(
-        thread_id=THREAD_ID, question="订单到哪了", status=status
+    written = await record_unfinished_turn(
+        recorder(database), question="订单到哪了", status=status
     )
 
     assert written is True
@@ -397,8 +430,8 @@ async def test_an_unfinished_turn_still_creates_the_thread() -> None:
     """第一句话就被取消: 会话行照样建起来 (否则那句提问没有落点, 外键会拦)."""
     database = FakeRecordDatabase()
 
-    await recorder(database).record_unfinished(
-        thread_id=THREAD_ID, question="第一句就被打断", status=RunStatus.CANCELLED
+    await record_unfinished_turn(
+        recorder(database), question="第一句就被打断", status=RunStatus.CANCELLED
     )
 
     [thread] = database.rows_of("charagent_threads")
@@ -413,15 +446,21 @@ async def test_an_unfinished_turn_still_creates_the_thread() -> None:
 async def test_a_failed_write_is_logged_and_marked_instead_of_raised(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """库连不上: 返回 False + 记一笔 warning, **不抛** (这一句问话不能被它拦下)."""
+    """库连不上: 返回 False + 记一笔 warning, **不抛** (这一句问话不能被它拦下).
+
+    日志**只有一条** (ticket 22 起): 失败发生在开账那一拍 (`begin`), 它已经记过;
+    收尾那拍只留「这段会话欠着一条提示行」的标记, 不再重复报 —— 同一轮报两条只会
+    稀释信号.
+    """
     rec = recorder(BrokenRecordDatabase())
 
     with caplog.at_level(logging.WARNING, logger="charagent.db"):
-        written = await rec.record(thread_id=THREAD_ID, result=result())
+        written = await record_turn(rec, result=result())
 
     assert written is False
     assert rec.missed_threads == frozenset({THREAD_ID})
-    assert "没能记进记录表" in caplog.text
+    assert "没能开出来" in caplog.text
+    assert caplog.text.count("WARNING") == 1, "同一轮只该有一条告警"
 
 
 async def test_the_next_write_first_adds_a_visible_notice() -> None:
@@ -429,9 +468,9 @@ async def test_the_next_write_first_adds_a_visible_notice() -> None:
     database = TwitchyDatabase(fail_times=1)
     rec = recorder(database)
 
-    assert await rec.record(thread_id=THREAD_ID, result=result()) is False
+    assert await record_turn(rec, result=result()) is False
     assert rec.missed_threads == frozenset({THREAD_ID})
-    assert await rec.record(thread_id=THREAD_ID, result=result()) is True
+    assert await record_turn(rec, result=result()) is True
 
     messages = database.rows_of("charagent_messages")
     assert [row["content"] for row in messages] == [
@@ -449,9 +488,9 @@ async def test_the_notice_is_added_only_once_per_missed_turn() -> None:
     database = TwitchyDatabase(fail_times=1)
     rec = recorder(database)
 
-    await rec.record(thread_id=THREAD_ID, result=result())
-    await rec.record(thread_id=THREAD_ID, result=result())
-    await rec.record(thread_id=THREAD_ID, result=result())
+    await record_turn(rec, result=result())
+    await record_turn(rec, result=result())
+    await record_turn(rec, result=result())
 
     contents = [row["content"] for row in database.rows_of("charagent_messages")]
     assert contents == [
@@ -491,9 +530,7 @@ async def test_a_fresh_summary_is_recorded_as_a_hidden_line() -> None:
     """
     database = FakeRecordDatabase()
 
-    await recorder(database).record(
-        thread_id=THREAD_ID, result=result(), summary="早前聊的是查订单"
-    )
+    await record_turn(recorder(database), result=result(), summary="早前聊的是查订单")
 
     messages = database.rows_of("charagent_messages")
     assert [(row["role"], row["hidden"]) for row in messages] == [
@@ -508,6 +545,6 @@ async def test_without_a_fresh_summary_no_line_is_added() -> None:
     """摘要没变 (默认 None) 就不加行 —— 否则每轮都写一条一模一样的."""
     database = FakeRecordDatabase()
 
-    await recorder(database).record(thread_id=THREAD_ID, result=result())
+    await record_turn(recorder(database), result=result())
 
     assert len(database.rows_of("charagent_messages")) == 2

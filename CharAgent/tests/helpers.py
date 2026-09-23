@@ -140,7 +140,7 @@ def make_checkpoint(**overrides: Any) -> Checkpoint:
     """
     fields: dict[str, Any] = {
         "thread_id": "thread-1",
-        "run_id": "run-1",
+        "loop_id": "loop-1",
         "turn_number": 1,
         "state": make_state(),
         "metadata": make_metadata(),

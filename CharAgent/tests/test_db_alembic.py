@@ -181,7 +181,7 @@ def test_alembic_version_records_the_head_revision(migrated, _engine):
             {"name": f"{ALEMBIC_SCHEMA}.{VERSION_TABLE}"},
         ).scalar()
 
-    assert version == "0003_migration_audit_log"
+    assert version == "0004_frame_run_linkage"
     assert test_schema_version, (
         "版本表没落在测试 schema 里 (version_table_schema 没生效)"
     )
@@ -199,11 +199,11 @@ def test_upgrade_head_is_idempotent(migrated, _engine):
             text(f"SELECT version_num FROM {ALEMBIC_SCHEMA}.{VERSION_TABLE}")
         ).scalar()
 
-    assert version == "0003_migration_audit_log"
+    assert version == "0004_frame_run_linkage"
 
 
 def test_the_audit_table_records_every_applied_revision(migrated, _engine):
-    """审计表把跑过的三条都记下: 0001 / 0002 是补记, 0003 由钩子记 (有真实时刻).
+    """审计表把跑过的四条都记下: 0001 / 0002 是补记, 之后每条由钩子记 (有真实时刻).
 
     补记那两条为什么时刻留空: 它们在**任何**库里都发生在审计表建起来之前 (新建库
     同样如此), 无从考证 —— 编一个时间比留空更糟 (见 0003 的 docstring).
@@ -220,6 +220,7 @@ def test_the_audit_table_records_every_applied_revision(migrated, _engine):
         "0001_core",
         "0002_run_usage_breakdown",
         "0003_migration_audit_log",
+        "0004_frame_run_linkage",
     ]
     assert rows[1].name == "runs 表加用量分解五列 (成本归因 #34)", (
         "标题取的是脚本 docstring 的首行, 与 alembic history 印的是同一句"
@@ -227,6 +228,8 @@ def test_the_audit_table_records_every_applied_revision(migrated, _engine):
     assert (rows[0].applied_at, rows[1].applied_at) == (None, None), "补记留空"
     assert (rows[0].applied_by, rows[1].applied_by) == (None, None)
     assert rows[2].applied_at is not None, "0003 由钩子记, 有真实时刻"
+    assert rows[3].applied_at is not None, "0004 同样由钩子记"
+    assert rows[3].name == "帧与运行的双向溯源: `run_id` 改名 `loop_id` + 两列新外键"
 
 
 def test_no_difference_between_code_and_migrated_schema(migrated, _engine):

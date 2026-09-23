@@ -12,9 +12,12 @@
 只增不减、永不压缩 (PLAN 的 L2.5 一句话: 「用户看到的记录永不压缩」). 两者同源
 (都从 `LoopResult` 来) 而用途不同.
 
-**什么时候写**: 每次运行**收尾写一次** (不是每轮) —— 一轮 = 用户点一次「发送」到
-agent 答完, 这正好是「一句话的账」. 每轮写一次会让一次带工具的问答写出十几行
-半成品, 而半成品正是这个记录最不该有的东西.
+**什么时候写**: 一次运行**两拍** (ticket 22) —— 跑之前 `begin` 把运行行建出来
+(帧在运行中途落盘, 而 `checkpoints.run_id` 是指向它的外键), 跑完 `record` /
+`record_unfinished` 把那一行推进到终态并写下这一轮的消息. **消息只写一次**
+(收尾那一拍, 不是每轮): 一轮 = 用户点一次「发送」到 agent 答完, 这正好是「一句话
+的账」; 每轮写一次会让一次带工具的问答写出十几行半成品, 而半成品正是这个记录最
+不该有的东西.
 
 **写什么** (三层都由 `db/conversation.py` 的规则算好, 本模块不另判一遍):
 
@@ -166,26 +169,55 @@ class RunRecorder(Protocol):
 
     与框架里其他协议同一套做法 (ChatModel / CheckpointSaver / ContextProvider):
     只照形状检查, 不要求继承 —— 业务要换成写到别处 (对象存储 / 数仓) 自己实现这
-    两个方法即可. 本模块的 `ConversationRecorder` 是给 `db/` 那几张表用的实现.
+    几个方法即可. 本模块的 `ConversationRecorder` 是给 `db/` 那几张表用的实现.
 
-    两个方法都**不该抛** (返回 False 表示这次没记上): 调用方是会话收尾那条路,
-    记录写不进去不该把一次已经跑完的问答变成一次失败. 实现方自己负责记日志与补救.
+    **三个方法, 对应一次运行的三拍** (ticket 22 起):
+
+    | 方法 | 什么时候 | 做什么 |
+    |---|---|---|
+    | `begin` | 跑之前 | 把这一轮的运行行先建出来 (状态 running), 返回编号 |
+    | `record` | 跑完了 | 推进那一行到终态 + 写消息行 + 落 `last_checkpoint_id` |
+    | `record_unfinished` | 没跑完 (取消 / 失败) | 同上, 只是终态不同、没有账目 |
+
+    为什么「先建行」: 快照帧是在运行**中途**逐轮落盘的, 而 `checkpoints.run_id` 是
+    指向运行行的外键 —— 行不在, 帧就盖不上编号 (见 `begin` 的说明).
+
+    三个方法都**不该抛** (`begin` 返回 None、另两个返回 False 表示这次没记上): 调用
+    方是会话那条路, 记录写不进去不该把一次问答变成一次失败. 实现方自己负责记日志
+    与补救.
     """
+
+    async def begin(self, *, thread_id: str, title: str = "") -> str | None:
+        """开一次运行的账: 建行 (状态 running), 返回编号.
+
+        Args:
+            thread_id: 哪段会话 (会话行不在就顺手建).
+            title: 会话标题的候选 (通常是这次提问); **只在会话行还不存在时用得上**
+                —— 标题是首条用户消息 (与从前一致), 后面的轮次给了也不覆盖.
+
+        Returns:
+            str | None: 运行编号; None 表示这次不记账 (库不可用等) —— 于是这一轮的
+            帧不带 `run_id`、也没有运行行, 与「没配记录层」同一种形状.
+        """
+        ...
 
     async def record(
         self,
         *,
         thread_id: str,
         result: LoopResult,
+        run_id: str | None = None,
         since: int = 0,
         summary: str | None = None,
         model: str | None = None,
     ) -> bool:
-        """记下**一次跑完的运行** (含 visible / hidden 消息与运行行).
+        """记下**一次跑完的运行** (含 visible / hidden 消息 + 推进运行行).
 
         Args:
             thread_id: 算哪段会话.
             result: 这次运行的结果 (`LoopResult`) —— 记录的内容全部由它派生.
+            run_id: `begin` 那一步返回的编号 (要推进的那一行); None 表示这一轮
+                没有可推进的行 (没配记录层 / `begin` 没成) → 直接返回 False.
             since: 只从消息列表的第几条开始记 (跑之前历史有多长) —— 老的那一段
                 上一次已经写过了, 重记一遍会写出重复行.
             summary: 这一轮**新压出来的**摘要; None 表示这一轮没压 (或压出来的与
@@ -195,7 +227,7 @@ class RunRecorder(Protocol):
                 名字只有装配处知道), 所以由调用方递进来; None 表示没给.
 
         Returns:
-            bool: 记上了 True; 没记上 (库不可用等) False.
+            bool: 记上了 True; 没记上 (库不可用 / 没有那一行) False.
         """
         ...
 
@@ -205,6 +237,7 @@ class RunRecorder(Protocol):
         thread_id: str,
         question: str,
         status: RunStatus,
+        run_id: str | None = None,
         model: str | None = None,
     ) -> bool:
         """记下**一次没答完的运行** (取消 / 失败那一轮).
@@ -213,6 +246,7 @@ class RunRecorder(Protocol):
             thread_id: 算哪段会话.
             question: 用户那一句提问 (页面上已经显示了, 记录里不能少).
             status: 这次运行的终态 (cancelled / failed).
+            run_id: 同 `record` —— `begin` 建的那一行; None 表示没得推进.
             model: 这次用的模型名 (同 `record`); 这一轮没有账目, 但模型是跑之前
                 就定下的配置事实, 照样记得下来.
 
@@ -253,16 +287,54 @@ class ConversationRecorder:
         """有哪些会话欠着一条「没记上」的提示行 (排查与用例用)."""
         return frozenset(self._missed)
 
+    async def begin(self, *, thread_id: str, title: str = "") -> str | None:
+        """开一次运行的账 (建会话行 + 建运行行), 返回运行编号.
+
+        为什么在**跑之前**就把行建出来 (ticket 22): 快照帧是在运行中途逐轮落盘的,
+        而 `charagent_checkpoints.run_id` 是指向这一行的外键 —— 行不在, 帧就盖不上
+        编号, 那条「这一帧属于哪一行账」的溯源就是空的. 于是编号提前定下来, 由会话
+        同时交给 loop (盖到每一帧上) 与收尾的 `record` (推进这一行).
+
+        状态直接给 **running** 而不是 created: 建它的那一刻这次运行真的开始了
+        (调用方紧接着就调 loop), 而状态机里 created 到不了 finished (见 state.py
+        的合法迁移表) —— 写成 created 就得为「跑完」多补一次没意义的中间推进.
+
+        失败只降级不抛 (与另两个方法同一条规矩): 记不上账不该让用户这一句问不出来.
+        这一轮于是没有运行行、帧上的 `run_id` 为空, 与「没配记录层」同一种形状;
+        事后由 `_missed` + 下一次成功写入的提示行如实报一句.
+
+        Args:
+            thread_id: 哪段会话 (会话行不在就顺手建, 标题用 title).
+            title: 会话标题的候选 (通常是这次提问); 只在会话行还不存在时生效.
+
+        Returns:
+            str | None: 运行编号; None = 这次不记账.
+        """
+        try:
+            await self._ensure_thread(thread_id, normalize_title(title))
+            run = await self._runs.add(thread_id=thread_id, status=RunStatus.RUNNING)
+        except DbError as exc:
+            self._missed.add(thread_id)
+            logger.warning(
+                "会话 %s 这一轮的账没能开出来 (本轮不记账): %s",
+                thread_id,
+                exc,
+                exc_info=True,
+            )
+            return None
+        return run.run_id
+
     async def record(
         self,
         *,
         thread_id: str,
         result: LoopResult,
+        run_id: str | None = None,
         since: int = 0,
         summary: str | None = None,
         model: str | None = None,
     ) -> bool:
-        """记下这次跑完的运行 (消息按可见性落库 + 运行行 + 刷会话的活动时刻)."""
+        """记下这次跑完的运行 (消息按可见性落库 + 推进运行行 + 刷会话的活动时刻)."""
         lines = recorded_transcript(result.messages, result.content, since=since)
         if summary:
             # 这一轮把早前的对话压成了摘要: 它是**内部件** (给模型看的上下文替身),
@@ -291,8 +363,12 @@ class ConversationRecorder:
         return await self._write(
             thread_id=thread_id,
             lines=lines,
+            run_id=run_id,
             status=run_status_for_outcome(result.outcome),
             facts=RunFacts.of(result, model=model),
+            # 本段落的最后一帧: 有了它, 「这次花了多少」与「当时它看到了什么」就
+            # 对到同一件事上 (顺 parent_id 往回走 = 本次运行落的每一帧)
+            last_checkpoint_id=result.last_checkpoint_id,
         )
 
     async def record_unfinished(
@@ -301,6 +377,7 @@ class ConversationRecorder:
         thread_id: str,
         question: str,
         status: RunStatus,
+        run_id: str | None = None,
         model: str | None = None,
     ) -> bool:
         """记下这一轮没答完 (提问 + 一条可见说明) —— 取消 / 失败那一轮走这里."""
@@ -316,7 +393,11 @@ class ConversationRecorder:
         # 没跑完那一轮没有账可记: 五个分解字段都是 None (「没有」, 不是「零」) ——
         # 但模型名照样带上: 它是跑之前就定下的配置事实, 不是跑出来的账目
         return await self._write(
-            thread_id=thread_id, lines=lines, status=status, facts=RunFacts(model=model)
+            thread_id=thread_id,
+            lines=lines,
+            run_id=run_id,
+            status=status,
+            facts=RunFacts(model=model),
         )
 
     async def _write(
@@ -324,10 +405,12 @@ class ConversationRecorder:
         *,
         thread_id: str,
         lines: list[TranscriptLine],
+        run_id: str | None,
         status: RunStatus,
         facts: RunFacts,
+        last_checkpoint_id: str | None = None,
     ) -> bool:
-        """四步写入 (会话行 / 运行行 / 消息行 / 活动时刻), 失败降级不抛.
+        """四步写入 (会话行 / 运行行收尾 / 消息行 / 活动时刻), 失败降级不抛.
 
         为什么是四次分开的事务而不是一个大事务: 四件事属于三个仓储 (各管一张表),
         凑成一个大事务要么跨仓储开私用接口, 要么把这四张表的写法搬到本模块 ——
@@ -335,24 +418,39 @@ class ConversationRecorder:
         行写了、消息行没写), 那一轮同样落进 `_missed`, 下一次补提示行 —— 记录表
         里不会出现「看起来完整其实缺了半轮」的样子 (提示行会说话).
 
+        运行行那一笔是**推进** `begin` 建的那一行 (ticket 22), 不是新建: 帧在运行
+        中途就已经把编号盖上了, 这里另起一行的会让那些帧指到别处去. `run_id` 为
+        None 说明 `begin` 那一步没成 —— 那就整轮不写 (连消息行也不写: 消息行的
+        `run_id` 列是外键), 落进 `_missed` 如实报一句.
+
         只兜 `DbError` (数据库那一族的错, 仓储抛的就是它): 别的异常是框架自己的
         bug, 该留 traceback 给人看 —— 悄悄吞掉会让记录从此错下去, 那比一次报错
         难查得多.
         """
+        if run_id is None:
+            # `begin` 没成 (没配记录层时压根不会走到这里): 本轮不记账. 不在这儿
+            # 补建行 —— 帧上的编号已经定了, 事后补的行对不上它们; 也**不重复记
+            # 日志**: 那件事 `begin` 已经说过一次了 (同一轮报两条只会稀释信号).
+            # 只留「这段会话欠着一条提示行」这个标记, 由下一次成功写入补上
+            self._missed.add(thread_id)
+            return False
         try:
-            await self._ensure_thread(thread_id, lines)
-            run = await self._runs.add_terminal(
-                thread_id=thread_id, status=status, **asdict(facts)
+            await self._ensure_thread(thread_id, title_for(lines))
+            await self._runs.finish(
+                run_id,
+                status=status,
+                last_checkpoint_id=last_checkpoint_id,
+                **asdict(facts),
             )
-            # 消息行带上 run_id: 它们确实属于刚建的那次执行 —— 审计时「这几条是
-            # 哪一次问答产生的」靠它 (列注释: NULL 表示不是 agent 跑出来的)
+            # 消息行带上 run_id: 它们确实属于这次执行 —— 审计时「这几条是哪一次
+            # 问答产生的」靠它 (列注释: NULL 表示不是 agent 跑出来的)
             #
             # 提示行与本轮那几行**同一批**插进去: 要么都成, 要么都不成 ——
             # 否则会出现「说了缺一轮, 但本轮也没写进去」这种更乱的中间态
             await self._messages.add_lines(
                 thread_id=thread_id,
                 lines=self._pending(thread_id, lines),
-                run_id=run.run_id,
+                run_id=run_id,
             )
             await self._threads.touch(thread_id)
         except DbError as exc:
@@ -364,12 +462,22 @@ class ConversationRecorder:
         self._missed.discard(thread_id)
         return True
 
-    async def _ensure_thread(self, thread_id: str, lines: list[TranscriptLine]) -> None:
-        """会话行懒创建: 有就复用, 没有就用首条用户消息当标题建一个.
+    async def _ensure_thread(self, thread_id: str, title: str) -> None:
+        """会话行懒创建: 有就复用 (顺手补个空标题), 没有就用 title 建一个.
+
+        两拍都带着标题 (`begin` 拿的是这次提问, 收尾那拍拿的是这批行里第一条用户
+        消息) —— 于是第一次开口就建出带标题的会话行. **补空标题是为 `begin` 没给
+        标题的那种调用** (protocol 里 `title` 的默认值是空串): 不补的话, 那段会话
+        在前端左栏里永远没有名字 (而它明明聊过). 只补空的, 已有标题不覆盖 ——
+        标题的语义是「首条用户消息」, 不该漂.
 
         `get` 再 `add` 之间有一个窗口, 但框架的部署纪律本就是**单进程**
         (`server/sessions.py` 写明), 而同一段会话又不许并发 (登记表的 busy 集合
         拦着) —— 于是这两步之间不会有第二个写入者.
+
+        Args:
+            thread_id: 哪段会话.
+            title: 首条用户消息规范化后的标题; 空串表示这批行里没有用户消息.
         """
         existing = await self._threads.get(thread_id)
         if existing is not None:
@@ -389,12 +497,16 @@ class ConversationRecorder:
                     self._tenant_id,
                     self._user_id,
                 )
+                return
+                return
+            if not existing.title and title:
+                await self._threads.set_title(thread_id, title)
             return
         await self._threads.add(
             thread_id=thread_id,
             tenant_id=self._tenant_id,
             user_id=self._user_id,
-            title=title_for(lines),
+            title=title,
         )
 
     def _pending(
@@ -409,11 +521,20 @@ class ConversationRecorder:
         ]
 
 
-def title_for(lines: list[TranscriptLine]) -> str:
-    """会话标题: 这批行里第一条用户消息 (压平空白 + 截断).
+def normalize_title(text: str) -> str:
+    """标题文本 → 存库那一行: 压平空白 + 截断.
 
     为什么要压平空白: 标题在前端是**一行**, 而用户的提问可能带换行 (粘贴一段
     报错、写几条要点) —— 原样存进去会把列表那一行撑成好几行.
+
+    单独一个函数 (而不只藏在 `title_for` 里): `begin` 那一步还没有「行」,
+    只有这次提问的原文, 它要的是同一条规范化规则.
+    """
+    return " ".join(text.split())[:TITLE_LIMIT]
+
+
+def title_for(lines: list[TranscriptLine]) -> str:
+    """会话标题: 这批行里第一条用户消息 (规范化后).
 
     Args:
         lines: 要落库的那批行 (顺序即时间顺序).
@@ -423,7 +544,7 @@ def title_for(lines: list[TranscriptLine]) -> str:
     """
     for line in lines:
         if line.role == "user" and line.content:
-            return " ".join(line.content.split())[:TITLE_LIMIT]
+            return normalize_title(line.content)
     return ""
 
 
@@ -434,5 +555,6 @@ __all__ = [
     "ConversationRecorder",
     "RunFacts",
     "RunRecorder",
+    "normalize_title",
     "title_for",
 ]

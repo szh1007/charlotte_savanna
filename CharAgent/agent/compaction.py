@@ -6,7 +6,8 @@
 
     账本 (LoopState.history)   append-only, 一字不改 —— 断点续跑与回溯靠它
        ↓ 投影 (每次模型调用前算一次, 不落地)
-    视图 (送给模型的)          system + 摘要 + 最近 N 个提问 —— 越聊越短
+    视图 (送给模型的)          system + 摘要 + 摘要之后的一切; 账本再超阈值时
+                               切一刀 (裁到最近 N 个提问 + 截短老工具结果)
 
 **为什么不动账本**: ① 落盘的仍是全量历史 (只多了「压到哪一步」那两个字段) ——
 于是断点续跑、time-travel 回溯、快照表格视图看到的都还是完整过程, 压缩掉的只是
@@ -37,6 +38,13 @@
 下限压的话, 下一次调用立刻又超线, 于是每次调用都压一次, 摘要调用也就每次都
 花一次钱.
 
+**投影与切刀是两件事** (2026-09-23 修, ticket 23): 投影**每一轮都做** (摘要替换掉
+它覆盖过的那一段), 阈值只管「要不要再切一刀」(扩大覆盖 + 重新压摘要). 两者曾经被
+合成一句 `if before < threshold: return unchanged` —— 而 `unchanged` 是**全量账本**,
+于是压过之后每隔一轮视图就失效一次 (摘要根本不带上), 账本随即把估算顶回大值,
+再下一轮又切一刀: 八轮模拟里 2 压 3 跳、4 压 5 跳, 单请求 token 一半的轮次跳回全量,
+摘要调用也白烧一半. 分开之后同一份模拟是「每轮都带摘要, 请求随账本缓涨到阈值再切」.
+
 与 LoopGuard 的分工 (两个数各自算, 都要留): guard 是**运行级刹车** (这次运行总共
 别烧太多 → 直接停), 本模块是**单请求治理** (别让这一次请求变大 → 压完继续).
 
@@ -60,7 +68,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Any, Protocol
 
 from CharAgent.agent.utils.errors import CompactionConfigError
 from CharAgent.agent.utils.messages import (
@@ -132,6 +140,59 @@ class CompiledView:
         (只有一个提问), 都不该在前端留一条「压缩过」的痕迹.
         """
         return self.dropped > 0 or self.truncated > 0
+
+
+def compiled_counts(compiled: CompiledView) -> dict[str, Any]:
+    """这次压缩「做了什么」的六个计数 (**唯一一处定义**).
+
+    两个下游共用它, 各自再拼上自己多出来的那个键:
+
+    | 谁 | 多出来的键 | 给谁看 |
+    |---|---|---|
+    | `utils/events.context_compacted_data` | `turn` | 前端的进度提示 (这一轮压了) |
+    | `view_payload` | `messages` | 帧里的审计材料 (当时发出去的那份) |
+
+    口径只写一遍的理由很直白: 加一个计数时漏掉一边, 表现是「事件里说了、帧里没
+    说」(或反过来) —— 而那两边本来就是同一件事的两种说法.
+    """
+    return {
+        "dropped": compiled.dropped,
+        "truncated": compiled.truncated,
+        "estimated_tokens": compiled.estimated_tokens,
+        "saved_tokens": compiled.saved_tokens,
+        "summarized": compiled.summarized,
+        "warning": compiled.warning,
+    }
+
+
+def view_payload(
+    compiled: CompiledView, ledger: Sequence[ModelMessage]
+) -> dict[str, Any]:
+    """这一轮**真的发出去**的东西 → 落进帧里的观察值 (ticket 22 第 4 件).
+
+    为什么记它: 压缩让「账本」与「送给模型的」分成两份, 而库里原本只有账本 ——
+    「当时它看到了什么」(L3 要回答的那句) 因此答不上来. 这一份补上.
+
+    两条取值规则:
+    - **`messages` 只在视图与账本不同时才带**. 相同时给 None, 语义是「**视图就是
+      账本本身**」: 帧里已经有全量账本 (`state.messages`), 再抄一份会让每帧体积
+      翻倍; 而审计价值全在「视图真的不一样的那些轮」.
+    - 判据是**直接比**, 不是看 `compiled.compacted`: 两者今天恰好等价 (不切就不
+      投影), 而那是 view-oscillation 那条缺陷 (2026-09-23 修) 的副产品 —— 修好
+      之后「没切刀但视图仍带摘要」的轮会变成常态, 用 `compacted` 判会全漏掉.
+
+    Args:
+        compiled: 这一轮投影的产物.
+        ledger: 同一时刻的账本 (用来判「视图与账本是否相同」).
+
+    Returns:
+        dict: 计数 (与 `context_compacted_data` 同一套口径) + `messages`.
+    """
+    same = compiled.messages == list(ledger)
+    return {
+        **compiled_counts(compiled),
+        "messages": None if same else compiled.messages,
+    }
 
 
 class TokenCounter(Protocol):
@@ -301,19 +362,50 @@ class TrimAndSummarize:
         counter: TokenCounter,
         summarizer: ChatModel | None = None,
     ) -> CompiledView:
-        """算视图: 不超阈值原样返回; 超了则裁剪 + 截断 (+ 重压摘要).
+        """算这一轮的视图: **投影每轮都做**, 阈值只管「要不要再切一刀」.
 
-        顺序是有讲究的: **先判要不要压** (锚值最可信的一步) → **再算切点** (逐轮
-        往回收, 直到估算落到水位线以下) → **最后才压摘要** (真裁掉了东西才有得压,
-        而且这一步要花钱). 摘要失败只降级、不抛 —— 那是一次「压得更好看」的调用,
-        不是这条链路成立的必需件.
+        两件事曾经被合成一件 (2026-09-23 修, ticket 23):
+
+        | | 什么时候做 | 做什么 |
+        |---|---|---|
+        | **投影** | **每一轮** | 视图 = 第 0 条 + 摘要 + 摘要没覆盖到的一切 |
+        | | | (没摘要时 = 账本本身) |
+        | **再切一刀** | 账本估算到阈值时 | 扩大摘要覆盖 (重压摘要) |
+        | | | + 裁到最近 N 个提问 + 截短老工具结果 |
+
+        合并的代价是真机上踩出来的: 压完那一轮的锚落到「小视图」上 → 下一轮估算
+        (小锚 + 增量) 低于阈值 → 判定「不用压」→ 而当时那句 `unchanged = list(history)`
+        把**全量账本**原样发了出去, 摘要那条根本不带上. 于是视图每隔一轮失效一次,
+        而账本随即把锚顶回大值 → 再下一轮又切一刀 (又烧一次摘要) —— 八轮模拟里
+        2 压 3 跳、4 压 5 跳, 单请求 token 一半的轮次跳到全量.
+
+        顺序 (修好之后): **先投影** (不花钱的那一半) → **再判要不要切** (锚值最可信
+        的一步) → **最后才压摘要** (真裁掉了东西才有得压, 而且这一步要花钱). 摘要
+        失败只降级、不抛 —— 那是一次「压得更好看」的调用, 不是这条链路成立的必需件.
+
+        Note:
+            投影只丢**摘要已经覆盖过的**那一段 (切点 `max(summary_covers, 1)`) ——
+            没进过摘要的原文一条都不丢, 否则信息就凭空没了.
         """
         before = counter.count(history)
+        # 投影 (每轮都做): 摘要替换掉它覆盖的那一段, 老工具结果**不截** (截断与裁剪
+        # 同属「再切一刀」那一半, 见 _view 的 truncate_tools)
+        projected, _ = self._view(
+            history,
+            cut=max(summary_covers, 1),
+            summary=summary,
+            latest_start=_latest_question_start(history),
+            truncate_tools=False,
+        )
         unchanged = CompiledView(
-            messages=list(history),
+            messages=projected,
             summary=summary,
             summary_covers=summary_covers,
-            estimated_tokens=before,
+            # 没切刀: dropped / truncated / summarized 都保持「什么都没做」,
+            # 于是不发 context_compacted 事件 (上一次压缩已经报过一次了);
+            # 但它确实比账本小 —— saved_tokens 如实报
+            estimated_tokens=counter.count(projected),
+            saved_tokens=estimate_tokens(history) - estimate_tokens(projected),
         )
         if before < self.threshold_tokens:
             return unchanged
@@ -403,6 +495,7 @@ class TrimAndSummarize:
         summary: str | None,
         latest_start: int,
         summary_slot: bool = False,
+        truncate_tools: bool = True,
     ) -> tuple[list[ModelMessage], int]:
         """切出视图: 第 0 条 + (摘要) + 第 cut 条起, 其中老工具正文截短.
 
@@ -411,6 +504,10 @@ class TrimAndSummarize:
             summary_slot: 没有摘要时也占一个空位 —— 给**试算**用. 压完摘要那条
                 消息一定会在位 (它是「被裁掉那段」的唯一记录), 试算时漏掉它,
                 水位线就会卡在边上 (压完刚好又超一点).
+            truncate_tools: 要不要顺手截短老工具结果. **投影那一路给 False** ——
+                截断是「再切一刀」那一半的手段 (与裁剪同进退), 而**投影每一轮都做**
+                (见 apply): 不切刀的那一轮只把摘要放回去, 不该顺手改正文 (2026-09-23,
+                ticket 23).
 
         Returns:
             tuple: (视图消息, 这次截短了几条工具结果).
@@ -423,7 +520,8 @@ class TrimAndSummarize:
             message = history[index]
             content = message.get("content")
             if (
-                message.get("role") == "tool"
+                truncate_tools
+                and message.get("role") == "tool"
                 and index < latest_start  # 正在回答的那段不截
                 and isinstance(content, str)
                 and len(content) > self.tool_result_limit

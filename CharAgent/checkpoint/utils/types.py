@@ -33,12 +33,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import Any
 from uuid import uuid4
 
 from CharAgent.checkpoint.utils.errors import CheckpointConfigError
 from CharAgent.model.utils.types import ModelMessage, ModelToolCall
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 """当前快照格式的版本号 (difficulties #5 向前兼容).
 
 改字段结构的**不兼容**变化就 +1, 并在 utils/migrations.py 写一个「老版本 → 新
@@ -50,20 +51,25 @@ SCHEMA_VERSION = 5
   并新增 source / turn_tokens / turn_elapsed_ms / tool_names 四个调试字段
 - v4: 进度多两样「上下文压缩」的账 —— summary (摘要正文) 与
   summary_covers (它压到第几条). 老帧没有摘要, 补 None / 0 = 「那时候还没压过」
-- v5 (当前): 两件事 —— ① **身份说明不再逐帧抄正文**, 改存一个引用 (prompt_ref:
+- v5: 两件事 —— ① **身份说明不再逐帧抄正文**, 改存一个引用 (prompt_ref:
   名字 + 渲染后正文的 sha256, 见 prompt/ref.py), 正文的唯一定义仍在提示词目录里;
   ② 累计用量多出五个**归因**字段 (input / output / reasoning / cache_hit /
   cache_miss), 它们是 total_tokens 的分解, 供成本归因 (#34) 拆解用. 老帧两样都
   没有: prompt_ref 补 None —— 正文仍在 messages[0] 里, 那正是当时的事实, 不是
   「补不上」; 五个计数器补 None —— 「上游一次都没上报过」, 与 0 是两回事
+- v6 (当前): **两个 `run_id` 各归其位** (ticket 22) —— 帧上那个「哪一次**循环
+  执行**落下的」更名 `loop_id` (存储键一起改; 老帧里的 `run_id` 键按它读), 同时
+  新增一个 `run_id` 指向**记录层**的运行行 (`charagent_runs.run_id`, 可空: 没配
+  记录层的进程就是 None). 老帧补 `run_id=None` —— 「这一帧不属于任何一行账」,
+  与「指向某一行」是两回事
 """
 
-# 标识别符 (thread_id / run_id) 的长度上限与禁用字符 (见 check_identifier)
+# 标识别符 (thread_id / loop_id) 的长度上限与禁用字符 (见 check_identifier)
 _IDENTIFIER_MAX_LEN = 128
 
 
 def check_identifier(name: str, value: str) -> str:
-    """校验 thread_id / run_id: 非空、不太长、不带空白与控制字符.
+    """校验 thread_id / loop_id: 非空、不太长、不带空白与控制字符.
 
     为什么要卡这一关 (与 IdempotencyKey 同一条理由 #17): 这两个值会变成存储里
     的**键名** (Redis 的 key)、**主键与索引** (Postgres 的列) 和**日志字段**.
@@ -221,6 +227,12 @@ class CheckpointMetadata:
         finish_reason / outcome: 最后一次响应为什么停 / 这次 run 为什么结束
             (None 表示当时还没跑完). 两者都存**字符串**而不是枚举: 快照要长期留
             在硬盘上, 枚举的取值 (如 "finished") 才是稳定契约.
+        view: 这一轮**真的发出去**的那份 (上下文视图, ticket 22 第 4 件; 由
+            `agent/compaction.py` 的 `view_payload` 装). 压缩把「账本」与「送给
+            模型的」分成两份, 而帧里原本只有账本 —— 「当时它看到了什么」于是答不
+            上来. 取值见那个函数: `messages` 只在视图**不等于**账本时才带 (None =
+            视图就是账本本身, 不必再抄一份). None = 这一轮没有模型调用 (挂起补做
+            那一轮) 或压根没配压缩策略.
     """
 
     source: CheckpointSource = CheckpointSource.LOOP
@@ -230,6 +242,7 @@ class CheckpointMetadata:
     content: str | None = None
     finish_reason: str | None = None
     outcome: str | None = None
+    view: dict[str, Any] | None = None
 
 
 @dataclass(slots=True)
@@ -239,8 +252,14 @@ class Checkpoint:
     attributes:
         checkpoint_id: 本条存档的编号 (uuid4 hex, 全局唯一).
         thread_id: 属于哪一段对话 —— 一个对话的所有存档排成一条线 (分区键).
-        run_id: 是哪一次运行存下的. 续跑默认沿用原 run_id (「同一个 run 接着
-            跑」), 想另起一次运行就显式传新的 (见 agent/loop.py 的 resume).
+        loop_id: 是哪一次**循环执行**存下的 (loop 自己生成, 一个 run 一个; 续跑
+            默认沿用原 `loop_id` = 「同一个 run 接着跑」, 想另起一次就显式传新的,
+            见 agent/loop.py 的 resume). **一次循环执行的几帧共享同一个 `loop_id`**
+            (每 turn 一帧, `turn_number` 递增).
+        run_id: 这一帧属于**记录层**的哪一行账 (`charagent_runs.run_id` 的外键);
+            None = 不属于任何一行 —— 没配记录层的进程 (框架 CLI 演示)、那一轮没记
+            上账、老帧, 三种都是它. 2026-09-23 (ticket 22) 之前这个位置放的是
+            `loop_id`, 两个 `run_id` 撞名且对不上, 于是改名 + 新增.
         turn_number: 存下它的时候, 已经跑完几轮 (「执行到哪一步」#5).
         state: 进度 (见 CheckpointState).
         metadata: 观察值 (见 CheckpointMetadata).
@@ -255,10 +274,12 @@ class Checkpoint:
 
     checkpoint_id: str
     thread_id: str
-    run_id: str
+    loop_id: str
     turn_number: int
     state: CheckpointState
     metadata: CheckpointMetadata = field(default_factory=CheckpointMetadata)
+    # 记录层那一行的编号 (外键); None = 这一帧不属于任何一行账 (见 attributes)
+    run_id: str | None = None
     parent_id: str | None = None
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     schema_version: int = SCHEMA_VERSION
@@ -268,10 +289,11 @@ class Checkpoint:
         cls,
         *,
         thread_id: str,
-        run_id: str,
+        loop_id: str,
         turn_number: int,
         state: CheckpointState,
         metadata: CheckpointMetadata | None = None,
+        run_id: str | None = None,
         parent_id: str | None = None,
         checkpoint_id: str | None = None,
         created_at: datetime | None = None,
@@ -282,10 +304,13 @@ class Checkpoint:
         (#61 确定性), 随机编号和当前时间会让快照对比失败.
 
         Args:
-            thread_id / run_id: 会话与运行标识 (会被校验, 见 check_identifier).
+            thread_id / loop_id: 会话与循环执行标识 (会被校验, 见 check_identifier).
             turn_number: 已跑完的轮数 (0 表示还没跑过).
             state: 进度.
             metadata: 观察值; None 表示按「普通一帧」记 (source=loop, 其余默认).
+            run_id: 记录层那一行的编号; None = 这一帧不属于任何一行账 (没配记录层 /
+                那一轮没记上 / 老帧). **不校验**: 它是别人发的编号, 校验规则在记录
+                层那边 (这里只当一个不透明的值原样带上).
             parent_id: 上一份存档的编号 (线性续存传它; 新会话传 None).
             checkpoint_id: 显式编号 (测试用; None 表示生成 uuid4 hex).
             created_at: 显式时刻 (测试用; None 表示现在, UTC).
@@ -301,10 +326,11 @@ class Checkpoint:
         return cls(
             checkpoint_id=checkpoint_id or uuid4().hex,
             thread_id=check_identifier("thread_id", thread_id),
-            run_id=check_identifier("run_id", run_id),
+            loop_id=check_identifier("loop_id", loop_id),
             turn_number=turn_number,
             state=state,
             metadata=metadata if metadata is not None else CheckpointMetadata(),
+            run_id=run_id,
             parent_id=parent_id,
             created_at=created_at or datetime.now(UTC),
         )

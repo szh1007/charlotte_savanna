@@ -198,7 +198,28 @@ def _v4_to_v5(body: dict[str, Any]) -> dict[str, Any]:
     return upgraded
 
 
+def _v5_to_v6(body: dict[str, Any]) -> dict[str, Any]:
+    """v5 -> v6: 帧上那个运行编号更名 `loop_id`, 并补上 `run_id=None` (ticket 22).
+
+    两类改动分别是**改名**与**加字段**, 而同一个函数要能同时吃下两种形状:
+
+    - **Postgres 的 body 里本来没有这个键** (它是表列, 不在 `{"state", "metadata"}`
+      里) —— 所以这里用「键在才改」而不是「必须有」, 那个键只出现在 Redis 的整条
+      记录里 (见 serialization 的 encode_record). 少了这个宽容, PG 的老帧会在读
+      回来时被判成畸形.
+    - `run_id=None`: 「这一帧不属于任何一行账」—— 老帧在记录层那条线接线之前就存在,
+      None 是**事实**, 不是补不上 (与 v5 给五个计数器补 None 同一条口径).
+    """
+    upgraded = dict(body)
+    if "run_id" in upgraded:
+        upgraded["loop_id"] = upgraded.pop("run_id")
+    upgraded.setdefault("run_id", None)
+    return upgraded
+
+
+# 注册表 (按版本升序; 每加一版在这里补一条 —— 缺哪一版, 读老帧时就会当场报错)
 MIGRATIONS[1] = _v1_to_v2
 MIGRATIONS[2] = _v2_to_v3
 MIGRATIONS[3] = _v3_to_v4
 MIGRATIONS[4] = _v4_to_v5
+MIGRATIONS[5] = _v5_to_v6

@@ -365,7 +365,7 @@ class FakeRecordSession:
     # --- 写 (记录员那条路) ---
 
     def execute(self, statement: Any, params: Any = None) -> Any:
-        """落一行 (insert) 或刷一列 (update), 都收进「库」里."""
+        """落一行 (insert) 或改几行 (update), 都收进「库」里."""
         table = statement.table.name
         if statement.is_insert:
             # 批量插入走 `params` (消息那批), 单行插入走语句里带的值
@@ -373,8 +373,40 @@ class FakeRecordSession:
             for row in rows:
                 self._remember(table, dict(row))
             return _Affected(1)
+        if statement.is_update:
+            changed = self._apply_update(statement)
+            self.updates.append(table)
+            return _Affected(changed)
         self.updates.append(table)
         return _Affected(1)
+
+    def _apply_update(self, statement: Any) -> int:
+        """把一条 UPDATE 落到假库里匹配的那些行上, 返回改到了几行.
+
+        只认仓储里真实存在的形状: **单表 + 等值条件 + 直接给值**. 真 SQL 的其余语义
+        (复合条件 / 表达式 / 子查询) 由 pg_db 用例拿真库守 —— 这里要的只是让「写完
+        再读回来」成立 (ticket 22 起 `finish` / `set_title` / `touch` 全是 UPDATE).
+
+        读 `_values` 与 `_where_criteria` 这两个非公开属性: 公开的 `compile().params`
+        把 SET 与 WHERE 的绑定参数混在一起 (名字还被加了 `_1` 后缀), 在测试替身里
+        照着语句改内存, 比手写一套 SQL 解析诚实。
+        """
+        entity = self._TABLES[statement.table.name]
+        criteria = {}
+        for expression in statement._where_criteria:
+            column = getattr(expression.left, "name", None)
+            right = getattr(expression, "right", None)
+            if column is not None and right is not None:
+                criteria[column] = getattr(right, "value", None)
+        values = {name: bind.value for name, bind in statement._values.items()}
+        changed = 0
+        for row in self._rows_of(entity) or []:
+            if any(getattr(row, key, None) != value for key, value in criteria.items()):
+                continue
+            for name, value in values.items():
+                setattr(row, name, value)
+            changed += 1
+        return changed
 
     @property
     def params(self) -> dict[str, Any]:
@@ -444,9 +476,30 @@ class FakeRecordDatabase:
     async def connect(self) -> AsyncIterator[FakeRecordSession]:
         yield self.session
 
-    def rows_of(self, table: str) -> list[dict]:
-        """某个表里写进去的那些行 (按写入顺序) —— 断言「写了什么」用."""
+    def written_rows_of(self, table: str) -> list[dict]:
+        """某个表**这次新插了**哪些行 (按插入顺序) —— 断言「没另建行」这类用.
+
+        与 `rows_of` 的区别: 那个答「库里现在有什么」(含预置的行与随后的 UPDATE),
+        这个答「这次写了哪些新行」. 要断「没有多出一行」时只有它能说明问题.
+        """
         return [row for name, row in self.session.rows if name == table]
+
+    def rows_of(self, table: str) -> list[dict]:
+        """某个表**现在**有哪些行 (按写入顺序) —— 断言「库里成了什么样」用.
+
+        读的是**实体的当前状态**, 不是插入那一刻的参数: 仓储从 ticket 22 起会用
+        UPDATE 推进已存在的行 (运行行的终态与 `last_checkpoint_id`、会话行的标题),
+        而那些正是用例要断言的「最终写成了什么」. 没有实体映射的表退回插入流水.
+        """
+        entity = FakeRecordSession._TABLES.get(table)
+        if entity is None:
+            return [row for name, row in self.session.rows if name == table]
+        attribute = {Thread: "threads", Run: "runs", Message: "messages"}[entity]
+        columns = list(entity.__table__.columns.keys())
+        return [
+            {name: getattr(row, name) for name in columns}
+            for row in getattr(self, attribute)
+        ]
 
 
 def record_message(

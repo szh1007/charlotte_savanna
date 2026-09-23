@@ -232,7 +232,14 @@ def test_counter_falls_back_to_the_estimate_for_a_shorter_list() -> None:
 
 
 async def test_under_the_threshold_nothing_is_touched() -> None:
-    """没超阈值: 一个字都不动 (视图内容 = 账本, 不算压缩, 不发事件)."""
+    """没超阈值: 一个字都不动 (视图内容 = 账本, 不算压缩, 不发事件).
+
+    Note:
+        「视图内容 = 账本」只在**还没有摘要**时成立 (这条用例就是这种情形: summary
+        是 None). 压过之后低于阈值的那一轮, 视图仍带着摘要 —— 那才是对的 (见
+        `test_a_turn_that_does_not_cut_still_sends_the_view`), ticket 23 修的就是
+        这个区别.
+    """
     history = _history(50)
     compiled = await _apply(_policy(threshold_tokens=10_000), history)
 
@@ -345,6 +352,11 @@ async def test_compacting_twice_in_a_row_does_not_happen() -> None:
     这一条同时钉住两件事 —— 水位线 (压完确实变小了) 与**锚** (上游回的是压完之后
     那个小请求的用量, 于是锚跟着落到小值; 只按启发式算的话, 一份很长的账本会
     每次都判定超阈值).
+
+    Note:
+        它只断了「不再切一刀」这半边; **另半边** (这一轮发出去的仍是视图、摘要还在
+        里面) 见 `test_a_turn_that_does_not_cut_still_sends_the_view` —— 两者分开
+        之前, 这半边正是 ticket 23 那个每隔一轮失效的循环.
     """
     counter = AnchorTokenCounter()
     policy = _policy(
@@ -382,6 +394,61 @@ async def test_compacting_twice_in_a_row_does_not_happen() -> None:
 
     assert second.compacted is False
     assert second.summary == first.summary  # 没重压, 摘要原样带回来
+
+
+async def test_a_turn_that_does_not_cut_still_sends_the_view() -> None:
+    """没切新刀的那一轮**也要投影**: 发出去的仍是「摘要 + 摘要之后的一切」.
+
+    上一条断的是「刚压完别立刻再压」(滞回), 这一条断的是**另一半**: 不切 ≠ 不投影.
+    两者分开之前, 真机上踩到的形状是 (2026-09-23, ticket 23; 八轮模拟: 2 压 3 跳、
+    4 压 5 跳……):
+
+      - 压完那一轮发的是小视图 → 上游回报的 input_tokens 小 → 锚落到小值
+      - 下一轮估算 (小锚 + 增量) 低于阈值 → 判定「不用再切」→ 旧实现把**全量账本**
+        原样发了出去, 摘要那条根本不带上, 视图就此每隔一轮失效一次
+      - 而账本随即把锚顶回大值 → 再下一轮又超阈值 → 又切一刀 (又烧一次摘要)
+
+    修法是两件事分家: **投影每轮都做** (视图 = system + 摘要 + 摘要没覆盖到的一切),
+    「再切一刀」(扩大覆盖 + 重压摘要) 才需要阈值说话. 于是在这里断言: 这一轮没切
+    (compacted=False), 但发出去的**不是**账本本身, 而且摘要还在里面.
+    """
+    counter = AnchorTokenCounter()
+    policy = _policy(
+        threshold_tokens=1000, keep_recent_questions=1, watermark_ratio=0.5
+    )
+    summarizer = MockLLM.scripted([text_response("早前聊的是查订单")])
+    history = _history(300, 300, 300)
+
+    first = await policy.apply(
+        history,
+        summary=None,
+        summary_covers=0,
+        counter=counter,
+        summarizer=summarizer,
+    )
+    assert first.summarized is True
+    counter.note_usage(
+        Usage(input_tokens=first.estimated_tokens), message_count=len(history)
+    )
+
+    grown = [*history, *_unit(9, size=20)]
+    assert counter.count(grown) < policy.threshold_tokens, "这一轮确实低于阈值"
+
+    second = await policy.apply(
+        grown,
+        summary=first.summary,
+        summary_covers=first.summary_covers,
+        counter=counter,
+        summarizer=summarizer,
+    )
+
+    assert second.compacted is False, "没切新刀 (既没裁也没截)"
+    assert second.messages[0] is grown[0], "system 仍是原来那条 (身份)"
+    assert any(
+        "早前聊的是查订单" in str(message.get("content")) for message in second.messages
+    ), "摘要必须还在视图里 —— 它是上一次压缩的成果, 不是一次性的"
+    assert len(second.messages) < len(grown), "不能再把全量账本原样发出去"
+    assert _wire_legal(second.messages)
 
 
 async def test_scrolling_summary_feeds_the_previous_summary_back() -> None:
@@ -585,7 +652,7 @@ async def test_the_model_gets_the_view_while_the_ledger_stays_whole() -> None:
         compactor=_seam_policy(summarizer=_stub_summarizer("早前查过订单")),
     )
 
-    result = await loop.run(history, run_id="run-compaction")
+    result = await loop.run(history, loop_id="loop-compaction")
 
     view = seen[0]
     assert len(view) < len(history)  # 送出去的那份短了
@@ -593,6 +660,84 @@ async def test_the_model_gets_the_view_while_the_ledger_stays_whole() -> None:
     assert "摘要" in str(view[1].get("content"))  # 摘要占了一条 system
     # 账本 (返回值 / 快照) 仍是全量: 已经发生过的事一条不少
     assert result.messages[: len(history)] == history
+
+
+async def test_the_frame_remembers_what_was_actually_sent() -> None:
+    """帧里记着**这一轮真的发出去的那一份** (ticket 22 第 4 件).
+
+    压缩把「账本」与「送给模型的」分成两份, 而帧里原本只有账本 —— 「当时它看到了
+    什么」(L3 要回答的那句) 因此答不上来. 这一条断的是: **视图与账本不一样的那些
+    轮, 帧里记着的那份与模型实际收到的逐条一致** (拿模型替身的调用记录比 —— 视图
+    是内部产物, 只有站在模型的位置才看得见).
+
+    两帧正好是判据的两侧: **第一轮没切刀** (低于阈值) → 视图就是账本, `messages`
+    记 None; **第二轮切了一刀** (工具结果把它顶过线) → 裁段 + 摘要顶上来, 视图
+    明显短于账本, `messages` 把那份留下来.
+    """
+    saver = InMemoryCheckpointSaver()
+    thread_id = "thread-view-in-frame"
+    model = MockLLM.scripted(
+        [
+            tool_call_response(make_tool_call("query_order", '{"order_no": "1"}')),
+            text_response("答完了"),
+        ]
+    )
+    loop = AgentLoop(
+        model=model,
+        tools=[BIG_TOOL],
+        # 阈值卡在两次决策之间: 第一次不压, 工具结果把它顶过线
+        compactor=_policy(
+            threshold_tokens=900, summarizer=_stub_summarizer("压过一段")
+        ),
+        saver=saver,
+        thread_id=thread_id,
+    )
+
+    await loop.run(_history(300, 300), loop_id="loop-view")
+
+    frames = await saver.list_history(thread_id)
+    assert len(frames) == 2
+    first, second = frames
+
+    # 第一帧: 没切刀, 视图与账本逐条相同 → 不抄第二份
+    assert first.metadata.view is not None, "这一轮有模型调用, 视图就该记下来"
+    assert first.metadata.view["messages"] is None
+    assert (first.metadata.view["dropped"], first.metadata.view["truncated"]) == (0, 0)
+
+    # 第二帧: 切了一刀 —— 留下的那份与模型第二次决策实际收到的逐条一致
+    sent = second.metadata.view["messages"]
+    assert sent is not None, "视图与账本不一样, 这一份必须留下来"
+    assert sent == model.calls[-1]["messages"]
+    assert any("压过一段" in str(m.get("content")) for m in sent), "摘要那条在场"
+    assert second.metadata.view["dropped"] > 0
+    assert len(sent) < len(second.state.messages), "视图比账本短 (这就是它存在的意义)"
+    assert second.metadata.view["estimated_tokens"] > 0
+
+
+async def test_a_view_identical_to_the_ledger_is_not_copied_into_the_frame() -> None:
+    """视图与账本一模一样时, 帧里**不抄第二份**: `messages` 给 None.
+
+    语义是「**视图就是账本本身**」: 帧里已经有全量账本 (`state.messages`), 再抄一份
+    会让每帧体积翻倍 —— 而审计价值全在视图真不一样的那些轮. 判据是**直接比**, 不看
+    `compacted`: 后者今天恰好等价, 但那是 view-oscillation 那条缺陷的副产品 (见
+    `view_payload`).
+    """
+    saver = InMemoryCheckpointSaver()
+    thread_id = "thread-view-same-as-ledger"
+    # 阈值与截断线都调得极高: 不裁段也不截工具结果 → 视图与账本逐条相同
+    loop = AgentLoop(
+        model=MockLLM.scripted([text_response("答完了")]),
+        compactor=_policy(threshold_tokens=10**6, tool_result_limit=10**6),
+        saver=saver,
+        thread_id=thread_id,
+    )
+
+    await loop.run(_history(300), loop_id="loop-same")
+
+    [frame] = await saver.list_history(thread_id)
+    assert frame.metadata.view is not None
+    assert frame.metadata.view["messages"] is None
+    assert (frame.metadata.view["dropped"], frame.metadata.view["truncated"]) == (0, 0)
 
 
 async def test_the_authoritative_usage_is_fed_back_into_the_counter() -> None:
@@ -746,7 +891,7 @@ async def test_the_summary_rides_along_with_the_checkpoint() -> None:
         saver=saver,
         thread_id=thread_id,
     )
-    await loop.run(history, run_id="run-compaction")
+    await loop.run(history, loop_id="loop-compaction")
 
     frame = await saver.load_latest(thread_id)
     assert frame is not None
@@ -804,7 +949,7 @@ async def test_a_resumed_run_does_not_re_compact_what_was_already_summarized() -
         saver=saver,
         thread_id=thread_id,
     )
-    await loop.run(history, run_id="run-compaction")
+    await loop.run(history, loop_id="loop-compaction")
     frame = await saver.load_latest(thread_id)
     assert frame is not None
 
@@ -845,7 +990,7 @@ async def test_frames_before_the_compaction_stay_as_they_were() -> None:
     )
     history = _history(300, 300)
 
-    await loop.run(history, run_id="run-compaction")
+    await loop.run(history, loop_id="loop-compaction")
 
     frames = await saver.list_history(thread_id)
     assert len(frames) == 2  # 一次决策一帧, 没多也没少

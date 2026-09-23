@@ -47,7 +47,7 @@ def make_frame(
     fields = {
         "thread_id": thread_id,
         "checkpoint_id": f"{thread_id}-{name}",
-        "run_id": f"{thread_id}-run",
+        "loop_id": f"{thread_id}-loop",
         "turn_number": turn,
         "created_at": datetime(2026, 9, 13, 10, 0, tzinfo=UTC)
         + timedelta(minutes=minutes),

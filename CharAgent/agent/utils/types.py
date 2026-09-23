@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import Any
 
 from CharAgent.model.utils.types import (
     FinishReason,
@@ -95,8 +96,16 @@ class LoopState:
         truncation_count: 已发生的 length 截断处理次数.
         total_tokens: 全 run 累计 usage (无 usage 的调用计 0; 续跑时接着累计).
         done: 循环是否结束 (分支方法置 True 表示这次 run 到此为止).
-        run_id: 本次运行的编号 (配了 checkpoint saver 才有; 续跑时默认沿用快照里
-            的 run_id —— 表示「还是同一次运行接着跑」).
+        loop_id: 本次**循环执行**的编号 (配了 checkpoint saver 才有; 续跑时默认沿用
+            快照里的 `loop_id` —— 表示「还是同一次执行接着跑」). 落进每一帧的
+            `loop_id` 列, 一个 run 的几帧共享它.
+        run_id: 本次运行在**记录层**是哪一行 (`charagent_runs.run_id`); 由会话层
+            在建行时定下 (`RunRecorder.begin`), 框架只当一个不透明的值盖到每一帧上.
+            None = 这一轮没记账 (没配记录层 / 建行没成).
+        view: 这一轮**真的发出去**的那份 (装好的观察值, 见 `compaction.view_payload`);
+            每轮覆盖, 落帧时进 `CheckpointMetadata.view` (ticket 22 第 4 件) ——
+            「当时它发出去的是什么」由此可查. None = 这一轮还没投影过 (挂起补做那
+            一轮没有模型调用) 或压根没配压缩策略.
         last_checkpoint_id: 最近落盘那一帧快照的编号. 下一帧的 parent_id 指向它,
             于是同一会话的快照串成一条链; 从老快照恢复时链就从那里岔出去, 形成
             新分支 (#5 time-travel).
@@ -127,8 +136,10 @@ class LoopState:
     truncation_count: int = 0
     total_tokens: int = 0
     done: bool = False
+    loop_id: str | None = None
     run_id: str | None = None
     last_checkpoint_id: str | None = None
+    view: dict[str, Any] | None = None
     summary: str | None = None
     summary_covers: int = 0
     prompt_ref: dict[str, str] | None = None

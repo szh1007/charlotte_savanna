@@ -624,7 +624,7 @@ async def test_hydration_seals_a_tool_call_that_never_got_its_result() -> None:
     await saver.save(
         Checkpoint.create(
             thread_id=thread_id,
-            run_id="run-1",
+            loop_id="loop-1",
             turn_number=1,
             state=CheckpointState(
                 messages=[
@@ -719,11 +719,19 @@ async def test_the_session_hands_every_run_to_the_recorder() -> None:
     class Recorder:
         """记下每次被调用的形状 (与 db/recorder.py 的协议同款)."""
 
+        async def begin(self, *, thread_id: str, title: str = "") -> str | None:
+            """开账那一拍 (ticket 22): 交一个固定编号.
+
+            不记进 `calls` —— 各用例断的是收尾那一拍.
+            """
+            return "run-1"
+
         async def record(
             self,
             *,
             thread_id: str,
             result: Any,
+            run_id: str | None = None,
             since: int = 0,
             summary: str | None = None,
             model: str | None = None,
@@ -737,6 +745,7 @@ async def test_the_session_hands_every_run_to_the_recorder() -> None:
             thread_id: str,
             question: str,
             status: Any,
+            run_id: str | None = None,
             model: str | None = None,
         ) -> bool:
             calls.append((thread_id, -1, question))
@@ -766,11 +775,19 @@ async def test_the_session_tells_the_recorder_which_model_ran() -> None:
     class Recorder:
         """只关心 model 那一个参数的记录员."""
 
+        async def begin(self, *, thread_id: str, title: str = "") -> str | None:
+            """开账那一拍 (ticket 22): 交一个固定编号.
+
+            不记进 `calls` —— 各用例断的是收尾那一拍.
+            """
+            return "run-1"
+
         async def record(
             self,
             *,
             thread_id: str,
             result: Any,
+            run_id: str | None = None,
             since: int = 0,
             summary: str | None = None,
             model: str | None = None,
@@ -784,6 +801,7 @@ async def test_the_session_tells_the_recorder_which_model_ran() -> None:
             thread_id: str,
             question: str,
             status: Any,
+            run_id: str | None = None,
             model: str | None = None,
         ) -> bool:
             seen.append(model)
@@ -808,11 +826,19 @@ async def test_an_interrupted_run_is_recorded_as_unfinished() -> None:
     class Recorder:
         """只关心「没答完」那条路 (record 这一轮走不到)."""
 
+        async def begin(self, *, thread_id: str, title: str = "") -> str | None:
+            """开账那一拍 (ticket 22): 交一个固定编号.
+
+            不记进 `calls` —— 各用例断的是收尾那一拍.
+            """
+            return "run-1"
+
         async def record(
             self,
             *,
             thread_id: str,
             result: Any,
+            run_id: str | None = None,
             since: int = 0,
             summary: str | None = None,
             model: str | None = None,
@@ -826,6 +852,7 @@ async def test_an_interrupted_run_is_recorded_as_unfinished() -> None:
             thread_id: str,
             question: str,
             status: Any,
+            run_id: str | None = None,
             model: str | None = None,
         ) -> bool:
             calls.append((question, status))
@@ -862,11 +889,19 @@ async def test_only_a_fresh_summary_is_handed_to_the_recorder() -> None:
     class Recorder:
         """只关心 summary 那一个参数的记录员."""
 
+        async def begin(self, *, thread_id: str, title: str = "") -> str | None:
+            """开账那一拍 (ticket 22): 交一个固定编号.
+
+            不记进 `calls` —— 各用例断的是收尾那一拍.
+            """
+            return "run-1"
+
         async def record(
             self,
             *,
             thread_id: str,
             result: Any,
+            run_id: str | None = None,
             since: int = 0,
             summary: str | None = None,
             model: str | None = None,
@@ -880,6 +915,7 @@ async def test_only_a_fresh_summary_is_handed_to_the_recorder() -> None:
             thread_id: str,
             question: str,
             status: Any,
+            run_id: str | None = None,
             model: str | None = None,
         ) -> bool:
             return True

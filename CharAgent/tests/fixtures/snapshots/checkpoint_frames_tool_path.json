@@ -1,9 +1,10 @@
 [
   {
-    "schema_version": 5,
+    "schema_version": 6,
     "checkpoint_id": "<id>",
     "thread_id": "snapshot-thread",
-    "run_id": "run-snapshot",
+    "loop_id": "loop-snapshot",
+    "run_id": null,
     "turn_number": 1,
     "parent_id": null,
     "created_at": "<ts>",
@@ -56,14 +57,16 @@
       ],
       "content": null,
       "finish_reason": "tool_calls",
-      "outcome": null
+      "outcome": null,
+      "view": null
     }
   },
   {
-    "schema_version": 5,
+    "schema_version": 6,
     "checkpoint_id": "<id>",
     "thread_id": "snapshot-thread",
-    "run_id": "run-snapshot",
+    "loop_id": "loop-snapshot",
+    "run_id": null,
     "turn_number": 2,
     "parent_id": "<id>",
     "created_at": "<ts>",
@@ -118,7 +121,8 @@
       "tool_names": [],
       "content": "您的订单 **20260701123456** 状态如下：\n\n- **状态**：已发货\n- **承运商**：顺丰\n- **运单号**：SF1234567890\n\n您可以用这个运单号在顺丰官网或小程序上查看实时物流轨迹。如需我帮您做其他操作（比如退款），请告诉我。",
       "finish_reason": "stop",
-      "outcome": "finished"
+      "outcome": "finished",
+      "view": null
     }
   }
 ]

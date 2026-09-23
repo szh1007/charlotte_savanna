@@ -22,6 +22,7 @@ import pytest
 from helpers import make_checkpoint, make_metadata, make_state
 from mock_llm import ScriptedModel, make_tool_call, text_response, tool_call_response
 
+from CharAgent.agent.compaction import TrimAndSummarize
 from CharAgent.agent.guard import LoopGuard
 from CharAgent.agent.loop import AgentLoop
 from CharAgent.agent.utils.errors import LoopConfigError
@@ -138,13 +139,13 @@ async def test_frame_records_identity_and_observation_fields():
         [make_counting_tool().tool],
     )
 
-    await loop.run([{"role": "user", "content": "订单到哪了"}], run_id="run-x")
+    await loop.run([{"role": "user", "content": "订单到哪了"}], loop_id="loop-x")
 
     frames = await frames_of(loop._saver, "t-1")
     mid_run = frame_for_turn(frames, 1)
     finished = frame_for_turn(frames, 2)
     assert mid_run.thread_id == "t-1"
-    assert mid_run.run_id == "run-x"
+    assert mid_run.loop_id == "loop-x"
     # 进度里只有「接着跑要用的」: 结束原因这类观察值在 metadata 里
     assert not hasattr(mid_run.state, "outcome")
     # 跑一半的帧写「还没结束」, 跑完的帧才写结束原因
@@ -345,8 +346,8 @@ async def test_time_travel_from_older_checkpoint_creates_branch():
         [counting.tool],
         saver=saver,
     )
-    # 另起一次运行 (run_id 传给 resume): 分支不只是换个说法, 也是一次新执行
-    branched = await branched_loop.resume(origin, run_id="run-branch")
+    # 另起一次执行 (loop_id 传给 resume): 分支不只是换个说法, 也是一次新执行
+    branched = await branched_loop.resume(origin, loop_id="loop-branch")
 
     assert branched.content == "换个说法: 订单 A 已发货"
     assert counting.calls == ["A"]  # 回到第一帧后, 那次工具调用还在历史里, 不重跑
@@ -355,7 +356,7 @@ async def test_time_travel_from_older_checkpoint_creates_branch():
     assert len(frames) == 3
     new_line = next(frame for frame in frames if frame.checkpoint_id not in known)
     assert new_line.parent_id == origin.checkpoint_id  # 挂在老帧下面 = 新分支
-    assert new_line.run_id == "run-branch"
+    assert new_line.loop_id == "loop-branch"
     assert new_line.metadata.source is CheckpointSource.FORK
     assert old_line.parent_id == origin.checkpoint_id  # 老分支还在, 没被覆盖
 
@@ -465,6 +466,33 @@ async def test_resume_saves_a_frame_for_the_completed_pending_turn():
     assert completed.metadata.source is CheckpointSource.SUSPENSION
     assert completed.metadata.tool_names == ["query_order"]
     assert completed.state.messages[-1]["role"] == "tool"
+
+
+async def test_the_completed_pending_turn_has_no_view_in_its_frame() -> None:
+    """补做那一轮**没有模型调用** → 帧里那份「当时发出去的」是 None, 不是上一轮的.
+
+    ticket 22 第 4 件点名的一条. `state.view` 每轮覆盖, 而挂起补做这轮**不投影**
+    —— 不显式置 None 的话, 上一轮那份会跟着落进这一帧, 读起来像「这一轮发了它」.
+    配了压缩策略才说明问题 (没配时整份恒为 None, 两种原因分不开).
+    """
+    counting = make_counting_tool()
+    saver = InMemoryCheckpointSaver()
+    checkpoint = await save_suspended_checkpoint(saver)
+    loop = make_loop(
+        ScriptedModel([text_response("已发货")]),
+        [counting.tool],
+        saver=saver,
+        compactor=TrimAndSummarize(),
+    )
+
+    await loop.resume(checkpoint)
+
+    frames = await frames_of(saver, "t-1")
+    completed = frame_for_turn(frames, 2)  # 补做的那轮
+    answered = frame_for_turn(frames, 3)  # 补做之后模型作答那一轮
+    assert completed.metadata.source is CheckpointSource.SUSPENSION
+    assert completed.metadata.view is None, "补做那轮没投影, 不该抄上一轮那份"
+    assert answered.metadata.view is not None, "作答那轮有模型调用, 视图照记"
 
 
 async def test_plain_run_does_not_complete_history_pending_calls():

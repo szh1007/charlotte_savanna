@@ -514,15 +514,27 @@ def test_v2_migration_moves_non_null_observation_values():
 
 
 def test_old_snapshots_report_current_schema_version():
-    """读回来的老快照在内存里已是当前版本 (升级过就不再是老的)."""
+    """读回来的老快照在内存里已是当前版本 (升级过就不再是老的).
+
+    v5 也进了这张名单 (2026-09-23, ticket 22): 它从「当前格式」变成了「老格式」——
+    而它那份样本正好带着 v6 要改的那个键 (`run_id` = 当时的循环编号), 于是下面
+    顺手把「改名之后编号没丢」也钉住.
+    """
     for name in (
         "checkpoint_v1.json",
         "checkpoint_v2.json",
         "checkpoint_v3.json",
         "checkpoint_v4.json",
+        "checkpoint_v5.json",
     ):
         checkpoint = DEFAULT_CODEC.decode_record(read_fixture(name))
         assert checkpoint.schema_version == SCHEMA_VERSION
+
+    # v5 帧里那个 `run_id` 是**当时的循环编号**, v6 起它叫 `loop_id` —— 升级之后
+    # 编号必须原样还在, 而新的 `run_id` (记录层那一行) 补 None (那时候还没有它)
+    upgraded = DEFAULT_CODEC.decode_record(read_fixture("checkpoint_v5.json"))
+    assert upgraded.loop_id == "run-v5"
+    assert upgraded.run_id is None
 
 
 def test_v4_progress_keeps_only_resume_inputs():
@@ -568,23 +580,38 @@ def test_a_v3_snapshot_reads_back_without_a_summary():
 
 
 def test_serialized_record_matches_fixture():
-    """序列化产物与 fixtures/checkpoint_v5.json 逐字一致 (改格式必须是有意的).
+    """序列化产物与 fixtures/checkpoint_v6.json 逐字一致 (改格式必须是有意的).
 
     这个用例红了怎么办: 先确认格式变更是有意为之, 再重新生成 fixture —— 顺手
     也要判断「老快照还读得回来吗」, 读不回来就得加一个迁移函数并把
-    SCHEMA_VERSION +1 (见 utils/migrations.py). v1~v4 的 fixture 留着不删: 它们是
+    SCHEMA_VERSION +1 (见 utils/migrations.py). v1~v5 的 fixture 留着不删: 它们是
     「老快照读得回来」那些用例的样本 (见上面几条).
 
-    它同时钉住 v5 帧的**目标形状**: 身份说明的正文不在 messages 里 (只剩 prompt_ref
+    它同时钉住 v6 帧的**目标形状**: 身份说明的正文不在 messages 里 (只剩 prompt_ref
     那个引用) —— 那是**造帧的人**摘的 (prompt/ref.py 的 detach_identity), 编解码器
-    只负责原样写出来.
+    只负责原样写出来; 以及**两个编号各占一个键** (`loop_id` = 哪次循环执行,
+    `run_id` = 记录层哪一行, 可空 —— 见 ticket 22).
     """
-    expected = (FIXTURES / "checkpoint_v5.json").read_text(encoding="utf-8")
-    checkpoint = DEFAULT_CODEC.decode_record(read_fixture("checkpoint_v5.json"))
+    expected = (FIXTURES / "checkpoint_v6.json").read_text(encoding="utf-8")
+    checkpoint = DEFAULT_CODEC.decode_record(read_fixture("checkpoint_v6.json"))
 
     assert DEFAULT_CODEC.dumps(
         DEFAULT_CODEC.encode_record(checkpoint), indent=2
     ) == expected.rstrip("\n")
+
+
+def test_the_two_ids_roundtrip_separately():
+    """两个编号各走各的键, 往返都不串 (`loop_id` 必填, `run_id` 可空).
+
+    ticket 22 之后帧上同时有两个: 循环执行那个 (必填, 老键 `run_id` 改名而来) 与
+    记录层那一行 (可空, 指向 `charagent_runs`). 这里断的是**非空**的那一半 ——
+    fixture 与快照都是 null, 少了这条就没人守「有值时也写得进读得出」.
+    """
+    checkpoint = make_checkpoint(loop_id="loop-1", run_id="run-1")
+
+    restored = DEFAULT_CODEC.decode_record(DEFAULT_CODEC.encode_record(checkpoint))
+
+    assert (restored.loop_id, restored.run_id) == ("loop-1", "run-1")
 
 
 def test_fixture_suspension_agrees_with_pending_extraction():

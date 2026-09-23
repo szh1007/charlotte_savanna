@@ -234,6 +234,23 @@ runs = Table(
         comment="失败原因 (结构化: code + message), 供审计与降级判断",
     ),
     Column(
+        "last_checkpoint_id",
+        String(128),
+        # `use_alter=True`: 这一列与 `checkpoints.run_id` 互为外键, 两张表之间**无解
+        # 的环**. SQLAlchemy 因此不能靠拓扑排序决定建表顺序 —— 标上它, 这条约束会
+        # 被推迟成建表之后的 `ALTER TABLE` (不标的话 `create_all` 只报一条
+        # 「unresolvable cycles」警告, 然后**跳过**这条约束: 库里少一个外键, 而
+        # 没有任何地方会红). 迁移脚本里本来写的就是 ALTER, 不受影响.
+        ForeignKey(
+            "charagent_checkpoints.checkpoint_id",
+            ondelete="SET NULL",
+            use_alter=True,
+        ),
+        nullable=True,
+        comment="这一段运行落的**最后一帧** (快照); 顺它的 parent_id 往回走就是本次"
+        "运行落的全部帧 —— NULL = 没配快照存储 (或一帧都没落成)",
+    ),
+    Column(
         "created_at",
         DateTime(timezone=True),
         nullable=False,
@@ -422,7 +439,20 @@ checkpoints = Table(
         nullable=False,
         comment="所属会话 (分区键: 一个会话的所有快照排成一条线)",
     ),
-    Column("run_id", String(128), nullable=False, comment="是哪一次运行存下的"),
+    Column(
+        "loop_id",
+        String(128),
+        nullable=False,
+        comment="哪一次循环执行存下的 (一次循环执行的几帧共享; 续跑沿用)",
+    ),
+    Column(
+        "run_id",
+        String(128),
+        ForeignKey("charagent_runs.run_id", ondelete="SET NULL"),
+        nullable=True,
+        comment="归属记录层的哪一行账 (charagent_runs); NULL = 不属于任何一行 "
+        "(没配记录层的进程 / 那一轮没记上账 / 老帧)",
+    ),
     Column(
         "turn_number",
         Integer,
