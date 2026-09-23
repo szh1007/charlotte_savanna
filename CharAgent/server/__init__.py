@@ -41,6 +41,8 @@
 
     class MySessions:                       # 插座二: 上下文 → 会话
         async def provide(self, context, *, event_sink):
+            # 快照后端是 Postgres 时还要给 `database=` (记录层): 帧的 thread_id
+            # 指向记录层的 charagent_threads, 那一行由记录员的 begin 建 (ticket 24)
             return ChatSession(model, saver=saver, tools=..., event_sink=event_sink,
                                thread_id=context.thread_id)
 

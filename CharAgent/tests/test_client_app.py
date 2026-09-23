@@ -32,9 +32,11 @@ import pytest
 from mock_llm import MockLLM, make_tool_call, text_response, tool_call_response
 
 from CharAgent.checkpoint import InMemoryCheckpointSaver
+from CharAgent.checkpoint.postgres import PostgresCheckpointSaver
 from CharAgent.client import app
 from CharAgent.client.app import KillSwitch, build_saver_for, main, parse_argv
 from CharAgent.client.utils.types import DEFAULT_THREAD_ID, CliOptions
+from CharAgent.db.recorder import ConversationRecorder
 from CharAgent.model import HttpXChatModel, ModelConfigError, ModelConnectionError
 from CharAgent.model.utils.types import FinishReason, ModelMessage, ModelResponse
 from CharAgent.retry import RetryingChatModel
@@ -138,6 +140,22 @@ def test_build_saver_follows_the_explicit_backend() -> None:
     saver = build_saver_for(CliOptions(backend="memory"))
 
     assert isinstance(saver, InMemoryCheckpointSaver)
+
+
+def test_only_the_postgres_backend_gets_a_recorder() -> None:
+    """记录员只在 Postgres 快照后端下挂上 (ticket 24).
+
+    为什么值得一条用例: 帧的 `thread_id` 指着记录层的 `charagent_threads`, 而 CLI
+    里**只有记录员**会建那一行 —— 漏挂它, 现象是「第一句问话报一个外键错」, 与真因
+    (装配处少挂一件东西) 看着毫无关系. 反向那一半同样要钉: 内存 / Redis 后端的帧
+    不落那个库, 不该为此多写一张表.
+
+    只验装配 (不连服务): `PostgresCheckpointSaver` 构造是懒的, 不碰库.
+    """
+    postgres = PostgresCheckpointSaver(dsn="postgresql+psycopg://u:p@127.0.0.1/db")
+
+    assert isinstance(app._recorder_for(postgres), ConversationRecorder)
+    assert app._recorder_for(InMemoryCheckpointSaver()) is None
 
 
 # ---------------------------------------------------------------------------

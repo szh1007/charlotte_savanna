@@ -30,7 +30,7 @@ from CharAgent.checkpoint.config import postgres_dsn
 from CharAgent.checkpoint.postgres import PostgresCheckpointSaver
 from CharAgent.checkpoint.utils.errors import CheckpointConfigError
 from CharAgent.db import PgDatabase
-from CharAgent.db.schema import CHECKPOINTS_TABLE_NAME as CHECKPOINTS_TABLE
+from CharAgent.db.schema import threads
 from CharAgent.model import HttpXChatModel
 
 
@@ -172,36 +172,72 @@ async def db(_admin_url) -> AsyncIterator[PgDatabase]:
         )
 
 
-def _delete_thread_frames(pg_dsn, thread_id: str) -> None:
-    """删掉某个会话的全部快照 (同步执行, 由调用方放进线程)."""
+def _ensure_thread_row(url, thread_id: str) -> None:
+    """给这个会话号建一行 threads (同步执行, 由调用方放进线程).
+
+    ticket 24 起帧的 `thread_id` 有了外键 (ON DELETE CASCADE), 于是「只写快照、
+    不建会话行」不再可行 —— 这一步就是那条行为契约在测试里的落地.
+
+    连表一起建 (`checkfirst=True`, 用的就是 db/schema.py 那份定义): 新环境里表
+    可能还没建, 而本 fixture 不保证排在 `pg_saver` 后面 (先后由用例签名决定),
+    少这一步就会把「表还没建」变成一个外键错误 —— 报错与真因毫无关系.
+    """
+    engine = create_engine(url, poolclass=pool.NullPool)
+    try:
+        with engine.begin() as connection:
+            threads.create(connection, checkfirst=True)
+            connection.execute(
+                threads.insert().values(
+                    thread_id=thread_id,
+                    tenant_id="test-tenant",
+                    user_id="test-user",
+                )
+            )
+    finally:
+        engine.dispose()
+
+
+def _delete_thread_row(pg_dsn, thread_id: str) -> None:
+    """删掉这个会话的行 (它的帧跟着 CASCADE 走; 同步执行, 由调用方放进线程)."""
     try:
         with psycopg.connect(conninfo(pg_dsn), autocommit=True) as conn:
+            # 表名从 Table 对象上取 (不抄字面量): schema.py 那份定义是唯一来源,
+            # 这里抄一份就又多了个会漂移的地方 —— 上面那句 insert 用的就是它
             conn.execute(
-                f"DELETE FROM {CHECKPOINTS_TABLE} WHERE thread_id = %s", (thread_id,)
+                f"DELETE FROM {threads.name} WHERE thread_id = %s", (thread_id,)
             )
     except psycopg.errors.UndefinedTable:
-        # 表还不存在 = 这次运行一帧都没存过, 本来就没东西要删
+        # 表还不存在 = 这次运行根本没写过库, 本来就没东西要删
         return
 
 
 @pytest_asyncio.fixture
-async def pg_thread_id() -> AsyncIterator[str]:
-    """发一个**唯一**的会话号, 用完把这个会话的快照从表里删掉.
+async def pg_thread_id(request) -> AsyncIterator[str]:
+    """发一个**唯一**的会话号, 用完把这个会话 (连同它的帧) 从表里删掉.
 
     唯一是关键: 用例之间靠会话号隔离, 不必清空整张表 (开发库里可能还有别人
     —— 比如手工演示 —— 留下的数据, 不能顺手抹掉).
 
-    这个 fixture 本身**不连库** (发号复用性): 没配 Postgres 时它就只发一个号,
-    收尾时静默跳过删除 —— 于是内存 / Redis 的用例也能用它拿一个干净的分区键.
+    **标了 `pg` 的用例还会得到一行 threads** (ticket 24): 帧的 `thread_id` 有外键
+    之后, 写 PG 的用例必须先有会话行; 而内存 / Redis 那几组参数 (同一个 fixture
+    也被 test_checkpoint_backends 的参数化用着) 不该因为共用一个 fixture 就往
+    开发库里写一行. 判据用**标记**而不是「签名里有没有 pg_saver」: 标记是 pytest
+    的正规表达 (参数化上挂的 `marks=` 也算), fixture 名字则是内部实现.
+
+    这个 fixture 没配 Postgres 时**只发号不连库**: 建行与删行都静默跳过 ——
+    于是内存 / Redis 的用例照样能用它拿一个干净的分区键.
     """
     thread_id = f"test-{uuid4().hex}"
-    yield thread_id
     _load_root_dotenv()
     try:
         dsn = postgres_dsn(os.environ)
     except CheckpointConfigError:
+        yield thread_id
         return
-    await asyncio.to_thread(_delete_thread_frames, dsn, thread_id)
+    if request.node.get_closest_marker("pg") is not None:
+        await asyncio.to_thread(_ensure_thread_row, dsn, thread_id)
+    yield thread_id
+    await asyncio.to_thread(_delete_thread_row, dsn, thread_id)
 
 
 @pytest_asyncio.fixture

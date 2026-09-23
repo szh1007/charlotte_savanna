@@ -124,8 +124,8 @@ class Base(DeclarativeBase):
     """
 
     # 自己不映射任何表 (基类不是实体): 五张业务表分别由下面的五个子类认领.
-    # (`charagent_migrations` 那张审计表**没有实体** —— 它是运维设施, 由 alembic
-    # 的钩子直接写, 没有业务代码去读它.)
+    # (`charagent_migrations` 那张版本表**没有实体** —— 它是 alembic 的设施
+    # (ticket 24 起兼作审计表), 由它的钩子直接写, 没有业务代码去读它.)
     # 少了这一行, SQLAlchemy 会试着给基类也找一张表, 找不到就报错.
     __abstract__ = True
     # 认领 schema.py 那份 metadata (表定义与迁移体系的唯一来源)

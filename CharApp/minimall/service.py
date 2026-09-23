@@ -268,6 +268,10 @@ class MinimallService:
             会话照常能问答, 只是「重启后拿回历史」与「会话列表」没有落点.
             给了它就顺便决定了两件事: 每轮问答的账写进记录表 (见 db/recorder.py),
             以及服务进程多一条 `GET /conversations` 路由.
+            **注意 `saver` 是 Postgres 时 `None` 是条被堵死的组合** (ticket 24):
+            帧的 `thread_id` 指向记录层的 `charagent_threads`, 而不记账就没人建
+            那一行, 第一句问话会以外键失败告终. 上面那句「照常能问答」只在
+            memory / redis 快照后端下成立.
         model_name: 模型名覆盖; None 表示听 .env 的 DEEPSEEK_MODEL_NAME.
         thinking: 思考模式开关; None 表示不传 (上游默认开启). 服务端从
             `CHARAPP_THINKING` 读, 命令行入口从 `--no-thinking` 读 (两边都不填时

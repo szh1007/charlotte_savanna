@@ -167,7 +167,9 @@ def create_app(
             `GET /history` 就读记录表, 并且多出 `GET /conversations` 这条路由;
             None (默认) 表示这个应用没有记录层 —— `/history` 读会话内存, 会话列表
             那条路由**不注册**. 一次装配选定一个来源, 运行期不互相兜底 (理由见
-            history.py).
+            history.py). 另外: **快照后端用 Postgres 时它还是写帧的前置**
+            (帧的 `thread_id` 指向记录层的 `charagent_threads`, ticket 24) ——
+            这种组合下不给它就没人建那一行, 第一帧会以外键失败告终.
 
     Returns:
         FastAPI: 装好的应用. 业务可以再往上加自己的路由与中间件 (框架占

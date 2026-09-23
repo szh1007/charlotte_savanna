@@ -24,8 +24,8 @@
 | `threads` 表列定义的**唯一来源** | `db/schema.py:82-132` |
 | `list_for_tenant` 现在的排序是 `updated_at DESC, thread_id DESC` | `threads.py:108-113` |
 | 加一列要动 **6 处**：`schema.py` 表定义 · 新 revision 文件 · `Thread` 实体 · 仓储 `_params` · `tests/test_db_schema.py` 的硬编码断言 · `db/README.md` 的「改 schema 的流程」 | `db/schema.py:82` · `alembic/versions/` · `db/entities.py:133-157` · `threads.py:119-130` · `tests/test_db_schema.py` · `db/README.md:68-79` |
-| 迁移文件命名是 `<version>_<slug>.py`（`alembic.ini` **刻意没有** `file_template`），首个是 `0001_charagent_core.py` | `alembic.ini:26-28`、`versions/0001_charagent_core.py` |
-| 迁移写法惯例：docstring 头（含 `Revision ID` / `Revises` / `Create Date`）· `revision` / `down_revision` 变量块 · `upgrade()` 与 `downgrade()` **逐条显式**（`downgrade` 顺序与 `upgrade` 相反） | `0001_charagent_core.py:1-30`、`:40-43`、`:493-512` |
+| 迁移文件命名是 `<version>_<slug>.py`（`alembic.ini` **刻意没有** `file_template`），首个是 `0001_core.py` | `alembic.ini:26-28`、`versions/0001_core.py` |
+| 迁移写法惯例：docstring 头（含 `Revision ID` / `Revises` / `Create Date`）· `revision` / `down_revision` 变量块 · `upgrade()` 与 `downgrade()` **逐条显式**（`downgrade` 顺序与 `upgrade` 相反） | `0001_core.py:1-54`、`:64-68`、`:623-659` |
 | 可空时间列的既有范例：`runs.finished_at`（`nullable=True` + comment 说清 NULL 什么含义） | `db/schema.py:213-216` |
 | `test_db_schema.py::test_every_column_has_a_comment` **强制**新列写 `comment=` | `tests/test_db_schema.py:53-65` |
 | `test_db_alembic.py` 会**逐列比**迁移产物与代码定义（列名 / 类型 / 可空 / 主键）并跑 `compare_metadata` 断言零差异 —— 改了 schema 忘改迁移会当场红 | `tests/test_db_alembic.py:122-169`、`:205-234` |
@@ -45,7 +45,7 @@
 | `pinned_at` | `DateTime(timezone=True), nullable=True` | NULL = 未置顶；有值 = 置顶时刻（**时间戳而不是布尔**：它能表达"最近置顶的排前面"，且与 `updated_at` 同型、排序表达式对称） |
 | `deleted_at` | `DateTime(timezone=True), nullable=True` | NULL = 还在；有值 = 已被用户删除（**软删**） |
 
-- **删除为什么是软删**：硬删会顺着外键把 `runs` / `messages` / `tool_calls` 一起 CASCADE 掉，而 **L3 的成本记账正挂在 `runs` 表上** —— 硬删会让「上周花了多少钱」失真。用户语义上的"删除"就是"从我的列表里消失"，软删完全满足
+- **删除为什么是软删**：硬删会顺着外键把 `runs` / `messages` / `tool_calls` 一起 CASCADE 掉，而 **L3 的成本记账正挂在 `runs` 表上** —— 硬删会让「上周花了多少钱」失真。用户语义上的"删除"就是"从我的列表里消失"，软删完全满足。**另外别忘了帧**（ticket 24 起 `charagent_checkpoints.thread_id` 也是 CASCADE）—— 硬删还会把这段会话的全部快照一起带走，那正是「模型为什么忘了」要查的东西
 - 文件按惯例命名（`0002_thread_management.py`），6 处一起改；`test_db_schema.py` 的列注释与索引断言同步
 
 ### 2. 仓储方法（`ThreadsRepository`）

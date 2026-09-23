@@ -8,9 +8,10 @@
 隔离做法与 `test_db_store.py` 一致: 独立 schema (`charagent_alembic_test`),
 跑完整个删掉. 开发库的 public 一个字节都不动.
 
-版本表 (charagent_alembic_version) 也落在测试 schema 里 (通过
-`version_table_schema`) —— 否则它
-会写进 public, 而本机 public 里那张是开发环境的状态记录, 不该被测试改动.
+版本表 (`charagent_migrations`) 也落在测试 schema 里 (通过 `version_table_schema`)
+—— 否则它会写进 public, 而本机 public 里那张是开发环境的状态记录, 不该被测试改动.
+**它兼作审计表** (ticket 24): 一行 = 当前 head, 外加 `name` / `history` 两列,
+所以这里既验版本号, 也验「那一笔是谁什么时候记的」.
 """
 
 from __future__ import annotations
@@ -29,8 +30,8 @@ from CharAgent.db.schema import ALL_TABLES, metadata
 pytestmark = pytest.mark.pg_db
 
 ALEMBIC_SCHEMA = "charagent_alembic_test"
-# alembic 的版本表名 (带项目前缀, 理由见 alembic/env.py 的 VERSION_TABLE)
-VERSION_TABLE = "charagent_alembic_version"  # 带项目前缀, 理由见 alembic/env.py
+# 版本表 (ticket 24 起兼作审计表) 的名字, 理由见 alembic/env.py 的 VERSION_TABLE
+VERSION_TABLE = "charagent_migrations"
 
 # 仓库根目录 (本文件在 CharAgent/tests/ 下, 往上两级)
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -107,7 +108,7 @@ def _reflect(connection: Connection) -> MetaData:
 
 
 def test_upgrade_head_creates_every_table_on_an_empty_schema(migrated, _engine):
-    """空库跑 `upgrade head`: 表齐全 (五张业务表 + 迁移审计表).
+    """空库跑 `upgrade head`: 五张业务表齐全.
 
     这是一条关键验收 (「alembic 首次迁移在空库可执行」) —— 从零建库
     是每个新环境的第一件事, 它在半路报错的话后面什么都做不了.
@@ -181,7 +182,7 @@ def test_alembic_version_records_the_head_revision(migrated, _engine):
             {"name": f"{ALEMBIC_SCHEMA}.{VERSION_TABLE}"},
         ).scalar()
 
-    assert version == "0004_frame_run_linkage"
+    assert version == "0001_core"
     assert test_schema_version, (
         "版本表没落在测试 schema 里 (version_table_schema 没生效)"
     )
@@ -199,37 +200,37 @@ def test_upgrade_head_is_idempotent(migrated, _engine):
             text(f"SELECT version_num FROM {ALEMBIC_SCHEMA}.{VERSION_TABLE}")
         ).scalar()
 
-    assert version == "0004_frame_run_linkage"
+    assert version == "0001_core"
 
 
-def test_the_audit_table_records_every_applied_revision(migrated, _engine):
-    """审计表把跑过的四条都记下: 0001 / 0002 是补记, 之后每条由钩子记 (有真实时刻).
+def test_the_version_row_records_the_step_that_just_ran(migrated, _engine):
+    """版本表那一行同时也是审计: 标题 + 「从空库到 0001_core」这一笔, 都是真值.
 
-    补记那两条为什么时刻留空: 它们在**任何**库里都发生在审计表建起来之前 (新建库
-    同样如此), 无从考证 —— 编一个时间比留空更糟 (见 0003 的 docstring).
+    ticket 24 起版本表兼作审计表 (理由见 alembic/env.py 的 VERSION_TABLE):
+    一行 = 当前 head, 外加 `name` (这一版的标题) 与 `history` (dict, 键 = 迁移编号,
+    值 = 这一版最近一次成为当前版时的 `{from, at, by}`). 钩子写在 alembic 的**同一
+    步**里, 所以时刻与执行者必定是真值 —— 不再有旧设计里「补记留空」那种半真半假
+    的记录.
     """
     with _engine.connect() as connection:
-        rows = connection.execute(
+        row = connection.execute(
             text(
-                "SELECT revision, name, applied_at, applied_by"
-                f" FROM {ALEMBIC_SCHEMA}.charagent_migrations ORDER BY revision"
+                "SELECT version_num, name,"
+                " (SELECT count(*) FROM jsonb_object_keys(history)) AS versions,"
+                " history -> version_num ->> 'from' AS from_rev,"
+                " history -> version_num ->> 'at' AS at,"
+                " history -> version_num ->> 'by' AS by"
+                f" FROM {ALEMBIC_SCHEMA}.{VERSION_TABLE}"
             )
-        ).all()
+        ).one()
 
-    assert [row.revision for row in rows] == [
-        "0001_core",
-        "0002_run_usage_breakdown",
-        "0003_migration_audit_log",
-        "0004_frame_run_linkage",
-    ]
-    assert rows[1].name == "runs 表加用量分解五列 (成本归因 #34)", (
+    assert row.version_num == "0001_core"
+    assert row.name == "五实体核心表 + 版本表的审计两列: 压缩后的唯一起点", (
         "标题取的是脚本 docstring 的首行, 与 alembic history 印的是同一句"
     )
-    assert (rows[0].applied_at, rows[1].applied_at) == (None, None), "补记留空"
-    assert (rows[0].applied_by, rows[1].applied_by) == (None, None)
-    assert rows[2].applied_at is not None, "0003 由钩子记, 有真实时刻"
-    assert rows[3].applied_at is not None, "0004 同样由钩子记"
-    assert rows[3].name == "帧与运行的双向溯源: `run_id` 改名 `loop_id` + 两列新外键"
+    assert row.versions == 1, "一次 upgrade head 只走一步, history 里就该只有一条"
+    assert row.from_rev is None, "从空库起的第一步没有上一版"
+    assert row.at and row.by, "时刻与执行者都该是真值 (钩子写在同一步的事务里)"
 
 
 def test_no_difference_between_code_and_migrated_schema(migrated, _engine):

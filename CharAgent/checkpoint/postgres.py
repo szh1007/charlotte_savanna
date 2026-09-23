@@ -122,7 +122,13 @@ class PostgresCheckpointSaver:
             self._schema_ready = True
 
     async def save(self, checkpoint: Checkpoint) -> None:
-        """存一帧 (追加一行; 同编号重复保存 = 什么都不做, 幂等)."""
+        """存一帧 (追加一行; 同编号重复保存 = 什么都不做, 幂等).
+
+        **前置: 这个会话在 `charagent_threads` 里已经有一行** (ticket 24 起帧的
+        `thread_id` 是外键, `ON DELETE CASCADE`). 本 saver 不知道 `tenant_id` /
+        `user_id`, 没法替你补建那一行 —— 配了记录层的进程由记录员在 `begin` 时建,
+        单独用本 saver 的调用方自己先建一行.
+        """
         await self.ensure_schema()
         body = self._codec.encode_body(checkpoint)
         statement = (
@@ -213,8 +219,10 @@ class PostgresCheckpointSaver:
         了 0 行」的调用方, 自己接一层 (测试的收尾就是这种场景: 用例可能一帧都没
         存过, 那时表可能还不存在).
 
-        与「会话清理策略」是两回事: 那个要考虑保留期与级联删除 (属后续阶段),
-        别拿这个方法当清理入口.
+        与「会话清理策略」是两回事: 级联删除已由外键兜住 (ticket 24 起
+        `checkpoints.thread_id` 是 `ON DELETE CASCADE`, 删会话行就把它的帧一起带走),
+        保留期策略仍属后续阶段. 于是「整段删」的常见做法是删那行会话, 本方法留给
+        「只清快照、留着会话」的场合 —— 别拿它当清理入口.
         """
         await self.ensure_schema()
         statement = delete(checkpoints).where(checkpoints.c.thread_id == thread_id)

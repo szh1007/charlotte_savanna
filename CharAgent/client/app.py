@@ -66,6 +66,7 @@ from CharAgent.checkpoint import (
     build_saver,
     checkpoint_saver_from_env,
 )
+from CharAgent.checkpoint.postgres import PostgresCheckpointSaver
 from CharAgent.client.render import (
     EventPrinter,
     format_answer,
@@ -78,6 +79,8 @@ from CharAgent.client.utils.commands import (
     parse_command,
 )
 from CharAgent.client.utils.types import DEFAULT_THREAD_ID, CliOptions
+from CharAgent.db import PgDatabase
+from CharAgent.db.recorder import ConversationRecorder, RunRecorder
 from CharAgent.model import ModelError, chat_model_from_env
 from CharAgent.model.protocol import ChatModel
 from CharAgent.retry import RetryAttempt, RetryCallback, RetryingChatModel, RetryPolicy
@@ -112,6 +115,9 @@ _EPILOG = """\
   3) 换快照存储:   python -m CharAgent.client --backend redis
      redis / postgres 需要本机服务在跑; 配 --thread-id 固定会话, 跨进程也能
      用 --resume 接着跑 (内存后端进程一退档就没了 —— 存储介质不同, 语义也不同)
+     postgres 顺带把这段会话记进记录表 (会话行 / 运行行 / 消息): 帧的 thread_id
+     指向记录层的会话行, 那一行得有人建 (ticket 24) —— 于是这个后端下这段会话
+     在库里是完整的, 用 psql 就能复盘
 """
 
 
@@ -271,6 +277,35 @@ def build_saver_for(options: CliOptions) -> CheckpointSaver:
     if options.backend:
         return build_saver(options.backend)
     return checkpoint_saver_from_env()
+
+
+# CLI 的占位身份 (`tenant_id` / `user_id` 是多租户与属主的概念, 命令行两者都没有)
+_CLI_IDENTITY = "cli"
+
+
+def _recorder_for(saver: CheckpointSaver) -> RunRecorder | None:
+    """给这次装配挑记录员: 只有 Postgres 快照后端配一个, 其余后端不配.
+
+    为什么偏偏 Postgres 要配 (ticket 24): 帧的 `thread_id` 指向记录层的
+    `charagent_threads`, 写帧之前那一行必须存在 —— 而本 CLI 里没有别的角色会
+    建它, 缺了它第一帧就以外键失败告终. 让记录层来建 (它本来就住在这个库里),
+    顺带这段会话的账 (运行行 / 消息) 也留了下来. 内存 / Redis 后端的帧不落
+    这个库, 也就不需要会话行 —— 那种情况下再挂一个记录员只是多写几张表.
+
+    身份写死 `cli`: 命令行既不区分租户也没有登录用户, 与其让使用者每次多传两个
+    参数, 不如如实写「这行是命令行跑出来的」.
+
+    Args:
+        saver: 这次装配选定的快照后端.
+
+    Returns:
+        RunRecorder | None: 记录员; 非 Postgres 后端给 None (会话照旧不记账).
+    """
+    if not isinstance(saver, PostgresCheckpointSaver):
+        return None
+    return ConversationRecorder(
+        database=PgDatabase(), tenant_id=_CLI_IDENTITY, user_id=_CLI_IDENTITY
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -626,11 +661,13 @@ def main(
     runner = KillSwitch(loop)
     session: ChatSession | None = None
     try:
+        saver = build_saver_for(options)
         session = ChatSession(
             model if model is not None else build_model(options, writer),
-            saver=build_saver_for(options),
+            saver=saver,
             tools=DEMO_TOOLS,
             thread_id=options.thread_id,
+            recorder=_recorder_for(saver),
             model_name=options.model_name,
             event_sink=printer,
             guard=LoopGuard(max_turns=options.max_turns),

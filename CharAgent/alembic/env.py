@@ -3,7 +3,7 @@
 一句话理解: 这是 alembic 与**我们这个项目**之间的适配层 —— alembic 只管「按
 版本号跑脚本」, 它不知道我们的表定义在哪儿、连接串从哪来, 都由本文件告诉它.
 
-干三件事:
+干四件事:
 
 1. **连接串从环境变量来** (不写进 alembic.ini): 根 .env 的 PGSQL_*, 或
    CHARAGENT_DB_DSN 覆盖. 迁移是运维动作, 连接串该跟运行时同一套来源, 而不是在配置
@@ -13,6 +13,8 @@
    全项目唯一一份.
 3. **提供两种跑法**: 在线 (连库执行) 与离线 (`--sql` 打印 SQL 不连库, 给 DBA
    审阅用).
+4. **每跑完一步记一笔**: 往版本表那一行的 `name` / `history` 里写下「刚才是从哪一版
+   到哪一版、什么时候、谁跑的」(见 record_migration).
 
 用**同步**引擎 (而不是 async): 迁移是命令行动作, 没有事件循环在跑, 同步正是
 它要的 (同步/异步的取舍见 db/database.py 的模块 docstring).
@@ -51,27 +53,43 @@ if config.config_file_name is not None:
 # 它来自 db/schema.py: 表定义只有那一处, 这里只是引用.
 target_metadata = metadata
 
-# **版本表也要带 charagent_ 前缀**. alembic 默认叫 `alembic_version` —— 一个
-# 不带项目标识的通名. 本项目各子项目共用同一个 PG 库 (根 .env 的 PGSQL_*), 谁
-# 的迁移先跑, 这张表就是谁的: 另一个子项目再跑 alembic 会读到**我们**的版本号,
-# 于是「表还没建」却被判定为「已经到最新版」, 迁移直接跳过 —— 报错信息与真因
-# (版本表撞名) 毫无关系, 极难排查. 五张业务表都带前缀的理由与此完全一致.
-VERSION_TABLE = "charagent_alembic_version"
-
-
-# --- 迁移审计: 每应用一条迁移往 charagent_migrations 追加一行 ----------------
+# **版本表**. alembic 靠它记「这个库跑到哪一版了」: 一列 `version_num`, 一行 =
+# 一个 head. 表由 alembic 自己在跑迁移之前建出来 (只带那一列, 主键名也由它定),
+# 我们只往后补两列审计信息 (见 0001_core 与 record_migration).
 #
-# 为什么需要它: `charagent_alembic_version` 只记**当前 head** (alembic 靠那一行
-# 决定还该跑哪些迁移, 多行会被当成分叉的 head) —— 于是「这张库什么时候上的哪条
-# 迁移」在库里查不到. 审计表补上这件事, 定义在 db/schema.py 的 migrations.
-AUDIT_TABLE = "charagent_migrations"
+# 名字带 charagent_ 前缀的理由: alembic 默认叫 `alembic_version` —— 一个不带项目
+# 标识的通名. 本项目各子项目共用同一个 PG 库 (根 .env 的 PGSQL_*), 谁的迁移先跑,
+# 这张表就是谁的: 另一个子项目再跑 alembic 会读到**我们**的版本号, 于是「表还没建」
+# 却被判定为「已经到最新版」, 迁移直接跳过 —— 报错信息与真因 (版本表撞名) 毫无
+# 关系, 极难排查. 五张业务表都带前缀的理由与此完全一致.
+#
+# **这张表兼作审计表** (ticket 24): 版本表天然只记当前 head, 而 alembic 把
+# 「一行 = 一个 head」写死了 —— 它那张表**不可能**是「一行一条迁移」的累积形状,
+# 多一行就会被当成多一个 head 直接报错. 既然累积与「当前」想说的是同一件事的
+# 两种读法, 就不要两张必须时刻保持一致的冗余表: 在同一行上补 `name` (当前这一版
+# 的标题) 与 `history` (每一版各是何时由谁成为当前版的), 一张表答完.
+VERSION_TABLE = "charagent_migrations"
 
-_INSERT_APPLIED = text(
-    "insert into charagent_migrations (revision, name, applied_at, applied_by)"
-    " values (:revision, :name, now(), :applied_by)"
-    " on conflict (revision) do nothing"
+# 一步跑完: 改写标题 + 把这一版记进 history. `now()` 用库的时钟 (与这一步的写入
+# 同一事务), 不用 Python 的 —— 审计的时刻该跟数据落在同一个时间源上.
+#
+# history 是 **dict, 键 = 迁移编号**, 值 = 这一版**最近一次成为当前版**时的
+# `{from, at, by}`. 于是那一行自己就把三件事答完了: 现在在哪一版 (`version_num`)、
+# 这一版何时由谁成为当前版 (`history -> version_num`)、一路经过哪几版 (键集合).
+# 回退时改写的是**目标版那个键** —— 代价是「首次上线时刻」会被覆盖, 换来的是回退
+# 也留痕 (只记首次的话, 一次 downgrade 之后这一行就在撒谎).
+#
+# 表名用 f-string 从 VERSION_TABLE 取, 不写死字面量: 名字只该在那一处定义, 而这条
+# SQL 与下面那个守列判断若各写各的, 改名之后会出现「守门放行、UPDATE 命中 0 行、
+# name/history 静默不写」这种最难查的组合.
+_APPEND_HISTORY = text(
+    f"update {VERSION_TABLE} set name = :name,"
+    " history = coalesce(history, '{}'::jsonb) ||"
+    " jsonb_build_object(cast(:revision as text), jsonb_build_object("
+    "'from', cast(:from_revision as text),"
+    " 'at', now(), 'by', cast(:applied_by as text)))"
+    " where version_num = :revision"
 )
-_DELETE_APPLIED = text("delete from charagent_migrations where revision = :revision")
 
 
 def _applied_by() -> str | None:
@@ -86,56 +104,75 @@ def _applied_by() -> str | None:
         return None
 
 
-def _audit_table_exists(connection) -> bool:
-    """审计表在不在 (它由 0003 建起来, 那之前的几步必然不在)."""
+def _audit_columns_ready(connection) -> bool:
+    """版本表那两列审计信息在不在 (它们由 0001_core 补上).
+
+    为什么需要这一判: `downgrade base` 的最后一步里, 0001_core 的 downgrade 先把
+    这两列拆了, 而 alembic 的回调在那之后才跑 —— 不判一下就会撞「列不存在」, 让
+    一次本该成功的回退失败在最后一步.
+
+    只在 `current_schemas(false)` (即连接自己的 search_path) 里找: 版本表可能被按
+    进别的 schema (测试就是这么干的), 全库同名的表不该被算进来.
+    """
     return bool(
         connection.execute(
-            text("select to_regclass(:name) is not null"), {"name": AUDIT_TABLE}
+            text(
+                "select count(*) = 2 from information_schema.columns"
+                " where table_name = :table"
+                " and column_name in ('name', 'history')"
+                " and table_schema = any (current_schemas(false))"
+            ),
+            {"table": VERSION_TABLE},
         ).scalar()
     )
 
 
 def record_migration(ctx, step, heads, run_args) -> None:
-    """一条迁移跑完了, 往审计表记一笔 (由 alembic 在**同一事务**里回调).
+    """一步跑完了, 把这一笔写进版本表那一行 (由 alembic 在**同一事务**里回调).
 
-    应用就插一行、回退就删一行 —— 两个方向都记, 表里那一份才始终等于「当前实际
-    应用了哪些迁移」; 只插不删的话, 一次 downgrade 之后表就在撒谎.
+    写两样东西: `name` = **走完之后**停在的那一版 (它的标题, 即脚本 docstring 的
+    首行); `history` 里**这一版那个键**改成 `{from, at, by}` —— 升级写「从哪版上来
+    的」, 回退写「从哪版退回来的」, 两个方向都落在同一个形状里. 于是这一行既是
+    「现在在哪」, 也是「每一版各是什么时候由谁成为当前版的」.
 
-    三种**安静跳过** (都是正常情形, 不是错误):
-    - 审计表还不存在: 0001 / 0002 跑的时候它必然不在 (那两条由 0003 补记, 见
-      0003 的 docstring); 0003 的 downgrade 把表自己删了, 也会走到这一支;
+    三处**安静跳过** (都是正常情形, 不是错误):
+    - 离线模式没有连接可写;
     - `alembic stamp`: 只写版本号, 没有任何迁移动作 —— 记成「应用过」是假的;
-    - 拿不到编号 (`up_revision_id` 为空): 记不了就不记半行.
+    - 两列审计信息还不存在: 只有 `downgrade base` 的最后一步会走到 (0001_core 的
+      downgrade 刚把它们拆掉), 而那一支之后 alembic 也把唯一那行删了 ——
+      **`history` 连同「上过哪几版」的记录一起没, 要留档就先导出**.
 
-    标题取自脚本 docstring 的首行 (`Script.doc`), 与 `alembic history` 印的是同一句;
-    万一脚本目录里查不到这条编号 (理论上不会: 它刚刚才被执行), 宁缺勿编, 留空串.
+    标题万一取不到 (脚本目录里查不到这条编号, 理论上不会: 它刚刚才被执行),
+    宁缺勿编, 留空串.
 
-    参数 `heads` / `run_args` 是 alembic 回调的固定形状 (按关键字传进来), 本函数不用
-    它们 —— 名字不能改, 否则 TypeError.
+    参数 `heads` / `run_args` 是 alembic 回调的固定形状 (按关键字传进来), 本函数
+    不用它们 —— 名字不能改, 否则 TypeError.
     """
     if ctx.connection is None:  # 离线模式没有连接可写
         return
     if step.is_stamp:
         return
-    if not _audit_table_exists(ctx.connection):
+    if not _audit_columns_ready(ctx.connection):
         return
-    revision_id = step.up_revision_id
-    if not revision_id:
-        return
-    if step.is_upgrade:
-        title = ""
-        if ctx.script is not None:
-            title = (ctx.script.get_revision(revision_id).doc or "")[:200]
-        ctx.connection.execute(
-            _INSERT_APPLIED,
-            {
-                "revision": revision_id,
-                "name": title,
-                "applied_by": _applied_by(),
-            },
-        )
-    else:
-        ctx.connection.execute(_DELETE_APPLIED, {"revision": revision_id})
+    # 走完之后停在哪一版: 升级时是刚应用的那条, 回退时是退到的那条, 都是 destination
+    # —— 于是这一行永远说着「现在这里是哪一版」, history 的键也用它.
+    destinations = step.destination_revision_ids
+    if not destinations:
+        return  # 退到 base: 没有「停在哪一版」可写
+    revision_id = destinations[0]
+    title = ""
+    if ctx.script is not None:
+        title = (ctx.script.get_revision(revision_id).doc or "")[:200]
+    sources = step.source_revision_ids
+    ctx.connection.execute(
+        _APPEND_HISTORY,
+        {
+            "revision": revision_id,
+            "name": title,
+            "from_revision": sources[0] if sources else None,
+            "applied_by": _applied_by(),
+        },
+    )
 
 
 def _database_url() -> str:

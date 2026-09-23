@@ -1081,6 +1081,11 @@ class AgentLoop:
 
         存成功后把编号记进 state.last_checkpoint_id: 下一帧的 parent_id 指向它,
         同一会话的快照就串成一条链 (从老快照恢复时链从那里岔开, #5 time-travel).
+
+        前置: **`thread_id` 对应的会话行必须已经存在** (ticket 24 起帧的 `thread_id`
+        是指向 `charagent_threads` 的外键). 经 `ChatSession` 跑时由记录员的 `begin`
+        建; 裸用 loop + Postgres saver 的调用方自己先建一行 —— 本层不替它建,
+        也不知道 `tenant_id` / `user_id`.
         """
         checkpoint = Checkpoint.create(
             thread_id=thread_id,

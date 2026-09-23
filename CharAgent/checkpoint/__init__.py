@@ -36,6 +36,11 @@
     checkpoint = await saver.load_latest("t-1")
     result = await loop.resume(checkpoint)
 
+配 Postgres 后端时**先建一行 `charagent_threads`** (ticket 24): 帧的 `thread_id`
+是指向它的外键, 写帧之前那一行必须存在 —— 本包不知道 `tenant_id` / `user_id`,
+替你建不了. 经 `ChatSession` 跑时由记录员的 `begin` 建, 单独用 loop + saver 的
+调用方自己先建 (理由见 `db/README.md` 的「一条跨层的契约」).
+
 两种「换存储」的姿势 (都只改一行, loop 不动):
 - 环境变量: CHARAGENT_CHECKPOINT_BACKEND=postgres (配 checkpoint_saver_from_env 用)
 - 直接构造: PostgresCheckpointSaver(dsn=...)

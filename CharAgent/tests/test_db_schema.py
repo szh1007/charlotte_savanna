@@ -39,11 +39,12 @@ def test_every_table_is_prefixed():
 
 
 def test_five_entities_are_declared():
-    """五实体齐全 (thread / run / message / tool_call / checkpoint) + 一张审计表.
+    """五实体齐全 (thread / run / message / tool_call / checkpoint).
 
-    审计表 (`charagent_migrations`) 不是实体: 没有实体类、没有仓储, 只是运维设施
-    (记「哪条迁移什么时候上的」, 由 alembic/env.py 的钩子写). 它在这份清单里是为了
-    「库里的表 = 这份清单」这条等式成立 —— 漏了它, 迁移与表定义就会被判成不一致.
+    这五张就是全部 —— `charagent_migrations` (alembic 的版本表, ticket 24 起兼作
+    审计表) **刻意不在这份定义里**: 它的列与主键名由 alembic 定, 我们声明一份只会
+    与它打架; 而 `alembic check` 按 `version_table` 把它从代码侧与库侧两边都排除,
+    所以它不在这儿也照样零差异 (理由见 schema.py 的模块 docstring).
     """
     assert set(TABLE_NAMES) == {
         "charagent_threads",
@@ -51,9 +52,8 @@ def test_five_entities_are_declared():
         "charagent_messages",
         "charagent_tool_calls",
         "charagent_checkpoints",
-        "charagent_migrations",
     }
-    assert len(ALL_TABLES) == 6
+    assert len(ALL_TABLES) == 5
 
 
 def test_every_column_has_a_comment():
@@ -111,12 +111,16 @@ def test_foreign_key_delete_actions():
     - `checkpoints.parent_id` SET NULL: 删一帧时, 挂在它下面的分支**不被连带删掉**
       (只是变成「没有起点的孤儿」)—— 删数据是危险动作, 宁可留下看着奇怪的记录,
       也不要替调用方把下游数据一起抹掉.
+    - `checkpoints.thread_id` CASCADE (ticket 24 补): 这一列不能为空, 所以只能
+      CASCADE 不能 SET NULL. 于是**写帧之前会话行必须存在** —— 直接拿
+      PostgresCheckpointSaver 单独用 (不配记录层) 的人要先自己建一行 threads.
     """
     assert _ondelete(messages, "thread_id") == "CASCADE"
     assert _ondelete(runs, "thread_id") == "CASCADE"
     assert _ondelete(tool_calls, "run_id") == "CASCADE"
     assert _ondelete(messages, "run_id") == "SET NULL"
     assert _ondelete(checkpoints, "parent_id") == "SET NULL"
+    assert _ondelete(checkpoints, "thread_id") == "CASCADE"
     # tool_calls.message_id 是**主键的一部分**, 所以只能 CASCADE 不能 SET NULL
     # (主键列不允许为空): 发起那条调用的消息没了, 这次调用的记录也跟着走.
     assert _ondelete(tool_calls, "message_id") == "CASCADE"

@@ -1,12 +1,16 @@
 """表定义的**唯一定义处**: 表长什么样只在这一个文件里说.
 
 一句话理解: 这个文件是**数据库的户型图**. 五张业务表 (会话 / 运行 / 消息 / 工具
-调用 / 快照) 各有哪些列、哪列是主键、谁引用谁、建哪些索引, 全部写在这里; 另有一张
-**迁移审计表** `charagent_migrations` (记「哪条迁移什么时候上的」, 由
-`alembic/env.py` 的钩子写, 见 `alembic/versions/0003_migration_audit_log.py`) ——
-它是运维设施, 不是数据模型里的实体: 没有实体类、没有仓储.
+调用 / 快照) 各有哪些列、哪列是主键、谁引用谁、建哪些索引, 全部写在这里.
 别处 (仓储 / 快照存储 / alembic 迁移 / 测试) 都从这里取, 不许自己再抄一份 ——
 抄两份的结果一定是「改了一份忘了另一份」, 然后代码与库悄悄对不上.
+
+**`charagent_migrations` (alembic 的版本表) 例外, 不在这里声明** (ticket 24): 它是
+工具的表 —— 列名 `version_num` 与主键名 `charagent_migrations_pkc` 都由 alembic
+自己定, 我们跟着声明一份只会与它打架. 而 `alembic check` 会按 `version_table`
+把这张表从**代码侧与库侧两边**都排除, 所以不声明它, 零差异照样成立. 它的形状、
+后补的那两列审计信息 (`name` / `history`) 与怎么回填, 见
+`alembic/versions/0001_core.py` 与 `alembic/env.py`.
 
 对齐 entities.py 的实体字段表 —— 那个表是**业务视角**(这一列是干什么用的),
 本文件是**存储视角**(这一列在库里是什么类型、能不能为空). 两边应当是一一对应的,
@@ -436,14 +440,19 @@ checkpoints = Table(
     Column(
         "thread_id",
         String(128),
+        # 这条外键是 ticket 24 补的: 原先只有注释说它是「分区键」, 却没有约束保证
+        # 那个会话真的存在 —— 于是「只在库里跑快照存储、不配记录层」时, 帧会挂到
+        # 一个不存在的会话上, 而且谁也发现不了.
+        #
+        # 代价是一条**行为契约**: thread_id 不能为空, 所以只能 CASCADE (不能像
+        # run_id 那样 SET NULL), 于是**写帧之前会话行必须已经存在**. 快照存储
+        # (PostgresCheckpointSaver) 自己不知道 tenant_id / user_id, 没法替调用方
+        # 补建会话行 —— 直接用它的人要先自己建一行 `charagent_threads`
+        # (ChatSession 那条路不必操心: `_begin_run` 早于 `loop.run`).
+        ForeignKey("charagent_threads.thread_id", ondelete="CASCADE"),
         nullable=False,
-        comment="所属会话 (分区键: 一个会话的所有快照排成一条线)",
-    ),
-    Column(
-        "loop_id",
-        String(128),
-        nullable=False,
-        comment="哪一次循环执行存下的 (一次循环执行的几帧共享; 续跑沿用)",
+        comment="所属会话 (分区键: 一个会话的所有快照排成一条线); "
+        "会话删掉, 它的快照一并删掉 (CASCADE)",
     ),
     Column(
         "run_id",
@@ -452,6 +461,12 @@ checkpoints = Table(
         nullable=True,
         comment="归属记录层的哪一行账 (charagent_runs); NULL = 不属于任何一行 "
         "(没配记录层的进程 / 那一轮没记上账 / 老帧)",
+    ),
+    Column(
+        "loop_id",
+        String(128),
+        nullable=False,
+        comment="哪一次循环执行存下的 (一次循环执行的几帧共享; 续跑沿用)",
     ),
     Column(
         "turn_number",
@@ -508,52 +523,20 @@ checkpoints = Table(
     comment="会话快照: 一帧一行, 全历史都在 (agent/loop.py 每 Turn 末尾落一帧)",
 )
 
-# --- 迁移审计表 (运维设施, 不是数据模型里的实体) ------------------------------
-migrations = Table(
-    "charagent_migrations",
-    metadata,
-    Column(
-        "revision",
-        String(64),
-        primary_key=True,
-        comment="迁移编号 (alembic 的 revision, 如 0002_run_usage_breakdown)",
-    ),
-    Column(
-        "name",
-        String(200),
-        nullable=False,
-        comment="迁移标题 (脚本 docstring 的首行, 与 alembic history 印的是同一句)",
-    ),
-    Column(
-        "applied_at",
-        DateTime(timezone=True),
-        nullable=True,
-        comment="应用时刻 (带时区); NULL = 补记 (见表注释)",
-    ),
-    Column(
-        "applied_by",
-        String(128),
-        nullable=True,
-        comment="执行者 (user@host); NULL = 补记 (见表注释)",
-    ),
-    # 表级注释 (会变成库里的 COMMENT ON TABLE)
-    comment="迁移审计: 每应用一条迁移追加一行. 0003 之前的两条 (0001 / 0002) "
-    "由 0003 补记, 时刻与执行者留 NULL —— 它们在**任何**库里都发生在建表之前, "
-    "无从考证, 编一个时间比留空更糟",
-)
-
 # 五张业务表按依赖顺序排好, 建表时直接按这个顺序跑 (被引用的先建, 否则外键指向
 # 一个还不存在的表). SQLAlchemy 的 metadata.sorted_tables 也能算出来, 这里显式
 # 列一份是为了让「谁依赖谁」在文件里一眼可见.
 #
-# 迁移审计表排在最后: 它不引用任何表, 也没人引用它.
+# `charagent_migrations` (alembic 的版本表) **不在这份清单里**: 它是工具的表,
+# 由 alembic 自己建自己管, 运行时建表 (create_all) 不该去碰它 —— 否则一张空表
+# 会让 alembic 把「版本表在、但没有行」读成「这个库还停在 base」. 理由见模块
+# docstring.
 ALL_TABLES: tuple[Table, ...] = (
     threads,
     runs,
     messages,
     tool_calls,
     checkpoints,
-    migrations,
 )
 
 # 表名清单 (测试与运维脚本按名字找表用; 顺序与 ALL_TABLES 一致)

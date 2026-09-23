@@ -287,6 +287,9 @@ def build_service(writer: Callable[[str], Any]) -> MinimallService:
         # PGSQL_*). **构造不连库** (PgDatabase 的引擎是懒建的), 于是没配库 /
         # 库不在线都不拦住进程启动 —— 真到写记录时连不上就降级 (日志 + 提示行,
         # 见 db/recorder.py), 买家的问答不受影响.
+        # 那句「不受影响」只覆盖记录线: 快照后端是 Postgres 时, 帧的 thread_id
+        # 还要求会话行存在 (ticket 24), 而那一行由记录员建 —— 两者共用同一个库,
+        # 所以「库连不上」对帧同样是拦路虎 (降级的是记账, 不是落帧).
         database=PgDatabase(),
         # 上下文压缩的五个旋钮 (CHARAPP_CONTEXT_*, ticket 18): 不填全走默认值,
         # 于是"没配"与"配了默认那套"是同一回事 —— 但**装配处拿到的一定是一份具体
