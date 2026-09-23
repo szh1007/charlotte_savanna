@@ -735,6 +735,20 @@ async def _thread_with_a_visible_message(
     return thread
 
 
+async def _thread_titled(
+    db: PgDatabase, *, tenant_id: str, user_id: str, title: str, body: str
+):
+    """建一个标题与正文都由调用方给的会话 (搜索用例要拿这两处当靶子)."""
+    thread = await ThreadsRepository(db).add(
+        tenant_id=tenant_id, user_id=user_id, title=title
+    )
+    await MessagesRepository(db).add_lines(
+        thread_id=thread.thread_id,
+        lines=visible_transcript([{"role": "user", "content": body}]),
+    )
+    return thread
+
+
 async def test_list_active_skips_shells_internals_and_closed_threads(db: PgDatabase):
     """会话列表只要「还在聊且聊过话」的: 空壳 / 只剩内部件 / 已归档都不进.
 
@@ -987,3 +1001,279 @@ async def test_finish_refuses_a_status_that_is_not_an_ending(db: PgDatabase):
 
     with pytest.raises(DataConfigError):
         await runs.finish(run.run_id, status=RunStatus.RUNNING)
+
+
+# ---------------------------------------------------------------------------
+# 会话管理: 置顶 / 改名 / 删除 / 搜索 (ticket 20)
+# ---------------------------------------------------------------------------
+
+
+async def test_pinned_threads_come_first(db: PgDatabase):
+    """置顶的排最前, 且**最近置顶的**更靠前 —— 这正是不用布尔而用时刻的理由.
+
+    没置顶的那些相互之间仍按最后活动倒序: 置顶是插在整张表前面的一小撮, 不把后面
+    的顺序打乱.
+    """
+    threads = ThreadsRepository(db)
+    tenant = f"tenant-{uuid4().hex}"
+    day = datetime(2026, 9, 20, 10, 0, tzinfo=UTC)
+    newest = await _thread_with_a_visible_message(
+        db, tenant_id=tenant, user_id="u-1", moment=day + timedelta(hours=2)
+    )
+    middle = await _thread_with_a_visible_message(
+        db, tenant_id=tenant, user_id="u-1", moment=day + timedelta(hours=1)
+    )
+    oldest = await _thread_with_a_visible_message(
+        db, tenant_id=tenant, user_id="u-1", moment=day
+    )
+
+    async def listed() -> list[str]:
+        return [t.thread_id for t in await threads.list_active_with_messages(tenant)]
+
+    async def pin(thread_id: str, pinned: bool, *, moment=None) -> None:
+        assert await threads.set_pinned(
+            thread_id, pinned, tenant_id=tenant, user_id="u-1", moment=moment
+        )
+
+    # 没置顶时: 纯按最后活动倒序
+    assert await listed() == [newest.thread_id, middle.thread_id, oldest.thread_id]
+
+    # 置顶最老的那个: 它跳到最前, 其余两个相互顺序不变
+    await pin(oldest.thread_id, True, moment=day)
+    assert await listed() == [oldest.thread_id, newest.thread_id, middle.thread_id]
+
+    # 再置顶中间那个: **最近置顶的**排在更前面 (布尔表达不了这件事)
+    await pin(middle.thread_id, True, moment=day + timedelta(hours=1))
+    assert await listed() == [middle.thread_id, oldest.thread_id, newest.thread_id]
+
+    # 全部取消置顶: 回到按活动倒序
+    await pin(middle.thread_id, False)
+    await pin(oldest.thread_id, False)
+    assert await listed() == [newest.thread_id, middle.thread_id, oldest.thread_id]
+
+
+async def test_soft_delete_hides_the_thread_but_keeps_every_row(db: PgDatabase):
+    """删除是**软删**: 两个列表里都没了, 而行与消息一条不少, 重删也不报错.
+
+    行与消息留着不是偷懒 —— 成本记账 (L3) 挂在 `charagent_runs` 上, 硬删会让
+    「上周花了多少钱」凭空少一块; 而用户要的「删除」本来就是「从列表里消失」.
+
+    这条同时钉住 ticket 20 点名要想清楚的那句「**删除后列表不再返回它, 但历史仍
+    读得到**」: 前一半是上面两条列表断言, 后一半是「消息一行不少」+「按编号仍取
+    得到那一行」—— 而 `/history` 那条路读的正是这两样, 它自己**没有**任何
+    `deleted_at` 过滤 (那条路由只认会话编号), 所以服务端数据还在 = 历史读得到.
+    """
+    threads = ThreadsRepository(db)
+    messages = MessagesRepository(db)
+    tenant = f"tenant-{uuid4().hex}"
+    doomed = await _thread_with_a_visible_message(db, tenant_id=tenant, user_id="u-1")
+    kept = await _thread_with_a_visible_message(db, tenant_id=tenant, user_id="u-1")
+    body_before = await messages.list_conversation(doomed.thread_id)
+
+    first = datetime(2026, 9, 23, 10, 0, tzinfo=UTC)
+    assert await threads.soft_delete(
+        doomed.thread_id, tenant_id=tenant, user_id="u-1", moment=first
+    )
+
+    # 两个列表都不再给它 (用户的「删掉」= 从我的列表里消失)
+    assert [t.thread_id for t in await threads.list_active_with_messages(tenant)] == [
+        kept.thread_id
+    ]
+    assert doomed.thread_id not in {
+        t.thread_id for t in await threads.list_for_tenant(tenant)
+    }
+    # 数据一条没少
+    still_there = await threads.get(doomed.thread_id)
+    assert still_there is not None
+    assert still_there.deleted_at == first
+    assert [m.content for m in await messages.list_conversation(doomed.thread_id)] == [
+        m.content for m in body_before
+    ]
+
+    # 再删一次: 照样命中一行 (不报错, 上层回 200 而不是 404), 列表也还是没有它
+    later = first + timedelta(hours=3)
+    assert await threads.soft_delete(
+        doomed.thread_id, tenant_id=tenant, user_id="u-1", moment=later
+    )
+    assert [t.thread_id for t in await threads.list_active_with_messages(tenant)] == [
+        kept.thread_id
+    ]
+
+
+async def test_renaming_does_not_touch_last_activity(db: PgDatabase):
+    """改标题**不动 `updated_at`** —— 否则改个名字就把会话顶到列表最前.
+
+    「最后活动时刻」说的是聊过话, 而改名不是活动. 这条容易在"顺手刷新一下"里丢掉
+    (`touch` 与 `set_title` 都写这一列, 只有用户改名这一条不写).
+    """
+    threads = ThreadsRepository(db)
+    tenant = f"tenant-{uuid4().hex}"
+    day = datetime(2026, 9, 20, 10, 0, tzinfo=UTC)
+    newer = await _thread_with_a_visible_message(
+        db, tenant_id=tenant, user_id="u-1", moment=day + timedelta(hours=1)
+    )
+    older = await _thread_with_a_visible_message(
+        db, tenant_id=tenant, user_id="u-1", moment=day
+    )
+
+    assert await threads.update_title(
+        older.thread_id, "退换货政策", tenant_id=tenant, user_id="u-1"
+    )
+
+    renamed = await threads.get(older.thread_id)
+    assert renamed is not None
+    assert renamed.title == "退换货政策"
+    assert renamed.updated_at == day, "改标题不算「活动」"
+    # 列表顺序也没变 (老的那个没被顶上来)
+    assert [t.thread_id for t in await threads.list_active_with_messages(tenant)] == [
+        newer.thread_id,
+        older.thread_id,
+    ]
+
+
+async def test_a_user_renamed_title_is_never_overwritten_by_the_auto_title(
+    db: PgDatabase,
+):
+    """用户改过名之后, **自动标题再也盖不上来** (ticket 20 点名要钉住的那条).
+
+    自动标题取自首条用户消息, 只在**标题还空着**时写一次 (`set_title` 的 WHERE 里
+    有 `title == ''`). 少了那个条件, 用户起的名字会在下一轮问答收尾时被悄悄换回第
+    一句话 —— 而那正是"优化成每次写入都刷标题"的典型后果.
+    """
+    threads = ThreadsRepository(db)
+    tenant = f"tenant-{uuid4().hex}"
+    thread = await _thread_with_a_visible_message(db, tenant_id=tenant, user_id="u-1")
+
+    assert await threads.update_title(
+        thread.thread_id, "我的退换货问题", tenant_id=tenant, user_id="u-1"
+    )
+    # 记录员收尾那一拍会调的自动标题: 这里该**什么也不做**
+    assert not await threads.set_title(thread.thread_id, "随手打的第一句话")
+
+    reloaded = await threads.get(thread.thread_id)
+    assert reloaded is not None
+    assert reloaded.title == "我的退换货问题"
+
+
+async def test_the_three_write_methods_are_scoped_to_the_owner(db: PgDatabase):
+    """改标题 / 置顶 / 删除都只认自己的会话 —— 别人的编号一律改不动.
+
+    与列会话那两条 (读) 同一条纪律, 但**写**更要紧: 读错了只是看见别人的, 写错了
+    是改了别人的. 判据在仓储这一层 (三个方法都把归属写进 WHERE), 于是上层哪个入口
+    漏了校验也改不动别人的东西.
+    """
+    threads = ThreadsRepository(db)
+    tenant = f"tenant-{uuid4().hex}"
+    theirs = await _thread_with_a_visible_message(db, tenant_id=tenant, user_id="u-2")
+    other_tenant = await _thread_with_a_visible_message(
+        db, tenant_id=f"tenant-{uuid4().hex}", user_id="u-1"
+    )
+
+    # 同一个租户里的另一个人: 三个动作一个也落不下去
+    assert not await threads.update_title(
+        theirs.thread_id, "抢过来", tenant_id=tenant, user_id="u-1"
+    )
+    assert not await threads.set_pinned(
+        theirs.thread_id, True, tenant_id=tenant, user_id="u-1"
+    )
+    assert not await threads.soft_delete(
+        theirs.thread_id, tenant_id=tenant, user_id="u-1"
+    )
+    untouched = await threads.get(theirs.thread_id)
+    assert untouched is not None
+    assert (untouched.title, untouched.pinned_at, untouched.deleted_at) == (
+        "聊过",
+        None,
+        None,
+    )
+
+    # 换一个租户也一样: 同一个人在别的租户里不是这段会话的属主
+    assert not await threads.soft_delete(
+        other_tenant.thread_id, tenant_id=tenant, user_id="u-1"
+    )
+    assert (await threads.get(other_tenant.thread_id)).deleted_at is None
+
+
+async def test_search_matches_both_the_title_and_the_message_body(db: PgDatabase):
+    """搜索: 标题命中与**正文**命中都能找回会话, 而且大小写不敏感.
+
+    只搜标题会漏掉「要找的词在第二句里」的; 只搜正文会漏掉「标题被用户改过」的
+    (改名之后自动标题再也不更新) —— 两条路都得有.
+    """
+    threads = ThreadsRepository(db)
+    tenant = f"tenant-{uuid4().hex}"
+    by_title = await _thread_titled(
+        db, tenant_id=tenant, user_id="u-1", title="退款要几天", body="随便说点什么"
+    )
+    by_body = await _thread_titled(
+        db, tenant_id=tenant, user_id="u-1", title="别的", body="我的 Refund 到账了吗"
+    )
+    await _thread_titled(
+        db, tenant_id=tenant, user_id="u-1", title="别的", body="跟这个词无关"
+    )
+
+    async def found(query: str) -> set[str]:
+        rows = await threads.list_active_with_messages(
+            tenant, user_id="u-1", query=query
+        )
+        return {t.thread_id for t in rows}
+
+    assert await found("退款") == {by_title.thread_id}
+    assert await found("refund") == {by_body.thread_id}, "正文里是 Refund, 小写该搜到"
+    assert await found("REFUND") == {by_body.thread_id}, "大写同理"
+    assert await found("没这个词") == set()
+
+
+async def test_search_stays_inside_the_tenant_and_honours_the_limit(db: PgDatabase):
+    """搜索只在这条 (租户, 属主) 的会话里找, 且 `limit` 照样生效.
+
+    搜索是列表的一个过滤条件, 所以它继承列表那两条边界: 看不见别人的会话, 也不会
+    因为「搜出来的少」就把 limit 顶掉.
+    """
+    threads = ThreadsRepository(db)
+    tenant = f"tenant-{uuid4().hex}"
+    mine = await _thread_titled(
+        db, tenant_id=tenant, user_id="u-1", title="退款", body="甲"
+    )
+    await _thread_titled(db, tenant_id=tenant, user_id="u-2", title="退款", body="乙")
+    await _thread_titled(
+        db, tenant_id=f"tenant-{uuid4().hex}", user_id="u-1", title="退款", body="丙"
+    )
+
+    scoped = await threads.list_active_with_messages(
+        tenant, user_id="u-1", query="退款"
+    )
+    assert [t.thread_id for t in scoped] == [mine.thread_id]
+
+    assert (
+        await threads.list_active_with_messages(
+            tenant, user_id="u-1", query="退款", limit=0
+        )
+        == []
+    )
+
+
+async def test_search_treats_wildcards_as_plain_text(db: PgDatabase):
+    """`%` 与 `_` 在搜索词里是**字面字符**, 不是 LIKE 的通配符.
+
+    不转义的话, 搜一个下划线会命中**所有**会话 (它是「任意一个字符」) —— 看着像
+    搜索坏了, 而那个键恰恰很容易被敲进去.
+    """
+    threads = ThreadsRepository(db)
+    tenant = f"tenant-{uuid4().hex}"
+    literal = await _thread_titled(
+        db, tenant_id=tenant, user_id="u-1", title="打折 50% 怎么算", body="甲"
+    )
+    await _thread_titled(
+        db, tenant_id=tenant, user_id="u-1", title="别的标题", body="乙"
+    )
+
+    async def found(query: str) -> set[str]:
+        rows = await threads.list_active_with_messages(
+            tenant, user_id="u-1", query=query
+        )
+        return {t.thread_id for t in rows}
+
+    assert await found("50%") == {literal.thread_id}
+    assert await found("_") == set(), "一个下划线不该把所有会话都搜出来"
+    assert await found("别_标题") == set(), "下划线不该当「任意一个字符」用"

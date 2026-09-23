@@ -32,10 +32,18 @@ from CharAgent.server import (
     CONVERSATION_ID_FIELD,
     CONVERSATIONS_FIELD,
     CONVERSATIONS_PATH,
+    DELETE_PATH,
+    DELETED_FIELD,
     LIMIT_QUERY,
+    MAX_TITLE_LENGTH,
     MESSAGES_FIELD,
+    PIN_PATH,
+    PINNED_AT_FIELD,
+    PINNED_FIELD,
+    QUERY_QUERY,
     THREAD_ID_FIELD,
     TITLE_FIELD,
+    TITLE_PATH,
     UPDATED_AT_FIELD,
     ServerAuthError,
     create_app,
@@ -112,12 +120,15 @@ async def conversations(
 # ---------------------------------------------------------------------------
 
 
-async def test_the_list_comes_back_projected_to_three_fields() -> None:
-    """每条三个字段: 点进去要带的对话 ID / 列表上显示的标题 / 排序用的时刻.
+async def test_the_list_comes_back_projected_to_four_fields() -> None:
+    """每条四个字段: 点进去要带的对话 ID / 标题 / 排序用的时刻 / 置顶时刻.
 
     `conversation_id` 是会话编号的**第三段**: 请求头 `X-Conversation-Id` 收的就是
     它, 于是前端拿着列表项直接就能切回那段对话 (前两段说的是「这是谁的东西」,
     而列表本来就是按属主查的).
+
+    `pinned_at` 是 ticket 20 加的第四个 (没置顶时是 null —— 前端据它决定那颗菜单里
+    显示「置顶」还是「取消置顶」).
     """
     app = build(
         FakeRecordDatabase(
@@ -137,14 +148,32 @@ async def test_the_list_comes_back_projected_to_three_fields() -> None:
                 CONVERSATION_ID_FIELD: "web",
                 TITLE_FIELD: "订单到哪了",
                 UPDATED_AT_FIELD: LATE.isoformat(),
+                PINNED_AT_FIELD: None,
             },
             {
                 CONVERSATION_ID_FIELD: "cli",
                 TITLE_FIELD: "退换货",
                 UPDATED_AT_FIELD: EARLY.isoformat(),
+                PINNED_AT_FIELD: None,
             },
         ]
     }
+
+
+async def test_a_pinned_thread_reports_when_it_was_pinned() -> None:
+    """置顶过的那条把时刻交出去 (ISO 文本, 与 updated_at 同一个形状)."""
+    app = build(
+        FakeRecordDatabase(
+            threads=[
+                record_thread("toy:u-9f3a:web", title="置顶的", pinned_at=LATE),
+            ]
+        )
+    )
+
+    response = await conversations(app)
+
+    row = response.json()[CONVERSATIONS_FIELD][0]
+    assert row[PINNED_AT_FIELD] == LATE.isoformat()
 
 
 async def test_the_query_carries_the_caller_identity_and_the_limit() -> None:
@@ -206,6 +235,177 @@ async def test_an_empty_list_is_not_a_missing_one() -> None:
 
     assert response.status_code == 200
     assert response.json() == {CONVERSATIONS_FIELD: []}
+
+
+# ---------------------------------------------------------------------------
+# 三个管理动作: 改名 / 置顶 / 删除 (ticket 20)
+# ---------------------------------------------------------------------------
+
+
+async def act(
+    app: Any, path: str, *, body: dict | None = None, **header_kwargs: Any
+) -> httpx.Response:
+    """打一次管理动作 (三条都是 POST; 删那条不带请求体)."""
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://toy"
+    ) as http:
+        return await http.post(path, json=body, headers=headers(**header_kwargs))
+
+
+def _toy_thread(**kwargs: Any):
+    """那条玩具会话 (玩具插座认出来的编号就是 `toy:{user}:1`)."""
+    return record_thread("toy:u-9f3a:1", **kwargs)
+
+
+async def test_renaming_writes_the_title_and_echoes_it() -> None:
+    """改标题: 落到那一行上, 并回显**规范化之后**的值 (调用方不必再查一次)."""
+    records = FakeRecordDatabase(threads=[_toy_thread(title="旧名字")])
+    app = build(records)
+
+    response = await act(app, TITLE_PATH, body={TITLE_FIELD: "  退换货政策  "})
+
+    assert response.status_code == 200
+    assert response.json() == {CONVERSATION_ID_FIELD: "1", TITLE_FIELD: "退换货政策"}
+    assert records.threads[0].title == "退换货政策"
+
+
+@pytest.mark.parametrize(
+    ("body", "code"),
+    [
+        ({TITLE_FIELD: "   "}, "invalid_title"),
+        ({TITLE_FIELD: "好" * (MAX_TITLE_LENGTH + 1)}, "title_too_long"),
+        ({}, "invalid_title"),
+    ],
+)
+async def test_a_blank_or_overlong_title_is_refused(body, code) -> None:
+    """空标题 / 超长标题当场拒 (400): 列表上那一行不能是空白, 也不该等库来报错."""
+    app = build(FakeRecordDatabase(threads=[_toy_thread()]))
+
+    response = await act(app, TITLE_PATH, body=body)
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == code
+
+
+async def test_pinning_stamps_a_moment_and_unpinning_clears_it() -> None:
+    """置顶写一个时刻, 取消置顶写回 NULL, 两次都回显这一次的结果."""
+    records = FakeRecordDatabase(threads=[_toy_thread()])
+    app = build(records)
+
+    pinned = await act(app, PIN_PATH, body={PINNED_FIELD: True})
+    assert pinned.status_code == 200
+    assert pinned.json() == {CONVERSATION_ID_FIELD: "1", PINNED_FIELD: True}
+    assert records.threads[0].pinned_at is not None
+
+    unpinned = await act(app, PIN_PATH, body={PINNED_FIELD: False})
+    assert unpinned.status_code == 200
+    assert records.threads[0].pinned_at is None
+
+
+@pytest.mark.parametrize("bad", ["true", 1, None])
+async def test_the_pin_flag_must_be_a_real_boolean(bad) -> None:
+    """`pinned` 必须是真布尔 —— 字符串 `"true"` 不给过.
+
+    放水的话表现是「置顶一直是生效的, 而取消置顶怎么点都不动」—— 半好半坏最难查.
+    """
+    app = build(FakeRecordDatabase(threads=[_toy_thread()]))
+
+    response = await act(app, PIN_PATH, body={PINNED_FIELD: bad})
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_pinned"
+
+
+async def test_deleting_stamps_the_row_instead_of_removing_it() -> None:
+    """删除是软删: 那一行还在, 只是盖上了删除时刻 (成本记账还指着它)."""
+    records = FakeRecordDatabase(threads=[_toy_thread()])
+    app = build(records)
+
+    response = await act(app, DELETE_PATH)
+
+    assert response.status_code == 200
+    assert response.json() == {CONVERSATION_ID_FIELD: "1", DELETED_FIELD: True}
+    assert len(records.threads) == 1, "行不该被删掉"
+    assert records.threads[0].deleted_at is not None
+
+
+async def test_deleting_twice_is_not_an_error() -> None:
+    """重删照样 200 —— 用户连点两下、两个标签页各按一次, 都不该冒出「找不到」."""
+    records = FakeRecordDatabase(threads=[_toy_thread()])
+    app = build(records)
+
+    assert (await act(app, DELETE_PATH)).status_code == 200
+    assert (await act(app, DELETE_PATH)).status_code == 200
+
+
+@pytest.mark.parametrize("path", [TITLE_PATH, PIN_PATH, DELETE_PATH])
+async def test_someone_elses_conversation_is_a_404(path: str) -> None:
+    """不是自己的会话一律 404 (不是 403) —— 与取消那条同一个理由.
+
+    403 会确认「这个编号真实存在过」, 那是白送的情报. 判据在仓储的 WHERE 里
+    (归属), 所以「动别人的」在这里表现为「一行都没改到」.
+    """
+    records = FakeRecordDatabase(threads=[_toy_thread(user_id="u-别人")])
+    app = build(records)
+    bodies = {
+        TITLE_PATH: {TITLE_FIELD: "抢过来"},
+        PIN_PATH: {PINNED_FIELD: True},
+        DELETE_PATH: None,
+    }
+
+    response = await act(app, path, body=bodies[path])
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "thread_not_found"
+    assert records.threads[0].title == "", "一个字都没改到"
+
+
+@pytest.mark.parametrize("path", [TITLE_PATH, PIN_PATH, DELETE_PATH])
+async def test_the_actions_go_through_the_same_door(path: str) -> None:
+    """认证失败 → 401 (与另几条逐字同款): 三个动作也都打在同一道门后面."""
+    app = build(FakeRecordDatabase(threads=[_toy_thread()]))
+
+    response = await act(app, path, body={}, token=None)
+
+    assert response.status_code == 401
+
+
+@pytest.mark.parametrize("path", [TITLE_PATH, PIN_PATH, DELETE_PATH])
+async def test_the_actions_do_not_exist_without_a_database(path: str) -> None:
+    """没给库 → 三条管理动作也 404 (它们与列表长在同一条装配线上)."""
+    app = build(None)
+
+    assert (await act(app, path, body={})).status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# 搜索: 列表端点的一个可选过滤条件
+# ---------------------------------------------------------------------------
+
+
+async def test_the_search_term_goes_down_to_the_repository() -> None:
+    """`?q=` 传到仓储的查询里 (真按它筛由 SQL 负责, 见 test_db_store.py)."""
+    records = FakeRecordDatabase(threads=[record_thread("toy:u-9f3a:web")])
+    app = build(records)
+
+    await conversations(app, query=f"?{QUERY_QUERY}=退款")
+
+    assert any("退款" in str(value) for value in records.session.params.values()), (
+        f"搜索词没传下去: {records.session.params}"
+    )
+
+
+@pytest.mark.parametrize("query", ["", "?", "?q=", "?q=%20%20"])
+async def test_a_blank_search_means_no_search(query: str) -> None:
+    """空串 / 只有空白 = 不搜 —— 不是「搜一个空模式」(那会命中所有会话)."""
+    records = FakeRecordDatabase(threads=[record_thread("toy:u-9f3a:web")])
+    app = build(records)
+
+    await conversations(app, query=query)
+
+    assert not any("ILIKE" in str(key) for key in records.session.params), (
+        f"空搜索不该拼进 WHERE: {records.session.params}"
+    )
 
 
 # ---------------------------------------------------------------------------

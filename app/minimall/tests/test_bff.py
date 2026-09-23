@@ -29,7 +29,10 @@ from app.minimall.models import Category, Product, Profile
 from app.minimall.views_bff import (
     MAX_MESSAGE_LENGTH,
     MAX_THREAD_ID_LENGTH,
+    MAX_TITLE_LENGTH,
+    QUERY_FIELD,
     THREAD_ID_PREFIX,
+    THREAD_NOT_FOUND_CODE,
     max_conversation_id_length,
 )
 
@@ -49,6 +52,10 @@ PAGE_URL = "/minimall/agent/"
 CANCEL_URL = "/minimall/agent/cancel/"
 HISTORY_URL = "/minimall/agent/history/"
 CONVERSATIONS_URL = "/minimall/agent/conversations/"
+# 三个会话管理动作 (issue 20): 都挂在列表那条下面, 会话编号走请求体
+TITLE_URL = "/minimall/agent/conversations/title/"
+PIN_URL = "/minimall/agent/conversations/pin/"
+DELETE_URL = "/minimall/agent/conversations/delete/"
 
 BUYER_NAME = "bff_buyer"
 OTHER_NAME = "bff_other"
@@ -207,12 +214,30 @@ class BffTestBase(TestCase):
         """把助手服务的会话列表端点拦下来, 让它回指定的响应."""
         return respx.get(CONVERSATIONS_UPSTREAM).mock(return_value=response)
 
-    def list_conversations(self, **kwargs):
-        """按页面的样子列一次会话 (POST, **不带请求体**).
+    def list_conversations(self, query: str | None = None, **kwargs):
+        """按页面的样子列一次会话 (POST; 搜索词走请求体).
 
-        与另三条不同: 列表问的是「所有段」, 不针对某一段对话 —— 所以没有编号要发.
+        与另几条不同: 列表**可以不带参数** —— 不搜的时候本来就没有筛选条件要传.
+        真机上页面发的是一个**没有体**的 POST (那条路走 `request.body` 为空的分支),
+        测试客户端发不出真正的空体, 所以这里给一个空的 `{}` —— 两条路在视图里都
+        归到「不搜」.
         """
-        return self.client.post(CONVERSATIONS_URL, **kwargs)
+        payload = {} if not query else {QUERY_FIELD: query}
+        return self.client.post(
+            CONVERSATIONS_URL,
+            data=json.dumps(payload),
+            content_type="application/json",
+            **kwargs,
+        )
+
+    def post_action(self, url: str, payload: dict | None = None, **kwargs):
+        """按页面的样子打一次会话管理动作 (改名 / 置顶 / 删除; 都带 JSON 体)."""
+        return self.client.post(
+            url,
+            data=json.dumps(payload if payload is not None else {}),
+            content_type="application/json",
+            **kwargs,
+        )
 
     def page_source(self) -> str:
         """客服页渲染出来的源码, 空白压平成一行.
@@ -1010,7 +1035,11 @@ class BffConversationsTest(BffTestBase):
                 httpx.Response(200, json=CONVERSATIONS_BODY)
             )
             self.list_conversations()
-            other_client.post(CONVERSATIONS_URL)
+            other_client.post(
+                CONVERSATIONS_URL,
+                data=json.dumps({}),
+                content_type="application/json",
+            )
 
         forwarded = [call.request.headers["X-User-Id"] for call in route.calls]
         self.assertEqual(forwarded, [str(self.buyer.pk), str(self.other.pk)])
@@ -1213,7 +1242,12 @@ class BffCsrfTest(BffTestBase):
                 content_type="application/json",
                 HTTP_X_CSRFTOKEN=token,
             )
-            listed = client.post(CONVERSATIONS_URL, HTTP_X_CSRFTOKEN=token)
+            listed = client.post(
+                CONVERSATIONS_URL,
+                data=json.dumps({}),
+                content_type="application/json",
+                HTTP_X_CSRFTOKEN=token,
+            )
 
         self.assertEqual(r.status_code, 200)
         self.assertTrue(chat.called)
@@ -1232,6 +1266,290 @@ class BffCsrfTest(BffTestBase):
 
         sent = [c.request.headers["X-Conversation-Id"] for c in route.calls]
         self.assertEqual(sent, [TAB_ONE, TAB_TWO])
+
+
+class BffConversationSearchTest(BffTestBase):
+    """列会话那条路的搜索参数 (issue 20) —— 它是过滤条件, 不是新端点."""
+
+    def test_the_search_term_goes_upstream_as_a_query_parameter(self):
+        """浏览器把搜索词放在**请求体**里, 上游收的是**查询串** `q`.
+
+        两套 wire 契约各按各的形状 (浏览器这一侧不往 URL 里放任何东西 —— 搜索词里
+        完全可能有订单号), 这一层负责对上.
+        """
+        with respx.mock:
+            route = self.mock_conversations(
+                httpx.Response(200, json=CONVERSATIONS_BODY)
+            )
+            r = self.list_conversations(query="退款要几天")
+
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(route.calls[0].request.url.params["q"], "退款要几天")
+
+    def test_no_search_means_no_query_string_upstream(self):
+        """不搜的时候上游地址上**一个参数都不带** (与从前逐字一样)."""
+        with respx.mock:
+            route = self.mock_conversations(
+                httpx.Response(200, json=CONVERSATIONS_BODY)
+            )
+            self.list_conversations()
+
+        self.assertEqual(route.calls[0].request.url.query, b"")
+
+    def test_an_empty_search_term_is_not_a_search(self):
+        """空串当成「没搜」—— 清空输入框时页面发的就是它."""
+        with respx.mock:
+            route = self.mock_conversations(
+                httpx.Response(200, json=CONVERSATIONS_BODY)
+            )
+            self.list_conversations(query="   ")
+
+        self.assertEqual(route.calls[0].request.url.query, b"")
+
+    def test_a_bodyless_post_still_lists_everything(self):
+        """**没有请求体**的 POST 照样回全量列表 (页面不搜时发的就是这个形状).
+
+        列会话是唯一一条请求体可选的: 不搜的时候本来就没有筛选条件要传. 逼着前端
+        每次都发一个 `{}` 只是形式主义, 而"忘了发体就 400"会让页面在第一次打开
+        时不显示任何历史 —— 那是本片最容易踩的一脚.
+        """
+        with respx.mock:
+            route = self.mock_conversations(
+                httpx.Response(200, json=CONVERSATIONS_BODY)
+            )
+            r = self.client.post(
+                CONVERSATIONS_URL, data="", content_type="application/json"
+            )
+
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(json.loads(r.content), CONVERSATIONS_BODY)
+        self.assertEqual(route.calls[0].request.url.query, b"")
+
+    def test_a_malformed_body_is_still_refused(self):
+        """体发了但不是 JSON → 400 (「没发体」与「发了看不懂的东西」是两回事)."""
+        with respx.mock:
+            route = self.mock_conversations(
+                httpx.Response(200, json=CONVERSATIONS_BODY)
+            )
+            r = self.client.post(
+                CONVERSATIONS_URL, data="这不是 JSON", content_type="application/json"
+            )
+
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(json.loads(r.content)["error"]["code"], "invalid_request")
+        self.assertFalse(route.called)
+
+
+class BffConversationActionsTest(BffTestBase):
+    """三个管理动作 (issue 20): 改名 / 置顶 / 删除.
+
+    形状照着 `BffConversationsTest` 那一页来 —— 它们与列会话是同一个接入面 (同一
+    前缀, 同一套 CSRF, 同一套「身份只从 session 取」). 断的重点有三条:
+
+    1. **会话编号不进 URL**: 浏览器那一跳用请求体, 上游那一跳用
+       `X-Conversation-Id` 头 —— 两条路都不把编号放进地址.
+    2. 上游正文原样透传 (本层不认识它的形状).
+    3. 失败收口: 上游的 `thread_not_found` 转 404 (用户能懂), 其余 502.
+    """
+
+    def mock_action(self, upstream: str, response: httpx.Response) -> respx.Route:
+        """把某个动作的上游端点拦下来."""
+        return respx.post(f"{AGENT_URL}{upstream}").mock(return_value=response)
+
+    def test_renaming_forwards_the_title_and_the_conversation_header(self):
+        with respx.mock:
+            route = self.mock_action(
+                "/conversations/title",
+                httpx.Response(
+                    200, json={"conversation_id": TAB_ONE, "title": "退换货"}
+                ),
+            )
+            r = self.post_action(
+                TITLE_URL, {"conversation_id": TAB_ONE, "title": "退换货"}
+            )
+
+        self.assertEqual(r.status_code, 200)
+        request = route.calls[0].request
+        self.assertEqual(request.method, "POST")
+        self.assertEqual(json.loads(request.content), {"title": "退换货"})
+        self.assertEqual(request.headers["X-Conversation-Id"], TAB_ONE)
+        self.assertEqual(request.headers["X-User-Id"], str(self.buyer.pk))
+        self.assertEqual(request.headers["X-Internal-Token"], TOKEN)
+
+    def test_pinning_forwards_the_boolean(self):
+        with respx.mock:
+            route = self.mock_action(
+                "/conversations/pin",
+                httpx.Response(200, json={"conversation_id": TAB_ONE, "pinned": True}),
+            )
+            r = self.post_action(PIN_URL, {"conversation_id": TAB_ONE, "pinned": True})
+
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(json.loads(route.calls[0].request.content), {"pinned": True})
+
+    def test_deleting_sends_the_header_and_no_body(self):
+        """删除没有第二个参数 —— 上游那一跳不带请求体, 删哪段由头说了算."""
+        with respx.mock:
+            route = self.mock_action(
+                "/conversations/delete",
+                httpx.Response(200, json={"conversation_id": TAB_ONE, "deleted": True}),
+            )
+            r = self.post_action(DELETE_URL, {"conversation_id": TAB_ONE})
+
+        self.assertEqual(r.status_code, 200)
+        request = route.calls[0].request
+        self.assertEqual(request.headers["X-Conversation-Id"], TAB_ONE)
+        self.assertEqual(request.content, b"")
+
+    def test_the_conversation_id_never_lands_in_either_url(self):
+        """**守卫测试**: 编号只在请求体与请求头里, 两条路的地址上都不出现.
+
+        编号进 URL 就等于同时进了访问日志 / 浏览器历史 / Referer (ADR-0002 与
+        issue 13 复核时定的纪律) —— 这里把两条路一起钉住.
+        """
+        with respx.mock:
+            route = self.mock_action(
+                "/conversations/title",
+                httpx.Response(200, json={"conversation_id": TAB_ONE, "title": "x"}),
+            )
+            self.post_action(TITLE_URL, {"conversation_id": TAB_ONE, "title": "x"})
+
+        request = route.calls[0].request
+        self.assertNotIn(TAB_ONE, str(request.url))
+        self.assertEqual(request.url.query, b"")
+        self.assertEqual(TITLE_URL, "/minimall/agent/conversations/title/")
+
+    def test_a_blank_title_is_refused_before_calling_out(self):
+        """空标题当场拒 (400) —— 一个请求都不发 (列表上那一行不能是空白)."""
+        with respx.mock:
+            route = self.mock_action(
+                "/conversations/title", httpx.Response(200, json={})
+            )
+            r = self.post_action(TITLE_URL, {"conversation_id": TAB_ONE, "title": "  "})
+
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(json.loads(r.content)["error"]["code"], "invalid_title")
+        self.assertFalse(route.called)
+
+    def test_an_overlong_title_is_refused(self):
+        with respx.mock:
+            route = self.mock_action(
+                "/conversations/title", httpx.Response(200, json={})
+            )
+            r = self.post_action(
+                TITLE_URL,
+                {"conversation_id": TAB_ONE, "title": "字" * (MAX_TITLE_LENGTH + 1)},
+            )
+
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(json.loads(r.content)["error"]["code"], "title_too_long")
+        self.assertFalse(route.called)
+
+    def test_a_non_boolean_pin_is_refused(self):
+        """`pinned` 必须是真布尔 —— 与上游同一条判据, 在这里先卡住.
+
+        放水 (`"true"` 也算真) 的表现是「置顶一直生效、取消置顶怎么点都不动」.
+        """
+        for bad in ("true", 1, None):
+            with self.subTest(bad=bad), respx.mock:
+                route = self.mock_action(
+                    "/conversations/pin", httpx.Response(200, json={})
+                )
+                r = self.post_action(
+                    PIN_URL, {"conversation_id": TAB_ONE, "pinned": bad}
+                )
+
+                self.assertEqual(r.status_code, 400)
+                self.assertEqual(
+                    json.loads(r.content)["error"]["code"], "invalid_pinned"
+                )
+                self.assertFalse(route.called)
+
+    def test_the_identity_comes_from_the_session_not_from_the_body(self):
+        """**守卫测试**: 请求体里塞别人的 user_id → 仍然以自己的身份转发."""
+        with respx.mock:
+            route = self.mock_action(
+                "/conversations/pin",
+                httpx.Response(200, json={"conversation_id": TAB_ONE, "pinned": True}),
+            )
+            self.post_action(
+                PIN_URL,
+                {
+                    "conversation_id": TAB_ONE,
+                    "pinned": True,
+                    "user_id": str(self.other.pk),
+                },
+            )
+
+        self.assertEqual(
+            route.calls[0].request.headers["X-User-Id"], str(self.buyer.pk)
+        )
+
+    def test_a_gone_conversation_answers_404_not_502(self):
+        """上游说「这段会话不在册」→ **404** 转给浏览器 (不是 502).
+
+        用户可能只是在另一个标签页里把它删了 —— 那不是故障, 页面该照实说「它已经
+        从列表里消失」. 与取消那条路同一个口径.
+        """
+        with respx.mock:
+            self.mock_action(
+                "/conversations/delete",
+                httpx.Response(404, json={"error": {"code": THREAD_NOT_FOUND_CODE}}),
+            )
+            r = self.post_action(DELETE_URL, {"conversation_id": TAB_ONE})
+
+        body = json.loads(r.content)
+        self.assertEqual(r.status_code, 404)
+        self.assertEqual(body["error"]["code"], THREAD_NOT_FOUND_CODE)
+        self.assertIn("已经不在列表里", body["error"]["message"])
+
+    def test_an_unreachable_service_is_reported(self):
+        """助手服务没起来 → 502 + 一句人话 (与另几条路同一个口径)."""
+        with respx.mock:
+            respx.post(f"{AGENT_URL}/conversations/pin").mock(
+                side_effect=httpx.ConnectError("connection refused")
+            )
+            r = self.post_action(PIN_URL, {"conversation_id": TAB_ONE, "pinned": True})
+
+        self.assertEqual(r.status_code, 502)
+        self.assertEqual(json.loads(r.content)["error"]["code"], "agent_unavailable")
+
+    def test_an_unconfigured_token_fails_before_calling_out(self):
+        """本机没配令牌 (fail closed): 一个请求都不发."""
+        with respx.mock:
+            route = self.mock_action(
+                "/conversations/delete", httpx.Response(200, json={})
+            )
+            with override_settings(CHARAPP_INTERNAL_TOKEN=""):
+                r = self.post_action(DELETE_URL, {"conversation_id": TAB_ONE})
+
+        self.assertEqual(r.status_code, 503)
+        self.assertFalse(route.called)
+
+    def test_a_malformed_conversation_id_is_refused(self):
+        """会话编号缺失 / 含空白 / 非 ASCII → 400 (它马上要进 HTTP 头)."""
+        with respx.mock:
+            route = self.mock_action(
+                "/conversations/delete", httpx.Response(200, json={})
+            )
+            r = self.post_action(DELETE_URL, {})
+
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(
+            json.loads(r.content)["error"]["code"], "invalid_conversation_id"
+        )
+        self.assertFalse(route.called)
+
+    def test_a_read_by_url_is_not_allowed(self):
+        """GET 一律 405 —— 这几个动作都改数据, 不做成一条链接就能触发的 GET."""
+        for url in (TITLE_URL, PIN_URL, DELETE_URL):
+            with self.subTest(url=url):
+                r = self.client.get(url)
+
+                self.assertEqual(r.status_code, 405)
+                self.assertEqual(
+                    json.loads(r.content)["error"]["code"], "method_not_allowed"
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -1368,8 +1686,9 @@ class AgentPageTest(BffTestBase):
             "body: JSON.stringify({ conversation_id: conversationId })", compact
         )
         self.assertNotIn("/history/?conversation_id=", compact)
-        # 提问 / 取消 / 读历史 / 列会话: 四条路一套写法 (都 POST + 都带 CSRF)
-        self.assertEqual(compact.count("'X-CSRFToken': csrfToken()"), 4)
+        # 提问 / 取消 / 读历史 / 列会话 / 三个管理动作 (它们共用一个发送函数):
+        # 五处发送点, 一套写法 (都 POST + 都带 CSRF)
+        self.assertEqual(compact.count("'X-CSRFToken': csrfToken()"), 5)
 
     def test_the_conversation_id_survives_a_reload_but_not_a_new_tab(self):
         """会话编号存 `sessionStorage`: 刷新还在, 新标签页是新的一段.
@@ -1421,6 +1740,101 @@ class AgentPageTest(BffTestBase):
         # 页面上真的出现过 `{# 智能客服入口... #}` 这行字).
         self.assertNotIn("{#", body)
         self.assertNotIn("{%", body)
+
+    # ------------------------------------------------------------------
+    # 左栏: 会话管理动作与搜索 (issue 20)
+    # ------------------------------------------------------------------
+
+    def test_the_sidebar_has_a_debounced_search_box(self):
+        """输入即搜, 但要防抖; 搜索词走**请求体**, 不进地址栏.
+
+        防抖那条守的是「别每敲一个字母发一次请求」; 走请求体那条与「会话编号不进
+        URL」同源 —— 搜索词完全可能是一个订单号.
+        """
+        compact = self.page_source()
+
+        self.assertIn('id="conversation-search"', compact)
+        self.assertIn("searchBox.addEventListener('input', onSearchInput)", compact)
+        self.assertIn("window.setTimeout(function () {", compact)
+        self.assertIn("SEARCH_DEBOUNCE_MS", compact)
+        self.assertIn("body: JSON.stringify({ query: searchTerm })", compact)
+        self.assertNotIn("?q=", compact)
+
+    def test_the_empty_state_says_which_kind_of_empty_it_is(self):
+        """「搜不到」与「还没聊过」是两种空, 用户要做的事不一样."""
+        compact = self.page_source()
+
+        self.assertIn("'没搜到相关的对话'", compact)
+        self.assertIn("'还没有历史对话'", compact)
+
+    def test_every_item_carries_the_three_management_actions(self):
+        """每一项都有一颗「⋯」, 里面是改名 / 置顶(取消置顶) / 删除.
+
+        「置顶」那一项的措辞**按当前状态换** (后端把 `pinned_at` 一起给了): 一个
+        永远写着「置顶」的菜单, 用户点了不知道会发生什么.
+        """
+        compact = self.page_source()
+
+        self.assertIn("'agent-item-more', '⋯'", compact)
+        self.assertIn("'重命名'", compact)
+        self.assertIn("pinned ? '取消置顶' : '置顶'", compact)
+        self.assertIn("'删除'", compact)
+        self.assertIn("'/minimall/agent/conversations/title/'", compact)
+        self.assertIn("'/minimall/agent/conversations/pin/'", compact)
+        self.assertIn("'/minimall/agent/conversations/delete/'", compact)
+
+    def test_renaming_swaps_in_a_real_input(self):
+        """就地改名用的是一个小 `<input>` —— 不是 `contenteditable`.
+
+        那个属性会把这一行变成可编辑的富文本 (粘贴进来什么都有可能), 而这一页所有
+        文本都走 `textContent`. 断言落在**它确实是个 input** 上, 比去搜那个不存在
+        的属性名稳.
+        """
+        compact = self.page_source()
+
+        self.assertIn("el('input', 'agent-rename')", compact)
+        self.assertIn("title.replaceWith(input)", compact)
+        self.assertIn("displayTitle(input.value || '')", compact)
+        # 输入框的长度上限用**自己那个常量**, 不用列表的截断值 (改展示不该动校验)
+        self.assertIn("input.maxLength = MAX_TITLE_LENGTH", compact)
+
+    def test_deleting_asks_before_it_does_it(self):
+        """删除要二次确认 —— 用户对「删除」的预期是不可逆的."""
+        compact = self.page_source()
+
+        self.assertIn("window.confirm(", compact)
+        self.assertIn("if (!window.confirm(", compact)
+
+    def test_deleting_the_open_conversation_moves_to_a_fresh_one(self):
+        """删掉的正是当前这段 → 换一段干净的 (不把人留在一段已经不在列表里的对话上).
+
+        换的仍然走 `newConversationId()` 那一个来源, 并写回 sessionStorage ——
+        刷新之后不该又回到刚删掉的那一段.
+        """
+        compact = self.page_source()
+
+        self.assertIn("if (row.conversation_id === conversationId) {", compact)
+        self.assertIn("rememberConversationId(conversationId)", compact)
+        self.assertIn("clearChat()", compact)
+
+    def test_a_failed_action_says_so_in_the_sidebar(self):
+        """三个动作失败都要**说在页面上**: 静默等于「点了没用」."""
+        compact = self.page_source()
+
+        self.assertIn("function actionFailed(", compact)
+        self.assertIn("function sendAction(", compact)
+        # 三个动作都走同一个发送函数 (一处加码 / 一处改超时, 三条路一起受益)
+        self.assertEqual(compact.count("await sendAction("), 3)
+
+    def test_the_sidebar_actions_reload_the_list_instead_of_shuffling_dom(self):
+        """改完统一重拉列表 —— 排序规则归后端 (置顶要跳到最前).
+
+        页面自己挪 DOM 等于把那份规则在浏览器里再实现一遍, 两处迟早对不上.
+        """
+        compact = self.page_source()
+
+        self.assertIn("await refreshAfterAction()", compact)
+        self.assertIn("await loadConversations()", compact)
 
     # ------------------------------------------------------------------
     # 左栏: 会话列表 (issue 19)

@@ -182,7 +182,7 @@ def test_alembic_version_records_the_head_revision(migrated, _engine):
             {"name": f"{ALEMBIC_SCHEMA}.{VERSION_TABLE}"},
         ).scalar()
 
-    assert version == "0001_core"
+    assert version == "0002_thread_management"
     assert test_schema_version, (
         "版本表没落在测试 schema 里 (version_table_schema 没生效)"
     )
@@ -200,17 +200,22 @@ def test_upgrade_head_is_idempotent(migrated, _engine):
             text(f"SELECT version_num FROM {ALEMBIC_SCHEMA}.{VERSION_TABLE}")
         ).scalar()
 
-    assert version == "0001_core"
+    assert version == "0002_thread_management"
 
 
 def test_the_version_row_records_the_step_that_just_ran(migrated, _engine):
-    """版本表那一行同时也是审计: 标题 + 「从空库到 0001_core」这一笔, 都是真值.
+    """版本表那一行同时也是审计: 标题 + 走过来的每一笔, 都是真值.
 
     ticket 24 起版本表兼作审计表 (理由见 alembic/env.py 的 VERSION_TABLE):
     一行 = 当前 head, 外加 `name` (这一版的标题) 与 `history` (dict, 键 = 迁移编号,
     值 = 这一版最近一次成为当前版时的 `{from, at, by}`). 钩子写在 alembic 的**同一
     步**里, 所以时刻与执行者必定是真值 —— 不再有旧设计里「补记留空」那种半真半假
     的记录.
+
+    2026-09-23 起这条链上有了**第二条**迁移 (ticket 20 的 0002), 于是从空库
+    `upgrade head` 会走两步、钩子回调两次: 两个编号都在 `history` 里, 而
+    `version_num` 与 `name` 是**最后停在**的那一版. 这正是「一行 = 当前 head,
+    history = 一路怎么走过来的」那条设计在老库升级时该有的样子.
     """
     with _engine.connect() as connection:
         row = connection.execute(
@@ -224,12 +229,12 @@ def test_the_version_row_records_the_step_that_just_ran(migrated, _engine):
             )
         ).one()
 
-    assert row.version_num == "0001_core"
-    assert row.name == "五实体核心表 + 版本表的审计两列: 压缩后的唯一起点", (
-        "标题取的是脚本 docstring 的首行, 与 alembic history 印的是同一句"
+    assert row.version_num == "0002_thread_management"
+    assert row.name == "会话管理两列: 置顶时刻与删除时刻", (
+        "标题取的是脚本 docstring 的**首段** (alembic 的 `Script.doc` 就是这么切的)"
     )
-    assert row.versions == 1, "一次 upgrade head 只走一步, history 里就该只有一条"
-    assert row.from_rev is None, "从空库起的第一步没有上一版"
+    assert row.versions == 2, "空库到 head 走了两步 (0001 → 0002), history 两条"
+    assert row.from_rev == "0001_core", "当前这一版是从 0001 上来的"
     assert row.at and row.by, "时刻与执行者都该是真值 (钩子写在同一步的事务里)"
 
 

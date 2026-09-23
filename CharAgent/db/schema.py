@@ -130,6 +130,21 @@ threads = Table(
         server_default=func.now(),
         comment="最后活动时刻 —— 会话列表按它排序 (新的在前)",
     ),
+    # 下面两列是用户对会话做的两个管理动作 (#20). 都取**时刻**而不是布尔:
+    # 「置不置顶」布尔够用, 而「谁先置顶的」只有时刻说得清 —— 既然要加列, 就加
+    # 撑得住排序语义的那一个; `deleted_at` 同理, 一列同时回答「删了没」与「何时删的」.
+    Column(
+        "pinned_at",
+        DateTime(timezone=True),
+        nullable=True,
+        comment="置顶时刻 —— NULL = 未置顶; 有值 = 置顶那一刻 (列表把置顶项排最前)",
+    ),
+    Column(
+        "deleted_at",
+        DateTime(timezone=True),
+        nullable=True,
+        comment="删除时刻 —— NULL = 还在; 有值 = 已被用户删除 (软删: 行与消息都留着)",
+    ),
     # 会话列表的两种查法: 「这个租户的会话」(管理端) / 「这个用户的会话」(用户端).
     # 两者都要按最后活动时间倒序, 所以索引里带上 updated_at.
     Index("ix_charagent_threads_tenant_updated", "tenant_id", "updated_at"),

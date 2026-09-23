@@ -23,7 +23,10 @@ from django.urls import path
 from .views_bff import (
     AgentCancelView,
     AgentChatView,
+    AgentConversationDeleteView,
+    AgentConversationPinView,
     AgentConversationsView,
+    AgentConversationTitleView,
     AgentHistoryView,
     AgentPageView,
 )
@@ -35,9 +38,26 @@ urlpatterns = [
     path("chat/", AgentChatView.as_view(), name="chat"),
     path("cancel/", AgentCancelView.as_view(), name="cancel"),
     path("history/", AgentHistoryView.as_view(), name="history"),
+    # 会话列表与它下面的三个管理动作 (#20): 同一段前缀, 同一个接入面 —— 四条形状
+    # 一致 (POST + CSRF + 身份只从 session 取), 页面那边一套写法.
     path(
         "conversations/",
         AgentConversationsView.as_view(),
         name="conversations",
+    ),
+    path(
+        "conversations/title/",
+        AgentConversationTitleView.as_view(),
+        name="conversation-title",
+    ),
+    path(
+        "conversations/pin/",
+        AgentConversationPinView.as_view(),
+        name="conversation-pin",
+    ),
+    path(
+        "conversations/delete/",
+        AgentConversationDeleteView.as_view(),
+        name="conversation-delete",
     ),
 ]

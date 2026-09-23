@@ -9,9 +9,10 @@
 |----|------|-----------|------|
 | ServerAuthError | 业务 (第一个插座) | 401 | 令牌不对 / 认不出这次运行是谁的 |
 | ServerConfigError | 业务 (任一回调) | 503 | 配置缺失 / 服务没就绪 (如令牌没配) |
-| InvalidRequestError | 框架 | 400 | 请求体不成形 (不是 JSON / 缺 message) |
+| InvalidRequestError | 框架 | 400 | 请求体不成形 (不是 JSON / 缺字段 / 标题不合法) |
 | ThreadBusyError | 框架 | 409 | 同一会话已有一次运行在跑 (不并发写) |
 | RunNotFoundError | 框架 | 404 | 取消时这次运行已不在册 (跑完了 / 不存在 / 不是你的) |
+| ThreadNotFoundError | 框架 | 404 | 改标题 / 置顶 / 删除时这段会话不在册 |
 
 三条纪律:
 
@@ -120,6 +121,28 @@ class ThreadBusyError(ServerError):
         *,
         code: str = "thread_busy",
         status_code: int = 409,
+    ) -> None:
+        super().__init__(message, code=code, status_code=status_code)
+
+
+class ThreadNotFoundError(ServerError):
+    """这段会话不在册 / 不是这次请求那个人的 —— 框架自己抛 (#20 的三个管理动作).
+
+    **两种情况共用这一个错误**, 与 `RunNotFoundError` 同一条纪律: 会话编号不存在,
+    与「它存在但不是你的」在响应上不加区分 —— 区分等于确认「这个编号真实存在过」,
+    那是白送的情报 (可以拿它枚举别人的会话). 想区分的是日志, 不是响应.
+
+    什么时候会走到它: 改标题 / 置顶 / 删除时, 那条 UPDATE 一行都没命中. 三个动作
+    的归属判据写在仓储的 WHERE 里 (见 `ThreadsRepository._owned`), 所以「不是你的」
+    在这里表现为「没改到」, 而不是另一条分支.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "thread_not_found",
+        status_code: int = 404,
     ) -> None:
         super().__init__(message, code=code, status_code=status_code)
 

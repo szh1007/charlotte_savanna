@@ -147,6 +147,9 @@ class Thread(Base):
         title: 会话标题 (由首条用户消息生成; 前端左侧会话列表显示它).
         status: 见 ThreadStatus.
         created_at / updated_at: 建的时刻 / 最后活动的时刻 (列表按后者倒序).
+        pinned_at: 置顶时刻; None = 未置顶 —— 列表把置顶的排在最前 (#20).
+        deleted_at: 删除时刻; None = 还在 —— 有值表示用户把它从列表里删掉了.
+            **软删**: 行与它名下的消息都留着 (成本记账与排查要用), 只是不再列出.
     """
 
     __table__ = threads

@@ -122,7 +122,16 @@ RUNS_PATH = "/runs"
 CANCEL_PATH = "/runs/{run_id}/cancel"
 HISTORY_PATH = "/history"
 CONVERSATIONS_PATH = "/conversations"
+# 三个管理动作 (#20): 都挂在列表端点下面, 会话编号一律走 `X-Conversation-Id` 头
+CONVERSATION_TITLE_PATH = "/conversations/title"
+CONVERSATION_PIN_PATH = "/conversations/pin"
+CONVERSATION_DELETE_PATH = "/conversations/delete"
 MESSAGE_FIELD = "message"
+# 搜索词在上游是**查询串**里的 `q` (框架那条列表路由的契约), 而在浏览器这边是
+# 请求体里的 `query` —— 两个名字不是笔误: 那是两套 wire 契约 (见模块 docstring
+# 「不 import CharApp」那一段), 这一层的工作之一就是把它们对上.
+UPSTREAM_QUERY_FIELD = "q"
+QUERY_FIELD = "query"
 
 # 运行编号: 响应头上带出去 (`X-Run-Id`), 取消时从请求体里收回来. 形状是框架
 # `new_run_id()` 发的那个 (uuid4 的 hex), 这里按**传输契约**再声明一遍 —— 它要进
@@ -132,8 +141,15 @@ RUN_ID_FIELD = "run_id"
 RUN_ID_LENGTH = 32
 _HEX_DIGITS = frozenset("0123456789abcdef")
 
-# 浏览器打进来的那两个字段 (页面按它发, 这里按它认)
+# 浏览器打进来的那几个字段 (页面按它发, 这里按它认)
 CONVERSATION_FIELD = "conversation_id"
+TITLE_FIELD = "title"
+PINNED_FIELD = "pinned"
+
+# 标题长度上限 (与助手服务那条线同值: `CharAgent/server/conversations.py` 的
+# MAX_TITLE_LENGTH). BFF 也卡一道不是重复劳动 —— 这一层卡住了, 用户看到的是
+# 「名字太长」; 让它穿到上游再被打回来, 用户看到的是同一句话但要绕一趟网络.
+MAX_TITLE_LENGTH = 100
 
 # 列会话那条路带上去的 `X-Conversation-Id`: **空值**, 而且是有意的.
 #
@@ -187,6 +203,11 @@ INTERRUPTED_CODE = "stream_interrupted"
 # 是唯一一个**能原样转给浏览器**的失败 —— 别的 404 都是接线问题, 见 `forward_cancel`.
 RUN_NOT_FOUND_CODE = "run_not_found"
 
+# 上游「这段会话不在了」那个码 (框架 `ThreadNotFoundError` 的默认码, #20). 三个
+# 管理动作 (改名 / 置顶 / 删除) 上它能原样转给浏览器 —— 理由与上面那条一模一样:
+# 用户可能只是在另一个标签页里删掉了它, 那不是故障. 其余 404 是接线问题.
+THREAD_NOT_FOUND_CODE = "thread_not_found"
+
 # 错误码 → 用户看得懂的一句话.
 #
 # 左边是**事实** (框架的 LoopOutcome 值, 加本层补的两个), 右边是**话术**: 用户
@@ -217,6 +238,12 @@ ERROR_COPY: dict[str, str] = {
     "invalid_conversation_id": "这次对话的连接坏了, 刷新页面再问一次.",
     "invalid_run_id": "这次没能停下来, 刷新页面再看看.",
     "method_not_allowed": "这条请求的方式不对, 刷新页面再问一次.",
+    # 三个管理动作 (#20) 自己的码. 上游 (框架) 那边的码是事实描述, 这里是照着
+    # 用户能做什么写的 —— 与上面那一批同一条规矩.
+    "invalid_title": "给这段对话起个名字吧, 空名字在列表上会是一行空白.",
+    "title_too_long": "名字太长了, 短一点再试.",
+    "invalid_pinned": "这次置顶没能生效, 刷新页面再试一次.",
+    "thread_not_found": "这段对话已经不在列表里了, 刷新看看.",
 }
 
 # 没见过的码 (框架以后新增的) 用的兜底话术
@@ -446,6 +473,27 @@ def conversation_id_from(value: object, user_id: int) -> str:
     return conversation_id
 
 
+def _payload_from_request(request, user_id: int, action: str) -> dict:
+    """请求体 → JSON 对象 (五条读字段的路共用的第一段).
+
+    `action` 只说这次要做什么 (提问 / 取消 / 读历史 / 改名 / 置顶), 用来把日志写得
+    像人话. 抽成一处是因为「解析 + 必须是对象」跟字段无关 —— 抄五遍的话, 迟早有
+    一条路的报错与另几条不一样, 而排查的人是按日志找的.
+
+    Raises:
+        RefusedError: 正文不是合法 JSON 对象 (400 + `invalid_request`).
+    """
+    try:
+        payload = json.loads(request.body)
+    except ValueError as exc:
+        logger.warning("买家 %s: %s请求体不是合法 JSON: %s", user_id, action, exc)
+        raise RefusedError(400, "invalid_request") from exc
+    if not isinstance(payload, dict):
+        logger.warning("买家 %s: %s请求体应为 JSON 对象", user_id, action)
+        raise RefusedError(400, "invalid_request")
+    return payload
+
+
 def question_from_request(request, user_id: int) -> Question:
     """请求体 → 一次问句; 哪里不合契约就抛 `RefusedError` (400).
 
@@ -453,15 +501,7 @@ def question_from_request(request, user_id: int) -> Question:
         Refused: 正文不是 JSON 对象 / 缺字段 / 问句为空或过长 / 会话编号不合法.
             给用户的文案取自 `ERROR_COPY`, 给开发者的那份理由 (哪个字段坏了) 走日志.
     """
-    try:
-        payload = json.loads(request.body)
-    except ValueError as exc:
-        logger.warning("买家 %s: 请求体不是合法 JSON: %s", user_id, exc)
-        raise RefusedError(400, "invalid_request") from exc
-    if not isinstance(payload, dict):
-        logger.warning("买家 %s: 请求体应为 JSON 对象", user_id)
-        raise RefusedError(400, "invalid_request")
-
+    payload = _payload_from_request(request, user_id, "提问")
     message = payload.get(MESSAGE_FIELD)
     if not isinstance(message, str) or not message.strip():
         logger.warning("买家 %s: 请求体缺少非空字符串字段 %s", user_id, MESSAGE_FIELD)
@@ -509,15 +549,7 @@ def cancellation_from_request(request, user_id: int) -> Cancellation:
     Raises:
         RefusedError: 正文不是 JSON 对象 / 缺字段 / 编号形状不对 / 会话编号不合法.
     """
-    try:
-        payload = json.loads(request.body)
-    except ValueError as exc:
-        logger.warning("买家 %s: 取消请求体不是合法 JSON: %s", user_id, exc)
-        raise RefusedError(400, "invalid_request") from exc
-    if not isinstance(payload, dict):
-        logger.warning("买家 %s: 取消请求体应为 JSON 对象", user_id)
-        raise RefusedError(400, "invalid_request")
-
+    payload = _payload_from_request(request, user_id, "取消")
     raw = payload.get(RUN_ID_FIELD)
     run_id = raw.strip() if isinstance(raw, str) else ""
     if not valid_run_id(run_id):
@@ -537,6 +569,110 @@ def cancellation_from_request(request, user_id: int) -> Cancellation:
     return Cancellation(run_id=run_id, conversation_id=conversation_id)
 
 
+@dataclass(frozen=True, slots=True)
+class Rename:
+    """浏览器要给哪段对话改成什么名字 (BFF 从请求体里只认这两样)."""
+
+    conversation_id: str
+    title: str
+
+
+def rename_from_request(request, user_id: int) -> Rename:
+    """请求体 → 一次改名; 哪里不合契约就抛 `RefusedError` (400).
+
+    空标题**拒掉**: 列表上那一行会变成空白, 看着像坏了 (与上游同一条判据, 这里先
+    卡一道 —— 见 `MAX_TITLE_LENGTH` 那段的理由).
+
+    Raises:
+        RefusedError: 正文不成形 / 缺 `title` / 空 / 过长 / 会话编号不合法.
+    """
+    payload = _payload_from_request(request, user_id, "改名")
+    raw = payload.get(TITLE_FIELD)
+    title = raw.strip() if isinstance(raw, str) else ""
+    if not title:
+        logger.warning(
+            "买家 %s: 改名的请求体缺少非空字符串字段 %s", user_id, TITLE_FIELD
+        )
+        raise RefusedError(400, "invalid_title")
+    if len(title) > MAX_TITLE_LENGTH:
+        logger.warning(
+            "买家 %s: 标题过长 (%d 字符, 上限 %d)",
+            user_id,
+            len(title),
+            MAX_TITLE_LENGTH,
+        )
+        raise RefusedError(400, "title_too_long")
+    conversation_id = conversation_id_from(payload.get(CONVERSATION_FIELD), user_id)
+    return Rename(conversation_id=conversation_id, title=title)
+
+
+@dataclass(frozen=True, slots=True)
+class Pin:
+    """浏览器要把哪段对话置顶还是取消置顶 (BFF 从请求体里只认这两样)."""
+
+    conversation_id: str
+    pinned: bool
+
+
+def pin_from_request(request, user_id: int) -> Pin:
+    """请求体 → 一次置顶/取消; 哪里不合契约就抛 `RefusedError` (400).
+
+    `pinned` **必须是真布尔**: 传 `"true"` / `1` / 缺字段都拒. 放水的话表现是
+    「置顶一直生效、取消置顶怎么点都不动」—— 半好半坏最难查, 与上游同一条判据.
+
+    Raises:
+        RefusedError: 正文不成形 / `pinned` 不是布尔 / 会话编号不合法.
+    """
+    payload = _payload_from_request(request, user_id, "置顶")
+    pinned = payload.get(PINNED_FIELD)
+    if not isinstance(pinned, bool):
+        logger.warning(
+            "买家 %s: 置顶的请求体缺少布尔字段 %s, 收到 %s",
+            user_id,
+            PINNED_FIELD,
+            type(pinned).__name__,
+        )
+        raise RefusedError(400, "invalid_pinned")
+    conversation_id = conversation_id_from(payload.get(CONVERSATION_FIELD), user_id)
+    return Pin(conversation_id=conversation_id, pinned=pinned)
+
+
+def conversation_to_delete_from_request(request, user_id: int) -> str:
+    """请求体 → **要删的那段**会话编号; 不合法就抛 `RefusedError` (400).
+
+    名字写成「要删的那段」而不是「已删除的」: 它返回的是**待办**里的那个编号,
+    不是删完之后的什么东西.
+
+    只认这一个字段 (删除没有第二个参数), 所以不另造一个 dataclass ——
+    `Rename` / `Pin` 那种容器是为了把**两个**字段捆着传, 一个字段装不下任何别的
+    东西, 包一层只是多一个名字要记.
+
+    Raises:
+        RefusedError: 正文不成形 / 会话编号不合法.
+    """
+    payload = _payload_from_request(request, user_id, "删除")
+    return conversation_id_from(payload.get(CONVERSATION_FIELD), user_id)
+
+
+def search_query_from_request(request, user_id: int) -> str | None:
+    """请求体 → 搜索词 (没给 / 空串 / **压根没发体** = 不搜).
+
+    与读历史一样, 列表那条也是 POST + 请求体: 浏览器这一侧**不把任何东西放进
+    URL** —— 搜索词里完全可能有订单号.
+
+    「没发请求体」是合法的, 而且是有意保留的:**不搜的时候本来就没有参数要传**.
+    列会话是唯一一条请求体可选的写形状 (另几条都得有个字段才能干活), 所以空体在
+    这里等于「一个筛选条件都不给」, 而不是「请求不合法」—— 逼着前端每次都发一个
+    `{}` 只是形式主义.
+    """
+    if not request.body:
+        return None
+    payload = _payload_from_request(request, user_id, "列会话")
+    raw = payload.get(QUERY_FIELD)
+    query = raw.strip() if isinstance(raw, str) else ""
+    return query or None
+
+
 def _refusal(status: int, code: str) -> JsonResponse:
     """回一个错误响应 (形状与框架的 error 响应一致: `{"error": {...}}`).
 
@@ -554,9 +690,13 @@ def _refusal(status: int, code: str) -> JsonResponse:
 # ---------------------------------------------------------------------------
 
 
-def _runs_url() -> str:
-    """上游端点地址 (基地址写在 settings 里, 部署期可换)."""
-    return f"{settings.CHARAPP_SERVER_URL.rstrip('/')}{RUNS_PATH}"
+def _url(path: str) -> str:
+    """上游某个端点的地址 (基地址写在 settings 里, 部署期可换).
+
+    **只有这一处拼基地址** —— 五条转发路各自拼一遍的话, 换部署地址就得记得改五处,
+    而漏掉的那一条表现是「只有某个功能连不上」, 排查时最难想到的就是地址本身.
+    """
+    return f"{settings.CHARAPP_SERVER_URL.rstrip('/')}{path}"
 
 
 def _internal_token(who: str, action: str) -> str:
@@ -598,10 +738,11 @@ def _who_for(user_id: int, conversation_id: str | None = None) -> str:
 
     翻日志的人手上通常只有一个「谁反映的」, 没有别的线索.
 
-    `conversation_id` 可以不给: 列会话那条路问的是「我聊过哪几段」, 本来就没有
-    哪一段对话可言 —— 那时前缀只报到买家 (拼一个空段进去, 日志看着像缺了一块).
+    `conversation_id` 可以不给 (或给空): 列会话那条路问的是「我聊过哪几段」, 本来就
+    没有哪一段对话可言 —— 那时前缀只报到买家 (拼一个空段进去, 日志看着像缺了一块).
+    空串与 None 同等对待, 是因为列会话那条路上游要的正是 `NO_CONVERSATION_ID`.
     """
-    if conversation_id is None:
+    if not conversation_id:
         return f"买家 {user_id}"
     return f"买家 {user_id} / 会话 {conversation_id}"
 
@@ -676,7 +817,7 @@ def open_upstream(user_id: int, question: Question) -> Upstream:
             response = stack.enter_context(
                 client.stream(
                     "POST",
-                    _runs_url(),
+                    _url(RUNS_PATH),
                     json={MESSAGE_FIELD: question.message},
                     headers=headers,
                 )
@@ -756,111 +897,178 @@ def relay(upstream: Upstream) -> Iterator[bytes]:
 
 def _cancel_url(run_id: str) -> str:
     """取消端点地址 (编号已经过 `valid_run_id`, 拼进路径是安全的)."""
-    path = CANCEL_PATH.format(run_id=run_id)
-    return f"{settings.CHARAPP_SERVER_URL.rstrip('/')}{path}"
+    return _url(CANCEL_PATH.format(run_id=run_id))
 
 
-def _history_url() -> str:
-    """历史端点地址 (要读哪段对话由那三个头说了算, 地址里不带参数)."""
-    return f"{settings.CHARAPP_SERVER_URL.rstrip('/')}{HISTORY_PATH}"
+def _call_upstream(
+    *,
+    method: str,
+    path: str,
+    user_id: int,
+    conversation_id: str,
+    timeout: httpx.Timeout,
+    action: str,
+    params: dict[str, str] | None = None,
+    payload: dict | None = None,
+    not_found_code: str | None = None,
+) -> bytes:
+    """打一次「普通请求/响应」型的上游调用; 失败就抛 `RefusedError`.
 
+    | 情况 | 状态 | 码 |
+    |------|------|----|
+    | 本机没配令牌 (我们自己的问题) | 503 | `agent_unavailable` |
+    | 连不上 / 超时 / 基地址写错 | 502 | `agent_unavailable` |
+    | 上游回非 200 | 502 | **上游给的那个码** |
 
-def _conversations_url() -> str:
-    """会话列表端点地址 (列谁的由那三个头说了算, 地址里不带参数)."""
-    return f"{settings.CHARAPP_SERVER_URL.rstrip('/')}{CONVERSATIONS_PATH}"
+    五条路 (读历史 / 列会话 / 改名 / 置顶 / 删除) 都走它 —— 分头写五遍的代价很
+    具体: 其中一条忘了把 `httpx.InvalidURL` 收进 except (基地址端口写错就够),
+    表现是那条路冒成 500 而别的路回 502, 排查的人得先猜是哪一条.
+
+    **三个头也在这里拼** (`_service_headers`): 五个调用方各拼一遍, 就等于把
+    「身份从哪儿来」这条纪律抄了五份 —— 而它出过的错 (某个头漏带) 正是因为抄了
+    第二份.
+
+    与 `relay()` 的分工: 那条路搬的是**流**(逐帧透传), 这条搬的是一次普通响应的
+    正文 (整段字节). 两边都不解析上游的内容 —— 响应体里有哪些字段是助手服务那侧
+    的契约, 本层照着转; 它要是改了形状, 该跟着改的是页面, 不是这一层.
+
+    Args:
+        method: GET (两条读路) 或 POST (三条写动作).
+        path: 上游端点 (本文件顶上那几个 `*_PATH`).
+        user_id: 这次请求的买家 —— 只可能来自 `request.user.pk`.
+        conversation_id: 哪一段对话; 列会话那条给 `NO_CONVERSATION_ID` (空值).
+        timeout: 这条路的耐心 (三条读路同档, 三条写路也同档).
+        action: 要做什么 (读历史 / 列会话 / 改名...), 只进日志.
+        params: 查询串 (只有列会话那条的搜索词会用到).
+        payload: 请求体 (只有三条写动作会用到).
+        not_found_code: 上游回的 404 **带着这个码**时, 把 404 原样转给浏览器;
+            见下.
+
+    Returns:
+        bytes: 上游的响应体 (原样, 不重新编码).
+
+    Raises:
+        RefusedError: 见上表 (令牌没配是 503, 其余是 502); 给了 `not_found_code`
+            且上游正好回那个码时, 是 **404**.
+    """
+    who = _who_for(user_id, conversation_id)
+    headers = _service_headers(_internal_token(who, action), user_id, conversation_id)
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            response = client.request(
+                method, _url(path), headers=headers, params=params, json=payload
+            )
+    except (httpx.HTTPError, httpx.InvalidURL) as exc:
+        # `InvalidURL` 不是 `HTTPError` (基地址写错就够), 但它同样属于「这条链路
+        # 根本没走通」, 该回同一句话而不是冒成 500
+        logger.error("%s: %s请求发不出去: %s: %s", who, action, type(exc).__name__, exc)
+        raise RefusedError(502, UNAVAILABLE_CODE) from exc
+
+    if response.status_code == 200:
+        return response.content
+    code = _refusal_code(response)
+    logger.warning(
+        "%s: 客服服务拒绝了这次%s: HTTP %d %s",
+        who,
+        action,
+        response.status_code,
+        _detail(response),
+    )
+    # 「这段会话不在了」是唯一一个对用户有意义的答案 (两个标签页里删掉了、别人替它
+    # 删了) —— 那不是故障, 页面该照实说「它已经从列表里消失」. 别的 404 一律当接线
+    # 故障 (对面根本没有这条路由 = 版本不齐 / 地址打错), 塌成 502.
+    #
+    # 判据必须带上**那个码**: 一个不带 `thread_not_found` 的 404 说明路由不在,
+    # 放过去的话页面会把它当成"已删除"静默吞掉, 而实际是接线坏了 —— 与取消那条
+    # 路同一个坑, 见 `forward_cancel`.
+    if response.status_code == 404 and code == not_found_code:
+        raise RefusedError(404, code)
+    raise RefusedError(502, code)
 
 
 def forward_history(user_id: int, conversation_id: str) -> bytes:
-    """读一段对话聊过什么; 失败就抛 `RefusedError` (与取消那条同一套分法).
+    """读一段对话聊过什么 (上路, 见 `_call_upstream` 的失败分法).
 
-    | 情况 | 状态 | 码 |
-    |------|------|----|
-    | 本机没配令牌 (我们自己的问题) | 503 | `agent_unavailable` |
-    | 连不上 / 超时 | 502 | `agent_unavailable` |
-    | 上游回非 200 | 502 | **上游给的那个码** |
-
-    与 `relay()` 的分工: 那条路搬的是**流**(逐帧透传), 这条路搬的是一次普通响应的
-    正文 (整段字节). 两边都不解析上游的内容 —— 历史响应的形状 (有哪些字段、每条
-    消息叫什么) 是助手服务那侧的契约, 本层照着转就行: 它要是改了形状, 该跟着改的
-    是页面, 不是这一层.
-
-    Returns:
-        bytes: 上游的响应体 (原样, 不重新编码).
-
-    Raises:
-        RefusedError: 见上表.
+    用途只有一个: 浏览器刷新会把页面那一份渲染丢光, 得有个地方把聊过的话再取一遍.
     """
-    who = _who_for(user_id, conversation_id)
-    headers = _service_headers(_internal_token(who, "读历史"), user_id, conversation_id)
-    try:
-        with httpx.Client(timeout=HISTORY_TIMEOUT) as client:
-            response = client.get(_history_url(), headers=headers)
-    except (httpx.HTTPError, httpx.InvalidURL) as exc:
-        # 与取消那条同一个口径: 链路根本没走通, 该回同一句话而不是冒成 500
-        logger.error("%s: 历史请求发不出去: %s: %s", who, type(exc).__name__, exc)
-        raise RefusedError(502, UNAVAILABLE_CODE) from exc
-
-    if response.status_code == 200:
-        return response.content
-    code = _refusal_code(response)
-    logger.error(
-        "%s: 客服服务拒绝了这次读历史: HTTP %d %s",
-        who,
-        response.status_code,
-        _detail(response),
+    return _call_upstream(
+        method="GET",
+        path=HISTORY_PATH,
+        user_id=user_id,
+        conversation_id=conversation_id,
+        timeout=HISTORY_TIMEOUT,
+        action="读历史",
     )
-    raise RefusedError(502, code)
 
 
-def forward_conversations(user_id: int) -> bytes:
-    """列「这个买家聊过哪几段」; 失败就抛 `RefusedError` (与读历史同一套分法).
-
-    | 情况 | 状态 | 码 |
-    |------|------|----|
-    | 本机没配令牌 (我们自己的问题) | 503 | `agent_unavailable` |
-    | 连不上 / 超时 | 502 | `agent_unavailable` |
-    | 上游回非 200 | 502 | **上游给的那个码** |
-
-    与 `forward_history` 是两条路各答一半: 那条答「这段聊了什么」, 这条答「我聊过
-    哪几段」. 形状完全照抄它 —— 整段正文搬回来, 不解析 (有哪些字段、怎么排序都是
-    助手服务那侧的契约, 本层照着转, 它改了形状该改的是页面).
+def forward_conversations(user_id: int, *, query: str | None = None) -> bytes:
+    """列「这个买家聊过哪几段」(上路); 给了 `query` 就只回命中的那些.
 
     **「换一个买家看不到别人的」不在这层**: 判据在助手服务那侧 (按转发过去的
     `X-User-Id` 过滤, 见 `CharAgent/server/conversations.py`); 本层能保证的是
-    「转过去的一定是 session 里那个人」—— 也就是上面那个 `_service_headers` 里的
-    身份只可能来自 `request.user.pk`.
+    「转过去的一定是 session 里那个人」—— 也就是 `_service_headers` 里的身份只可能
+    来自 `request.user.pk`.
 
     Args:
         user_id: 这次请求的买家 (BFF 只从 session 取).
+        query: 搜索词; None 表示不搜 (浏览器那一侧给的就是"没填"或空串).
 
     Returns:
         bytes: 上游的响应体 (原样, 不重新编码).
-
-    Raises:
-        RefusedError: 见上表.
     """
-    who = _who_for(user_id)
-    headers = _service_headers(
-        _internal_token(who, "列会话"), user_id, NO_CONVERSATION_ID
+    return _call_upstream(
+        method="GET",
+        path=CONVERSATIONS_PATH,
+        user_id=user_id,
+        conversation_id=NO_CONVERSATION_ID,
+        timeout=CONVERSATIONS_TIMEOUT,
+        action="列会话",
+        # 搜索词走**上游的查询串** (框架那条路的契约就是 `?q=`), 而它在浏览器那侧
+        # 走的是请求体 —— 两套 wire 契约各按各的形状, 这一层负责对上.
+        # 会话编号仍然只走头 (上面那条纪律), 不进地址.
+        params=(None if not query else {UPSTREAM_QUERY_FIELD: query}),
     )
-    try:
-        with httpx.Client(timeout=CONVERSATIONS_TIMEOUT) as client:
-            response = client.get(_conversations_url(), headers=headers)
-    except (httpx.HTTPError, httpx.InvalidURL) as exc:
-        # 与另两条同一个口径: 链路根本没走通, 该回同一句话而不是冒成 500
-        logger.error("%s: 会话列表请求发不出去: %s: %s", who, type(exc).__name__, exc)
-        raise RefusedError(502, UNAVAILABLE_CODE) from exc
 
-    if response.status_code == 200:
-        return response.content
-    code = _refusal_code(response)
-    logger.error(
-        "%s: 客服服务拒绝了这次列会话: HTTP %d %s",
-        who,
-        response.status_code,
-        _detail(response),
+
+def forward_rename(user_id: int, rename: Rename) -> bytes:
+    """把「改标题」转给助手服务 (上路); 会话编号走头, 新名字走请求体."""
+    return _call_upstream(
+        method="POST",
+        path=CONVERSATION_TITLE_PATH,
+        user_id=user_id,
+        conversation_id=rename.conversation_id,
+        timeout=CONVERSATIONS_TIMEOUT,
+        action="改标题",
+        not_found_code=THREAD_NOT_FOUND_CODE,
+        payload={TITLE_FIELD: rename.title},
     )
-    raise RefusedError(502, code)
+
+
+def forward_pin(user_id: int, pin: Pin) -> bytes:
+    """把「置顶 / 取消置顶」转给助手服务 (上路)."""
+    return _call_upstream(
+        method="POST",
+        path=CONVERSATION_PIN_PATH,
+        user_id=user_id,
+        conversation_id=pin.conversation_id,
+        timeout=CONVERSATIONS_TIMEOUT,
+        action="置顶",
+        not_found_code=THREAD_NOT_FOUND_CODE,
+        payload={PINNED_FIELD: pin.pinned},
+    )
+
+
+def forward_delete(user_id: int, conversation_id: str) -> bytes:
+    """把「删除」转给助手服务 (上路) —— 不带请求体, 删哪段由头说了算."""
+    return _call_upstream(
+        method="POST",
+        path=CONVERSATION_DELETE_PATH,
+        user_id=user_id,
+        conversation_id=conversation_id,
+        timeout=CONVERSATIONS_TIMEOUT,
+        action="删除会话",
+        not_found_code=THREAD_NOT_FOUND_CODE,
+    )
 
 
 def forward_cancel(user_id: int, cancellation: Cancellation) -> None:
@@ -1042,16 +1250,11 @@ class AgentHistoryView(LoginRequiredMixin, View):
         # 身份只从 session 取 (与 chat / cancel 同一行代码同一个理由)
         buyer_id = request.user.pk
         try:
-            payload = json.loads(request.body)
-            if not isinstance(payload, dict):
-                raise ValueError("请求体应为 JSON 对象")
-        except ValueError as exc:
-            logger.warning("买家 %s: 历史请求体不是合法 JSON: %s", buyer_id, exc)
-            return _refusal(400, "invalid_request")
-
-        try:
             conversation_id = conversation_id_from(
-                payload.get(CONVERSATION_FIELD), buyer_id
+                _payload_from_request(request, buyer_id, "读历史").get(
+                    CONVERSATION_FIELD
+                ),
+                buyer_id,
             )
             body = forward_history(buyer_id, conversation_id)
         except RefusedError as refused:
@@ -1073,24 +1276,29 @@ class AgentConversationsView(LoginRequiredMixin, View):
     Note:
         与 `AgentHistoryView` 那一对关系: 那条答「这段对话聊了什么」, 这条答「我
         有哪些对话」. 两条的形状**刻意一模一样** (POST + CSRF + 身份只从 session
-        取 + 正文原样透传), 页面那边一套写法 —— 差别只在请求体: 这条**不需要**
-        会话编号 (列表本来就是「所有段」), 所以它连请求体都不读.
+        取 + 正文原样透传), 页面那边一套写法.
+
+        请求体里只认 `query` 一个字段 (#20 的搜索), 而且**可以不给** —— 不搜就是
+        列全部. 它**要不到会话编号**: 列表本来就是「所有段」, 指名某一段没有意义.
 
         **为什么读操作用 POST** (与 `AgentHistoryView` 同一条纪律, 见 `adr/0002`):
         它读的是私人数据 (谁的对话列表), 而 GET + cookie 是跨站可触发的 —— 一条
         `<img src=".../minimall/agent/conversations/">` 就能让别人的浏览器替他发出
-        这条请求. POST 之后由 Django 的 CSRF 中间件接管.
+        这条请求. POST 之后由 Django 的 CSRF 中间件接管; 顺带把**搜索词**也从
+        地址栏挪进了请求体 (它里面完全可能有订单号).
 
         「换一个买家看不到别人的」判据**不在本层**: 转发过去的身份只可能来自
         `request.user.pk` (下面那一行), 而列表在助手服务那侧按它查.
     """
 
     def post(self, request) -> HttpResponse:
-        # 身份只从 session 取 (与另三条同一行代码同一个理由): 请求体里塞谁的 ID
+        # 身份只从 session 取 (与另几条同一行代码同一个理由): 请求体里塞谁的 ID
         # 都改不了这次转发带的是谁 —— 而「列哪些会话」在助手服务那侧正是按它查的
         buyer_id = request.user.pk
         try:
-            body = forward_conversations(buyer_id)
+            body = forward_conversations(
+                buyer_id, query=search_query_from_request(request, buyer_id)
+            )
         except RefusedError as refused:
             return _refusal(refused.status, refused.code)
         # 正文原样转给浏览器 (与读历史一致): 本层不认识它的内部形状
@@ -1102,3 +1310,75 @@ class AgentConversationsView(LoginRequiredMixin, View):
             "BFF 会话列表端点收到 %s (只认 POST): %s", request.method, request.path
         )
         return _refusal(405, "method_not_allowed")
+
+
+class _AgentConversationActionView(LoginRequiredMixin, View):
+    """三个管理动作 (改名 / 置顶 / 删除) 的共同一半: 认证 → 取身份 → 转发 → 透传.
+
+    抽出一个基类而不是把三份视图抄三遍: 它们**除了"把请求体翻成哪种请求"之外逐字
+    相同** —— 同一个前缀、同一套 CSRF、同一条「身份只从 session 取」、同一个
+    「上游正文原样交回」. 抄三份的话, 将来加一条纪律 (比如限流 / 审计日志) 就得
+    记得改三处, 而漏掉的那一处不会有任何报错.
+
+    子类只实现 `_forward`: 把请求与买家 ID 变成一次上游调用 (`RefusedError` 照抛,
+    由这里统一翻成响应).
+    """
+
+    def _forward(self, request, buyer_id: int) -> bytes:  # pragma: no cover - 见子类
+        raise NotImplementedError
+
+    def post(self, request) -> HttpResponse:
+        buyer_id = request.user.pk
+        try:
+            body = self._forward(request, buyer_id)
+        except RefusedError as refused:
+            return _refusal(refused.status, refused.code)
+        # 正文原样转给浏览器 (与另几条一致): 本层不认识它的内部形状
+        return HttpResponse(body, content_type="application/json")
+
+    def http_method_not_allowed(self, request, *args, **kwargs) -> HttpResponse:
+        """GET 之类一律拒掉: 这几个动作都改数据, 不做成一条链接就能触发的 GET."""
+        logger.warning(
+            "BFF 会话管理端点收到 %s (只认 POST): %s", request.method, request.path
+        )
+        return _refusal(405, "method_not_allowed")
+
+
+class AgentConversationTitleView(_AgentConversationActionView):
+    """BFF 端点: 给一段会话改名 (POST) —— `{"conversation_id", "title"}`.
+
+    Note:
+        网址里**没有会话编号** (它在请求体里, 由 `_service_headers` 那头带下去),
+        与 `/history` 同一条纪律: 编号进 URL 就等于同时进了访问日志 / 浏览器历史 /
+        Referer.
+    """
+
+    def _forward(self, request, buyer_id: int) -> bytes:
+        return forward_rename(buyer_id, rename_from_request(request, buyer_id))
+
+
+class AgentConversationPinView(_AgentConversationActionView):
+    """BFF 端点: 置顶 / 取消置顶 (POST) —— `{"conversation_id", "pinned"}`.
+
+    Note:
+        置顶与取消是**同一个端点**: 它们是同一个字段的两个取值, 拆成两条路只会让
+        「置顶」这件事有两个地址 (前端也要跟着写两个分支). 形状与改名一致.
+    """
+
+    def _forward(self, request, buyer_id: int) -> bytes:
+        return forward_pin(buyer_id, pin_from_request(request, buyer_id))
+
+
+class AgentConversationDeleteView(_AgentConversationActionView):
+    """BFF 端点: 删除一段会话 (POST) —— `{"conversation_id"}`.
+
+    Note:
+        它在上游是**软删** (行与消息都留着, 见 `ThreadsRepository.soft_delete`),
+        所以"删了之后历史还读得到"是有意的: 列表里没了, 但那段记录还在库里.
+        页面据此把删掉的当前会话换成一段新的空对话.
+    """
+
+    def _forward(self, request, buyer_id: int) -> bytes:
+        return forward_delete(
+            buyer_id, conversation_to_delete_from_request(request, buyer_id)
+        )

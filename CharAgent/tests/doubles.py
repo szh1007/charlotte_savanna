@@ -393,7 +393,7 @@ class FakeRecordSession:
         """
         entity = self._TABLES[statement.table.name]
         criteria = {}
-        for expression in statement._where_criteria:
+        for expression in _flatten_and(statement._where_criteria):
             column = getattr(expression.left, "name", None)
             right = getattr(expression, "right", None)
             if column is not None and right is not None:
@@ -429,6 +429,22 @@ class _Affected:
 
     def __init__(self, rowcount: int) -> None:
         self.rowcount = rowcount
+
+
+def _flatten_and(criteria: Sequence[Any]) -> list[Any]:
+    """WHERE 里的条件拆成一条条 (把 `and_(...)` 摊平).
+
+    仓储里有两种写法都在用: `.where(c1, c2)` (两条并列) 与 `.where(and_(c1, c2))`
+    (`ThreadsRepository._owned` 那种「归属是一件事」的写法). 真 SQL 里两者完全
+    等价, 而替身按条件逐条比, 所以要自己摊一下.
+
+    **只摊 AND**: OR / 子查询 / 表达式那些是**语义**上的差别, 仍旧由 pg_db 用例
+    拿真库守 (见本模块的说明), 这里不假装会.
+    """
+    flat: list[Any] = []
+    for expression in criteria:
+        flat.extend(getattr(expression, "clauses", None) or [expression])
+    return flat
 
 
 class BrokenRecordDatabase:
@@ -531,6 +547,7 @@ def record_thread(
     title: str = "",
     status: str = "active",
     updated_at: datetime | None = None,
+    pinned_at: datetime | None = None,
 ) -> Thread:
     """造一条会话行 (列表那条路要的东西)."""
     moment = datetime.now(UTC) if updated_at is None else updated_at
@@ -542,4 +559,5 @@ def record_thread(
         status=status,
         created_at=moment,
         updated_at=moment,
+        pinned_at=pinned_at,
     )

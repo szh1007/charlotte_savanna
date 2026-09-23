@@ -7,15 +7,18 @@
 结构总览 (对齐 model / tool / agent 包惯例):
 
 - app.py       应用工厂 create_app: 三条路 (POST /runs 问一句 / POST /runs/{id}/cancel
-               停一次 / GET /history 读这段对话聊过什么) + 一条可选的 (GET
-               /conversations 列我聊过哪几段, 给了 database 才有) + 两条接缝 + 一套收尾
+               停一次 / GET /history 读这段对话聊过什么) + 一组可选的会话路由
+               (GET /conversations 列我聊过哪几段与搜索, 外加 POST
+               /conversations/title|pin|delete 三个管理动作, 给了 database 才有)
+               + 两条接缝 + 一套收尾
 - sse.py       事件流 → SSE: 字段映射 (纯函数) + 响应体生成器 (收尾时叫停没人听的运行)
 - sessions.py   会话登记表 + 事件路由: 会话按 thread_id 长驻, 同一会话不并发跑,
                空闲超时的条目被清掉 (真相在快照与记录里, 内存只是缓存)
 - runs.py       一次运行的流与在册: 事件队列 + 序号记账 + 可取消的任务句柄
 - history.py    会话历史的只读视图: 记录表的行 (或内存那份 wire 历史) → 能给人看的
                那一份对话
-- conversations.py 会话列表的只读视图: 会话行 → 前端左栏要的 (对话 ID / 标题 / 时间)
+- conversations.py 会话列表的读写视图: 会话行 → 前端左栏要的 (对话 ID / 标题 / 时间 /
+               置顶时刻), 以及 ticket 20 的三个管理动作 (改名 / 置顶 / 删除) 的契约
 - utils/        支撑子包: types (两个插座协议 + wire 契约常量) /
                 errors (一族自带状态码的错误)
 
@@ -73,8 +76,16 @@ from CharAgent.server.conversations import (
     CONVERSATION_ID_FIELD,
     CONVERSATIONS_FIELD,
     CONVERSATIONS_PATH,
+    DELETE_PATH,
+    DELETED_FIELD,
     LIMIT_QUERY,
+    MAX_TITLE_LENGTH,
+    PIN_PATH,
+    PINNED_AT_FIELD,
+    PINNED_FIELD,
+    QUERY_QUERY,
     TITLE_FIELD,
+    TITLE_PATH,
     UPDATED_AT_FIELD,
 )
 from CharAgent.server.history import (
@@ -89,6 +100,7 @@ from CharAgent.server.utils.errors import (
     ServerConfigError,
     ServerError,
     ThreadBusyError,
+    ThreadNotFoundError,
 )
 from CharAgent.server.utils.types import (
     CANCELLED_CODE,
@@ -105,15 +117,23 @@ __all__ = [
     "CONVERSATIONS_FIELD",
     "CONVERSATIONS_PATH",
     "CONVERSATION_ID_FIELD",
+    "DELETED_FIELD",
+    "DELETE_PATH",
     "HISTORY_PATH",
     "LIMIT_QUERY",
+    "MAX_TITLE_LENGTH",
     "MESSAGES_FIELD",
     "MESSAGE_FIELD",
+    "PINNED_AT_FIELD",
+    "PINNED_FIELD",
+    "PIN_PATH",
+    "QUERY_QUERY",
     "RUN_FAILED_CODE",
     "RUN_ID_HEADER",
     "SSE_MEDIA_TYPE",
     "THREAD_ID_FIELD",
     "TITLE_FIELD",
+    "TITLE_PATH",
     "UPDATED_AT_FIELD",
     "ContextProvider",
     "InvalidRequestError",
@@ -123,5 +143,6 @@ __all__ = [
     "ServerError",
     "SessionProvider",
     "ThreadBusyError",
+    "ThreadNotFoundError",
     "create_app",
 ]

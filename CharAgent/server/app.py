@@ -68,10 +68,20 @@ final, 失败与取消有本层补的 error (见 runs.py), 之后流才收线.
 列会话那条路与它同源, 只是问的是另一个问题 (「我聊过哪几段」而不是「这段聊了
 什么」)::
 
-    GET /conversations[?limit=N]
+    GET /conversations[?q=<可选>&limit=<可选>]
       ├─ 1. ContextProvider.provide(request)   <- 与上两条**同一道门**
       └─ 2. 按 (tenant_id, user_id) 查记录表的会话行 → 200 {"conversations": [...]}
-            只给「还活着且有可见消息」的, 按最后活动时刻倒序
+            只给「还活着、聊过话、没被删」的, 置顶的在前; 给了 q 就再筛一层
+
+另有三条写动作挂在同一段前缀下 (#20), 都是 POST + `X-Conversation-Id` 头::
+
+    POST /conversations/title   {"title": "..."}      改名
+    POST /conversations/pin     {"pinned": true|false} 置顶 / 取消置顶
+    POST /conversations/delete                         软删
+
+它们的归属判据不在这一层 —— 仓储那三个写方法把 (tenant_id, user_id) 写进了
+WHERE, 一行都没命中就是 404 (`ThreadNotFoundError`); 于是「改别人的会话」在这
+一层连一条分支都不需要.
 
 **它只在装配时给了库才存在** (没给 = 这条路由不注册, 404): 会话列表没有「内存里
 的版本」可言 —— 登记表里只有**这个进程**见过的那几段对话, 拿它当列表等于把
@@ -92,12 +102,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from functools import partial
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.responses import Response, StreamingResponse
 
+from CharAgent.agent import RunContext
 from CharAgent.db.errors import DbError
 from CharAgent.db.repositories.base import Database
 from CharAgent.db.repositories.messages import MessagesRepository
@@ -106,9 +118,19 @@ from CharAgent.db.repositories.threads import (
     ThreadsRepository,
 )
 from CharAgent.server.conversations import (
+    CONVERSATION_ID_FIELD,
     CONVERSATIONS_FIELD,
     CONVERSATIONS_PATH,
+    DELETE_PATH,
+    DELETED_FIELD,
     LIMIT_QUERY,
+    MAX_TITLE_LENGTH,
+    PIN_PATH,
+    PINNED_FIELD,
+    QUERY_QUERY,
+    TITLE_FIELD,
+    TITLE_PATH,
+    conversation_id_of,
     conversation_row,
 )
 from CharAgent.server.history import (
@@ -131,6 +153,7 @@ from CharAgent.server.utils.errors import (
     InvalidRequestError,
     RunNotFoundError,
     ServerError,
+    ThreadNotFoundError,
 )
 from CharAgent.server.utils.types import (
     MESSAGE_FIELD,
@@ -174,7 +197,7 @@ def create_app(
     Returns:
         FastAPI: 装好的应用. 业务可以再往上加自己的路由与中间件 (框架占
         `POST /runs` / `POST /runs/{run_id}/cancel` / `GET /history` 三条路,
-        给了 `database` 再多一条 `GET /conversations`).
+        给了 `database` 再多几条会话路由).
     """
     registry = SessionRegistry(session_provider)
     runs = RunRegistry()
@@ -355,11 +378,131 @@ def create_app(
             context = await context_provider.provide(request)
             limit = read_limit(request)
             rows = await threads_repo.list_active_with_messages(
-                context.tenant_id, user_id=context.user_id, limit=limit
+                context.tenant_id,
+                user_id=context.user_id,
+                query=read_query(request),
+                limit=limit,
             )
             return JSONResponse(
                 {CONVERSATIONS_FIELD: [conversation_row(row) for row in rows]}
             )
+
+        async def _conversation_action(
+            request: Request, change: Callable[[RunContext], Awaitable[dict | None]]
+        ) -> JSONResponse:
+            """三个管理动作的共同一半: 认证 → 落库 → 没改到就 404 → 回显.
+
+            顺序是有意的 (与 `start_run` 那条同源): **先认证** (不认识的人不该看见
+            任何东西), 再读请求体与落库, 最后才拼响应.
+
+            `change` 由各自的路由给: 它读自己的请求体、调自己的仓储方法, 成功了返回
+            「要在响应里回显的那几个字段」, **没改到就返回 None**. 「没改到」= 这段
+            会话不存在, 或者不是这次认证出来的那个人的 —— 两种情况**都回 404**,
+            不区分 (见 `ThreadNotFoundError`).
+
+            做法收成一处而不是抄三遍: 归属判据 (仓储那张 WHERE) 与「没改到 → 404」
+            是**同一件事**的两半, 分头写早晚有一条对不上 —— 而那种错不会报错, 只会
+            让某个动作悄悄对别人的会话生效.
+            """
+            context = await context_provider.provide(request)
+            echoed = await change(context)
+            if echoed is None:
+                raise ThreadNotFoundError(_thread_not_found_message(context.thread_id))
+            return JSONResponse(
+                {
+                    CONVERSATION_ID_FIELD: conversation_id_of(context.thread_id),
+                    **echoed,
+                }
+            )
+
+        @app.post(TITLE_PATH)
+        async def rename_conversation(request: Request) -> JSONResponse:
+            """给一段会话改标题 (#20; 会话编号走 `X-Conversation-Id` 头).
+
+            三件事按顺序: 认证 → 读标题 → 落库.
+
+            **空标题拒掉** (400): 列表上那一行会变成空白, 看着像坏了. 长度也有上限
+            (理由见 `MAX_TITLE_LENGTH`), 两条都在这一层卡 —— 仓储只管把值写进去.
+
+            「没改到」= 这段会话不存在, 或者不是这次认证出来的那个人的: 两种情况
+            **都回 404**, 不区分 (见 `ThreadNotFoundError`).
+
+            Returns:
+                JSONResponse: 200 + `{"conversation_id", "title"}` —— 回显改成了
+                什么, 调用方不必再查一次.
+
+            Raises:
+                ServerAuthError: 业务那个插座没认下这次请求 (框架翻成 401).
+                InvalidRequestError: 标题缺失 / 空 / 过长 (框架翻成 400).
+                ThreadNotFoundError: 这段会话不在册 (框架翻成 404).
+            """
+
+            async def change(context: RunContext) -> dict | None:
+                title = await read_title(request)
+                renamed = await threads_repo.update_title(
+                    context.thread_id,
+                    title,
+                    tenant_id=context.tenant_id,
+                    user_id=context.user_id,
+                )
+                return {TITLE_FIELD: title} if renamed else None
+
+            return await _conversation_action(request, change)
+
+        @app.post(PIN_PATH)
+        async def pin_conversation(request: Request) -> JSONResponse:
+            """置顶 / 取消置顶一段会话 (#20; 会话编号走 `X-Conversation-Id` 头).
+
+            `pinned` 必须是**布尔**: 传字符串 `"true"` 会被拒 (400) 而不是被悄悄
+            当成真 —— 「严格认类型」与 `read_message` 那条同源, 前端发错了要当场
+            看得见, 而不是某天发现取消置顶怎么也取消不掉.
+
+            Returns:
+                JSONResponse: 200 + `{"conversation_id", "pinned"}`.
+
+            Raises:
+                ServerAuthError: 同上 (401).
+                InvalidRequestError: 请求体不成形 / `pinned` 不是布尔 (400).
+                ThreadNotFoundError: 这段会话不在册 (404).
+            """
+
+            async def change(context: RunContext) -> dict | None:
+                pinned = await read_pinned(request)
+                changed = await threads_repo.set_pinned(
+                    context.thread_id,
+                    pinned,
+                    tenant_id=context.tenant_id,
+                    user_id=context.user_id,
+                )
+                return {PINNED_FIELD: pinned} if changed else None
+
+            return await _conversation_action(request, change)
+
+        @app.post(DELETE_PATH)
+        async def delete_conversation(request: Request) -> JSONResponse:
+            """把一段会话从用户的列表里删掉 (#20) —— **软删**, 行与消息都留着.
+
+            不读请求体: 删哪一段由 `X-Conversation-Id` 头说了算, 没有第二个参数.
+            重删**幂等** (再删一次照样 200) —— 判据是「命中了行」而不是「刚删的」
+            (见 `ThreadsRepository.soft_delete`), 这里不必额外判断「是不是已经删过了」.
+
+            Returns:
+                JSONResponse: 200 + `{"conversation_id", "deleted": true}`.
+
+            Raises:
+                ServerAuthError: 同上 (401).
+                ThreadNotFoundError: 这段会话不在册 (404).
+            """
+
+            async def change(context: RunContext) -> dict | None:
+                deleted = await threads_repo.soft_delete(
+                    context.thread_id,
+                    tenant_id=context.tenant_id,
+                    user_id=context.user_id,
+                )
+                return {DELETED_FIELD: True} if deleted else None
+
+            return await _conversation_action(request, change)
 
     return app
 
@@ -377,8 +520,24 @@ def _not_running_message(run_id: str) -> str:
     )
 
 
+def read_query(request: Request) -> str | None:
+    """从查询串里取搜索词 —— 会话列表的第二个可选参数 (#20).
+
+    空串 / 只有空白返回 **None** (不搜), 而不是把空串交给仓储: 后者按 `ILIKE '%%'`
+    会命中所有会话 —— 结果看着与「没搜」一样, 但语义是错的, 而前端清空输入框时
+    发的正是空串.
+
+    不设长度上限: 它只是一个 `ILIKE` 的模式串, 长了也只是扫得慢一点 (会话量级
+    本来就小), 而 URL 本身的长度由服务器那道闸管着.
+    """
+    raw = request.query_params.get(QUERY_QUERY)
+    if raw is None or not raw.strip():
+        return None
+    return raw.strip()
+
+
 def read_limit(request: Request) -> int:
-    """从查询串里取「最多几条」—— 会话列表那条路由唯一的参数.
+    """从查询串里取「最多几条」—— 会话列表那条路由的第二个可选参数.
 
     只认非负整数; 不成形就 400 (与 `read_message` 同一条规矩: 看不懂的请求当场
     说清, 不替它猜一个数). **0 是合法的** (「一条都不要」), 仓储会回空列表 ——
@@ -408,6 +567,23 @@ async def read_message(request: Request) -> str:
     Raises:
         InvalidRequestError: 不是 JSON 对象 / 缺字段 / 字段不是非空字符串.
     """
+    payload = await _read_object(request)
+    message = payload.get(MESSAGE_FIELD)
+    if not isinstance(message, str) or not message.strip():
+        raise InvalidRequestError(f"请求体缺少非空字符串字段 {MESSAGE_FIELD!r}")
+    return message
+
+
+async def _read_object(request: Request) -> dict:
+    """请求体 → JSON 对象 (三条读字段的路共用的第一段).
+
+    单拎出来是因为「解析 + 必须是对象」这两步**跟字段无关** —— 三条路 (问句 /
+    改标题 / 置顶) 各有各的字段规则, 但读不懂请求体这件事只有一种说法. 抄三份
+    的话, 迟早有一条路的报错信息与另两条不一样, 而调用方是按信息排查的.
+
+    Raises:
+        InvalidRequestError: 正文不是合法 JSON / 不是一个对象.
+    """
     try:
         payload = await request.json()
     except ValueError as exc:  # 覆盖 JSONDecodeError 与编码错误 (都是 ValueError)
@@ -416,10 +592,63 @@ async def read_message(request: Request) -> str:
         raise InvalidRequestError(
             f"请求体应为 JSON 对象, 收到 {type(payload).__name__}"
         )
-    message = payload.get(MESSAGE_FIELD)
-    if not isinstance(message, str) or not message.strip():
-        raise InvalidRequestError(f"请求体缺少非空字符串字段 {MESSAGE_FIELD!r}")
-    return message
+    return payload
+
+
+async def read_title(request: Request) -> str:
+    """从请求体里取新标题 (#20 改标题那条路由).
+
+    空标题**拒掉**而不是放行: 列表上那一行会变成空白, 看着像坏了. 长度那条线画在
+    `MAX_TITLE_LENGTH` (接口的规矩, 比列宽窄得多 —— 不该等撞到库那道闸才说太长).
+
+    Raises:
+        InvalidRequestError: 不是 JSON 对象 / 缺 `title` / 空 / 过长.
+    """
+    payload = await _read_object(request)
+    title = payload.get(TITLE_FIELD)
+    if not isinstance(title, str) or not title.strip():
+        raise InvalidRequestError(
+            f"请求体缺少非空字符串字段 {TITLE_FIELD!r}", code="invalid_title"
+        )
+    title = title.strip()
+    if len(title) > MAX_TITLE_LENGTH:
+        raise InvalidRequestError(
+            f"标题最多 {MAX_TITLE_LENGTH} 个字符, 收到 {len(title)}",
+            code="title_too_long",
+        )
+    return title
+
+
+async def read_pinned(request: Request) -> bool:
+    """从请求体里取「置顶还是取消置顶」(#20 那条路由).
+
+    **必须是布尔**: 传字符串 `"true"` 会被拒而不是被当成真 —— 与 `read_message`
+    同一条「严格认类型」. 放水的话, 前端把 true 写成字符串时表现是「置顶始终生效、
+    取消置顶怎么点都不动」, 那种半好半坏最难查.
+
+    Raises:
+        InvalidRequestError: 不是 JSON 对象 / 缺 `pinned` / 不是布尔.
+    """
+    payload = await _read_object(request)
+    pinned = payload.get(PINNED_FIELD)
+    if not isinstance(pinned, bool):
+        raise InvalidRequestError(
+            f"请求体缺少布尔字段 {PINNED_FIELD!r}, 收到 {type(pinned).__name__}",
+            code="invalid_pinned",
+        )
+    return pinned
+
+
+def _thread_not_found_message(thread_id: str) -> str:
+    """「这段会话不在册」那一句事实 —— 三种情况**共用同一条文本**.
+
+    与 `_not_running_message` 同款 (响应体只有回显的编号不同, 其余逐字相同 ——
+    那是契约, 由构造保证比由「记得写一样」保证牢).
+    """
+    return (
+        f"会话 {thread_id!r} 不在册: 它可能已经被删掉, 可能不属于这次请求的那个人, "
+        f"也可能压根没有这个编号 —— 本层刻意不区分这三种"
+    )
 
 
 def _record_store_error_response(request: Request, exc: DbError) -> JSONResponse:

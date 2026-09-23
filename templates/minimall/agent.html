@@ -66,12 +66,32 @@
   .agent-new:hover { border-color: #ff6b6b; color: #ff6b6b; }
   .agent-new:disabled { color: #ced4da; border-color: #e9ecef; cursor: not-allowed; }
   .agent-list { flex: 1; overflow-y: auto; background: #fff; border-radius: 12px; padding: 8px; }
+  .agent-search { width: 100%; padding: 9px 12px; border: 1.5px solid #d0d5dd; border-radius: 10px; font-size: 13px; outline: none; transition: all .2s; font-family: inherit; }
+  .agent-search:focus { border-color: #ff6b6b; box-shadow: 0 0 0 3px rgba(255,107,107,.1); }
   .agent-empty { color: #adb5bd; font-size: 13px; text-align: center; padding: 24px 0; }
-  .agent-item { display: block; width: 100%; text-align: left; background: none; border: none; border-radius: 8px; padding: 10px 12px; cursor: pointer; transition: background .15s; font-family: inherit; }
+  /* 每一项是一个容器 (不是按钮): 里面装着"点一下切过去"的主按钮与那颗「⋯」,
+     两者是并列的两个按钮 —— 按钮套按钮在 HTML 里是不合法的 */
+  .agent-item { position: relative; display: flex; align-items: center; border-radius: 8px; transition: background .15s; }
   .agent-item:hover { background: #fdf2f2; }
   .agent-item-on { background: #fdf2f2; }
+  .agent-item-main { flex: 1; min-width: 0; text-align: left; background: none; border: none; border-radius: 8px; padding: 10px 4px 10px 12px; cursor: pointer; font-family: inherit; }
   .agent-item-title { display: block; font-size: 13px; color: #333; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .agent-item-time { display: block; font-size: 11px; color: #adb5bd; margin-top: 4px; }
+  .agent-item-more { flex: none; background: none; border: none; color: #adb5bd; font-size: 16px; line-height: 1; padding: 6px 10px; cursor: pointer; border-radius: 6px; font-family: inherit; }
+  .agent-item-more:hover { color: #ff6b6b; background: #fff; }
+  /* 就地改名: 一个小 input 顶替标题行 (**不用 `contenteditable`** —— 那个属性会
+     把 DOM 变成可编辑的富文本, 而这一页所有文本都走 textContent) */
+  .agent-rename { width: 100%; box-sizing: border-box; padding: 4px 6px; border: 1.5px solid #ff6b6b; border-radius: 6px; font-size: 13px; outline: none; font-family: inherit; }
+  /* 「⋯」展开的那颗小菜单: 贴在条目里 (position: absolute), 于是它跟着列表一起
+     滚、一起被裁 —— 不用算坐标, 也不会飘到别的条目上 */
+  .agent-menu { position: absolute; top: 100%; right: 6px; z-index: 10; min-width: 108px; background: #fff; border: 1px solid #f0f2f5; border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,.12); padding: 4px; display: flex; flex-direction: column; }
+  .agent-menu[hidden] { display: none; }
+  .agent-menu button { text-align: left; background: none; border: none; border-radius: 6px; padding: 8px 10px; font-size: 13px; color: #333; cursor: pointer; font-family: inherit; }
+  .agent-menu button:hover { background: #fdf2f2; color: #ff6b6b; }
+  .agent-menu .agent-menu-danger { color: #e03131; }
+  .agent-menu .agent-menu-danger:hover { background: #fff5f5; color: #e03131; }
+  /* 管理动作失败时在列表顶上那一句 (几秒后自己消失): 用户刚点过, 不能不说话 */
+  .agent-item-error { margin: 4px 4px 8px; padding: 8px 10px; border-radius: 8px; background: #fff5f5; color: #e03131; font-size: 12px; line-height: 1.5; }
   /* 正在回答时切不动会话 (半截事件会落进另一段对话里): 置灰 + 点不动 */
   .agent-list-busy .agent-item { opacity: .45; pointer-events: none; }
   .agent-card { flex: 1; min-width: 0; background: #fff; border-radius: 12px; overflow: hidden; display: flex; flex-direction: column; height: calc(100vh - 64px - 48px); min-height: 480px; }
@@ -120,6 +140,8 @@
   {% endcomment %}
   <aside class="agent-side">
     <button type="button" class="agent-new" id="new-conversation">+ 新对话</button>
+    <input type="text" class="agent-search" id="conversation-search"
+           autocomplete="off" placeholder="搜索对话">
     <div class="agent-list" id="conversation-list"></div>
   </aside>
 
@@ -188,6 +210,7 @@ const send = document.getElementById('ask-send');
 const stop = document.getElementById('ask-stop');
 const list = document.getElementById('conversation-list');
 const newButton = document.getElementById('new-conversation');
+const searchBox = document.getElementById('conversation-search');
 
 // 会话编号的第三段 (thread_id = minimall:{user_id}:{这一段}).
 // 它存在 `sessionStorage` 里 —— 那个存储按**标签页**隔离, 却能在刷新之后留下来,
@@ -602,20 +625,31 @@ async function loadHistory() {
 }
 
 // ---------------------------------------------------------------------------
-// 左栏: 会话列表 (issue 19)
+// 左栏: 会话列表 (issue 19) + 管理动作 (issue 20)
 // ---------------------------------------------------------------------------
 //
 // 数据源**只有一个**: 助手服务的 `GET /conversations` (经 BFF 转发的第四条路),
-// 回的是「这个买家聊过哪几段」, 每段三个字段: 编号 / 标题 / 最后活动时刻.
+// 回的是「这个买家聊过哪几段」, 每段四个字段: 编号 / 标题 / 最后活动时刻 / 置顶时刻.
 //
-// 三条不做的: **不重排**(后端已按 updated_at 倒序), **不补行**(没聊过的那几段由
-// 后端按「有没有可见消息」滤掉, 前端补一行就是另一种真相), **不落库**(新对话只是
-// 换一个编号, 会话行由记录器懒创建).
+// 三条不做的: **不重排**(后端已按「置顶的在前, 其余按活动倒序」排好), **不补行**
+// (没聊过的那几段由后端按「有没有可见消息」滤掉, 前端补一行就是另一种真相),
+// **不落库**(新对话只是换一个编号, 会话行由记录器懒创建).
+//
+// 三个管理动作 (改名 / 置顶 / 删除) 都**改完就重拉列表**: 后端管着排序 (置顶要跳
+// 到最前), 页面自己挪 DOM 等于把那份规则在浏览器里再实现一遍, 两处迟早对不上.
 //
 // 拉不回来就留空: 与读历史同一条 —— 左栏是首屏的辅助件, 不该拦着用户提问.
 
 // 列表一行放得下的字数 (标题在库里最长 60, 见框架 `recorder.TITLE_LIMIT`)
 const TITLE_CLIP = 20;
+
+// 用户改标题时那个输入框的长度上限. **与上面那个不是一回事**: 上面管"列表上显示
+// 几个字", 这个管"能存多长" —— 数值同源 (框架与 BFF 都是 100), 改展示不该动到它.
+const MAX_TITLE_LENGTH = 100;
+
+// 搜索的防抖 (毫秒): 输入即搜, 但不能每敲一个字母就发一次请求 —— 三百毫秒是
+// 「手停下来」与「还觉得是实时的」之间那个常用的折中
+const SEARCH_DEBOUNCE_MS = 300;
 
 // 超过一天就不说「几小时前」了, 直接给日期 —— 那才是买家要的信息
 const HOUR = 3600;
@@ -665,24 +699,239 @@ function compactionNote(data) {
 }
 
 function listItem(row) {
-  const item = el('button', 'agent-item');
-  item.type = 'button';   // 别留着按钮在表单里的那个默认提交语义
+  // 一层容器 + 两个并列的按钮: 「点一下切过去」与「⋯」是两件事, 而按钮套按钮在
+  // HTML 里不合法 (浏览器切起标签来会乱)
+  const item = el('div', 'agent-item');
   item.dataset.conversationId = row.conversation_id;
   if (row.conversation_id === conversationId) item.classList.add('agent-item-on');
-  // 标题空着给一句兜底: 列表里一行空白看着像坏了 (标题是首条用户消息, 可能还没写上)
-  const title = clip(row.title, TITLE_CLIP) || '未命名对话';
-  item.appendChild(el('span', 'agent-item-title', title));
-  item.appendChild(el('span', 'agent-item-time', relativeTime(row.updated_at)));
-  item.addEventListener('click', function () {
+
+  const open = el('button', 'agent-item-main');
+  open.type = 'button';
+  open.appendChild(titleNode(row));
+  open.appendChild(el('span', 'agent-item-time', relativeTime(row.updated_at)));
+  open.addEventListener('click', function () {
     switchConversation(row.conversation_id);
   });
+
+  const more = el('button', 'agent-item-more', '⋯');
+  more.type = 'button';
+  more.title = '更多';
+  const menu = actionMenu(row);
+  more.addEventListener('click', function (event) {
+    event.stopPropagation();   // 别让这次点击顺带把「切会话」也触发了
+    openMenu(menu);
+  });
+
+  item.appendChild(open);
+  item.appendChild(more);
+  item.appendChild(menu);
   return item;
+}
+
+function displayTitle(title) {
+  // 标题空着给一句兜底: 列表里一行空白看着像坏了 (标题是首条用户消息, 可能还没写上)
+  return clip(title, TITLE_CLIP) || '未命名对话';
+}
+
+function titleNode(row) {
+  return el('span', 'agent-item-title', displayTitle(row.title));
+}
+
+function actionMenu(row) {
+  // 一颗贴在这个条目上的小菜单. 三项各是一个按钮, 其中「置顶 / 取消置顶」
+  // **按当前状态换措辞** —— 后端把 `pinned_at` 一起给了, 不必再猜
+  const menu = el('div', 'agent-menu');
+  menu.hidden = true;
+  const pinned = Boolean(row.pinned_at);
+
+  const rename = el('button', null, '重命名');
+  rename.type = 'button';
+  rename.addEventListener('click', function () {
+    closeMenus();
+    startRename(row);
+  });
+
+  const pin = el('button', null, pinned ? '取消置顶' : '置顶');
+  pin.type = 'button';
+  pin.addEventListener('click', function () {
+    closeMenus();
+    pinConversation(row, !pinned);
+  });
+
+  const remove = el('button', 'agent-menu-danger', '删除');
+  remove.type = 'button';
+  remove.addEventListener('click', function () {
+    closeMenus();
+    deleteConversation(row);
+  });
+
+  [rename, pin, remove].forEach(function (button) {
+    menu.appendChild(button);
+  });
+  return menu;
+}
+
+function openMenu(menu) {
+  // 同时只开一颗: 两个菜单叠着开, 点哪个都得先关一个
+  closeMenus();
+  menu.hidden = false;
+}
+
+function closeMenus() {
+  // **只管菜单**: 「点别处就放弃这次改名」由那个 input 自己的 `blur` 兜 (焦点一走
+  // 就还原). 放在这里做的话, 点「重命名」那一刻的事件会冒到 document, 把刚建出来
+  // 的 input 当场取消掉 —— 表现是"点了重命名没有任何反应" (真机上抓到过).
+  Array.from(list.querySelectorAll('.agent-menu')).forEach(function (menu) {
+    menu.hidden = true;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// 三个管理动作 (issue 20): 改名 / 置顶 / 删除
+// ---------------------------------------------------------------------------
+//
+// 三条共用的形状与另外几条路一致: POST + JSON 体 + CSRF, **会话编号在请求体里**
+// (不进 URL —— 与 ADR-0002 同一条纪律). 改完统一 `loadConversations()` 重拉:
+// 置顶要跳到最前, 而排序规则归后端, 页面自己挪 DOM 就是把那份规则再实现一遍.
+//
+// 失败一律**说在页面上**(而不是静默): 这三件都是用户主动做的, 没反应等于"点了没用".
+
+async function sendAction(url, payload) {
+  // 返回 null 表示成了; 否则是给用户看的一句话
+  let response;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRFToken': csrfToken(),
+      },
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    return '没能连上客服, 检查网络后再试一次.';
+  }
+  if (response.ok) return null;
+  return errorMessage(response);
+}
+
+function actionFailed(message) {
+  // 三件事失败的样子一样: 在列表上面说一句, 几秒后自己消失 (不弹窗 —— 那是
+  // 打断; 也不静默 —— 用户刚点过)
+  if (!list) return;
+  const line = el('div', 'agent-item-error', message);
+  list.insertBefore(line, list.firstChild);
+  setTimeout(function () {
+    line.remove();
+  }, 4000);
+}
+
+async function refreshAfterAction() {
+  markCurrent();
+  await loadConversations();
+}
+
+function startRename(row) {
+  const item = itemOf(row.conversation_id);
+  if (!item || item.querySelector('.agent-rename')) return;
+  const title = item.querySelector('.agent-item-title');
+  if (!title) return;
+  // 一个 input 就地顶替标题那一行. **不用 `contenteditable`**: 那会把这一行变成
+  // 可编辑的富文本 (粘贴进来什么都有可能), 而这一页所有文本都走 textContent.
+  const input = el('input', 'agent-rename');
+  input.type = 'text';
+  input.value = row.title || '';
+  input.maxLength = MAX_TITLE_LENGTH;
+  input.addEventListener('keydown', function (event) {
+    if (event.key === 'Enter') submitRename(row, input);
+    if (event.key === 'Escape') cancelRename(input);
+  });
+  input.addEventListener('blur', function () {
+    // 点别处 = 放弃 (与 Escape 同一条出口): 改名字不该因为失焦就被写进去.
+    // 「正在提交」那一小段不算失焦 —— 提交成功之后它会跟着列表一起被换掉.
+    if (input.dataset.busy || !input.isConnected) return;
+    cancelRename(input);
+  });
+  title.replaceWith(input);
+  input.focus();
+  input.select();
+}
+
+function cancelRename(input) {
+  // 把 input 换回标题那一行 (没提交就是没发生)
+  if (!input.isConnected) return;
+  input.replaceWith(el('span', 'agent-item-title', displayTitle(input.value || '')));
+}
+
+async function submitRename(row, input) {
+  const title = input.value.trim();
+  if (!title || title === row.title) {
+    cancelRename(input);   // 没改 / 改成了空白: 当没发生, 一个请求都不发
+    return;
+  }
+  input.dataset.busy = '1';
+  const problem = await sendAction('/minimall/agent/conversations/title/', {
+    conversation_id: row.conversation_id,
+    title: title,
+  });
+  if (problem) {
+    // 没成: 把 input 放回可编辑状态并**留在原地** (用户的输入还在, 改一下再试),
+    // 错误话术挂在列表上面
+    delete input.dataset.busy;
+    input.focus();
+    actionFailed(problem);
+    return;
+  }
+  await refreshAfterAction();   // 成功: 整个列表重拉, input 跟着被换掉
+}
+
+async function pinConversation(row, pinned) {
+  const problem = await sendAction('/minimall/agent/conversations/pin/', {
+    conversation_id: row.conversation_id,
+    pinned: pinned,
+  });
+  if (problem) {
+    actionFailed(problem);
+    return;
+  }
+  await refreshAfterAction();
+}
+
+async function deleteConversation(row) {
+  // 二次确认: 用户对「删除」的预期是不可逆的, 而这一步之后它就从列表里没了
+  // (服务端其实还留着 —— 但用户不该指望自己知道这件事)
+  if (!window.confirm('删除这段对话? 删除后它就不再出现在列表里了.')) return;
+  const problem = await sendAction('/minimall/agent/conversations/delete/', {
+    conversation_id: row.conversation_id,
+  });
+  if (problem) {
+    actionFailed(problem);
+    return;
+  }
+  // 删掉的是正在聊的那一段 → 换一段干净的 (总不能把人留在一段已经不在列表里的
+  // 对话上: 他继续问, 那一段却已经"删了")
+  if (row.conversation_id === conversationId) {
+    conversationId = newConversationId();
+    rememberConversationId(conversationId);
+    showConversationTag();
+    clearChat();
+  }
+  await refreshAfterAction();
+}
+
+function itemOf(conversationId) {
+  return Array.from(list.children).find(function (item) {
+    return item.dataset && item.dataset.conversationId === conversationId;
+  });
 }
 
 function renderList(rows) {
   list.replaceChildren();
   if (!rows.length) {
-    list.appendChild(el('div', 'agent-empty', '还没有历史对话'));
+    // 两种"没有"要说清是哪种: 搜不到与还没聊过, 用户要做的事完全不同
+    list.appendChild(
+      el('div', 'agent-empty', searchTerm ? '没搜到相关的对话' : '还没有历史对话')
+    );
     return;
   }
   rows.forEach(function (row) {
@@ -710,15 +959,25 @@ function lockSwitching(locked) {
   newButton.disabled = locked;
 }
 
+// 谁发的那一次列表请求 (下面那个闸门用). 列表会被好几个地方拉: 首屏 / 每轮答完 /
+// 搜索的防抖 / 三个管理动作之后的刷新 —— 而这些**可以重叠** (搜着搜着, 上一轮
+// 答完的那次刷新正好回来), 于是**慢的那一份会把快的那一份盖掉**.
+let listRequests = 0;
+
 async function loadConversations() {
+  const ticket = ++listRequests;
   let response;
   try {
-    // 与另三条一样 POST + CSRF: 读的是私人数据 (我聊过哪几段), 而 GET + cookie
-    // 跨站可触发 (一条 <img src> 就够). **不带请求体** —— 它问的是"所有段",
-    // 不像读历史那样要指名某一段.
+    // 与另几条一样 POST + CSRF: 读的是私人数据 (我聊过哪几段), 而 GET + cookie
+    // 跨站可触发 (一条 <img src> 就够). 搜索词也在**请求体**里 —— 它完全可能是
+    // 一个订单号, 不该进地址栏 (与"会话编号不进 URL"同一条纪律).
     response = await fetch('/minimall/agent/conversations/', {
       method: 'POST',
-      headers: { 'X-CSRFToken': csrfToken() },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRFToken': csrfToken(),
+      },
+      body: JSON.stringify({ query: searchTerm }),
     });
   } catch (err) {
     return;   // 拉不到就留空, 不打扰用户 (与 loadHistory 同一条)
@@ -730,8 +989,26 @@ async function loadConversations() {
   } catch (err) {
     return;
   }
+  // 手上这份是**旧的**就丢掉: 后面还有一次请求在路上, 它带的是更新的条件
+  // (搜索词 / 置顶结果). 画下去的话表现是「搜了订单, 列表过一秒又变回全部」——
+  // 真机上抓到过.
+  if (ticket !== listRequests) return;
   renderList(payload.conversations || []);
 }
+
+// 搜索: 输入即搜, 但敲字的时候不发请求 —— 手停下来 300ms 才发一次. 清空输入框
+// 就是恢复全量列表 (搜索词为空 => 后端不筛).
+let searchTerm = '';
+
+function onSearchInput() {
+  searchTerm = searchBox.value.trim();
+  window.clearTimeout(searchTimer);
+  searchTimer = window.setTimeout(function () {
+    loadConversations();
+  }, SEARCH_DEBOUNCE_MS);
+}
+
+let searchTimer = null;
 
 function clearChat() {
   // 主区清空. 摘下去的 hint **留着**: 它只是被 remove 过, 没被销毁 —— 一段干净的
@@ -771,6 +1048,11 @@ form.addEventListener('submit', function (event) {
 stop.addEventListener('click', stopAsking);
 
 newButton.addEventListener('click', startNewConversation);
+
+searchBox.addEventListener('input', onSearchInput);
+// 点页面上别处就收起菜单 (以及放弃那次就地改名): 菜单开着却点不动别的东西,
+// 是最容易被当成"页面卡住了"的一种小毛病
+document.addEventListener('click', closeMenus);
 
 document.querySelectorAll('.agent-example').forEach(function (button) {
   button.addEventListener('click', function () {

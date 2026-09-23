@@ -83,13 +83,16 @@ pytest -m pg_db
 迁移。（唯一一次例外是 2026-09-23 的压缩：那时还没发布，只有本机这一个库用过那些
 编号，压掉不欠谁的 —— 发布之后不再有这种例外。）
 
-**既有迁移**：只有一条 —— `0001_core`（五张业务表 + 版本表的两列审计信息）。它是
-上面那次压缩的产物：此前是四条（`0001_core` / `0002_run_usage_breakdown` /
-`0003_migration_audit_log` / `0004_frame_run_linkage`），合并后的脚本长什么样、
-与当时那条 head 差在哪三处，都写在脚本的 docstring 里。它是**手写**的：那份
-`op.create_table` 是逐列核对过的结果，而纪律的真正保险不是 `--autogenerate` 这个
-动作，是 `pytest -m pg_db` 里那条「迁移结果与表定义逐列零差异」的比对 —— 手写脚本
-一样要过它。
+**既有迁移**（两条）：
+
+| 编号 | 做了什么 | 备注 |
+|------|---------|------|
+| `0001_core` | 五张业务表 + 版本表的两列审计信息 | 上面那次压缩的产物：此前是四条（`0001_core` / `0002_run_usage_breakdown` / `0003_migration_audit_log` / `0004_frame_run_linkage`），合并后的脚本长什么样、与当时那条 head 差在哪三处，都写在脚本的 docstring 里 |
+| `0002_thread_management` | `charagent_threads` 补两列（`pinned_at` / `deleted_at`） | **压缩之后的第一条增量迁移** —— 「只追加不改写」这条规矩从它开始真正被执行（ticket 20 的会话管理动作） |
+
+两条都是**手写**的：那份 `op.create_table` / `op.add_column` 是逐列核对过的结果，
+而纪律的真正保险不是 `--autogenerate` 这个动作，是 `pytest -m pg_db` 里那条
+「迁移结果与表定义逐列零差异」的比对 —— 手写脚本一样要过它。
 
 **迁移历史看哪里**：一张表 `charagent_migrations` 答完 —— ticket 24 起它就是
 alembic 的版本表，兼作审计表：

@@ -49,8 +49,9 @@ Starlette 读出来是按 latin-1 解码的 str —— 中文令牌 / 中文买�
 
 **与记录表那条线的关系** (ticket 17 起): 本进程建一个 `PgDatabase` 交给装配, 于是
 每轮问答的账写进 `charagent_threads` / `runs` / `messages`, 而框架据此把 `/history`
-指向记录表、并多注册一条 `GET /conversations`. 业务这一侧**一行 SQL 都不写** ——
-它只是把库入口递过去 (写什么、怎么分层全在框架的 `db/` 里).
+指向记录表、并多注册几条会话路由 (`GET /conversations` 列表与搜索, 以及 ticket 20
+的 `POST /conversations/title|pin|delete` 三个管理动作). 业务这一侧**一行 SQL 都不
+写** —— 它只是把库入口递过去 (写什么、怎么分层全在框架的 `db/` 里).
 """
 
 from __future__ import annotations

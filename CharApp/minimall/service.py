@@ -267,7 +267,8 @@ class MinimallService:
         database: 记录表那条线的库入口 (ticket 17); None 表示这个进程不记账 ——
             会话照常能问答, 只是「重启后拿回历史」与「会话列表」没有落点.
             给了它就顺便决定了两件事: 每轮问答的账写进记录表 (见 db/recorder.py),
-            以及服务进程多一条 `GET /conversations` 路由.
+            以及服务进程多出几条会话路由 (列表与搜索 + ticket 20 的改名 / 置顶 /
+            删除).
             **注意 `saver` 是 Postgres 时 `None` 是条被堵死的组合** (ticket 24):
             帧的 `thread_id` 指向记录层的 `charagent_threads`, 而不记账就没人建
             那一行, 第一句问话会以外键失败告终. 上面那句「照常能问答」只在
