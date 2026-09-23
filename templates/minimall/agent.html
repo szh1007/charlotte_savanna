@@ -22,6 +22,14 @@
   日志 / 浏览器历史 / Referer 都会跟着它走), 而 GET 带 cookie 还是跨站可触发的.
   与提问、取消同一个形状 (POST + JSON + CSRF).
 
+  左栏是会话列表 (issue 19): 打开页面时拉一次 `POST /minimall/agent/conversations/`
+  (第四条路, 铺在 issue 18), 列出这个买家聊过的每一段 —— 标题 + 相对时间, 点一下
+  切过去. 会话编号按 ADR-0002 的纪律**不进地址栏**, 所以切换只动内存与
+  sessionStorage: 选中态是画出来的, 不是 URL 里的一个参数.
+
+  「新对话」也**不落库**: 会话行是第一条消息发出去时由记录器创建的 (issue 17 的
+  懒创建), 所以点了新对话又不用, 列表里不会多出一条空壳.
+
   为什么不用 `EventSource` (它本来能白送帧解析): 它只能发 GET、也带不了自定义头,
   于是认证只能靠 cookie、问句只能进 URL —— 而这个端点有副作用 (真跑模型真花钱),
   按语义就不该是 GET, 问句进 URL 还会落进访问日志. 换 POST + fetch 之后由 Django
@@ -29,7 +37,7 @@
 
   帧解析**不手写**: 交给 `eventsource-parser` 的 `EventSourceParserStream` —— 那是
   一段有细节的活 (按空行切帧、跨 chunk 的半个帧、**一个汉字被 TCP 切成两半**时的
-  增量解码), 别人已经写对并维护着了. 页面这边只剩胶水: 发什么样的请求、把六类事件
+  增量解码), 别人已经写对并维护着了. 页面这边只剩胶水: 发什么样的请求, 把七类事件
   画成什么样子. 这个项目的重点在后端流式 (框架的 SSE 层 + BFF 的透传), 前端不值得
   自己造一遍解析器.
 
@@ -49,8 +57,24 @@
 
 {% block extra_head %}
 <style>
-  .agent-page { max-width: 880px; margin: 0 auto; }
-  .agent-card { background: #fff; border-radius: 12px; overflow: hidden; display: flex; flex-direction: column; height: calc(100vh - 64px - 48px); min-height: 480px; }
+  /* 左栏 + 主区 (issue 19). 左栏 260px 固定宽, 与主区同高 (都算到导航条下面).
+     窄屏 / 移动端**不折叠** —— 这是演示用的桌面版式, 折叠等真有手机端需求再说
+     (写在这里, 免得以后被当漏项) */
+  .agent-page { max-width: 1180px; margin: 0 auto; display: flex; gap: 16px; }
+  .agent-side { width: 260px; flex-shrink: 0; display: flex; flex-direction: column; gap: 10px; height: calc(100vh - 64px - 48px); min-height: 480px; }
+  .agent-new { width: 100%; padding: 11px 0; background: #fff; color: #333; border: 1.5px solid #d0d5dd; border-radius: 10px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all .2s; font-family: inherit; }
+  .agent-new:hover { border-color: #ff6b6b; color: #ff6b6b; }
+  .agent-new:disabled { color: #ced4da; border-color: #e9ecef; cursor: not-allowed; }
+  .agent-list { flex: 1; overflow-y: auto; background: #fff; border-radius: 12px; padding: 8px; }
+  .agent-empty { color: #adb5bd; font-size: 13px; text-align: center; padding: 24px 0; }
+  .agent-item { display: block; width: 100%; text-align: left; background: none; border: none; border-radius: 8px; padding: 10px 12px; cursor: pointer; transition: background .15s; font-family: inherit; }
+  .agent-item:hover { background: #fdf2f2; }
+  .agent-item-on { background: #fdf2f2; }
+  .agent-item-title { display: block; font-size: 13px; color: #333; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .agent-item-time { display: block; font-size: 11px; color: #adb5bd; margin-top: 4px; }
+  /* 正在回答时切不动会话 (半截事件会落进另一段对话里): 置灰 + 点不动 */
+  .agent-list-busy .agent-item { opacity: .45; pointer-events: none; }
+  .agent-card { flex: 1; min-width: 0; background: #fff; border-radius: 12px; overflow: hidden; display: flex; flex-direction: column; height: calc(100vh - 64px - 48px); min-height: 480px; }
   .agent-head { padding: 18px 24px; border-bottom: 1px solid #f0f2f5; display: flex; align-items: center; gap: 12px; }
   .agent-head h2 { font-size: 17px; color: #333; }
   .agent-head p { font-size: 13px; color: #adb5bd; margin-top: 4px; }
@@ -67,6 +91,10 @@
   .agent-step { font-size: 13px; color: #868e96; padding: 3px 0; word-break: break-word; }
   .agent-step-label { display: inline-block; min-width: 44px; color: #adb5bd; font-weight: 600; margin-right: 8px; }
   .agent-step.agent-error, .agent-step.agent-error .agent-step-label { color: #e03131; }
+  /* 压缩那一行灰字 (第七类事件). 它与工具行共用过程区 —— 顺序就是发生顺序 ——
+     但说的是另一件事: 工具行讲"做了什么", 这一行讲"上下文治理". 所以不给它工具行
+     那套「标签 + 正文」的版式, 改成一个不显眼的小灰条 */
+  .agent-compact { display: block; width: fit-content; margin: 4px 0; padding: 3px 10px; border-radius: 6px; background: #f1f3f5; color: #adb5bd; font-size: 12px; }
   .agent-reasoning { margin: 8px 0; font-size: 13px; color: #868e96; }
   .agent-reasoning summary { cursor: pointer; color: #adb5bd; outline: none; }
   .agent-reasoning-text { white-space: pre-wrap; padding: 8px 0 0 4px; line-height: 1.7; }
@@ -85,6 +113,16 @@
 
 {% block content %}
 <div class="agent-page">
+  {% comment %}
+    左栏: 会话列表 (issue 19). 内容全部由 JS 画 (数据在助手服务的记录表里), 这里
+    只留容器 —— 空着的那一句「还没有历史对话」也是 JS 写的, 免得服务端渲染一份,
+    脚本再覆盖一份 (两套迟早漂).
+  {% endcomment %}
+  <aside class="agent-side">
+    <button type="button" class="agent-new" id="new-conversation">+ 新对话</button>
+    <div class="agent-list" id="conversation-list"></div>
+  </aside>
+
   <div class="agent-card">
     <div class="agent-head">
       <div>
@@ -148,6 +186,8 @@ const form = document.getElementById('ask-form');
 const input = document.getElementById('ask-input');
 const send = document.getElementById('ask-send');
 const stop = document.getElementById('ask-stop');
+const list = document.getElementById('conversation-list');
+const newButton = document.getElementById('new-conversation');
 
 // 会话编号的第三段 (thread_id = minimall:{user_id}:{这一段}).
 // 它存在 `sessionStorage` 里 —— 那个存储按**标签页**隔离, 却能在刷新之后留下来,
@@ -156,8 +196,10 @@ const stop = document.getElementById('ask-stop');
 //   - 开新标签页 = 一段新对话 → 两个标签页各聊各的 (用户故事 25).
 // 换 localStorage 会让两个标签页共用一段对话 (历史串台), 换成一个内存变量则刷新
 // 即丢历史 (那是 L1b 的旧边界).
-const conversationId = loadConversationId();
-document.getElementById('session-tag').textContent = '会话 ' + conversationId.slice(0, 8);
+// 从 `const` 改成 `let` (issue 19): 左栏能切会话, 它就不是一个页面生命周期里不
+// 变的值了 —— 切过去之后发出去的问句必须落在新那一段上.
+let conversationId = loadConversationId();
+showConversationTag();
 
 let turn = null;          // 当前这一轮在页面上的那块 DOM (渲染函数都要用它)
 let finished = true;      // 没有正在跑的问答 (空闲)
@@ -185,10 +227,25 @@ function loadConversationId() {
     if (saved) return saved;
   } catch (err) { /* 存不了: 当成新对话 */ }
   const fresh = newConversationId();
-  try {
-    window.sessionStorage.setItem(STORAGE_KEY, fresh);
-  } catch (err) { /* 同上 */ }
+  rememberConversationId(fresh);
   return fresh;
+}
+
+function showConversationTag() {
+  document.getElementById('session-tag').textContent =
+    '会话 ' + conversationId.slice(0, 8);
+}
+
+function rememberConversationId(id) {
+  // 写下去的那一处 (**唯一一处**): 读在 `loadConversationId` 里, 写在切会话这里.
+  //
+  // 键在这里再声明一次而不是抽成模块级常量: 模块级的 const 有暂时性死区, 而这个
+  // 函数会在模块还没求值完的时候就被 `loadConversationId` 调到 (issue 13 在真机上
+  // 栽过一次, 见那边的注释).
+  const STORAGE_KEY = 'minimall.agent.conversation';
+  try {
+    window.sessionStorage.setItem(STORAGE_KEY, id);
+  } catch (err) { /* 存不下: 这一段只活在当前页面里 (与 loadConversationId 同一条退路) */ }
 }
 
 function el(tag, className, text) {
@@ -230,8 +287,26 @@ function startTurn(question) {
     toBottom();
     return step;
   }
+  // 往过程区加**一行灰字** (压缩那类「上下文治理」的事走它, 见 context_compacted).
+  // 与 addStep 一样进过程区 (于是顺序就是发生顺序), 但版式不同: 它没有标签列 ——
+  // addStep 说的每一行都是「某个东西做了什么」, 这一行讲的是另一回事.
+  //
+  // 与**上一条灰字**一样的话就不画第二遍: 压缩事件是按**轮**报的 (一次问答里模型
+  // 可能决策好几轮), 而摘要降级时相邻两轮会报出同一组数 —— 同一个动作在页面上连出
+  // 两条同样的灰字, 看着像坏了, 少画一条却什么也没丢.
+  //
+  // 比的是"上一条灰字"而不是"steps 的最后一个孩子": 这两轮之间常常刚好插进一条
+  // 工具行 (压缩 → 调工具 → 又压缩, 真机上的帧序就是这样), 比最后一个孩子会全漏.
+  let lastNote = null;
+  function addNote(text) {
+    if (text === lastNote) return;
+    lastNote = text;
+    steps.appendChild(el('div', 'agent-compact', text));
+    toBottom();
+  }
   return {
     addStep: addStep,
+    addNote: addNote,
     body: body,
     // 思考过程按轮次收: 同一轮再来一条就覆盖 (事件里带的是那一轮的全文, 不是增量)
     reasoning: new Map(),
@@ -271,6 +346,10 @@ function end() {
   stop.textContent = '停止';
   input.disabled = false;
   send.disabled = false;
+  lockSwitching(false);
+  // 左栏顺手拉一次: 刚问完的这一轮可能正是这段会话的第一句 —— 会话行由记录器在
+  // 「第一条消息发出去」时才建 (懒创建), 不重拉的话新会话要等下次打开页面才出现.
+  loadConversations();
   input.focus();
 }
 
@@ -317,7 +396,7 @@ async function stopAsking() {
   stop.textContent = '停止';
 }
 
-// 六类事件各怎么渲染. 左边那些名字是**跨进程契约** (框架 `EventType` 全集),
+// 七类事件各怎么渲染. 左边那些名字是**跨进程契约** (框架 `EventType` 全集),
 // 少写一个的表现是「那种事件静默消失」; 服务端以后新增类型也不会把这里搞崩
 // (认不出来的类型直接忽略).
 const RENDERERS = {
@@ -345,6 +424,12 @@ const RENDERERS = {
     turn.reasoning.set(data.turn, data.delta || '');
     turn.reasoningText.textContent = Array.from(turn.reasoning.values()).join('\n\n');
     toBottom();
+  },
+  context_compacted: function (data) {
+    // 第七类事件 (框架 issue 16 起就有了, 本片才接上): 这一轮的上下文被压过.
+    // 它是这次问答里**唯一一件"框架替我做了的事"** —— 用户看不见压缩, 但看得见
+    // 快照里的账本一条不少, 所以这行灰字是"账本与视图分开"那件事的现场证据.
+    turn.addNote(compactionNote(data));
   },
   final: function (data) {
     turn.waiting.remove();
@@ -407,6 +492,9 @@ async function ask(question) {
   sawTerminal = false;
   input.disabled = true;
   send.disabled = true;
+  // 正在答的时候切不动会话: 这一轮的事件还在往 `turn` 那块 DOM 里落, 半路换一段
+  // 就会把半截过程画到另一段对话上 (结束时会由 end() 放开)
+  lockSwitching(true);
   turn = startTurn(question);
 
   try {
@@ -513,6 +601,165 @@ async function loadHistory() {
   renderHistory(payload.messages || []);
 }
 
+// ---------------------------------------------------------------------------
+// 左栏: 会话列表 (issue 19)
+// ---------------------------------------------------------------------------
+//
+// 数据源**只有一个**: 助手服务的 `GET /conversations` (经 BFF 转发的第四条路),
+// 回的是「这个买家聊过哪几段」, 每段三个字段: 编号 / 标题 / 最后活动时刻.
+//
+// 三条不做的: **不重排**(后端已按 updated_at 倒序), **不补行**(没聊过的那几段由
+// 后端按「有没有可见消息」滤掉, 前端补一行就是另一种真相), **不落库**(新对话只是
+// 换一个编号, 会话行由记录器懒创建).
+//
+// 拉不回来就留空: 与读历史同一条 —— 左栏是首屏的辅助件, 不该拦着用户提问.
+
+// 列表一行放得下的字数 (标题在库里最长 60, 见框架 `recorder.TITLE_LIMIT`)
+const TITLE_CLIP = 20;
+
+// 超过一天就不说「几小时前」了, 直接给日期 —— 那才是买家要的信息
+const HOUR = 3600;
+const DAY = 86400;
+
+function clip(text, limit) {
+  const value = (text || '').trim();
+  return value.length > limit ? value.slice(0, limit) + '…' : value;
+}
+
+function relativeTime(iso) {
+  // 相对时间而不是 ISO 串: `2026-09-23T10:00:00+08:00` 对买家没有意义, 而排序
+  // 本来也不是页面的事 (后端给的就是倒序)
+  const at = Date.parse(iso || '');
+  if (!at) return '';
+  const seconds = Math.floor((Date.now() - at) / 1000);
+  if (seconds < 60) return '刚刚';
+  if (seconds < HOUR) return Math.floor(seconds / 60) + ' 分钟前';
+  if (seconds < DAY) return Math.floor(seconds / HOUR) + ' 小时前';
+  const when = new Date(at);
+  const date = when.getMonth() + 1 + '月' + when.getDate() + '日';
+  // 跨年才带年份 (列表里绝大多数是最近的, 多一个年份只是噪音)
+  return when.getFullYear() === new Date().getFullYear()
+    ? date
+    : when.getFullYear() + '年' + date;
+}
+
+function shortTokens(value) {
+  // 3200 → 3.2k: 省下的量级看个大概就够 (框架那边也是估算, 精确值只有上游账单有)
+  return value >= 1000 ? (value / 1000).toFixed(1) + 'k' : String(value);
+}
+
+function compactionNote(data) {
+  // 压缩那行灰字读的是**载荷里那六个计数** (框架算好的估算), 这里只把它们拼成人话:
+  // 不在页面这边重算一遍 (算出来就是第二个口径), 也不把字段名原样吐给用户.
+  const dropped = Number(data && data.dropped) || 0;
+  const truncated = Number(data && data.truncated) || 0;
+  const saved = Number(data && data.saved_tokens) || 0;
+  const done = [];
+  if (dropped > 0) done.push('已压缩更早的 ' + dropped + ' 条消息');
+  if (truncated > 0) done.push('截短了 ' + truncated + ' 条工具结果');
+  // 两个计数都是 0 时照说不误: 事件只在"真压了"的时候发, 走到这里就说明压过了
+  if (!done.length) done.push('已压缩上下文');
+  const line = done.join(', ');
+  // saved 是估算的差值, 压后反而更大时是负数 —— 那时不报"省了多少" (报负数是噪音)
+  return saved > 0 ? line + ', 估算省下约 ' + shortTokens(saved) + ' token' : line;
+}
+
+function listItem(row) {
+  const item = el('button', 'agent-item');
+  item.type = 'button';   // 别留着按钮在表单里的那个默认提交语义
+  item.dataset.conversationId = row.conversation_id;
+  if (row.conversation_id === conversationId) item.classList.add('agent-item-on');
+  // 标题空着给一句兜底: 列表里一行空白看着像坏了 (标题是首条用户消息, 可能还没写上)
+  const title = clip(row.title, TITLE_CLIP) || '未命名对话';
+  item.appendChild(el('span', 'agent-item-title', title));
+  item.appendChild(el('span', 'agent-item-time', relativeTime(row.updated_at)));
+  item.addEventListener('click', function () {
+    switchConversation(row.conversation_id);
+  });
+  return item;
+}
+
+function renderList(rows) {
+  list.replaceChildren();
+  if (!rows.length) {
+    list.appendChild(el('div', 'agent-empty', '还没有历史对话'));
+    return;
+  }
+  rows.forEach(function (row) {
+    list.appendChild(listItem(row));
+  });
+}
+
+function markCurrent() {
+  // 换会话但不重拉列表时, 高亮就地跟着走 (省一次请求)
+  Array.from(list.children).forEach(function (item) {
+    item.classList.toggle(
+      'agent-item-on',
+      item.dataset.conversationId === conversationId
+    );
+  });
+}
+
+function lockSwitching(locked) {
+  // 答到一半不许换会话: 这一轮的事件还在往 `turn` 那块 DOM 里落, 半路换一段就会把
+  // 半截过程画到另一段对话上. 两道一起上 —— 列表项置灰且点不动 (视觉), 以及
+  // `switchConversation` 自己那道 `finished` 判断 (键盘 / 程序化触发也拦得住).
+  //
+  // 「新对话」按钮也一起锁: 它同样是一次换会话, 理由一个字都不用改.
+  list.classList.toggle('agent-list-busy', locked);
+  newButton.disabled = locked;
+}
+
+async function loadConversations() {
+  let response;
+  try {
+    // 与另三条一样 POST + CSRF: 读的是私人数据 (我聊过哪几段), 而 GET + cookie
+    // 跨站可触发 (一条 <img src> 就够). **不带请求体** —— 它问的是"所有段",
+    // 不像读历史那样要指名某一段.
+    response = await fetch('/minimall/agent/conversations/', {
+      method: 'POST',
+      headers: { 'X-CSRFToken': csrfToken() },
+    });
+  } catch (err) {
+    return;   // 拉不到就留空, 不打扰用户 (与 loadHistory 同一条)
+  }
+  if (!response.ok) return;
+  let payload;
+  try {
+    payload = await response.json();
+  } catch (err) {
+    return;
+  }
+  renderList(payload.conversations || []);
+}
+
+function clearChat() {
+  // 主区清空. 摘下去的 hint **留着**: 它只是被 remove 过, 没被销毁 —— 一段干净的
+  // 对话又该有那句「试试这样问」, 直接放回去比再造一个省事, 那几个示例按钮的监听
+  // 也还在.
+  chat.replaceChildren();
+  if (hint) chat.appendChild(hint);
+}
+
+async function switchConversation(id) {
+  // 三道门: 正在答 (半截事件会落进另一段对话里) / 没有编号 / 点的就是当前这段
+  if (!finished || !id || id === conversationId) return;
+  conversationId = id;
+  rememberConversationId(id);
+  showConversationTag();
+  clearChat();
+  markCurrent();
+  // 新的一段先拉一次历史 (失败会被 loadHistory 自己吞掉, 降级成空历史) ——
+  // 与刷新页面走的是同一条路, 于是"切过去看到的"与"刷新后看到的"必然一致.
+  await loadHistory();
+}
+
+function startNewConversation() {
+  // 新对话**不落库**: 换一个编号就够了, 会话行是第一条消息发出去时由记录器建的
+  // (issue 17 的懒创建) —— 所以点了新对话又不用, 列表里不会多出一条空壳.
+  switchConversation(newConversationId());
+}
+
 form.addEventListener('submit', function (event) {
   event.preventDefault();
   const question = input.value.trim();
@@ -522,6 +769,8 @@ form.addEventListener('submit', function (event) {
 });
 
 stop.addEventListener('click', stopAsking);
+
+newButton.addEventListener('click', startNewConversation);
 
 document.querySelectorAll('.agent-example').forEach(function (button) {
   button.addEventListener('click', function () {
@@ -533,6 +782,9 @@ document.querySelectorAll('.agent-example').forEach(function (button) {
 
 input.focus();
 loadHistory();
+// 首屏拉一次左栏 (issue 19). 与读历史各拉各的: 一个答「这段聊了什么」, 一个答
+// 「我聊过哪几段」—— 两个都可能失败, 谁失败都不该拖住另一个.
+loadConversations();
 
 // 模块整个跑完了才置真: 上面任何一行抛错 (或开头那个 import 失败), 这个标记就落不
 // 下去, 表单那条路继续由上面那段兜底脚本守着. 放在末尾而不是 import 之后 —— 兜底要

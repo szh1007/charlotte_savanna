@@ -214,6 +214,15 @@ class BffTestBase(TestCase):
         """
         return self.client.post(CONVERSATIONS_URL, **kwargs)
 
+    def page_source(self) -> str:
+        """客服页渲染出来的源码, 空白压平成一行.
+
+        页面那一侧的行为大半只能靠**源码断言**守 (它是一段原生 JS, 没有构建也没有
+        测试运行器). 断言前压平空白, 守的是「这几个名字在」而不是「它们缩进几格」
+        —— 改个格式不该红. 十几个用例都要它, 所以收成一处.
+        """
+        return " ".join(self.client.get(PAGE_URL).content.decode("utf-8").split())
+
 
 # ---------------------------------------------------------------------------
 # 转发契约
@@ -1231,7 +1240,7 @@ class BffCsrfTest(BffTestBase):
 
 
 class AgentPageTest(BffTestBase):
-    """客服页面: 登录可见, 入口全站可达, 六类事件都接了."""
+    """客服页面: 登录可见, 入口全站可达, **七类事件**都接了, 左栏是会话列表."""
 
     def test_the_page_and_the_stream_are_for_logged_in_buyers_only(self):
         """未登录访问 → 跳登录页 (不是 500, 也不是空流)."""
@@ -1260,19 +1269,24 @@ class AgentPageTest(BffTestBase):
         self.assertNotIn("new EventSource(", body)
 
     def test_every_event_type_has_a_handler(self):
-        """六类事件一个不少 —— 漏一个的表现是「那种事件静默消失」.
+        """七类事件一个不少 —— 漏一个的表现是「那种事件静默消失」.
 
         这是前端能被 Django 测试够到的一半 (另一半是浏览器里真跑一遍): 事件名与
-        框架的 `EventType` 全集对齐. 断言前先把空白压平 —— 守的是「这六个名字在」,
+        框架的 `EventType` 全集对齐. 断言前先把空白压平 —— 守的是「这七个名字在」,
         不是「它们缩进几格」 (改个格式不该红).
+
+        `context_compacted` 是第七类 (框架 issue 16 加的, 本片才接上): 它以前进
+        这个表就会红, 正是这条用例存在的意义 —— 框架新增一类事件时, 页面这边
+        必须有人做一次决定 (接上, 还是有意忽略).
         """
-        compact = " ".join(self.client.get(PAGE_URL).content.decode("utf-8").split())
+        compact = self.page_source()
 
         for event in (
             "thinking",
             "tool_call",
             "tool_result",
             "reasoning",
+            "context_compacted",
             "final",
             "error",
         ):
@@ -1286,7 +1300,7 @@ class AgentPageTest(BffTestBase):
         `{stream: true}` 之类的坑; 库版本两行管道. 断言钉住那两件「别人已经做对的活」,
         同时挡住「又回去自己读字节流」这条路.
         """
-        compact = " ".join(self.client.get(PAGE_URL).content.decode("utf-8").split())
+        compact = self.page_source()
 
         self.assertIn("new TextDecoderStream()", compact)
         self.assertIn("new EventSourceParserStream()", compact)
@@ -1301,7 +1315,7 @@ class AgentPageTest(BffTestBase):
         - 它发的是 POST + CSRF (与提问同一条纪律);
         - 请求体里带 `run_id` 与 `conversation_id` —— 少一个都取消不掉.
         """
-        compact = " ".join(self.client.get(PAGE_URL).content.decode("utf-8").split())
+        compact = self.page_source()
 
         self.assertIn('id="ask-stop"', compact)
         self.assertIn("stop.hidden = !runId", compact)
@@ -1319,7 +1333,7 @@ class AgentPageTest(BffTestBase):
         `run_id` 出去、被前端自己的校验挡下 —— 用户看到的是"点了没反应". 与其演这一下,
         不如一开始就别给.
         """
-        compact = " ".join(self.client.get(PAGE_URL).content.decode("utf-8").split())
+        compact = self.page_source()
 
         self.assertIn("runId = response.headers.get('X-Run-Id')", compact)
         self.assertIn("if (finished || !runId || stopping) return", compact)
@@ -1331,7 +1345,7 @@ class AgentPageTest(BffTestBase):
         带的编号、以及**渲染走的是同一套 DOM** —— 恢复的那一轮与直播那一轮共用
         `startTurn`, 没有第二套渲染代码. 两套迟早会漂, 而漂了只在一个方向上看得出来.
         """
-        compact = " ".join(self.client.get(PAGE_URL).content.decode("utf-8").split())
+        compact = self.page_source()
 
         self.assertIn("'/minimall/agent/history/'", compact)
         self.assertIn("loadHistory();", compact)
@@ -1344,16 +1358,18 @@ class AgentPageTest(BffTestBase):
         改这条的理由是「编号进 URL = 同时进日志 / 浏览器历史 / Referer, 而 GET 带
         cookie 跨站可触发」(见 `AgentHistoryView`). 断言落在**页面发的那个请求**上:
         方法是 POST、编号在请求体里、且带着 CSRF 令牌 —— 三样缺一, 这条纪律就漏了.
+
+        列会话那条路 (本片接上的第四条) 同样吃这条纪律, 所以计数是 4.
         """
-        compact = " ".join(self.client.get(PAGE_URL).content.decode("utf-8").split())
+        compact = self.page_source()
 
         self.assertIn("fetch('/minimall/agent/history/', {", compact)
         self.assertIn(
             "body: JSON.stringify({ conversation_id: conversationId })", compact
         )
         self.assertNotIn("/history/?conversation_id=", compact)
-        # 提问与取消早就是这么发的; 读历史跟上之后, 三条路一套写法
-        self.assertEqual(compact.count("'X-CSRFToken': csrfToken()"), 3)
+        # 提问 / 取消 / 读历史 / 列会话: 四条路一套写法 (都 POST + 都带 CSRF)
+        self.assertEqual(compact.count("'X-CSRFToken': csrfToken()"), 4)
 
     def test_the_conversation_id_survives_a_reload_but_not_a_new_tab(self):
         """会话编号存 `sessionStorage`: 刷新还在, 新标签页是新的一段.
@@ -1362,10 +1378,10 @@ class AgentPageTest(BffTestBase):
         防的正是这个), 换成一个内存变量则刷新即丢 (那是 L1b 的旧边界). 这条把那个
         选择钉在页面上, 不让它随手被改掉.
         """
-        compact = " ".join(self.client.get(PAGE_URL).content.decode("utf-8").split())
+        compact = self.page_source()
 
         self.assertIn("window.sessionStorage.getItem(STORAGE_KEY)", compact)
-        self.assertIn("window.sessionStorage.setItem(STORAGE_KEY, fresh)", compact)
+        self.assertIn("window.sessionStorage.setItem(STORAGE_KEY, id)", compact)
         # 查的是那个 API 有没有被用 (注释里提到了它是被否掉的那条路, 不算)
         self.assertNotIn("window.localStorage", compact)
 
@@ -1376,7 +1392,7 @@ class AgentPageTest(BffTestBase):
         这正是「后端改了字段、前端没跟上」那类静默失效. 反过来也要守住: 页面**不该**
         再引用那个已经不存在的字段, 否则以后有人补一个 `data.summary` 就又漏回来了.
         """
-        compact = " ".join(self.client.get(PAGE_URL).content.decode("utf-8").split())
+        compact = self.page_source()
 
         self.assertIn("data.label || '正在处理'", compact)
         self.assertIn(
@@ -1405,3 +1421,120 @@ class AgentPageTest(BffTestBase):
         # 页面上真的出现过 `{# 智能客服入口... #}` 这行字).
         self.assertNotIn("{#", body)
         self.assertNotIn("{%", body)
+
+    # ------------------------------------------------------------------
+    # 左栏: 会话列表 (issue 19)
+    # ------------------------------------------------------------------
+
+    def test_the_sidebar_lists_the_conversations_of_this_buyer(self):
+        """左栏的数据源只有一条 (`/conversations`), 而且拉的是**这个买家**的.
+
+        页面自己不造行 —— 「没聊过的会话不显示」是后端按「有没有可见消息」过滤的
+        结果 (见 `CharAgent/server/conversations.py`), 前端补一行就是另一种真相;
+        「换一个买家看不到别人的」同理, 判据在助手服务那侧按转发过去的身份查.
+        这里守的是接线: 打哪个地址, 用哪个动词, 拿回来画什么.
+        """
+        compact = self.page_source()
+
+        self.assertIn("fetch('/minimall/agent/conversations/', {", compact)
+        self.assertIn("loadConversations();", compact)
+        self.assertIn("renderList(payload.conversations || [])", compact)
+        # 当前那一段高亮: 比的是列表行给的编号与页面上正在用的那个
+        self.assertIn("row.conversation_id === conversationId", compact)
+
+    def test_an_empty_sidebar_says_so_instead_of_staying_blank(self):
+        """一个会话都没有时说一句话, 不留一片空白.
+
+        空列表是**正常状态** (新买家第一回来), 不是故障 —— 所以它既不该弹错, 也不
+        该是一片看不出所以然的空白.
+
+        注意它**只管「后端回了空列表」这一种**: 列表压根没拉回来 (上游没起来 / 没配
+        记录层) 时左栏是留白的 —— 那时候说「还没有历史对话」就是撒谎, 而首屏的
+        辅助件失败本来就不该打扰用户 (与读历史同一条收口).
+        """
+        compact = self.page_source()
+
+        self.assertIn("还没有历史对话", compact)
+
+    def test_a_blank_title_and_a_stale_timestamp_still_read_as_words(self):
+        """标题空着要有兜底文案, 时间要读得懂 —— 两个都不是装饰.
+
+        标题来自首条用户消息, 它可能还没写上 (会话行先建, 标题后补, 见
+        `recorder._ensure_thread`), 空标题会让列表出现一行空白; 而把
+        `2026-09-23T10:00:00+08:00` 原样摆出来对买家没有意义, 所以摆的是相对时间.
+        """
+        compact = self.page_source()
+
+        self.assertIn("未命名对话", compact)
+        self.assertIn("function relativeTime(", compact)
+        self.assertIn("'刚刚'", compact)
+        self.assertIn("分钟前", compact)
+        self.assertIn("小时前", compact)
+
+    def test_a_new_conversation_only_swaps_the_id_and_clears_the_room(self):
+        """「新对话」**不落库**: 它只换一个会话编号 + 清空主区.
+
+        会话行是「第一条消息发出去」时由记录器创建的 (懒创建), 所以点了新对话又
+        不用, 列表里不会多出一条空壳 —— 这条正是不落库换来的. 编号来源也不许有
+        第二份: 走的是同一个 `newConversationId()`.
+
+        真机上核过这一条: 一整轮问答里点过两次新对话, 库里只多出**一行**会话
+        (就是真聊过的那个), 另外两个编号谁也没建行.
+        """
+        compact = self.page_source()
+
+        self.assertIn("switchConversation(newConversationId())", compact)
+        self.assertIn("chat.replaceChildren()", compact)
+
+    def test_switching_a_conversation_never_touches_the_url(self):
+        """会话编号**不进地址栏** —— 切会话只动内存与 sessionStorage (ADR-0002).
+
+        做成 `/minimall/agent/?c=…` 会顺带把它写进访问日志 / 浏览器历史 / Referer,
+        那正是 issue 13 复核时把读历史从 GET 改成 POST 的同一条理由. 这条守的是
+        页面这一侧: 换个会话不许碰 URL (pushState / replaceState / 查询串一个都
+        不许出现), 于是"当前是哪一段"这件事只活在页面自己的状态里.
+        """
+        compact = self.page_source()
+
+        self.assertNotIn("/history/?conversation_id=", compact)
+        for banned in ("pushState", "replaceState", "searchParams"):
+            with self.subTest(banned=banned):
+                self.assertNotIn(banned, compact)
+
+    def test_the_list_is_not_switchable_while_an_answer_is_running(self):
+        """正在流式回答时切不动 —— 否则半截事件会落进另一段对话里.
+
+        两道一起上: 列表项置灰且点不动 (视觉 + `pointer-events`), 以及切换函数
+        自己那道 `finished` 判断 (键盘 / 程序化触发也拦得住). 回答结束 (终局事件
+        之后走 `end()`) 恢复.
+        """
+        compact = self.page_source()
+
+        self.assertIn("if (!finished || !id || id === conversationId) return", compact)
+        self.assertIn("lockSwitching(true)", compact)
+        self.assertIn("lockSwitching(false)", compact)
+        self.assertIn("agent-list-busy", compact)
+
+    def test_the_compaction_line_is_drawn_apart_from_the_tool_rows(self):
+        """压缩那一行灰字与工具行**分开画** —— 它们说的是两件事.
+
+        工具行说的是「做了什么」(查了订单 / 加进购物车了), 这一行说的是「上下文
+        治理」(框架刚替我省了一笔). 同一块过程区里放两种版式, 是为了让"压缩"这件
+        事看得见, 又不至于和一次工具调用混成一样.
+
+        载荷沿用脱敏后的那一份 (`redact` 只动工具事件): 页面读到的是 dropped /
+        truncated / saved_tokens 这些计数, 拼成人话再画 —— 不把字段名吐给用户,
+        也不在页面这边重算一遍.
+        """
+        compact = self.page_source()
+
+        self.assertIn("context_compacted: function (data) {", compact)
+        self.assertIn("addNote(compactionNote(data))", compact)
+        self.assertIn("'agent-compact'", compact)
+        # 画出来的是一句话 (含压缩条数), 而不是 `dropped=2` 这种字段照抄
+        self.assertIn("已压缩更早的", compact)
+        self.assertIn("条消息", compact)
+        # 与上一条灰字一样就不画第二遍. 比的是**上一条灰字**而不是最后一个孩子:
+        # 两轮之间常常刚好插进一条工具行 (压缩 → 调工具 → 又压缩, 真机上的帧序
+        # 就是这样), 比最后一个孩子会全漏 —— 这条第一版就写错了, 真机上抓到.
+        self.assertIn("if (text === lastNote) return;", compact)
