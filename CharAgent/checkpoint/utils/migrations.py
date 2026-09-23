@@ -29,10 +29,14 @@ Postgres 的 state 列 + metadata 列).
   于是 state 只剩「接着跑必需的输入」, metadata 专管「这一步发生了什么」.
 - **v4**: 进度多两样上下文压缩 (#7) 的账 —— summary (摘要正文) 与
   summary_covers (它压到第几条). 老帧没有摘要, 补 None / 0, 那正是当时的事实.
-- **v5 (当前)**: 进度多两样东西 —— ① 身份说明的**引用** (prompt_ref): 老帧的
+- **v5**: 进度多两样东西 —— ① 身份说明的**引用** (prompt_ref): 老帧的
   正文本来就在 messages[0] 里, 于是补 None = 「不用补」; ② 五个**归因**分量
   (input / output / reasoning / cache_hit / cache_miss), 老帧补 None = 「那时
   上游还没上报过这些」. 两样都不动老帧的 messages.
+- **v6**: 帧上那个运行编号更名 `loop_id` (它说的是「哪一次循环执行落下的」), 并
+  新增 `run_id` 指向记录层的运行行 (ticket 22).
+- **v7 (当前)**: 视图那份 (metadata.view) 也与进度同构 —— 身份说明摘出来存
+  `prompt_ref`, 老帧补 None = 「这一帧的这份没剥离过, 正文就在 messages 里」.
 """
 
 from __future__ import annotations
@@ -217,9 +221,33 @@ def _v5_to_v6(body: dict[str, Any]) -> dict[str, Any]:
     return upgraded
 
 
+def _v6_to_v7(body: dict[str, Any]) -> dict[str, Any]:
+    """v6 -> v7: 视图那份也走引用 —— `metadata.view` 补 `prompt_ref=None` (ticket 26).
+
+    与 v5 对进度那条**同一个意思**: 老帧的 `view.messages` 带着身份说明 (那时候
+    没摘), 于是 `prompt_ref=None` 说的是「这一帧的这份没剥离过, 正文就在 messages
+    里」—— 老帧仍然完全自描述, 读回来一个字都不必补.
+
+    只动 `metadata.view` 这一个字典 (进度那边 v5 已经处理过), 且只在 view **是
+    字典**时才补: 它是 None 时没得描述 (那一轮没投影过), 连 `view` 这个键都没有时
+    同样不动 —— 「那时候还没记它」与「记了但没剥离」是两回事. 已经带 `prompt_ref`
+    的原样返回 (老帧重复升级也安全).
+    """
+    metadata = body.get("metadata")
+    if not isinstance(metadata, dict):
+        return body
+    view = metadata.get("view")
+    if not isinstance(view, dict) or "prompt_ref" in view:
+        return body
+    upgraded = dict(body)
+    upgraded["metadata"] = {**metadata, "view": {**view, "prompt_ref": None}}
+    return upgraded
+
+
 # 注册表 (按版本升序; 每加一版在这里补一条 —— 缺哪一版, 读老帧时就会当场报错)
 MIGRATIONS[1] = _v1_to_v2
 MIGRATIONS[2] = _v2_to_v3
 MIGRATIONS[3] = _v3_to_v4
 MIGRATIONS[4] = _v4_to_v5
 MIGRATIONS[5] = _v5_to_v6
+MIGRATIONS[6] = _v6_to_v7

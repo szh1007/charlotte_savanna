@@ -27,7 +27,7 @@
 from __future__ import annotations
 
 from CharAgent.agent.compaction import (
-    AnchorTokenCounter,
+    CalibratedTokenCounter,
     CompactionPolicy,
     CompiledView,
     TokenCounter,
@@ -50,7 +50,7 @@ from CharAgent.agent.utils.types import (
 
 __all__ = [
     "AgentLoop",
-    "AnchorTokenCounter",
+    "CalibratedTokenCounter",
     "CompactionConfigError",
     "CompactionPolicy",
     "CompiledView",

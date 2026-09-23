@@ -123,9 +123,11 @@ from collections.abc import Iterable, Sequence
 from uuid import uuid4
 
 from CharAgent.agent.compaction import (
-    AnchorTokenCounter,
+    CalibratedTokenCounter,
     CompactionPolicy,
+    CompiledView,
     TokenCounter,
+    note_request_diagnostics,
     view_payload,
 )
 from CharAgent.agent.guard import LoopGuard
@@ -164,6 +166,7 @@ from CharAgent.checkpoint.utils.types import (
 from CharAgent.hooks.registry import HookRegistry
 from CharAgent.hooks.utils.types import HookPoint, ModelCallPhase
 from CharAgent.model.protocol import ChatModel
+from CharAgent.model.utils.errors import ModelStatusError
 from CharAgent.model.utils.types import (
     FinishReason,
     ModelMessage,
@@ -172,11 +175,15 @@ from CharAgent.model.utils.types import (
     ToolSpec,
 )
 
-# 两样都来自 prompt.ref: 一个常量 (身份说明的 role 名 —— resume 用它判「这帧的身份
-# 说明补回来了没」) 与一个纯函数 (detach_identity —— 落帧时把那条正文摘掉换成引用).
-# 借这两样**不等于**本层认识提示词: 本层依然不按引用读盘 (摘是纯函数, 还原才要读盘,
-# 而读盘归会话层).
-from CharAgent.prompt.ref import IDENTITY_ROLE, detach_identity
+# 三样都来自 prompt.ref: 一个常量 (身份说明的 role 名 —— resume 用它判「这帧的身份
+# 说明补回来了没」) 与两个纯函数 (detach_identity 摘进度里那条正文, detach_view_identity
+# 摘视图里那份 —— 落帧那一刻都换成引用). 借这几样**不等于**本层认识提示词: 本层依然
+# 不按引用读盘 (摘是纯函数, 还原才要读盘, 而读盘归会话层).
+from CharAgent.prompt.ref import (
+    IDENTITY_ROLE,
+    detach_identity,
+    detach_view_identity,
+)
 from CharAgent.stream.bus import EventBus
 from CharAgent.stream.utils.types import EventSink, EventType
 from CharAgent.tool import Tool, ToolExecution, execute_tool
@@ -232,9 +239,9 @@ class AgentLoop:
             一份**视图** (摘要 + 最近几个提问) 再发出去 —— 账本本身一个字不动, 于是
             快照 / 续跑 / 回溯看到的仍是全量. None (默认) 表示不投影: 送给模型的
             就是账本本体, 行为与从前逐字一样.
-        counter: 估算器 (判阈值与水位线用). 默认 AnchorTokenCounter (锚 = 上游给
-            的 input_tokens). 只在配了 compactor 时有意义 —— 只给 counter 不给
-            compactor 属配置写错, 构造期报 LoopConfigError.
+        counter: 估算器 (判阈值与水位线用). 默认 CalibratedTokenCounter (启发式
+            + 上游真实用量反推的固定开销). 只在配了 compactor 时有意义 —— 只给
+            counter 不给 compactor 属配置写错, 构造期报 LoopConfigError.
         event_sink: 流式事件出口 (同步或异步回调): 运行过程逐个推
             事件 (thinking / tool_call / tool_result / reasoning /
             context_compacted / final / error), 供 SSE 推送 / CLI 打印 /
@@ -310,7 +317,7 @@ class AgentLoop:
         # compactor 时一个字节都不多花」这条对构造也成立
         self._counter: TokenCounter | None = None
         if compactor is not None:
-            self._counter = counter if counter is not None else AnchorTokenCounter()
+            self._counter = counter if counter is not None else CalibratedTokenCounter()
 
         # 未传注册表时用空实例 (对齐 guard=None -> LoopGuard() 的惯例):
         # 后续触发点不必逐处判空, 空注册的 fire 立即返回
@@ -697,16 +704,15 @@ class AgentLoop:
             tools=tool_specs,
         )
         view = await self._compile_view(state, bus)
-        response = await self._model.generate(
-            view,
-            tool_specs,
-            temperature=self._temperature,
-            top_p=self._top_p,
-            seed=self._seed,
-            max_tokens=self._max_tokens,
-            thinking=self._thinking,
-            reasoning_effort=self._reasoning_effort,
-        )
+        try:
+            response = await self._generate(view, tool_specs)
+        except ModelStatusError as exc:
+            if not exc.is_context_overflow or self._compactor is None:
+                raise
+            # 上游说这份请求超了窗口 —— 紧急压一次再发. **只重发一次**: 再超就是真
+            # 的压不动 (或窗口小得离谱), 如实抛给上层, 别把这一轮拖成重试循环.
+            view = await self._emergency_view(state, bus)
+            response = await self._generate(view, tool_specs)
         state.turn_count = turn
         # 用量记两笔: 总数给 guard 的预算 (它是账单原值, 也是唯一能跟供应商对账的
         # 那个数), 分解给成本归因 (#34). 两笔取自同一个 usage, 所以必然对得上
@@ -714,9 +720,12 @@ class AgentLoop:
         accumulate_usage(state, response.usage)
         state.finish_reason = response.finish_reason
         if self._counter is not None:
-            # 权威值回灌 (锚): 上游说的 input_tokens 才是真的, 它记的是**账本**
-            # 长度 —— 下一次估算 = 这个锚 + 之后新增那几条的启发式
-            self._counter.note_usage(response.usage, message_count=len(state.history))
+            # 权威值回灌 (校准): 上游说的 input_tokens 才是真的, 它对应的是**刚发
+            # 出去的那份** (view, 而不是账本) —— 传账本会得到一个错的校准项
+            self._counter.note_usage(response.usage, sent=view)
+        # 两个事后才知道的诊断值 (估算偏差 / 缓存命中率) 补进这一轮的视图载荷:
+        # generate 回来才有 usage, 而载荷在生成那一份时还没有它
+        note_request_diagnostics(state.view, response.usage)
         await self._hooks.fire(
             HookPoint.ON_MODEL_CALL,
             phase=ModelCallPhase.AFTER,
@@ -733,18 +742,29 @@ class AgentLoop:
             await bus.emit(EventType.REASONING, delta=response.reasoning, turn=turn)
         return response
 
+    async def _generate(
+        self, view: list[ModelMessage], tool_specs: list[ToolSpec] | None
+    ) -> ModelResponse:
+        """把一份视图交给模型 (两处调用: 常规那一轮, 与超限之后的紧急重发)."""
+        return await self._model.generate(
+            view,
+            tool_specs,
+            temperature=self._temperature,
+            top_p=self._top_p,
+            seed=self._seed,
+            max_tokens=self._max_tokens,
+            thinking=self._thinking,
+            reasoning_effort=self._reasoning_effort,
+        )
+
     async def _compile_view(
         self, state: LoopState, bus: EventBus
     ) -> list[ModelMessage]:
         """算这一轮送给模型的视图 (配了压缩策略才投影; 否则原样返回账本).
 
         视图是投影出来的**副本**: 压缩只影响这一次请求, `state.history` 一个字
-        不动 (它仍是 append-only 的账本). 三件事顺带在这里做完:
-
-        - 新摘要与「压到第几条」写回 state (它们是进度, 要跟着快照落盘)
-        - 摘要那一次调用的 token 计入本次运行预算 (确实花了钱), 但**不加**
-          turn_count —— 它不是一次模型决策, 不该占 max_turns 的额度
-        - 真压了才发 context_compacted 事件 (没压就不该在前端留痕迹)
+        不动 (它仍是 append-only 的账本). 投影产物的收尾 (落 state / 记预算 /
+        发事件) 在 `_account`, 与紧急压缩那条来路共用.
         """
         if self._compactor is None or self._counter is None:
             # 没配压缩策略: 这一轮没有「投影产物」可言 —— 显式置 None, 免得上一轮
@@ -758,15 +778,52 @@ class AgentLoop:
             counter=self._counter,
             summarizer=self._model,
         )
-        # 这一轮的投影产物留在 state 上 (装成可落盘的观察值), 落帧时进
-        # metadata.view (ticket 22 第 4 件). **「视图与账本是否相同」必须在这里判**:
-        # 此刻的 state.history 正是刚投影的那份输入; 等到落帧时 (轮末) 账本已经长了
-        # 一条 (模型这轮的答复), 再比就会永远判成「不一样」
+        return await self._account(state, bus, compiled)
+
+    async def _emergency_view(
+        self, state: LoopState, bus: EventBus
+    ) -> list[ModelMessage]:
+        """上游回报「输入超窗口」之后重算一份视图: 紧急压缩, 不留情面.
+
+        只在 `_decide` 捕获到 `is_context_overflow` 时调, 而且**只调一次** (重发也
+        只一次). 与 `_compile_view` 共用收尾, 差别只在策略那一步 (`emergency`
+        不问水位线、摘要失败也照裁).
+
+        Note:
+            常规那一轮若也压过, 这一轮就会**连着发两条** `context_compacted` ——
+            两条都是真发生的事 (第一条描述的那份确实发出去过, 只是被上游拒了), 且
+            带同一个 turn (同一次决策里的两次投影). 第二条的载荷里 `emergency=true`,
+            前端可以据此区分.
+        """
+        if self._compactor is None or self._counter is None:
+            state.view = None
+            return state.history
+        compiled = await self._compactor.emergency(
+            state.history,
+            summary=state.summary,
+            summary_covers=state.summary_covers,
+            counter=self._counter,
+            summarizer=self._model,
+        )
+        return await self._account(state, bus, compiled)
+
+    async def _account(
+        self, state: LoopState, bus: EventBus, compiled: CompiledView
+    ) -> list[ModelMessage]:
+        """投影产物的收尾 (两条来路共用): 落 state / 记预算 / 发事件.
+
+        - 这一轮的投影产物留在 state 上 (装成可落盘的观察值), 落帧时进
+          metadata.view (ticket 22 第 4 件). **「视图与账本是否相同」必须在这里判**:
+          此刻的 state.history 正是刚投影的那份输入; 等到落帧时 (轮末) 账本已经长了
+          一条 (模型这轮的答复), 再比就会永远判成「不一样」
+        - 摘要那一次调用的 token 计入本次运行预算 (确实花了钱), 但**不加**
+          turn_count —— 它不是一次模型决策, 不该占 max_turns 的额度. 两笔同进同出
+          (与 _decide 同一个口径), 否则「总量 - 各分量之和」会凭空多出摘要这一笔
+        - 真压了才发 context_compacted 事件 (没压就不该在前端留痕迹)
+        """
         state.view = view_payload(compiled, state.history)
         state.summary = compiled.summary
         state.summary_covers = compiled.summary_covers
-        # 摘要那一次调用同样记两笔 (与 _decide 同一个口径): 总数与分解必须同进
-        # 同出, 否则「总量 - 各分量之和」会凭空多出摘要这一笔
         state.total_tokens += count_tokens(compiled.summarizer_usage)
         accumulate_usage(state, compiled.summarizer_usage)
         if compiled.compacted:
@@ -948,7 +1005,8 @@ class AgentLoop:
         - tool_names 取本轮响应的 tool_calls (并行调多个时按模型给的顺序记)
         - view 是本轮**真的发出去**的那份 (有模型调用才有): 挂起补做那一轮没投影
           (state.view 是 None), 记 None 是本轮的**事实** —— 别把上一轮那份顺手
-          抄进来
+          抄进来. 它里面的身份说明在这里被**摘掉换成引用** (`detach_view_identity`,
+          与进度那条同构) —— 摘的动作由造帧的人执行, 三个后端一视同仁
         """
         return CheckpointMetadata(
             source=source,
@@ -960,7 +1018,7 @@ class AgentLoop:
                 None if state.finish_reason is None else state.finish_reason.value
             ),
             outcome=state.outcome.value if state.done else None,
-            view=state.view,
+            view=detach_view_identity(state.view, state.prompt_ref),
         )
 
     # ------------------------------------------------------------------

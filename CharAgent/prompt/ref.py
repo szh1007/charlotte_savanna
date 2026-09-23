@@ -37,6 +37,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+from typing import Any
 
 from CharAgent.model.utils.types import ModelMessage
 from CharAgent.prompt.errors import PromptRefMismatchError
@@ -187,6 +188,39 @@ def detach_identity(
     return messages[1:]
 
 
+def detach_view_identity(
+    view: dict[str, Any] | None, ref: PromptRef | None
+) -> dict[str, Any] | None:
+    """落帧用: 把「这一轮真发出去的那份视图」里的身份说明也换成引用 (与进度同构).
+
+    为什么要: 视图每轮都带着第 0 条身份说明 (那几千字), 而它**就是** progress 那边
+    那一条 (压缩策略拿 `history[0]` 当视图的第 0 条) —— 帧里已经有 `state.prompt_ref`
+    描述它, 视图再抄一遍纯属重复.
+
+    两条取值规则:
+    - `view` 为 None (这一轮没投影过): 原样返回 None —— 没有「那一份」可描述.
+    - `view["messages"]` 为 None (视图 == 账本): 不摘 (没得摘), 但**引用照记** ——
+      它说的还是「这一段的身份说明在哪」, 读的人据此知道账本那条要不要补.
+
+    Note:
+        摘完的 `view["messages"]` **不再是「可以直接发给模型的完整列表」** —— 读的
+        人要先按 `prompt_ref` 把正文取回来前插 (与 `restore_identity` 同一条规矩).
+
+    Args:
+        view: `agent/compaction.py` 的 `view_payload` 造出来的那份; None 表示没有.
+        ref: 这一段的身份说明引用; None 表示没剥离过 (或不用剥).
+
+    Returns:
+        dict | None: 新的字典 (带 `prompt_ref` 键); `view` 为 None 时是 None.
+    """
+    if view is None:
+        return None
+    messages = view.get("messages")
+    if not isinstance(messages, list):
+        return {**view, "prompt_ref": ref}
+    return {**view, "messages": detach_identity(list(messages), ref), "prompt_ref": ref}
+
+
 def restore_identity(
     messages: list[ModelMessage],
     ref: PromptRef | None,
@@ -248,6 +282,7 @@ __all__ = [
     "PromptRef",
     "deref_prompt",
     "detach_identity",
+    "detach_view_identity",
     "identity_message",
     "prompt_ref",
     "ref_name",

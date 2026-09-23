@@ -17,7 +17,11 @@ from typing import Any
 
 import httpx
 
-from CharAgent.model.parse import extract_error_message, parse_chat_completion
+from CharAgent.model.parse import (
+    classify_error,
+    extract_error_message,
+    parse_chat_completion,
+)
 from CharAgent.model.stream import (
     StreamAccumulator,
     apply_sse_chunk,
@@ -179,7 +183,10 @@ class HttpXChatModel:
         if response.status_code >= 400:
             await response.aread()  # 读取错误体 (流式响应同样适用)
             raise ModelStatusError(
-                response.status_code, extract_error_message(response.text)
+                response.status_code,
+                extract_error_message(response.text),
+                # 语义分类只看**原始**错误体 (判据在 parse 那一处, 见 classify_error)
+                kind=classify_error(response.status_code, response.text),
             )
         return response
 

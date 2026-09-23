@@ -563,13 +563,19 @@ class CheckpointCodec:
             view=self._read_view(payload.get("view")),
         )
 
-    @staticmethod
-    def _read_view(payload: Any) -> dict[str, Any] | None:
+    @classmethod
+    def _read_view(cls, payload: Any) -> dict[str, Any] | None:
         """读「这一轮发出去的那份」(见 CheckpointMetadata.view).
 
-        原样交给上层 (它是**观察值**, 恢复不读它): 只挡一下明显的畸形 (不是字典 /
-        不是 None) —— 里面的键以后可能会加, 这里不做逐字段校验, 免得「加一个
-        计数就得改两处」.
+        宽紧两条线分开, 因为这份字典里住着两类东西:
+
+        - **计数那一族原样交给上层** (它们是观察值, 恢复不读): 只挡一下明显的畸形
+          (不是字典 / 不是 None) —— 里面的键以后可能会加, 逐字段校验会让「加一个
+          计数就得改两处」.
+        - **`prompt_ref` 走严格校验** (与进度那边同一个读法, 见 `_read_prompt_ref`):
+          它不是一个计数, 而是读的人**按它把正文取回来**的凭据 —— 畸形了会让「这一
+          段用的是什么身份说明」答不上来, 不能放过. 缺这个键 = 老帧 (v6 及更早),
+          补 None = 「那一份没剥离过, 正文就在 messages 里」.
         """
         if payload is None:
             return None
@@ -577,7 +583,10 @@ class CheckpointCodec:
             raise CheckpointSerializationError(
                 f"metadata.view 应当是字典或 None, 实际为 {type(payload).__name__}"
             )
-        return payload
+        return {
+            **payload,
+            "prompt_ref": cls._read_prompt_ref(payload.get("prompt_ref")),
+        }
 
     @staticmethod
     def _read_source(payload: dict[str, Any]) -> CheckpointSource:

@@ -14,7 +14,7 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
-from CharAgent.model.utils.errors import ModelProtocolError
+from CharAgent.model.utils.errors import ModelErrorKind, ModelProtocolError
 from CharAgent.model.utils.types import (
     FinishReason,
     ModelResponse,
@@ -36,6 +36,43 @@ def extract_error_message(body: str) -> str:
     except (json.JSONDecodeError, AttributeError):
         pass
     return body[:300] or "(空响应体)"
+
+
+# 上游报「输入超窗口」时各家措辞不一 (OpenAI 系多是 context_length_exceeded 这个
+# code, 另一些把话写在 message 里: "maximum context length is N tokens"). 这张表是
+# **唯一**一处靠字符串判语义的地方 —— 判完就只剩 kind, 上层不必再认识这些字.
+_CONTEXT_OVERFLOW_MARKERS = (
+    "context_length_exceeded",
+    "maximum context length",
+    "context length",
+    "too many tokens",
+    "reduce the length of the messages",
+)
+
+
+def classify_error(status_code: int, body: str) -> ModelErrorKind:
+    """HTTP 错误 → 语义分类, 只为回答一个问题: **这份请求还救不救得回来**?
+
+    「超窗口」救得回来 (压一次再发, 见 compaction 的 emergency); 其余 4xx 救不回来
+    (重发多少次都一样). 5xx 与 429 是另一回事 —— 那是上游自己的状态, 归重试层.
+
+    Args:
+        status_code: 上游返回的状态码.
+        body: **原始响应体**, 不是抠出来的 message —— 判据可能落在 code 那一层.
+
+    Returns:
+        ModelErrorKind: 分类结果; 认不出来就是 `UNKNOWN`.
+    """
+    if status_code == 429:
+        return ModelErrorKind.RATE_LIMITED
+    if 500 <= status_code < 600:
+        return ModelErrorKind.SERVER
+    if 400 <= status_code < 500:
+        lowered = body.lower()
+        if any(marker in lowered for marker in _CONTEXT_OVERFLOW_MARKERS):
+            return ModelErrorKind.CONTEXT_OVERFLOW
+        return ModelErrorKind.INVALID_REQUEST
+    return ModelErrorKind.UNKNOWN
 
 
 def parse_finish_reason(value: Any) -> FinishReason:

@@ -457,6 +457,30 @@ async def test_http_400_maps_to_permanent_error(chat_model: HttpXChatModel) -> N
     assert "模型 deepseek:v4 不存在" in str(error)  # 错误体 message 透出, 供纠错参考
 
 
+async def test_http_400_context_overflow_carries_its_kind(
+    chat_model: HttpXChatModel,
+) -> None:
+    """超窗口那种 400 带上语义 kind —— loop 靠它决定要不要紧急压一次再发.
+
+    与上一条同样是 400, 区别只在**救不救得回来**: 参数写错重发多少次都一样, 而
+    输入超窗口压一次就能发出去 (见 compaction 的 emergency). 判据落在适配器这
+    一侧 —— `classify_error` 读的是**原始错误体**, 不是抠出来的 message.
+    """
+    body = {
+        "error": {
+            "code": "context_length_exceeded",
+            "message": "This model's maximum context length is 65536 tokens",
+        }
+    }
+    async with respx.mock() as router:
+        router.post(CHAT_URL).mock(return_value=httpx.Response(400, json=body))
+        with pytest.raises(ModelStatusError) as exc_info:
+            await chat_model.generate(MESSAGES)
+
+    assert exc_info.value.is_context_overflow is True
+    assert exc_info.value.retryable is False, "它仍是永久错误 —— 重试层不该重发它"
+
+
 async def test_http_429_maps_to_transient_error(chat_model: HttpXChatModel) -> None:
     async with respx.mock() as router:
         router.post(CHAT_URL).mock(

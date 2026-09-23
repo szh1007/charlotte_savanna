@@ -520,7 +520,9 @@ async def test_compaction_is_wired_through_the_session() -> None:
         event_sink=events.append,
     )
 
-    await session.ask("第一次提问")
+    # 首轮要够长: 压完视图里会多出摘要那一条 (前缀本身就有二三十字), 被裁的那段
+    # 省不过它就等于「压了反而更大」—— 那属于另一回事, 与这条验的接线无关
+    await session.ask("第一次提问" + "。" * 60)
     second = await session.ask("第二次提问")
 
     assert second.summary == "早前聊的是查订单"
@@ -544,7 +546,7 @@ async def test_the_summary_survives_from_one_question_to_the_next() -> None:
         MockLLM.scripted([capture, capture]), summarizer=summarizer
     )
 
-    await session.ask("第一次提问")
+    await session.ask("第一次提问" + "。" * 60)  # 够长才压得动, 见上一条用例
     second = await session.ask("第二次提问")
 
     assert len(summarizer.calls) == 1  # 只压过一次
@@ -935,7 +937,7 @@ async def test_only_a_fresh_summary_is_handed_to_the_recorder() -> None:
         recorder=Recorder(),
     )
 
-    await session.ask("第一次提问")  # 还没裁得动 -> 没有新摘要
+    await session.ask("第一次提问" + "。" * 60)  # 还没裁得动 -> 没有新摘要
     await session.ask("第二次提问")  # 这一轮压出了摘要
     await session.ask("第三次提问")  # 压出来的与手上那份一样
 

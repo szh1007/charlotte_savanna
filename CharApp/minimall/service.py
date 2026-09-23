@@ -32,7 +32,7 @@ from typing import Any
 import yaml
 
 from CharAgent.agent import (
-    AnchorTokenCounter,
+    CalibratedTokenCounter,
     CompactionPolicy,
     GuardConfigError,
     LoopConfigError,
@@ -232,10 +232,11 @@ def build_compaction_for(
     为什么必须成对: 框架那边「只给 counter 不给 compactor」是配置错误 (`AgentLoop`
     构造期就报 —— 没人会去问一个不压缩的会话要估算). 成对构造之后这个中间态不存在.
 
-    为什么估算器**每调一次新的**: `AnchorTokenCounter` 的锚是「**这个会话**上一次请求
-    的真实 input_tokens」, 它是会话级状态. 进程级共用一个的话, 两段对话会互相把对方
-    的锚改掉 —— 甲刚压完落在小值上, 乙的账本立刻被判定「没超阈值」, 于是该压的不压.
-    装配处每次 `session_for` 调一次, 正好一个会话一份.
+    为什么估算器**每调一次新的**: `CalibratedTokenCounter` 的校准项是「**这个会话**
+    上一次请求的真实 input_tokens 与那一份的启发式估算之差」, 它是会话级状态. 进程级
+    共用一个的话, 两段对话会互相把对方的校准项改掉 —— 甲刚压完 (校准项按小视图算出
+    来), 乙的账本立刻被判定「没超阈值」, 于是该压的不压. 装配处每次 `session_for`
+    调一次, 正好一个会话一份.
 
     Args:
         config: 从环境变量读来的五个旋钮 (见 `config.ContextConfig`).
@@ -251,7 +252,7 @@ def build_compaction_for(
             tool_result_limit=config.tool_limit,
             summarize=config.summary,
         ),
-        AnchorTokenCounter(),
+        CalibratedTokenCounter(),
     )
 
 

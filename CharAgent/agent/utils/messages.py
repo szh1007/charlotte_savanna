@@ -125,6 +125,12 @@ TRUNCATION_CONDENSE_TEXT = (
     "确保能在长度限制内完成."
 )
 
+# 思维链被清理后的占位文本 (只在 `reasoning_keep_turns` 开着时出现).
+#
+# 它替换掉的是**纯推理过程** —— 结论在正文里, 所以只说明「这里省掉了什么」就够.
+# 保留 key 而不是删掉: wire 形状稳定, 下游不必按「key 在不在」分支.
+REASONING_CLEARED_TEXT = "[思维链已省略]"
+
 
 # ---------------------------------------------------------------------------
 # 上下文压缩 (#7): 估算与文案
@@ -147,7 +153,7 @@ def estimate_tokens(messages: Sequence[ModelMessage]) -> int:
     """一份消息列表**大致**多大 (字符启发式, 不调上游也不引分词器).
 
     只用来判阈值与水位线 —— 真正权威的输入 token 数只有上游给的 usage (#7),
-    见 agent/compaction.py 的 AnchorTokenCounter.
+    见 agent/compaction.py 的 CalibratedTokenCounter.
     """
     return sum(_message_tokens(message) for message in messages)
 
@@ -182,6 +188,44 @@ def message_text(message: ModelMessage, *, tool_limit: int) -> str:
         parts.append(f"{function.get('name')}({function.get('arguments')})")
     label = f"{role}:调用工具" if calls else role
     return f"[{label}] {' '.join(parts)}"
+
+
+def cap_summary_material(
+    dropped: Sequence[ModelMessage], *, limit: int, tool_limit: int
+) -> list[ModelMessage]:
+    """摘要材料的**输入上界**: 砍掉最旧的那些, 让渲染出来的量不超过 limit.
+
+    为什么要: 被裁掉的那一段可能很大 (一屏大工具结果 + 长问答), 而摘要那一次调用
+    本身也是一次请求 —— 没有上界的话, 为了省 token 反而先花一大笔 (LangChain 的
+    `trim_tokens_to_summarize` 默认 4000 是同一条规矩).
+
+    为什么砍**最旧**那端: 相关性随距离衰减 —— 越旧的越该被压成摘要 (它们正是被裁
+    掉的理由), 最近那几轮留着更值. 至少留一条 (一条都不留等于没材料可压).
+
+    Args:
+        dropped: 这次新裁掉的那些消息 (要被压进摘要的材料).
+        limit: 材料的 token 上界; <= 0 表示不截.
+        tool_limit: 渲染单条消息时工具正文截到多少字符 (与 summary_request 同一把尺).
+
+    Returns:
+        list[ModelMessage]: 要交给摘要模型的那几条, 原顺序.
+    """
+    if limit <= 0:
+        return list(dropped)
+    kept: list[ModelMessage] = []
+    used = 0
+    for message in reversed(dropped):
+        rendered: ModelMessage = {
+            "role": "user",
+            "content": message_text(message, tool_limit=tool_limit),
+        }
+        cost = estimate_tokens([rendered])
+        if kept and used + cost > limit:
+            break
+        kept.append(message)
+        used += cost
+    kept.reverse()
+    return kept
 
 
 # 摘要指令 (滚动摘要的 system 段): 只说「保留什么 / 丢掉什么」, 不教它格式 ——
@@ -229,11 +273,18 @@ def summary_view_message(summary: str) -> ModelMessage:
 
 
 def _message_tokens(message: ModelMessage) -> int:
-    """单条消息的估算 (正文 + 工具调用参数 + 固定开销)."""
+    """单条消息的估算 (正文 + 思维链 + 工具调用参数 + 固定开销).
+
+    思维链一并计入: 它会回填进账本 (见 `assistant_wire` 的保真约定), 于是每一轮
+    都占着输入 —— 而 reasoner 的思考常比正文长数倍, 漏算它就是系统性低估.
+    """
     total = MESSAGE_OVERHEAD_TOKENS
     content = message.get("content")
     if isinstance(content, str):
         total += _text_tokens(content)
+    reasoning = message.get("reasoning_content")
+    if isinstance(reasoning, str):
+        total += _text_tokens(reasoning)
     for call in message.get("tool_calls") or []:
         function = call.get("function") or {}
         total += _text_tokens(str(function.get("name") or ""))

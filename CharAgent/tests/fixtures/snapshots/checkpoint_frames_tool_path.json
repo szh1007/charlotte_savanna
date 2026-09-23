@@ -1,6 +1,6 @@
 [
   {
-    "schema_version": 6,
+    "schema_version": 7,
     "checkpoint_id": "<id>",
     "thread_id": "snapshot-thread",
     "loop_id": "loop-snapshot",
@@ -62,7 +62,7 @@
     }
   },
   {
-    "schema_version": 6,
+    "schema_version": 7,
     "checkpoint_id": "<id>",
     "thread_id": "snapshot-thread",
     "loop_id": "loop-snapshot",

@@ -574,26 +574,40 @@ def test_a_v3_snapshot_reads_back_without_a_summary():
     assert checkpoint.state.messages  # 历史照旧读得回来
 
 
+def test_a_v6_snapshot_reads_back_without_a_view_ref():
+    """v6 老帧原样读回: 迁移只给 `view` 补 `prompt_ref=None` ("那一份没剥离过").
+
+    它的 `metadata.view` 是 null (那一轮没投影), 所以补键这一步都走不到 —— 这条钉的
+    是「老帧的迁移不炸」而不是形状; 上一族那两条用手搭的 body 钉形状.
+    """
+    checkpoint = DEFAULT_CODEC.decode_record(read_fixture("checkpoint_v6.json"))
+
+    assert checkpoint.metadata.view is None
+    assert checkpoint.state.summary is not None, "它带着压缩进度, 迁移不该动它"
+    assert checkpoint.state.messages  # 历史照旧读得回来
+
+
 # ---------------------------------------------------------------------------
 # 格式定稿 (快照测试, #63)
 # ---------------------------------------------------------------------------
 
 
 def test_serialized_record_matches_fixture():
-    """序列化产物与 fixtures/checkpoint_v6.json 逐字一致 (改格式必须是有意的).
+    """序列化产物与 fixtures/checkpoint_v7.json 逐字一致 (改格式必须是有意的).
 
     这个用例红了怎么办: 先确认格式变更是有意为之, 再重新生成 fixture —— 顺手
     也要判断「老快照还读得回来吗」, 读不回来就得加一个迁移函数并把
     SCHEMA_VERSION +1 (见 utils/migrations.py). v1~v5 的 fixture 留着不删: 它们是
     「老快照读得回来」那些用例的样本 (见上面几条).
 
-    它同时钉住 v6 帧的**目标形状**: 身份说明的正文不在 messages 里 (只剩 prompt_ref
-    那个引用) —— 那是**造帧的人**摘的 (prompt/ref.py 的 detach_identity), 编解码器
-    只负责原样写出来; 以及**两个编号各占一个键** (`loop_id` = 哪次循环执行,
-    `run_id` = 记录层哪一行, 可空 —— 见 ticket 22).
+    它同时钉住 v7 帧的**目标形状**: 身份说明的正文不在 messages 里 (只剩 prompt_ref
+    那个引用) —— 那是**造帧的人**摘的 (prompt/ref.py 的 `detach_identity`), 编解码器
+    只负责原样写出来; **两个编号各占一个键** (`loop_id` = 哪次循环执行, `run_id` =
+    记录层哪一行, 可空 —— ticket 22); 以及**视图那份也走引用** (v7, ticket 26):
+    `metadata.view` 里的身份说明同样摘出去, 与进度那边同构.
     """
-    expected = (FIXTURES / "checkpoint_v6.json").read_text(encoding="utf-8")
-    checkpoint = DEFAULT_CODEC.decode_record(read_fixture("checkpoint_v6.json"))
+    expected = (FIXTURES / "checkpoint_v7.json").read_text(encoding="utf-8")
+    checkpoint = DEFAULT_CODEC.decode_record(read_fixture("checkpoint_v7.json"))
 
     assert DEFAULT_CODEC.dumps(
         DEFAULT_CODEC.encode_record(checkpoint), indent=2
@@ -737,3 +751,61 @@ def test_a_prompt_ref_of_the_wrong_type_is_rejected():
         DEFAULT_CODEC.decode_record(record)
 
     assert "prompt_ref" in str(excinfo.value)
+
+
+def test_a_v6_view_without_a_ref_reads_back_as_not_detached():
+    """v6 老帧的 view 带着身份说明、没有 prompt_ref → 补 None = 「那一份没剥离过」.
+
+    为什么不顺手把正文摘掉: 那会让老帧**少一条消息**, 而「当时它看到了什么」正是
+    帧要回答的事. 与 v5 对进度那条同一个口径 —— 补 None 说的是「正文就在 messages
+    里」, 老帧仍然完全自描述.
+    """
+    body = {
+        "state": {},
+        "metadata": {"view": {"dropped": 1, "messages": [{"role": "user"}]}},
+    }
+
+    upgraded = migrate_body(body, from_version=6)
+
+    assert upgraded["metadata"]["view"]["prompt_ref"] is None
+    assert upgraded["metadata"]["view"]["dropped"] == 1  # 别的键原样留着
+    assert upgraded["metadata"]["view"]["messages"] == [{"role": "user"}], (
+        "messages 一条没少 —— 老帧仍然完全自描述"
+    )
+
+
+def test_a_v6_frame_without_a_view_is_left_alone():
+    """那一帧压根没记 view (它是 None) 时不补键 —— 「没记过」与「记了没剥离」两回事."""
+    body = {"state": {}, "metadata": {"view": None}}
+
+    upgraded = migrate_body(body, from_version=6)
+
+    assert upgraded["metadata"]["view"] is None
+
+
+def test_a_view_with_a_ref_roundtrips():
+    """带引用的视图往返不丢: 写出去什么样, 读回来什么样."""
+    record = read_fixture("checkpoint_v7.json")
+    ref = prompt_ref("system/v2", "你是商城客服")
+    record["metadata"]["view"] = {"dropped": 1, "messages": None, "prompt_ref": ref}
+
+    restored = DEFAULT_CODEC.decode_record(record)
+
+    assert restored.metadata.view is not None
+    assert restored.metadata.view["prompt_ref"] == ref
+    assert restored.metadata.view["dropped"] == 1
+
+
+def test_a_view_prompt_ref_missing_a_key_is_rejected():
+    """视图里那个引用也走严格校验 —— 它是一份**凭据** (读的人按它取正文), 不是计数."""
+    record = read_fixture("checkpoint_v7.json")
+    record["metadata"]["view"] = {
+        "dropped": 0,
+        "messages": None,
+        "prompt_ref": {REF_NAME_KEY: "system/v2"},  # 少了 sha256
+    }
+
+    with pytest.raises(CheckpointSerializationError) as excinfo:
+        DEFAULT_CODEC.decode_record(record)
+
+    assert REF_SHA_KEY in str(excinfo.value)

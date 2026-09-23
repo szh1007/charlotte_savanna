@@ -30,7 +30,11 @@ from typing import Any
 
 import openai
 
-from CharAgent.model.parse import extract_error_message, parse_chat_completion
+from CharAgent.model.parse import (
+    classify_error,
+    extract_error_message,
+    parse_chat_completion,
+)
 from CharAgent.model.stream import (
     StreamAccumulator,
     apply_sse_chunk,
@@ -69,7 +73,9 @@ def _map_api_error(exc: openai.APIError) -> ModelError:
         return ModelConnectionError(f"模型 API 连接失败: {exc}")
     if isinstance(exc, openai.APIStatusError):
         return ModelStatusError(
-            exc.status_code, extract_error_message(exc.response.text)
+            exc.status_code,
+            extract_error_message(exc.response.text),
+            kind=classify_error(exc.status_code, exc.response.text),
         )
     if isinstance(exc, openai.APIResponseValidationError):
         return ModelProtocolError(f"模型响应结构不符合 SDK schema: {exc}")

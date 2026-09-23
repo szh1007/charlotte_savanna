@@ -14,13 +14,16 @@ import pytest
 from CharAgent.model import (
     FinishReason,
     ModelConfigError,
+    ModelErrorKind,
     ModelProtocolError,
     ModelResponse,
+    ModelStatusError,
     ModelToolCall,
     chat_model_from_env,
     openai_chat_model_from_env,
 )
 from CharAgent.model.parse import (
+    classify_error,
     parse_chat_completion,
     parse_finish_reason,
     parse_tool_calls,
@@ -770,3 +773,54 @@ async def test_both_from_env_factories_resolve_same_config() -> None:
     finally:
         await http_model.aclose()
         await sdk_model.aclose()
+
+
+# ---------------------------------------------------------------------------
+# 错误语义分类 (classify_error): 4xx 里唯一救得回来的那一类
+# ---------------------------------------------------------------------------
+
+
+def test_context_overflow_is_recognised_from_either_spelling() -> None:
+    """判据覆盖两种常见写法: 结构化的 code, 与写在 message 里的那句话.
+
+    上游报「输入超窗口」时措辞不一 —— OpenAI 系多给 code `context_length_exceeded`,
+    另一些把话写在 message 里 ("maximum context length is N tokens"). 这层认不出来,
+    上层就救不回来 (见 compaction 的 emergency: 压一次再发).
+    """
+    by_code = '{"error": {"code": "context_length_exceeded", "message": "bad request"}}'
+    by_message = (
+        '{"error": {"message": "This model\'s maximum context length is 65536 tokens"}}'
+    )
+
+    assert classify_error(400, by_code) is ModelErrorKind.CONTEXT_OVERFLOW
+    assert classify_error(413, by_message) is ModelErrorKind.CONTEXT_OVERFLOW
+
+
+def test_other_client_errors_are_not_context_overflow() -> None:
+    """别的 4xx 不归它 —— 重发多少次都一样, 该让上层直接报错."""
+    assert (
+        classify_error(400, '{"error": {"message": "invalid model"}}')
+        is ModelErrorKind.INVALID_REQUEST
+    )
+    assert classify_error(401, "") is ModelErrorKind.INVALID_REQUEST
+    assert classify_error(404, "") is ModelErrorKind.INVALID_REQUEST
+
+
+def test_transient_statuses_keep_their_own_kind() -> None:
+    """429 / 5xx 是另一回事 (上游自己的状态), 归重试层, 这里只如实标出来."""
+    assert classify_error(429, "") is ModelErrorKind.RATE_LIMITED
+    assert classify_error(503, "") is ModelErrorKind.SERVER
+
+
+def test_a_status_error_without_a_kind_says_unknown() -> None:
+    """没判语义的 ModelStatusError 记 unknown —— 宁可说「不知道」, 也不凭状态码猜."""
+    unclassified = ModelStatusError(400, "whatever")
+
+    assert unclassified.kind is ModelErrorKind.UNKNOWN
+    assert unclassified.is_context_overflow is False
+    assert (
+        ModelStatusError(
+            400, "too long", kind=ModelErrorKind.CONTEXT_OVERFLOW
+        ).is_context_overflow
+        is True
+    )

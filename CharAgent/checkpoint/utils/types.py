@@ -39,7 +39,7 @@ from uuid import uuid4
 from CharAgent.checkpoint.utils.errors import CheckpointConfigError
 from CharAgent.model.utils.types import ModelMessage, ModelToolCall
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 """当前快照格式的版本号 (difficulties #5 向前兼容).
 
 改字段结构的**不兼容**变化就 +1, 并在 utils/migrations.py 写一个「老版本 → 新
@@ -57,11 +57,16 @@ SCHEMA_VERSION = 6
   cache_miss), 它们是 total_tokens 的分解, 供成本归因 (#34) 拆解用. 老帧两样都
   没有: prompt_ref 补 None —— 正文仍在 messages[0] 里, 那正是当时的事实, 不是
   「补不上」; 五个计数器补 None —— 「上游一次都没上报过」, 与 0 是两回事
-- v6 (当前): **两个 `run_id` 各归其位** (ticket 22) —— 帧上那个「哪一次**循环
+- v6: **两个 `run_id` 各归其位** (ticket 22) —— 帧上那个「哪一次**循环
   执行**落下的」更名 `loop_id` (存储键一起改; 老帧里的 `run_id` 键按它读), 同时
   新增一个 `run_id` 指向**记录层**的运行行 (`charagent_runs.run_id`, 可空: 没配
   记录层的进程就是 None). 老帧补 `run_id=None` —— 「这一帧不属于任何一行账」,
   与「指向某一行」是两回事
+- v7 (当前): **视图那份也走引用** (ticket 26) —— `metadata.view` 里的身份说明
+  同样摘出来存 `prompt_ref` (与进度那边同构), 于是那几千字在帧里只出现一次.
+  老帧的 `view.messages` **带**着身份说明 (那时候没摘), 补 `prompt_ref=None`:
+  与 v5 对进度那条同一个意思 —— 「这一帧的这份没剥离过, 正文就在 messages 里」,
+  于是老帧仍然完全自描述
 """
 
 # 标识别符 (thread_id / loop_id) 的长度上限与禁用字符 (见 check_identifier)

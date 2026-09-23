@@ -23,7 +23,7 @@ from typing import Any
 
 from conftest import BUYER_ID
 
-from CharAgent.agent import AnchorTokenCounter, TrimAndSummarize
+from CharAgent.agent import CalibratedTokenCounter, TrimAndSummarize
 from CharAgent.checkpoint import InMemoryCheckpointSaver
 from CharAgent.stream import EventType, StreamEvent
 from CharAgent.tests.mock_llm import MockLLM, text_response
@@ -57,12 +57,14 @@ async def ask_twice(service: MinimallService, model: MockLLM) -> tuple[list[Any]
     """同一个会话连问两句; 返回 (收到的事件, 会话).
 
     第二句是关键的那句: 只有它到来之后账本里才有「一个完整的旧提问」可裁
-    (第一句时还没有可裁的段, 压不动).
+    (第一句时还没有可裁的段, 压不动). 第一句要**够长**, 长过压完视图里多出来的
+    那条摘要 (前缀本身就有二三十字) —— 否则这一刀省不到什么, 框架按「压了反而
+    更大」不压 (见 `TrimAndSummarize` 的 clear_at_least 那两道门).
     """
     events: list[StreamEvent] = []
     context = build_context(BUYER_ID, "web", tenant_id=TENANT_WEB)
     session = await service.session_for(context, event_sink=events.append, redact=False)
-    await session.ask("第一句: 订单到哪了")
+    await session.ask("第一句: 订单到哪了" + "。" * 60)
     await session.ask("第二句: 那什么时候能到")
     return events, session
 
@@ -91,7 +93,7 @@ def test_the_knobs_map_onto_the_framework_policy() -> None:
     )
 
     assert isinstance(compactor, TrimAndSummarize)
-    assert isinstance(counter, AnchorTokenCounter)
+    assert isinstance(counter, CalibratedTokenCounter)
     assert (compactor.threshold_tokens, compactor.keep_recent_questions) == (1500, 2)
     assert (compactor.watermark_ratio, compactor.tool_result_limit) == (0.3, 50)
     assert compactor.summarize is False
@@ -117,10 +119,16 @@ async def test_the_budget_reaches_the_session(client: MinimallClient) -> None:
     events, session = await ask_twice(service, model)
 
     assert len(compactions(events)) == 1, "第二次问话时就该压一次"
-    assert "第一句: 订单到哪了" not in sent_to_model(model), "旧提问该被裁掉"
-    assert "第二句: 那什么时候能到" in sent_to_model(model), "正在答的那句必须留着"
+    went_out = sent_to_model(model)
+    # 子串匹配 (不是列表成员): 断言的是「那句话在不在这一份请求里」, 而提问带着自己
+    # 的尾巴 (见 ask_twice) —— 用 == 比整条的话, 没被裁时也会「看起来不在」
+    assert not any("第一句: 订单到哪了" in text for text in went_out), "旧提问该被裁掉"
+    assert any("第二句: 那什么时候能到" in text for text in went_out), (
+        "正在答的那句必须留着"
+    )
     assert any(
-        message.get("content") == "第一句: 订单到哪了" for message in session.history
+        "第一句: 订单到哪了" in str(message.get("content"))
+        for message in session.history
     ), "账本是全量的: 用户看到的历史一条不少"
 
 
@@ -164,4 +172,6 @@ async def test_without_a_config_nothing_is_compacted(
     events, _ = await ask_twice(service, model)
 
     assert compactions(events) == []
-    assert "第一句: 订单到哪了" in sent_to_model(model), "没压就该原样发全量账本"
+    assert any("第一句: 订单到哪了" in text for text in sent_to_model(model)), (
+        "没压就该原样发全量账本"
+    )
