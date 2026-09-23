@@ -48,6 +48,7 @@ CHAT_URL = "/minimall/agent/chat/"
 PAGE_URL = "/minimall/agent/"
 CANCEL_URL = "/minimall/agent/cancel/"
 HISTORY_URL = "/minimall/agent/history/"
+CONVERSATIONS_URL = "/minimall/agent/conversations/"
 
 BUYER_NAME = "bff_buyer"
 OTHER_NAME = "bff_other"
@@ -70,6 +71,20 @@ HISTORY_BODY = {
         {"role": "user", "content": "我最近的订单到哪了"},
         {"role": "assistant", "content": "你的订单已发货。"},
     ],
+}
+
+# 助手服务的会话列表端点 (框架 `CharAgent/server/conversations.py` 那条路由)
+CONVERSATIONS_UPSTREAM = f"{AGENT_URL}/conversations"
+
+# 一次列表响应 (框架那边的形状: 每段一个三元组, 按最后活动时刻倒序)
+CONVERSATIONS_BODY = {
+    "conversations": [
+        {
+            "conversation_id": TAB_ONE,
+            "title": "我最近的订单到哪了",
+            "updated_at": "2026-09-23T10:00:00+08:00",
+        }
+    ]
 }
 
 
@@ -187,6 +202,17 @@ class BffTestBase(TestCase):
         return self.client.post(
             HISTORY_URL, data=json.dumps(payload), content_type="application/json"
         )
+
+    def mock_conversations(self, response: httpx.Response) -> respx.Route:
+        """把助手服务的会话列表端点拦下来, 让它回指定的响应."""
+        return respx.get(CONVERSATIONS_UPSTREAM).mock(return_value=response)
+
+    def list_conversations(self, **kwargs):
+        """按页面的样子列一次会话 (POST, **不带请求体**).
+
+        与另三条不同: 列表问的是「所有段」, 不针对某一段对话 —— 所以没有编号要发.
+        """
+        return self.client.post(CONVERSATIONS_URL, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -930,6 +956,133 @@ class BffHistoryTest(BffTestBase):
 # ---------------------------------------------------------------------------
 
 
+class BffConversationsTest(BffTestBase):
+    """列会话那条路 —— 左侧列表 (issue 19) 要的「我聊过哪几段」.
+
+    与读历史是一对 (一个答「这段聊了什么」, 一个答「我有哪些对话」), 断的东西也
+    照着那一页来: 转发契约 / 身份只从 session 取 / 失败收口 / 动词。差别只在一处
+    —— 这条**没有请求体**, 也不看哪一段对话.
+    """
+
+    def test_the_list_forwards_the_identity_and_hands_back_the_body(self):
+        """转发到 `/conversations`: 三个头一个不少, 上游的正文原样交给浏览器.
+
+        `X-Conversation-Id` 这条路上是**空值** (列表不针对某一段) —— 但头仍然要带:
+        三个头是一组, 少带一个就是"另一份拼法", 而这一处正是被漏带害过的地方
+        (见 `_service_headers`). 下游那一跳仍是 GET.
+        """
+        with respx.mock:
+            route = self.mock_conversations(
+                httpx.Response(200, json=CONVERSATIONS_BODY)
+            )
+            r = self.list_conversations()
+
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(json.loads(r.content), CONVERSATIONS_BODY)
+        self.assertEqual(r["Content-Type"], "application/json")
+        request = route.calls[0].request
+        self.assertEqual(request.method, "GET")
+        self.assertEqual(request.headers["X-Internal-Token"], TOKEN)
+        self.assertEqual(request.headers["X-User-Id"], str(self.buyer.pk))
+        self.assertEqual(request.headers["X-Conversation-Id"], "")
+        self.assertEqual(request.url.query, b"", "列表不带查询串 (不分页)")
+
+    def test_two_buyers_each_ask_for_their_own_list(self):
+        """两个买家各自登录 → 各自的身份进各自的那次转发.
+
+        「换一个买家登录看不到别人的」判据在助手服务那侧 (它按 `X-User-Id` 查);
+        本层能保证的是**转过去的一定是 session 里那个人** —— 这条就是那一半.
+        """
+        other_client = self.client_class()
+        other_client.force_login(self.other)
+
+        with respx.mock:
+            route = self.mock_conversations(
+                httpx.Response(200, json=CONVERSATIONS_BODY)
+            )
+            self.list_conversations()
+            other_client.post(CONVERSATIONS_URL)
+
+        forwarded = [call.request.headers["X-User-Id"] for call in route.calls]
+        self.assertEqual(forwarded, [str(self.buyer.pk), str(self.other.pk)])
+
+    def test_the_identity_comes_from_the_session_not_from_the_body(self):
+        """**守卫测试**: 请求体里塞别人的 user_id → 仍然以自己的身份转发.
+
+        这条路的请求体**根本不读** (列表不需要指名哪一段), 但正因为如此更要说清:
+        万一以后有人"顺手"在这儿加一个 `user_id` 字段, 它也只能被无视.
+        """
+        with respx.mock:
+            route = self.mock_conversations(
+                httpx.Response(200, json=CONVERSATIONS_BODY)
+            )
+            self.client.post(
+                CONVERSATIONS_URL,
+                data=json.dumps({"user_id": str(self.other.pk)}),
+                content_type="application/json",
+            )
+
+        self.assertEqual(
+            route.calls[0].request.headers["X-User-Id"], str(self.buyer.pk)
+        )
+
+    def test_an_unreachable_service_is_reported(self):
+        """助手服务没起来 → 502 + 一句人话 (与另三条路同一个口径)."""
+        with respx.mock:
+            respx.get(CONVERSATIONS_UPSTREAM).mock(
+                side_effect=httpx.ConnectError("connection refused")
+            )
+            r = self.list_conversations()
+
+        self.assertEqual(r.status_code, 502)
+        self.assertEqual(json.loads(r.content)["error"]["code"], "agent_unavailable")
+        self.assertIn("客服暂时联系不上", json.loads(r.content)["error"]["message"])
+
+    def test_an_unconfigured_token_fails_before_calling_out(self):
+        """本机没配令牌 (fail closed): 一个请求都不发, 码与另三条路一致."""
+        with respx.mock:
+            route = self.mock_conversations(
+                httpx.Response(200, json=CONVERSATIONS_BODY)
+            )
+            with override_settings(CHARAPP_INTERNAL_TOKEN=""):
+                r = self.list_conversations()
+
+        self.assertEqual(r.status_code, 503)
+        self.assertEqual(json.loads(r.content)["error"]["code"], "agent_unavailable")
+        self.assertFalse(route.called)
+
+    def test_an_upstream_refusal_keeps_its_code(self):
+        """上游拒绝转发时保留它的码 —— 那是对面特意留给业务分辨用的."""
+        with respx.mock:
+            self.mock_conversations(
+                httpx.Response(503, json={"error": {"code": "not_configured"}})
+            )
+            r = self.list_conversations()
+
+        self.assertEqual(r.status_code, 502)
+        self.assertEqual(json.loads(r.content)["error"]["code"], "not_configured")
+
+    def test_a_read_by_url_is_not_allowed(self):
+        """**守卫测试**: GET 一律 405 —— 四条路一个形状, 页面才不必按动词分两套.
+
+        这条路上没有会话编号要保护, 但它读的是**私人数据** (我聊过哪几段): GET +
+        cookie 是跨站可触发的, 一条 `<img src=".../minimall/agent/conversations/">`
+        就能让别人的浏览器替他发出这条请求. POST + CSRF 之后由中间件接管.
+        """
+        for method in ("get", "put", "patch", "delete"):
+            with self.subTest(method=method), respx.mock:
+                route = self.mock_conversations(
+                    httpx.Response(200, json=CONVERSATIONS_BODY)
+                )
+                r = getattr(self.client, method)(CONVERSATIONS_URL)
+
+                self.assertEqual(r.status_code, 405)
+                self.assertEqual(
+                    json.loads(r.content)["error"]["code"], "method_not_allowed"
+                )
+                self.assertFalse(route.called)
+
+
 class BffCsrfTest(BffTestBase):
     """有副作用的端点必须挡住跨站伪造 —— 现在是 Django 的 CSRF 中间件在做这件事.
 
@@ -998,11 +1151,28 @@ class BffCsrfTest(BffTestBase):
         self.assertEqual(r.status_code, 403)
         self.assertFalse(route.called, "被 CSRF 拦下的请求绝不该打到下游")
 
+    def test_listing_the_conversations_without_the_csrf_token_is_refused(self):
+        """**列会话也受 CSRF 保护** (它同样是 POST).
+
+        这条路上没有会话编号要保护, 但列表本身就是私人数据 (我聊过哪几段、每段叫
+        什么名字) —— 一条 GET 就能被跨站页面上的 `<img src>` 触发, 而 POST + 令牌
+        之后伪造者得先拿到页面上的那一个.
+        """
+        client = self.csrf_client()
+        with respx.mock:
+            route = self.mock_conversations(
+                httpx.Response(200, json=CONVERSATIONS_BODY)
+            )
+            r = client.post(CONVERSATIONS_URL)
+
+        self.assertEqual(r.status_code, 403)
+        self.assertFalse(route.called, "被 CSRF 拦下的请求绝不该打到下游")
+
     def test_the_pages_own_token_is_accepted(self):
         """页面拿到的那个令牌能过 —— 有防护还不够, 正常路径不能被误伤.
 
-        三条 POST 一起过一遍 (提问 / 取消 / 读历史): 页面用的是同一个 `csrfToken()`,
-        「哪一条能用」分家就等于某一条在真机上永远是 403, 而用例全绿.
+        四条 POST 一起过一遍 (提问 / 取消 / 读历史 / 列会话): 页面用的是同一个
+        `csrfToken()`, 「哪一条能用」分家就等于某一条在真机上永远是 403, 而用例全绿.
         """
         client = self.csrf_client()
         client.get(PAGE_URL)  # 页面渲染时种下 csrf cookie
@@ -1012,6 +1182,9 @@ class BffCsrfTest(BffTestBase):
             chat = self.mock_agent(_frame(1, "final", content="好的."))
             cancel = self.mock_cancel(httpx.Response(200, json={}))
             history = self.mock_history(httpx.Response(200, json=HISTORY_BODY))
+            conversations = self.mock_conversations(
+                httpx.Response(200, json=CONVERSATIONS_BODY)
+            )
             r = client.post(
                 CHAT_URL,
                 data=_question(),
@@ -1031,12 +1204,15 @@ class BffCsrfTest(BffTestBase):
                 content_type="application/json",
                 HTTP_X_CSRFTOKEN=token,
             )
+            listed = client.post(CONVERSATIONS_URL, HTTP_X_CSRFTOKEN=token)
 
         self.assertEqual(r.status_code, 200)
         self.assertTrue(chat.called)
         self.assertTrue(cancel.called)
         self.assertEqual(read.status_code, 200)
         self.assertTrue(history.called)
+        self.assertEqual(listed.status_code, 200)
+        self.assertTrue(conversations.called)
 
     def test_a_client_generated_conversation_id_is_passed_through(self):
         """两个标签页各自的编号 → 各自成段 (用户故事 25 的前端那一半)."""

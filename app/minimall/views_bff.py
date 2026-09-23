@@ -30,11 +30,22 @@
 渲染刷新即丢 —— 所以页面每次加载都先问一次「这段对话聊到哪儿了」. 它不碰商城,
 也不产生任何运行.
 
+左栏的会话列表走第四条路 (同样不跑模型, 同样没有流)::
+
+    POST /minimall/agent/conversations/
+      ├─ 1. 认证与取身份: 同上 (同一个 session, 同一个 CSRF)
+      ├─ 2. 转发: GET CharApp /conversations (同样三个头)
+      └─ 3. 上游的响应体**原样**交给浏览器 (我聊过哪几段就在里面)
+
+它与上一条是一对 (一个答「这段聊了什么」, 一个答「我有哪些对话」), 只是连请求体
+都不读 —— 列表问的是「所有段」, 不需要指名哪一段. 列表内容由助手服务按**转发过去
+的身份**过滤, 所以「换一个买家登录就看不到别人的」在这条路上是免费的.
+
 **它为什么也是 POST** (读操作用 POST 是违反 HTTP 语义的, 所以得说清): 会话编号是
 私密数据 —— 它在 URL 里就等于同时进了访问日志 / 浏览器历史 / Referer, 而 GET +
-cookie 又是跨站可触发的 (`<img src>` 一行就够). 换成 POST + CSRF 之后, 三条路形状
-一致 (都 POST + JSON + CSRF, 都从 session 取身份), 页面那边一套写法. 下游那一跳
-(`forward_history`) 仍是 GET: 同机同信任域, 地址里不带参数, 要令牌才进得来.
+cookie 又是跨站可触发的 (`<img src>` 一行就够). 换成 POST + CSRF 之后, 四条路形状
+一致 (都 POST + CSRF, 都从 session 取身份), 页面那边一套写法. 下游那一跳 (读历史与
+列会话) 仍是 GET: 同机同信任域, 地址里不带参数, 要令牌才进得来.
 
 `run_id` 从哪来: 上一条 Chat 响应的 `X-Run-Id` 头 (框架给的, 本层原样带给浏览器).
 它是页面上按「停止」时唯一能指名道姓的东西 —— 而它**能且只能**取消自己那段会话里
@@ -110,6 +121,7 @@ HEADER_CONVERSATION_ID = "X-Conversation-Id"
 RUNS_PATH = "/runs"
 CANCEL_PATH = "/runs/{run_id}/cancel"
 HISTORY_PATH = "/history"
+CONVERSATIONS_PATH = "/conversations"
 MESSAGE_FIELD = "message"
 
 # 运行编号: 响应头上带出去 (`X-Run-Id`), 取消时从请求体里收回来. 形状是框架
@@ -122,6 +134,14 @@ _HEX_DIGITS = frozenset("0123456789abcdef")
 
 # 浏览器打进来的那两个字段 (页面按它发, 这里按它认)
 CONVERSATION_FIELD = "conversation_id"
+
+# 列会话那条路带上去的 `X-Conversation-Id`: **空值**, 而且是有意的.
+#
+# 它问的是「我聊过哪几段」, 不针对某一段对话 —— 但三个头一直是一组, 单独少带一个
+# 就变成"另一份拼法" (见 `_service_headers`, 那里正是被漏带害过). 助手服务把空着
+# 或缺失的这个头兜成它自己的默认段, 而列会话只按**租户与买家**过滤 —— 这个值是什么
+# 都不影响结果 (它连会话编号都不回显).
+NO_CONVERSATION_ID = ""
 
 # 问句长度上限 (字符): 客服问答没有理由更长. 超长的表现很具体 —— 直接烧 token,
 # 或者撞上模型侧的上下文上限换回一句没用的报错, 不如在这里说清楚.
@@ -147,6 +167,11 @@ CANCEL_TIMEOUT = httpx.Timeout(connect=5.0, read=10.0, write=5.0, pool=5.0)
 # 读历史那条路的超时 (与取消同档): 它也是一次普通请求/响应, 而且答得更快 ——
 # 那边只是把会话手上那份历史读出来, 不跑模型.
 HISTORY_TIMEOUT = httpx.Timeout(connect=5.0, read=10.0, write=5.0, pool=5.0)
+
+# 列会话那条路的超时 (与上面两条同档): 同样是一次库读, 不跑模型. 单列一个常量而
+# 不是复用 HISTORY_TIMEOUT —— 三条路现在同值只是巧合 (取消那条的注释里写了它自己
+# 的理由), 合并之后想单独调其中一条, 就得先把它们拆回来.
+CONVERSATIONS_TIMEOUT = httpx.Timeout(connect=5.0, read=10.0, write=5.0, pool=5.0)
 
 # 错误日志里最多带多少字符的上游正文 (够定位, 不把整页 HTML 塞进日志)
 _DETAIL_LIMIT = 200
@@ -568,11 +593,16 @@ def _service_headers(token: str, user_id: int, conversation_id: str) -> dict[str
     }
 
 
-def _who_for(user_id: int, conversation_id: str) -> str:
+def _who_for(user_id: int, conversation_id: str | None = None) -> str:
     """日志前缀: 跨进程的故障要能按**买家**追溯 (系统级规范 §6.3).
 
     翻日志的人手上通常只有一个「谁反映的」, 没有别的线索.
+
+    `conversation_id` 可以不给: 列会话那条路问的是「我聊过哪几段」, 本来就没有
+    哪一段对话可言 —— 那时前缀只报到买家 (拼一个空段进去, 日志看着像缺了一块).
     """
+    if conversation_id is None:
+        return f"买家 {user_id}"
     return f"买家 {user_id} / 会话 {conversation_id}"
 
 
@@ -735,6 +765,11 @@ def _history_url() -> str:
     return f"{settings.CHARAPP_SERVER_URL.rstrip('/')}{HISTORY_PATH}"
 
 
+def _conversations_url() -> str:
+    """会话列表端点地址 (列谁的由那三个头说了算, 地址里不带参数)."""
+    return f"{settings.CHARAPP_SERVER_URL.rstrip('/')}{CONVERSATIONS_PATH}"
+
+
 def forward_history(user_id: int, conversation_id: str) -> bytes:
     """读一段对话聊过什么; 失败就抛 `RefusedError` (与取消那条同一套分法).
 
@@ -770,6 +805,57 @@ def forward_history(user_id: int, conversation_id: str) -> bytes:
     code = _refusal_code(response)
     logger.error(
         "%s: 客服服务拒绝了这次读历史: HTTP %d %s",
+        who,
+        response.status_code,
+        _detail(response),
+    )
+    raise RefusedError(502, code)
+
+
+def forward_conversations(user_id: int) -> bytes:
+    """列「这个买家聊过哪几段」; 失败就抛 `RefusedError` (与读历史同一套分法).
+
+    | 情况 | 状态 | 码 |
+    |------|------|----|
+    | 本机没配令牌 (我们自己的问题) | 503 | `agent_unavailable` |
+    | 连不上 / 超时 | 502 | `agent_unavailable` |
+    | 上游回非 200 | 502 | **上游给的那个码** |
+
+    与 `forward_history` 是两条路各答一半: 那条答「这段聊了什么」, 这条答「我聊过
+    哪几段」. 形状完全照抄它 —— 整段正文搬回来, 不解析 (有哪些字段、怎么排序都是
+    助手服务那侧的契约, 本层照着转, 它改了形状该改的是页面).
+
+    **「换一个买家看不到别人的」不在这层**: 判据在助手服务那侧 (按转发过去的
+    `X-User-Id` 过滤, 见 `CharAgent/server/conversations.py`); 本层能保证的是
+    「转过去的一定是 session 里那个人」—— 也就是上面那个 `_service_headers` 里的
+    身份只可能来自 `request.user.pk`.
+
+    Args:
+        user_id: 这次请求的买家 (BFF 只从 session 取).
+
+    Returns:
+        bytes: 上游的响应体 (原样, 不重新编码).
+
+    Raises:
+        RefusedError: 见上表.
+    """
+    who = _who_for(user_id)
+    headers = _service_headers(
+        _internal_token(who, "列会话"), user_id, NO_CONVERSATION_ID
+    )
+    try:
+        with httpx.Client(timeout=CONVERSATIONS_TIMEOUT) as client:
+            response = client.get(_conversations_url(), headers=headers)
+    except (httpx.HTTPError, httpx.InvalidURL) as exc:
+        # 与另两条同一个口径: 链路根本没走通, 该回同一句话而不是冒成 500
+        logger.error("%s: 会话列表请求发不出去: %s: %s", who, type(exc).__name__, exc)
+        raise RefusedError(502, UNAVAILABLE_CODE) from exc
+
+    if response.status_code == 200:
+        return response.content
+    code = _refusal_code(response)
+    logger.error(
+        "%s: 客服服务拒绝了这次列会话: HTTP %d %s",
         who,
         response.status_code,
         _detail(response),
@@ -938,10 +1024,10 @@ class AgentHistoryView(LoginRequiredMixin, View):
         **跨站可触发**的 (`<img src=".../history/?conversation_id=…">` 一行就能让
         别人的浏览器发出这条请求), 换 POST 之后由 Django 的 CSRF 中间件接管.
 
-        改完的另一个好处是三条路**形状一致**: 都 POST + JSON + CSRF, 都从
-        `request.user.pk` 取身份, 页面那边一套写法. 代价是「读操作用了 POST」这点
-        违反 HTTP 语义 —— 这里认了: 它面向的是**浏览器**, 而浏览器这一侧的威胁模型
-        比动词的语义更重要.
+        改完的另一个好处是四条路**形状一致**: 都 POST + CSRF, 都从
+        `request.user.pk` 取身份, 页面那边一套写法 (三条带 JSON 请求体, 列会话
+        那条连请求体都不读). 代价是「读操作用了 POST」这点违反 HTTP 语义 —— 这里
+        认了: 它面向的是**浏览器**, 而浏览器这一侧的威胁模型比动词的语义更重要.
 
         **身份仍然只从 session 取** (与 chat / cancel 同一条纪律): 请求体里塞别人的
         `user_id` 改不了这次转发带的是谁 —— 而「读谁的对话」在助手服务那侧按这个
@@ -977,5 +1063,42 @@ class AgentHistoryView(LoginRequiredMixin, View):
         """GET 之类一律拒掉: 会话编号要待在请求体里, 不往 URL 上挂 (见类说明)."""
         logger.warning(
             "BFF 历史端点收到 %s (只认 POST): %s", request.method, request.path
+        )
+        return _refusal(405, "method_not_allowed")
+
+
+class AgentConversationsView(LoginRequiredMixin, View):
+    """BFF 端点: 列「我聊过哪几段」(POST) —— 左侧列表要的东西 (issue 19 用).
+
+    Note:
+        与 `AgentHistoryView` 那一对关系: 那条答「这段对话聊了什么」, 这条答「我
+        有哪些对话」. 两条的形状**刻意一模一样** (POST + CSRF + 身份只从 session
+        取 + 正文原样透传), 页面那边一套写法 —— 差别只在请求体: 这条**不需要**
+        会话编号 (列表本来就是「所有段」), 所以它连请求体都不读.
+
+        **为什么读操作用 POST** (与 `AgentHistoryView` 同一条纪律, 见 `adr/0002`):
+        它读的是私人数据 (谁的对话列表), 而 GET + cookie 是跨站可触发的 —— 一条
+        `<img src=".../minimall/agent/conversations/">` 就能让别人的浏览器替他发出
+        这条请求. POST 之后由 Django 的 CSRF 中间件接管.
+
+        「换一个买家看不到别人的」判据**不在本层**: 转发过去的身份只可能来自
+        `request.user.pk` (下面那一行), 而列表在助手服务那侧按它查.
+    """
+
+    def post(self, request) -> HttpResponse:
+        # 身份只从 session 取 (与另三条同一行代码同一个理由): 请求体里塞谁的 ID
+        # 都改不了这次转发带的是谁 —— 而「列哪些会话」在助手服务那侧正是按它查的
+        buyer_id = request.user.pk
+        try:
+            body = forward_conversations(buyer_id)
+        except RefusedError as refused:
+            return _refusal(refused.status, refused.code)
+        # 正文原样转给浏览器 (与读历史一致): 本层不认识它的内部形状
+        return HttpResponse(body, content_type="application/json")
+
+    def http_method_not_allowed(self, request, *args, **kwargs) -> HttpResponse:
+        """GET 之类一律拒掉: 四条路一个形状, 页面才不必按动词分两套写法."""
+        logger.warning(
+            "BFF 会话列表端点收到 %s (只认 POST): %s", request.method, request.path
         )
         return _refusal(405, "method_not_allowed")

@@ -31,7 +31,16 @@ from typing import Any
 
 import yaml
 
-from CharAgent.agent import GuardConfigError, LoopConfigError, LoopGuard, RunContext
+from CharAgent.agent import (
+    AnchorTokenCounter,
+    CompactionPolicy,
+    GuardConfigError,
+    LoopConfigError,
+    LoopGuard,
+    RunContext,
+    TokenCounter,
+    TrimAndSummarize,
+)
 from CharAgent.checkpoint import CheckpointError, CheckpointSaver
 from CharAgent.client import ChatSession, CliOptions, build_model
 from CharAgent.db import ConversationRecorder, PgDatabase
@@ -42,13 +51,14 @@ from CharAgent.prompt import PromptError
 from CharAgent.stream import EventSink
 from CharAgent.tool import Tool
 from CharApp.minimall.client import MinimallClient
-from CharApp.minimall.config import MinimallConfigError
+from CharApp.minimall.config import ContextConfig, MinimallConfigError
 from CharApp.minimall.guardrail import WriteGuardrail
 from CharApp.minimall.provider import (
     PAYLOAD_USER_ID,
     MinimallToolProvider,
     buyer_id,
 )
+from CharApp.minimall.redaction import redacting_sink
 
 # 会话编号的第一段 (PRD §4.11: `业务:买家ID:对话ID`) —— 快照按它分区, 于是
 # 多用户隔离是免费得到的: 换一个买家就是换一个分区, 谁也读不到谁的档.
@@ -214,6 +224,37 @@ def build_model_for(options: CliOptions, writer: Callable[[str], Any]) -> ChatMo
     return build_model(options, writer)
 
 
+def build_compaction_for(
+    config: ContextConfig,
+) -> tuple[CompactionPolicy, TokenCounter]:
+    """压缩参数 → 框架的两个零件 (策略 + 估算器), **一次给一对**.
+
+    为什么必须成对: 框架那边「只给 counter 不给 compactor」是配置错误 (`AgentLoop`
+    构造期就报 —— 没人会去问一个不压缩的会话要估算). 成对构造之后这个中间态不存在.
+
+    为什么估算器**每调一次新的**: `AnchorTokenCounter` 的锚是「**这个会话**上一次请求
+    的真实 input_tokens」, 它是会话级状态. 进程级共用一个的话, 两段对话会互相把对方
+    的锚改掉 —— 甲刚压完落在小值上, 乙的账本立刻被判定「没超阈值」, 于是该压的不压.
+    装配处每次 `session_for` 调一次, 正好一个会话一份.
+
+    Args:
+        config: 从环境变量读来的五个旋钮 (见 `config.ContextConfig`).
+
+    Returns:
+        tuple: (策略, 估算器) —— 直接喂给 `ChatSession` 的两个参数.
+    """
+    return (
+        TrimAndSummarize(
+            threshold_tokens=config.max_tokens,
+            keep_recent_questions=config.keep_turns,
+            watermark_ratio=config.watermark,
+            tool_result_limit=config.tool_limit,
+            summarize=config.summary,
+        ),
+        AnchorTokenCounter(),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class MinimallService:
     """客服服务的零件与装配 (一个进程一份, 两个入口共用同一段装配代码).
@@ -234,6 +275,10 @@ class MinimallService:
         max_turns: 轮数上限 (防跑飞).
         max_total_tokens: 单次运行的 token 预算; None 表示不限.
         max_duration_seconds: 单次运行的墙钟预算 (秒); None 表示不限.
+        compaction: 上下文压缩的五个旋钮 (`config.ContextConfig`); **None 表示不压缩**
+            —— 会话照常问答, 只是每一轮都把全量历史重发一遍 (与从前逐字一样).
+            生产两个入口都从 `CHARAPP_CONTEXT_*` 读出来给它, 于是默认那套值也是
+            显式的配置, 而不是"没人配就没有".
 
     三个零件都是**进程级**的, 所以谁建谁关: 建它的人在进程退出时调 `aclose()`
     (server 那侧); CLI 只有一次会话, 它沿用既有收尾 (`ChatSession.aclose()` 关的
@@ -249,9 +294,13 @@ class MinimallService:
     max_turns: int = DEFAULT_MAX_TURNS
     max_total_tokens: int | None = DEFAULT_MAX_TOTAL_TOKENS
     max_duration_seconds: float | None = DEFAULT_MAX_DURATION_SECONDS
+    # 名字避开 `context`: 这个类的方法里已经有 `context: RunContext` (运行上下文),
+    # 两者并存时「self.context」与「context」指的是两样东西 (CLI 那边已经被迫改过
+    # 一次局部变量名) —— 而「压缩」正是框架对这个能力的叫法 (agent/compaction.py).
+    compaction: ContextConfig | None = None
 
     async def session_for(
-        self, context: RunContext, *, event_sink: EventSink
+        self, context: RunContext, *, event_sink: EventSink, redact: bool
     ) -> ChatSession:
         """把零件装成一台能问答的机器: 上下文 → 工具 + 护栏 + 记录员 → 会话.
 
@@ -269,6 +318,12 @@ class MinimallService:
         Args:
             context: 这次运行的上下文 (身份在载荷里).
             event_sink: 事件出口 (框架给的路由或终端的渲染器).
+            redact: 这个出口是不是**浏览器** (`redaction.redacting_sink`).
+                **必填 keyword, 不给默认值**: 这件事只有入口知道 (框架递过来的
+                是一个 `EventSink`, 它长得跟终端渲染器一模一样), 而默认值会把
+                「忘了选」变成一次静默的泄漏 —— 第三个入口接上来时, 漏了它就
+                是工具参数原文直出浏览器 (ADR-0003 那条保证的正是这一跳).
+                Web 入口给 True, CLI 入口给 False (出口是开发者自己的终端).
 
         Returns:
             ChatSession: 装好的会话 (工具 / 提示词 / 模型 / 快照 / 快照分区).
@@ -282,13 +337,22 @@ class MinimallService:
         # 那条插件的账本按**运行**归零 (挂哪个点由它自己决定, 见 guardrail.install).
         hooks = HookRegistry()
         WriteGuardrail(client=self.client, user_id=buyer_id(context)).install(hooks)
+        # 压缩**每会话一份估算器**, 所以在这里造 (理由见 build_compaction_for):
+        # 没配就是不压缩 —— 这条会话每一轮把全量历史原样发出去
+        compactor, counter = (
+            (None, None)
+            if self.compaction is None
+            else build_compaction_for(self.compaction)
+        )
         return ChatSession(
             self.model,
             saver=self.saver,
             tools=tools,
             thread_id=context.thread_id,
             model_name=self.model_name,
-            event_sink=event_sink,
+            # 出口在这里裹一层脱敏 (由入口显式指名, 见上面的 `redact`): 与护栏、
+            # 记录员同一条理由 —— 挂在这唯一一处装配上, 两个入口一起覆盖
+            event_sink=redacting_sink(event_sink) if redact else event_sink,
             # 三道刹车一起上: 轮数 / token / 墙钟 —— 只配轮数拦不住"某一轮本身
             # 就很贵"那种跑飞 (见上面两个常量的注释)
             guard=LoopGuard(
@@ -304,6 +368,11 @@ class MinimallService:
             prompt_name=f"{PROMPT_NAME}/{resolve_prompt_version()}",
             prompt_dir=PROMPT_DIR,
             hooks=hooks,
+            # 上下文压缩 (ticket 18): 账本一字不改, 变的只是**这一次请求发出去的那份
+            # 视图** —— 用户看到的记录永不压缩 (见 CONTEXT.md 的「上下文视图」).
+            # 两个参数必须成对, 见 build_compaction_for.
+            compactor=compactor,
+            counter=counter,
             # 记账挂在这一处装配上 (与护栏同一个理由): 两个入口都经过这里, 于是
             # 「网页版记了、命令行没记」这种半边生效不会发生.
             recorder=self._recorder_for(context),
@@ -354,6 +423,7 @@ __all__ = [
     "TENANT_CLI",
     "TENANT_WEB",
     "MinimallService",
+    "build_compaction_for",
     "build_context",
     "build_model_for",
     "resolve_prompt_version",

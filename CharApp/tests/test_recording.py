@@ -66,7 +66,9 @@ async def test_both_entries_record_through_the_same_assembly(
 
     for tenant, conversation in ((TENANT_WEB, "web"), (TENANT_CLI, "cli")):
         context = build_context(BUYER_ID, conversation, tenant_id=tenant)
-        session = await service.session_for(context, event_sink=lambda event: None)
+        session = await service.session_for(
+            context, event_sink=lambda event: None, redact=False
+        )
         await session.ask("订单到哪了")
 
     thread_rows = records.rows_of("charagent_threads")
@@ -93,13 +95,13 @@ async def test_a_restarted_service_picks_up_the_previous_conversation(
     context = build_context(BUYER_ID, "web", tenant_id=TENANT_WEB)
     first_session = await service_for(
         mall_client, MockLLM.fixed(text_response("订单已发货")), saver
-    ).session_for(context, event_sink=lambda event: None)
+    ).session_for(context, event_sink=lambda event: None, redact=False)
     await first_session.ask("订单到哪了")
 
     # 重启: 新服务、新模型, 同一个 saver 与同一个会话编号
     model = MockLLM.fixed(text_response("预计明天到"))
     restarted = await service_for(mall_client, model, saver).session_for(
-        context, event_sink=lambda event: None
+        context, event_sink=lambda event: None, redact=False
     )
     await restarted.ask("那什么时候能到")
 

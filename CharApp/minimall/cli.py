@@ -57,7 +57,11 @@ from CharAgent.client import (
 from CharAgent.db import PgDatabase
 from CharAgent.model import ModelError
 from CharAgent.model.protocol import ChatModel
-from CharApp.minimall.config import client_from_env
+from CharApp.minimall.config import (
+    ContextConfig,
+    client_from_env,
+    context_config_from_env,
+)
 from CharApp.minimall.service import (
     DEFAULT_MAX_TURNS,
     STARTUP_ERRORS,
@@ -251,6 +255,7 @@ def service_for(
     client: Any,
     *,
     database: PgDatabase | None = None,
+    compaction: ContextConfig | None = None,
 ) -> MinimallService:
     """命令行选项 → 一份装配好的零件 (进程级那三件 + 运行时开关).
 
@@ -261,7 +266,9 @@ def service_for(
     为什么 `thinking` / `max_turns` 要逐个显式传: 它们**不是**模型工厂的参数
     (`build_model` 只管模型名与重试), 而是会话运行时的参数 —— 漏掉一个的表现是
     「命令行开关解析了、存下了、但没生效」, 这种静默失效最难发现 (`thinking` 就是
-    这么漏过一次, 由代码评审抓出来的).
+    这么漏过一次, 由代码评审抓出来的). `compaction` 同理 (ticket 18): 它由调用方
+    从 `CHARAPP_CONTEXT_*` 读出来传进来, 而不是在这里读 env —— 下面那条链上的每一
+    环因此都只做翻译, 一行 I/O 都没有 (用例可以直接给它一份参数, 不必改环境).
     """
     return MinimallService(
         client=client,
@@ -271,6 +278,7 @@ def service_for(
         model_name=options.model_name,
         thinking=options.thinking,
         max_turns=options.max_turns,
+        compaction=compaction,
     )
 
 
@@ -281,6 +289,7 @@ async def build_session(
     printer: EventPrinter,
     *,
     database: PgDatabase | None = None,
+    compaction: ContextConfig | None = None,
 ) -> ChatSession:
     """把零件装成一台能问答的机器 (装配本身在 `service.py`, 这里只补 CLI 特有的几项).
 
@@ -293,8 +302,15 @@ async def build_session(
     context = build_context(
         options.user_id, options.conversation_id, tenant_id=TENANT_CLI
     )
-    return await service_for(options, model, client, database=database).session_for(
-        context, event_sink=printer
+    service = service_for(
+        options, model, client, database=database, compaction=compaction
+    )
+    return await service.session_for(
+        context,
+        event_sink=printer,
+        # 这个出口是开发者自己的终端 (不是浏览器): 工具的参数与返回正文照原样
+        # 打出来才有排查价值, 包上脱敏反而会把两行变成 `add_to_cart( (畸形 JSON))`
+        redact=False,
     )
 
 
@@ -425,6 +441,8 @@ def main(
         # 记录表那条线 (ticket 17): 命令行也记账 —— 这段对话因此刷新得到、重启
         # 接得上 (造库这一手单独一个函数, 用例换得掉, 见 build_database)
         database = build_database()
+        # 上下文压缩的旋钮 (ticket 18) 两个入口同源 (都读 CHARAPP_CONTEXT_*):
+        # 命令行聊长了也一样会压, 没有理由只有浏览器那一侧受保护
         session = runner.run(
             build_session(
                 options,
@@ -434,6 +452,7 @@ def main(
                 client,
                 printer,
                 database=database,
+                compaction=context_config_from_env(),
             )
         )
         return _dispatch(runner, session, options, reader or input, writer)

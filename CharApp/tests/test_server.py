@@ -56,15 +56,27 @@ from CharAgent.tests.trace_assertions import trace_of
 from CharApp.minimall import cli
 from CharApp.minimall.client import HEADER_TOKEN, HEADER_USER_ID, MinimallClient
 from CharApp.minimall.config import (
+    DEFAULT_CONTEXT_KEEP_TURNS,
+    DEFAULT_CONTEXT_MAX_TOKENS,
+    DEFAULT_CONTEXT_SUMMARY,
+    DEFAULT_CONTEXT_TOOL_LIMIT,
+    DEFAULT_CONTEXT_WATERMARK,
     DEFAULT_SERVER_HOST,
     DEFAULT_SERVER_PORT,
     ENV_BASE_URL,
+    ENV_CONTEXT_KEEP_TURNS,
+    ENV_CONTEXT_MAX_TOKENS,
+    ENV_CONTEXT_SUMMARY,
+    ENV_CONTEXT_TOOL_LIMIT,
+    ENV_CONTEXT_WATERMARK,
     ENV_SERVER_HOST,
     ENV_SERVER_PORT,
     ENV_THINKING,
     ENV_TOKEN,
+    ContextConfig,
     MinimallConfigError,
     ServerConfig,
+    context_config_from_env,
     server_config_from_env,
     thinking_from_env,
 )
@@ -224,9 +236,9 @@ def assemblies(monkeypatch) -> list[str]:
     recorded: list[str] = []
     original = MinimallService.session_for
 
-    async def spy(self, context, *, event_sink):
+    async def spy(self, context, *, event_sink, redact):
         recorded.append(context.thread_id)
-        return await original(self, context, event_sink=event_sink)
+        return await original(self, context, event_sink=event_sink, redact=redact)
 
     monkeypatch.setattr(MinimallService, "session_for", spy)
     return recorded
@@ -882,15 +894,20 @@ def test_build_service_wires_the_process_level_parts(
     那些用例一条都不会红. 这里不碰商城也不碰模型 (只建对象), 断的是「接线」.
     """
     monkeypatch.setenv(ENV_THINKING, "no")  # 顺手断「思考模式开关也接上了」
+    monkeypatch.setenv(ENV_CONTEXT_KEEP_TURNS, "4")  # 顺手断「压缩旋钮也接上了」
     service = build_service(writer=logger.info)
 
     context = build_context(BUYER_ID, "web", tenant_id=TENANT_WEB)
-    session = asyncio.run(service.session_for(context, event_sink=lambda event: None))
+    session = asyncio.run(
+        service.session_for(context, event_sink=lambda event: None, redact=True)
+    )
 
     assert isinstance(service.client, MinimallClient)
     assert session.thread_id == context.thread_id
     assert len(session.tool_names) == 17, "零件接全了: 工具从上下文里装了出来"
     assert service.thinking is False, "env 里的思考模式开关没接到零件上"
+    assert service.compaction is not None, "压缩旋钮没接到零件上 (env → ContextConfig)"
+    assert service.compaction.keep_turns == 4, "接到零件上的还是默认值, 不是 env 那个"
     asyncio.run(service.aclose())
 
 
@@ -912,6 +929,26 @@ def test_the_process_reports_a_missing_token_in_one_line(monkeypatch, capsys) ->
 
     assert server_module.main() == 1
     assert "启动失败" in capsys.readouterr().err
+
+
+def test_the_process_reports_a_bad_context_knob_in_one_line(
+    monkeypatch, capsys, service_env
+) -> None:
+    """压缩旋钮写坏了 → 一句中文 + 退出码 1, 进程不占端口 (与缺令牌同一条路).
+
+    这条同时钉住「越界的值在业务这一层就拦下」: 交给框架去发现的话, 冒出来的是一屏
+    traceback (`CompactionConfigError` 不在 `STARTUP_ERRORS` 里), 而写错配置的人只
+    想知道是哪一行.
+    """
+    from CharApp.minimall import server as server_module
+
+    server_module.logger.handlers.clear()
+    monkeypatch.setenv(ENV_CONTEXT_WATERMARK, "1.5")
+
+    assert server_module.main() == 1
+    err = capsys.readouterr().err
+    assert "启动失败" in err
+    assert ENV_CONTEXT_WATERMARK in err, "那句人话要说清是哪一行配置写坏了"
 
 
 def test_the_server_config_comes_from_the_env(monkeypatch) -> None:
@@ -957,6 +994,80 @@ def test_the_thinking_switch_is_three_state(monkeypatch) -> None:
         thinking_from_env()
 
 
+def test_the_context_knobs_all_have_defaults(monkeypatch) -> None:
+    """五个旋钮**全有默认值**: 一个都不填也跑得起来 (与 `CHARAPP_THINKING` 同一语义).
+
+    「不填」在这里必须等于「用默认那套」而不是「关掉压缩」—— 前者是照常跑, 后者是
+    悄悄退化成每轮重发全量历史 (一个只有跑了很久才看得出来的差别).
+    """
+    for name in (
+        ENV_CONTEXT_MAX_TOKENS,
+        ENV_CONTEXT_KEEP_TURNS,
+        ENV_CONTEXT_TOOL_LIMIT,
+        ENV_CONTEXT_SUMMARY,
+        ENV_CONTEXT_WATERMARK,
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    config = context_config_from_env()
+
+    assert config == ContextConfig(
+        max_tokens=DEFAULT_CONTEXT_MAX_TOKENS,
+        keep_turns=DEFAULT_CONTEXT_KEEP_TURNS,
+        tool_limit=DEFAULT_CONTEXT_TOOL_LIMIT,
+        summary=DEFAULT_CONTEXT_SUMMARY,
+        watermark=DEFAULT_CONTEXT_WATERMARK,
+    ), "默认值应当是 ContextConfig 声明的那几个 (两处不许各写一份)"
+
+    # 空串与没配等价 (dotenv 里 `X=""` 是常见写法)
+    monkeypatch.setenv(ENV_CONTEXT_SUMMARY, "")
+    assert context_config_from_env().summary is True
+
+    # 填了就读填的那个
+    monkeypatch.setenv(ENV_CONTEXT_MAX_TOKENS, "1500")
+    monkeypatch.setenv(ENV_CONTEXT_KEEP_TURNS, "2")
+    monkeypatch.setenv(ENV_CONTEXT_TOOL_LIMIT, "50")
+    monkeypatch.setenv(ENV_CONTEXT_SUMMARY, "off")
+    monkeypatch.setenv(ENV_CONTEXT_WATERMARK, "0.3")
+
+    assert context_config_from_env() == ContextConfig(
+        max_tokens=1500, keep_turns=2, tool_limit=50, summary=False, watermark=0.3
+    )
+
+
+def test_a_bad_context_knob_is_refused_with_a_human_line(monkeypatch) -> None:
+    """坏值在**读配置这一处**就报 (带上变量名与实际值), 不留给框架去发现.
+
+    为什么必须在这里拦: 越界的值交给框架会抛 `CompactionConfigError`, 而它**不在**
+    `STARTUP_ERRORS` 那张表里 —— 那意味着 traceback 糊一屏, 而配置写错的人要的只是
+    「哪一行写错了」. 水位线是这条规矩最典型的一个 (它必须在 0 与 1 之间).
+    """
+    for value in ("1.5", "0", "-0.2", "1"):
+        monkeypatch.setenv(ENV_CONTEXT_WATERMARK, value)
+        with pytest.raises(MinimallConfigError, match=ENV_CONTEXT_WATERMARK):
+            context_config_from_env()
+
+    monkeypatch.setenv(ENV_CONTEXT_WATERMARK, "不是数字")
+    with pytest.raises(MinimallConfigError, match=ENV_CONTEXT_WATERMARK):
+        context_config_from_env()
+
+    monkeypatch.delenv(ENV_CONTEXT_WATERMARK, raising=False)
+    for name in (
+        ENV_CONTEXT_MAX_TOKENS,
+        ENV_CONTEXT_KEEP_TURNS,
+        ENV_CONTEXT_TOOL_LIMIT,
+    ):
+        for value in ("0", "-1", "abc"):
+            monkeypatch.setenv(name, value)
+            with pytest.raises(MinimallConfigError, match=name):
+                context_config_from_env()
+        monkeypatch.delenv(name, raising=False)
+
+    monkeypatch.setenv(ENV_CONTEXT_SUMMARY, "flase")
+    with pytest.raises(MinimallConfigError, match=ENV_CONTEXT_SUMMARY):
+        context_config_from_env()
+
+
 def test_the_server_config_falls_back_and_rejects_a_bad_port(monkeypatch) -> None:
     """没配就用默认值; 端口写成非数字当场报启动期错误 (别丢给 uvicorn 猜)."""
     monkeypatch.setenv(ENV_TOKEN, TOKEN)
@@ -986,6 +1097,11 @@ def test_the_template_lists_every_variable_the_business_reads() -> None:
         ENV_SERVER_HOST,
         ENV_SERVER_PORT,
         ENV_THINKING,
+        ENV_CONTEXT_MAX_TOKENS,
+        ENV_CONTEXT_KEEP_TURNS,
+        ENV_CONTEXT_TOOL_LIMIT,
+        ENV_CONTEXT_SUMMARY,
+        ENV_CONTEXT_WATERMARK,
     ):
         assert name in text, f".env.example 缺少 {name}"
 

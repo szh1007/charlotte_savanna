@@ -82,7 +82,12 @@ DEFAULT_THRESHOLD_TOKENS = 24_000
 DEFAULT_KEEP_RECENT_QUESTIONS = 2
 DEFAULT_WATERMARK_RATIO = 0.6
 DEFAULT_TOOL_RESULT_LIMIT = 800
-DEFAULT_SUMMARY_MAX_TOKENS = 512
+# 摘要那一次调用的预算 (2026-09-23 从 512 调到 1024, 与「摘要固定关思考」配套):
+# 摘要是**滚动**的 (上一条摘要连新裁掉的段一起重压), 它的长度会随对话缓慢增长,
+# 所以这里既是「给足一次压缩的空间」也是那道上限. 关掉思考之后 1024 装得下一段
+# 带事实与结论的中文摘要, 而它**不进**运行预算的大头 —— 一次 1024 的输出远小于
+# 它压掉的那些历史.
+DEFAULT_SUMMARY_MAX_TOKENS = 1_024
 
 
 @dataclass(frozen=True, slots=True)
@@ -244,8 +249,14 @@ class TrimAndSummarize:
         watermark_ratio: 水位线比例 —— 压到阈值的这个倍数以下才停手.
         tool_result_limit: 老工具结果的正文截到多少字符 (正在回答的那个提问的
             内容不截).
-        summary_max_tokens: 摘要那次调用的 max_tokens (只影响摘要本身).
+        summary_max_tokens: 摘要那次调用的 max_tokens (只影响摘要本身). 它是**滚动
+            摘要的长度上限**, 也是「关掉思考之后正文还装得下」的那点余量 (见
+            `_summarize`: 那一次调用固定 `thinking=False`).
         summarizer: 摘要模型; None 表示用 apply 传进来的那个 (通常是主模型).
+        summarize: 要不要走滚动摘要. False = 只做窗口裁剪 + 工具结果截断 (三件套
+            的第三件关掉), 于是压缩这一步**一次模型调用都不发**. 这不是降级: 摘要
+            只为「压得更狠」而存在, 它每压一次就要花一次钱 —— 花不花由业务按自己
+            的账单决定 (CharApp 的 `CHARAPP_CONTEXT_SUMMARY` 就是它).
     """
 
     threshold_tokens: int = DEFAULT_THRESHOLD_TOKENS
@@ -254,6 +265,7 @@ class TrimAndSummarize:
     tool_result_limit: int = DEFAULT_TOOL_RESULT_LIMIT
     summary_max_tokens: int = DEFAULT_SUMMARY_MAX_TOKENS
     summarizer: ChatModel | None = None
+    summarize: bool = True
 
     def __post_init__(self) -> None:
         """配置校验 (与 LoopGuard / AgentLoop 同一条纪律: 配置错在装配时报)."""
@@ -311,9 +323,17 @@ class TrimAndSummarize:
             # 压不动 (只有一个提问 / 没有可切的提问): 如实报告什么都没做
             return unchanged
 
-        new_summary, usage, warning = await self._summarize(
-            history[max(summary_covers, 1) : cut], previous=summary, model=summarizer
-        )
+        if self.summarize:
+            new_summary, usage, warning = await self._summarize(
+                history[max(summary_covers, 1) : cut],
+                previous=summary,
+                model=summarizer,
+            )
+        else:
+            # 摘要整个关掉: 连一次调用都不发, 且**不留降级原因** —— `warning` 那
+            # 个字段是留给「本来要摘要却没成」的, 拿它报一个配置选择会让每一次
+            # 压缩看起来都出了岔子 (见 CompiledView.warning)
+            new_summary, usage, warning = None, None, None
         summarized = new_summary is not None
         final_summary = new_summary if summarized else summary
         view, truncated = self._view(
@@ -449,8 +469,18 @@ class TrimAndSummarize:
             previous, dropped_messages, tool_limit=self.tool_result_limit
         )
         try:
+            # thinking=False 是**钉死的常量, 不是参数** (2026-09-23 真机实测):
+            # 不传它时这一次调用落回适配器的上游默认 (`thinking=None` = 开启), 而
+            # 思考会先把 max_tokens 吃掉 —— 正文为空, 框架按「摘要失败」降级纯裁剪.
+            # 真机表现是「摘要这一步在生产里从没生效过」(库里 9 帧只有 2 帧带摘要,
+            # 且其中一帧还是临时关掉思考才跑出来的). 摘要是一次**机械压缩**, 思考
+            # 在这件事上买不到什么, 所以不设开关 —— 要生效就得每一家都记得关,
+            # 那正是它漏掉整片功能的原因.
             response = await chosen.generate(
-                request, None, max_tokens=self.summary_max_tokens
+                request,
+                None,
+                max_tokens=self.summary_max_tokens,
+                thinking=False,
             )
         except Exception as exc:
             # 摘要只是「压得更好看」, 不是必需件: 它失败不该让用户这一句问不出来

@@ -20,9 +20,10 @@ HTTP + SSE 那一层, 业务只接两个插座: 认证解析 (认下这次请求
 
 **推给浏览器的事件是脱敏后的** (`redaction.py`, ADR-0003): 工具的参数原文与返回正文
 换成一句中文短语, 它们不再出门 (模型自己在答复或思维链里复述的值不在此列 —— 那是
-模型的话, 见 `redaction.py` 开头那段范围说明). 包在 `MinimallSessions.provide`
-那一处 —— 框架把事件出口交给业务的那一行, 也是浏览器这条路唯一的出口 (命令行那条路
-不脱敏: 它的出口是开发者自己的终端, 见那个方法上的说明).
+模型的话, 见 `redaction.py` 开头那段范围说明). 开关在 `MinimallSessions.provide`
+那一处给出 (`redact=True`) —— 框架把事件出口交给业务的那一行, 也是浏览器这条路唯一
+的出口 (命令行那条路给 False: 它的出口是开发者自己的终端). 装配处 (service.py) 收的
+是**必填参数**, 于是「某个入口忘了说自己的出口是不是浏览器」不存在默认值可兜.
 
 **身份与令牌**: 两个头都是 Django 转发来的 —— 浏览器 ↔ Django 是唯一真正验证
 「你是谁」的地方, 这里只是同一信任域内的转发 (PRD §4.10 的三层信任模型; 为什么
@@ -81,10 +82,10 @@ from CharApp.minimall.client import HEADER_TOKEN, HEADER_USER_ID
 from CharApp.minimall.config import (
     ServerConfig,
     client_from_env,
+    context_config_from_env,
     server_config_from_env,
     thinking_from_env,
 )
-from CharApp.minimall.redaction import redacting_sink
 from CharApp.minimall.service import (
     STARTUP_ERRORS,
     TENANT_WEB,
@@ -228,17 +229,19 @@ class MinimallSessions:
     async def provide(
         self, context: RunContext, *, event_sink: EventSink
     ) -> ChatSession:
-        """装配这个会话 (事件出口**脱敏后**转交, 框架按运行分流).
+        """装配这个会话 (并宣告: 这个出口是**浏览器**, 要脱敏).
 
-        为什么脱敏在这里而不是共用装配里 (`service.session_for`): 威胁模型是
-        「谁能看到**浏览器**」(ADR-0003), 而命令行的事件出口是框架的终端渲染器
-        —— 它按框架的载荷契约打 `name(args)` / `name ok: summary`, 包上脱敏之后
-        那两行会变成 `add_to_cart( (畸形 JSON))`. 按 `service.py` 自己的放置标准
-        (「换一个入口还要不要这段」), 这一段是入口特有的: 这里正是框架把 sink
-        交给业务的那一处, 也是浏览器唯一的那条出口.
+        为什么「要不要脱敏」由本入口声明 (而不是装配处自己猜): 威胁模型是「谁能
+        看到**浏览器**」(ADR-0003), 而 `EventSink` 只是一个协议 —— 框架递进来的
+        常驻路由与 CLI 的终端渲染器在类型上长得一样, 猜不出来. 本方法正是框架把
+        sink 交给业务的那一处, 也是浏览器唯一的那条出口, 所以只有这里说得清.
+
+        (`redact=` 是**必填**参数: 命令行那条路给 False —— 它的出口是开发者自己的
+        终端, 按框架的载荷契约打 `name(args)` / `name ok: summary`, 包上脱敏反而
+        会把那两行变成 `add_to_cart( (畸形 JSON))`.)
         """
         return await self.service.session_for(
-            context, event_sink=redacting_sink(event_sink)
+            context, event_sink=event_sink, redact=True
         )
 
 
@@ -285,6 +288,12 @@ def build_service(writer: Callable[[str], Any]) -> MinimallService:
         # 库不在线都不拦住进程启动 —— 真到写记录时连不上就降级 (日志 + 提示行,
         # 见 db/recorder.py), 买家的问答不受影响.
         database=PgDatabase(),
+        # 上下文压缩的五个旋钮 (CHARAPP_CONTEXT_*, ticket 18): 不填全走默认值,
+        # 于是"没配"与"配了默认那套"是同一回事 —— 但**装配处拿到的一定是一份具体
+        # 的配置**, 不是 None (None 是"不压缩"那条路, 只有用例会给).
+        # 与上面几项同一个性质: 读坏了 (比如水位线写成 1.5) 就该让进程起不来,
+        # 而不是等某个买家聊长了才发现 (MinimallConfigError 在 STARTUP_ERRORS 里).
+        compaction=context_config_from_env(),
     )
 
 
@@ -299,8 +308,9 @@ def create_minimall_app(service: MinimallService, config: ServerConfig) -> FastA
         config: 监听地址 / 端口 / 校验令牌.
 
     Returns:
-        FastAPI: 装好的应用 —— 框架占三条路 (问一句 / 停一次 / 读历史), 后两条
-        业务这边一行不用写.
+        FastAPI: 装好的应用 —— 框架占那四条路 (问一句 / 停一次 / 读历史 / 列会话),
+        后三条业务这边一行不用写; 其中列会话只在给了记录库时才注册 (没给就没有
+        这条路由, 与启动日志里那四条的计数对得上)。
 
     Note:
         取消端点**不需要业务这边多写一行**: 它复用同一个 `MinimallContexts` 认人

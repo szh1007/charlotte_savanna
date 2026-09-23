@@ -448,6 +448,71 @@ async def test_no_summarizer_degrades_to_trim_only() -> None:
     assert compiled.warning is not None
 
 
+async def test_summarizing_can_be_switched_off() -> None:
+    """摘要关掉时只做裁剪与截断: 一次模型调用都不发, 也不留降级原因.
+
+    与上一条的区别是**性质**: 那条是能力缺失 (记 warning), 这条是配置选择 ——
+    warning 那个字段说的是「本来要摘要却没成」, 被一个开关长期占着的话, 前端
+    每一次压缩都会显示一句降级说明.
+    """
+    history = _history(300, 300, 300)
+    summarizer = _stub_summarizer("这段不该被压出来")
+
+    compiled = await _apply(_policy(summarize=False), history, summarizer=summarizer)
+
+    assert compiled.compacted is True
+    assert compiled.summarized is False
+    assert compiled.warning is None
+    assert summarizer.calls == [], "关掉 = 连一次摘要调用都不发"
+
+
+async def test_switching_the_summary_off_keeps_the_previous_one() -> None:
+    """关掉摘要 ≠ 丢掉已有摘要: 它覆盖的那段已被裁掉, 拿掉它等于让历史凭空消失.
+
+    所以关的是「以后不再生成」, 视图里那条摘要照旧在位 (covers 也不动).
+    """
+    history = _history(300, 300, 300, 300)
+
+    compiled = await _apply(
+        _policy(summarize=False),
+        history,
+        summary="早前聊的是查订单",
+        summary_covers=3,
+    )
+
+    assert compiled.summary == "早前聊的是查订单"
+    assert compiled.summary_covers == 3
+    assert any("早前聊的是查订单" in str(m.get("content")) for m in compiled.messages)
+
+
+async def test_the_summary_call_never_thinks_and_gets_its_own_budget() -> None:
+    """摘要那一次调用**固定关思考**, 并用自己那份预算 (2026-09-23 真机踩出来的).
+
+    不钉死思考时它落回上游默认 (开启): 推理先把预算花光, 正文只剩空 —— 真机上的
+    表现是「摘要模型没有给出正文, 本次只做裁剪」每次都出现, 也就是压缩的第三件套
+    在生产里**从没生效过**. 这两条都是契约: 关掉不该想的那一半, 预算给足.
+    """
+    history = _history(300, 300, 300)
+    summarizer = _stub_summarizer("早前聊的是查订单")
+
+    compiled = await _apply(_policy(), history, summarizer=summarizer)
+
+    assert compiled.summarized is True, "这一次调用真的产出了摘要"
+    call = summarizer.calls[-1]
+    assert call["thinking"] is False, "摘要调用必须显式关掉思考"
+    assert call["max_tokens"] == _policy().summary_max_tokens
+
+
+def test_the_summary_budget_default_leaves_room_for_a_rolling_summary() -> None:
+    """默认预算是 1024 (2026-09-23 从 512 调上来, 与「固定关思考」配套).
+
+    它是**滚动**摘要的长度上限: 上一条摘要连新裁掉的段一起重压, 所以这个数既决定
+    单次压缩装多少, 也决定摘要最终能长到多大. 拍过的数, 往回降等于把刚修好的那条
+    路又堵上.
+    """
+    assert TrimAndSummarize().summary_max_tokens == 1_024
+
+
 def test_policy_rejects_a_nonsense_configuration() -> None:
     """构造期校验 (与 LoopGuard / AgentLoop 同一条纪律: 配置错在装配时报)."""
     with pytest.raises(CompactionConfigError):

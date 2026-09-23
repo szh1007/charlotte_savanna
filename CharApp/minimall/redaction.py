@@ -36,11 +36,15 @@
 所以此后看到这个对象的任何东西 (含 `ON_EVENT` 插件) 一并不见原文. 这正是想要的:
 只有一个出口, 就没有第二份原文在别处流转.
 
-放在**服务入口**而不是共用装配里 (`service.session_for`): 威胁模型是「谁能看到
-浏览器」, 而命令行的事件出口是框架的 `EventPrinter` (开发者自己的终端, 本来就在
-同一个进程里), 它按框架的载荷契约渲染 `name(args)` / `name ok: summary` —— 脱敏
-之后那两行会变成 `add_to_cart( (畸形 JSON))` 与 `add_to_cart ok (1ms):`. 按
-`service.py` 自己的放置标准 (「换一个入口还要不要这段」), 这一段是入口特有的.
+**开关由入口显式给** (`service.session_for(..., redact=)`, ticket 18): 威胁模型是
+「谁能看到**浏览器**」, 而「这个出口是不是浏览器」只有入口知道 —— 框架递进来的
+`EventSink` 是个协议, 终端的 `EventPrinter` 与它长得一样. 命令行入口给 False
+(开发者自己的终端, 它按框架的载荷契约渲染 `name(args)` / `name ok: summary`,
+脱敏之后那两行会变成 `add_to_cart( (畸形 JSON))` 与 `add_to_cart ok (1ms):`).
+
+**这个参数没有默认值** —— 它曾经是一条"靠人记得包"的隐式约定 (脱敏发生在服务入口,
+谁也没拦着第三个入口不包). 摆到台面上之后, 漏了它的表现是 `TypeError` (装配那一次
+就炸), 而不是某天发现工具参数原文进了浏览器.
 """
 
 from __future__ import annotations

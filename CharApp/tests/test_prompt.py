@@ -223,6 +223,8 @@ async def test_switching_the_manifest_switches_what_the_assembly_loads(
     ).session_for(
         build_context(BUYER_ID, "prompt-test", tenant_id=TENANT_WEB),
         event_sink=lambda event: None,
+        # 本用例不看事件, 出口是谁都行 —— 但**说不说**是必填的 (装配处不留默认值)
+        redact=False,
     )
 
     assert session.history[0]["content"] == "你是 v9 客服.\n"
