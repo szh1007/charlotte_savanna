@@ -80,10 +80,13 @@ def _owned(tenant_id: str, user_id: str) -> ColumnElement[bool]:
 def _visible_messages() -> ColumnElement[bool]:
     """「这条消息属于这个会话, 而且是给用户看的」—— EXISTS 的关联条件.
 
-    两处用它 (列表的「聊过话吗」与搜索的「正文命中吗」), 所以只写一遍: 那个
-    `thread_id` 的关联与 `hidden` 的过滤是**同一条口径**, 分头写的话, 哪天把
-    「可见」的定义改了 (比如再排除一类内部消息), 只会改到其中一处 —— 而漏掉的
-    那处表现是"搜得到一段用户压根看不见的对话".
+    关联与过滤写在一起, 于是「可见」只有一个定义: `thread_id` 对得上, 且
+    `hidden = false`.
+
+    调用方**只剩一个** (列表的「聊过话吗」) —— 搜索收窄到只搜标题之后
+    (ticket 25), 它不再被搜索用. 仍然不并进调用方: 「这条消息给不给人看」是记录
+    那一层的事 (CONTEXT.md 的「记录」: 「每行标着要不要展示给前端」), 不是一个
+    随手拼的条件.
     """
     return (messages.c.thread_id == threads.c.thread_id) & messages.c.hidden.is_(False)
 
@@ -109,19 +112,17 @@ def _escape_like(text: str) -> str:
 
 
 def _matches(query: str) -> ColumnElement[bool]:
-    """「标题或某条可见消息的正文里有这个词」—— 搜索的判据 (#20).
+    """「标题里有这个词」—— 搜索的判据 (#20, 收窄于 ticket 25).
 
-    两条先说清楚:
+    为什么**只搜标题** (而 #20 那一版连正文一起搜): 列表按 `updated_at` 排, 本
+    项目没有相关性排序 —— 留着正文搜索, 就会长期给出「排序说不通」的结果 (正文里
+    顺带提了一句的会话, 排在标题明显更相关的那个前面). 那比搜不到更伤信任.
 
-    - **两处都搜**: 只搜标题会漏掉「标题是首句、要找的词在后面」的会话; 只搜正文
-      会漏掉「标题被用户改过」的 (改名之后自动标题就再也不更新了).
-    - **只搜可见消息**: 与列表的「聊过话」同一条口径 —— 工具回填与内部指令不该把
-      一段用户看不见的对话搜出来.
+    代价明写: 「记得聊过 XX 却想不起标题」这条路**搜不到了**. 要补它得做「消息
+    搜索」—— 那是另一个概念 (搜会话 vs 搜消息), 见 `CharApp/CONTEXT.md`.
     """
     pattern = f"%{_escape_like(query)}%"
-    return threads.c.title.ilike(pattern, escape="\\") | exists().where(
-        _visible_messages() & messages.c.content.ilike(pattern, escape="\\")
-    )
+    return threads.c.title.ilike(pattern, escape="\\")
 
 
 class ThreadsRepository(PgRepository):
@@ -237,8 +238,8 @@ class ThreadsRepository(PgRepository):
         Args:
             tenant_id: 租户 (必填, 理由见模块 docstring).
             user_id: 只看这个属主的会话; None 表示这个租户下所有用户的.
-            query: 搜索词; None / 空串 = 不搜. 给了就只回**标题或某条可见消息正文**
-                命中它的会话 (大小写不敏感) —— 见下面的「搜索」一段.
+            query: 搜索词; None / 空串 = 不搜. 给了就只回**标题**命中它的会话
+                (大小写不敏感) —— 判据与理由见 `_matches` 那段.
             limit: 最多几条 (<= 0 返回空列表).
 
         Returns:

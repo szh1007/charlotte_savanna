@@ -1194,18 +1194,22 @@ async def test_the_three_write_methods_are_scoped_to_the_owner(db: PgDatabase):
     assert (await threads.get(other_tenant.thread_id)).deleted_at is None
 
 
-async def test_search_matches_both_the_title_and_the_message_body(db: PgDatabase):
-    """搜索: 标题命中与**正文**命中都能找回会话, 而且大小写不敏感.
+async def test_search_looks_at_the_title_only(db: PgDatabase):
+    """搜索只搜**标题**: 正文里有这个词不算命中.
 
-    只搜标题会漏掉「要找的词在第二句里」的; 只搜正文会漏掉「标题被用户改过」的
-    (改名之后自动标题再也不更新) —— 两条路都得有.
+    判据收窄到标题 (ticket 25). 更早那一版是「标题或正文」, 代价是搜出来的
+    东西说不通: 列表按 `updated_at` 排, 而命中正文的会话常常排在一个标题
+    更相关的会话前面 —— 顺序与"哪个更像"无关. 收窄之后搜到的每一条都能在
+    标题里看见那个词: 不是能力变小, 是可预测.
+
+    大小写仍不敏感 (`ILIKE`); 通配符照旧按字面搜, 那条另有专门用例.
     """
     threads = ThreadsRepository(db)
     tenant = f"tenant-{uuid4().hex}"
     by_title = await _thread_titled(
-        db, tenant_id=tenant, user_id="u-1", title="退款要几天", body="随便说点什么"
+        db, tenant_id=tenant, user_id="u-1", title="Retry 退款要几天", body="随便说"
     )
-    by_body = await _thread_titled(
+    await _thread_titled(
         db, tenant_id=tenant, user_id="u-1", title="别的", body="我的 Refund 到账了吗"
     )
     await _thread_titled(
@@ -1219,8 +1223,9 @@ async def test_search_matches_both_the_title_and_the_message_body(db: PgDatabase
         return {t.thread_id for t in rows}
 
     assert await found("退款") == {by_title.thread_id}
-    assert await found("refund") == {by_body.thread_id}, "正文里是 Refund, 小写该搜到"
-    assert await found("REFUND") == {by_body.thread_id}, "大写同理"
+    assert await found("retry") == {by_title.thread_id}, "标题里是 Retry, 小写该搜到"
+    assert await found("RETRY") == {by_title.thread_id}, "大写同理"
+    assert await found("refund") == set(), "正文里有 Refund 不算命中"
     assert await found("没这个词") == set()
 
 

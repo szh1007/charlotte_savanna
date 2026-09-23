@@ -66,8 +66,13 @@
   .agent-new:hover { border-color: #ff6b6b; color: #ff6b6b; }
   .agent-new:disabled { color: #ced4da; border-color: #e9ecef; cursor: not-allowed; }
   .agent-list { flex: 1; overflow-y: auto; background: #fff; border-radius: 12px; padding: 8px; }
-  .agent-search { width: 100%; padding: 9px 12px; border: 1.5px solid #d0d5dd; border-radius: 10px; font-size: 13px; outline: none; transition: all .2s; font-family: inherit; }
+  /* 搜索那一行: 输入框 + 一颗按钮. 搜索**要按按钮或回车才发** (ticket 25), 所以
+     按钮必须在场; 回车靠这一行的 form 白送 (不必自己绑 keydown) */
+  .agent-search-row { display: flex; gap: 8px; }
+  .agent-search { flex: 1; min-width: 0; padding: 9px 12px; border: 1.5px solid #d0d5dd; border-radius: 10px; font-size: 13px; outline: none; transition: all .2s; font-family: inherit; }
   .agent-search:focus { border-color: #ff6b6b; box-shadow: 0 0 0 3px rgba(255,107,107,.1); }
+  .agent-search-go { flex: none; padding: 9px 14px; background: #fff; color: #555; border: 1.5px solid #d0d5dd; border-radius: 10px; font-size: 13px; cursor: pointer; transition: all .2s; font-family: inherit; }
+  .agent-search-go:hover { border-color: #ff6b6b; color: #ff6b6b; }
   .agent-empty { color: #adb5bd; font-size: 13px; text-align: center; padding: 24px 0; }
   /* 每一项是一个容器 (不是按钮): 里面装着"点一下切过去"的主按钮与那颗「⋯」,
      两者是并列的两个按钮 —— 按钮套按钮在 HTML 里是不合法的 */
@@ -77,6 +82,13 @@
   .agent-item-main { flex: 1; min-width: 0; text-align: left; background: none; border: none; border-radius: 8px; padding: 10px 4px 10px 12px; cursor: pointer; font-family: inherit; }
   .agent-item-title { display: block; font-size: 13px; color: #333; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .agent-item-time { display: block; font-size: 11px; color: #adb5bd; margin-top: 4px; }
+  /* 置顶的标记只动**文字** (图标 + 主色 + 加粗), 不动整行底色 —— 列表项已经有
+     hover 与「当前会话」两种底色 (都是 #fdf2f2), 再叠一层是色阶打架, 而文字叠在
+     任何底色上都读得出来.
+     图标走 ::before 而不是拼进 textContent: 那段文本要能原样进改名的输入框.
+     **排序一个字不动** (后端已按 pinned_at 排好) —— 这里改的纯粹是画法. */
+  .agent-item-pinned .agent-item-title { color: #ff6b6b; font-weight: 600; }
+  .agent-item-pinned .agent-item-title::before { content: '📌 '; font-weight: 400; }
   .agent-item-more { flex: none; background: none; border: none; color: #adb5bd; font-size: 16px; line-height: 1; padding: 6px 10px; cursor: pointer; border-radius: 6px; font-family: inherit; }
   .agent-item-more:hover { color: #ff6b6b; background: #fff; }
   /* 就地改名: 一个小 input 顶替标题行 (**不用 `contenteditable`** —— 那个属性会
@@ -101,6 +113,18 @@
   .agent-head .agent-session { margin-left: auto; font-size: 12px; color: #adb5bd; background: #f8f9fa; padding: 5px 10px; border-radius: 8px; white-space: nowrap; }
   .agent-chat { flex: 1; overflow-y: auto; padding: 20px 24px; background: #fafbfc; }
   .agent-hint { color: #adb5bd; font-size: 14px; line-height: 2.2; }
+  /* 聊天区的三份"不是历史"的东西 (ticket 25): 转圈 / 失败行 / 引导横幅那一份在最上面.
+     它们**互斥** —— 谁上场, 谁先把上一份摘掉 (见 js 里的 setChatPlaceholder).
+     转圈**只放聊天区**: 切会话时左栏也在重新拉, 但那是它自己的一次拉取, 两个
+     spinner 同时转只会更乱. */
+  .agent-loading { text-align: center; padding: 48px 0; }
+  .agent-loading::after { content: ''; display: inline-block; width: 26px; height: 26px; border: 2.5px solid #f0f2f5; border-top-color: #ff6b6b; border-radius: 50%; animation: agent-spin .8s linear infinite; }
+  @keyframes agent-spin { to { transform: rotate(360deg); } }
+  /* 历史没加载出来: 一行话 + 一颗重试. **不复用引导横幅** —— 那说的是"这段还是空的",
+     与"没读到"是两件事, 混用会让用户以为这段对话真的没有历史 */
+  .agent-history-error { color: #adb5bd; font-size: 13px; text-align: center; padding: 36px 0; }
+  .agent-history-error button { margin-left: 10px; padding: 5px 12px; background: #fff; color: #555; border: 1.5px solid #d0d5dd; border-radius: 8px; font-size: 13px; cursor: pointer; font-family: inherit; }
+  .agent-history-error button:hover { border-color: #ff6b6b; color: #ff6b6b; }
   .agent-example { background: #fff; border: 1px solid #e9ecef; color: #555; border-radius: 16px; padding: 6px 14px; font-size: 13px; cursor: pointer; margin-right: 8px; transition: all .2s; font-family: inherit; }
   .agent-example:hover { border-color: #ff6b6b; color: #ff6b6b; }
   .agent-turn { margin-bottom: 22px; }
@@ -140,8 +164,15 @@
   {% endcomment %}
   <aside class="agent-side">
     <button type="button" class="agent-new" id="new-conversation">+ 新对话</button>
-    <input type="text" class="agent-search" id="conversation-search"
-           autocomplete="off" placeholder="搜索对话">
+    {% comment %}
+      搜索那一行是一整个 form: **回车提交由它白送**, 不必自己绑 keydown. 按按钮或
+      回车才发请求 (ticket 25) —— 上一版是"输入即搜"的 300ms 防抖.
+    {% endcomment %}
+    <form class="agent-search-row" id="search-form">
+      <input type="text" class="agent-search" id="conversation-search"
+             autocomplete="off" placeholder="搜索对话">
+      <button type="submit" class="agent-search-go">搜索</button>
+    </form>
     <div class="agent-list" id="conversation-list"></div>
   </aside>
 
@@ -211,6 +242,7 @@ const stop = document.getElementById('ask-stop');
 const list = document.getElementById('conversation-list');
 const newButton = document.getElementById('new-conversation');
 const searchBox = document.getElementById('conversation-search');
+const searchForm = document.getElementById('search-form');
 
 // 会话编号的第三段 (thread_id = minimall:{user_id}:{这一段}).
 // 它存在 `sessionStorage` 里 —— 那个存储按**标签页**隔离, 却能在刷新之后留下来,
@@ -221,6 +253,11 @@ const searchBox = document.getElementById('conversation-search');
 // 即丢历史 (那是 L1b 的旧边界).
 // 从 `const` 改成 `let` (issue 19): 左栏能切会话, 它就不是一个页面生命周期里不
 // 变的值了 —— 切过去之后发出去的问句必须落在新那一段上.
+// 首屏这一拍要等的东西**可能已经有内容**吗? 读回来的编号可能有 (这个标签页之前聊过
+// 这段), 刚生成的编号一定没有 (uuid 独一份, 库里不可能有) —— 给后者转个圈是在演假
+// 动作. **只有 `loadConversationId` 会写它, 也只有文件末尾那一行会读它**: 切会话与
+// 新对话各走各的参数, 不经过这个变量 (别拿它当"当前这段的来源", 它只管首屏那一拍).
+let mayHaveHistoryAtBoot = false;
 let conversationId = loadConversationId();
 showConversationTag();
 
@@ -247,7 +284,10 @@ function loadConversationId() {
   // 退回原生提交, 用户看到的是一个静默的问号, 见文件头那段说明).
   try {
     const saved = window.sessionStorage.getItem(STORAGE_KEY);
-    if (saved) return saved;
+    if (saved) {
+      mayHaveHistoryAtBoot = true;   // 这个标签页之前聊过: 这一段可能有历史
+      return saved;
+    }
   } catch (err) { /* 存不了: 当成新对话 */ }
   const fresh = newConversationId();
   rememberConversationId(fresh);
@@ -284,9 +324,52 @@ function toBottom() {
   chat.scrollTop = chat.scrollHeight;
 }
 
+// 聊天区里那份「不是历史」的东西 —— 引导横幅 / 转圈 / 失败行. **同一个时刻只该有
+// 一个** (ticket 25). 收在一处而不是各调用点自己 append/remove: 上一版是
+// `clearChat()` 无条件把横幅放回去, 于是切会话时「横幅先上场、历史几百毫秒后才到」
+// —— 用户看到的是先蹦一句"试试这样问", 再突然蹦出历史.
+//
+// 那个 hint 节点**从不销毁**, 只是被摘下/放回 (几个示例按钮的监听还在它上面).
+let chatPlaceholder = hint;   // 首屏那一份是服务端渲染的, 开场就在场
+
+function setChatPlaceholder(node) {
+  if (chatPlaceholder) chatPlaceholder.remove();
+  chatPlaceholder = node;
+  if (node) chat.appendChild(node);
+}
+
+// 读历史失败时摆什么: 本来在等内容才值得说「没加载出来」; 一段刚生成的编号没有
+// 内容可失败, 于是照旧摆横幅 (一句话都不多说 —— 用户没做错什么).
+function historyFailed(mayHaveHistory) {
+  // 聊天区里**已经有他自己那一轮**了就不再动画面: 这条"历史没加载出来"是对上一次
+  // 切换说的, 而失败行挂在那一轮**下面**在时序上是错的 (这次加载发生在那一轮之前).
+  // 重试这条路也没堵死 —— 重新切一次会话就会再拉一遍.
+  //
+  // 判据为什么不是 `finished` (上面那两道守卫用的): 这里要防的是"话已经说过了", 而
+  // 不是"话正在说". 提问失败得很快 (服务停了时连接当场被拒), `end()` 立刻把
+  // `finished` 放回真, 于是失败行落地时 `!finished` 早就不成立了 —— 2026-09-23 真机
+  // 上就是这么漏过去的.
+  if (chat.querySelector('.agent-turn')) return;
+  if (!mayHaveHistory) {
+    setChatPlaceholder(hint);
+    return;
+  }
+  const box = el('div', 'agent-history-error', '历史没加载出来');
+  const retry = el('button', null, '重试');
+  retry.type = 'button';
+  retry.addEventListener('click', function () {
+    loadHistory(true);   // 点了重试 = 这次确实在等内容
+  });
+  box.appendChild(retry);
+  setChatPlaceholder(box);
+}
+
 // 一次问答在页面上占一块: 问句 + 过程 (步骤 / 思考) + 答复正文
 function startTurn(question) {
-  if (hint) hint.remove();
+  // 顺手把聊天区那份"不是历史"的东西摘掉 (横幅 / 转圈 / 失败行): 用户可以在转圈
+  // 期间直接提问 —— loadHistory 那两道 `!finished` 守卫正是放行这条 —— 不清的话
+  // 那一圈会永远转下去 (或那行"没加载出来"永远挂在一段已经有内容的对话上).
+  setChatPlaceholder(null);
   const root = el('div', 'agent-turn');
   const q = el('div', 'agent-q');
   q.appendChild(el('span', null, question));
@@ -593,8 +676,14 @@ function renderHistory(messages) {
   toBottom();
 }
 
-async function loadHistory() {
+async function loadHistory(mayHaveHistory) {
+  // `mayHaveHistory`: 这一次在等的东西**可能已经有内容**吗. 它同时决定两件事
+  // (ticket 25):
+  //   - 画什么: 有内容要等就转圈, 没内容可等就直接摆横幅 (转圈是给"正在来"的);
+  //   - 失败了说不说: 本来该有内容才值得说「历史没加载出来」—— 给一段刚生成的
+  //     编号报这句是纯噪音 (它本来就没有历史).
   if (!finished) return;   // 用户已经在问了, 别把历史盖到新一轮上
+  setChatPlaceholder(mayHaveHistory ? el('div', 'agent-loading') : hint);
   let response;
   try {
     // POST 而不是 GET: 会话编号是私密数据, 不当 URL 参数挂在地址上 (它会跟着进
@@ -609,19 +698,29 @@ async function loadHistory() {
       body: JSON.stringify({ conversation_id: conversationId }),
     });
   } catch (err) {
+    historyFailed(mayHaveHistory);
     return;
   }
-  if (!response.ok) return;   // 失败不打扰用户: 页面上就是一段新对话
+  if (!response.ok) {
+    historyFailed(mayHaveHistory);
+    return;
+  }
   let payload;
   try {
     payload = await response.json();
   } catch (err) {
+    historyFailed(mayHaveHistory);
     return;
   }
   // 等这份 JSON 的工夫, 用户可能已经把第一句问出去了 —— 那时渲染历史只会插到
   // 正在跑的那一轮前面, 看着像「回答张冠李戴」
   if (!finished) return;
-  renderHistory(payload.messages || []);
+  const messages = payload.messages || [];
+  // 一段空对话该有的样子是**横幅** (那句"试试这样问"加三个示例按钮): 走到这里
+  // 就是「加载完了、而这段什么都没有」—— 横幅的真条件. 上一版是 `clearChat()`
+  // 无条件把它放回去, 于是它会在**加载中**就上场, 抢在历史前面.
+  setChatPlaceholder(messages.length ? null : hint);
+  if (messages.length) renderHistory(messages);
 }
 
 // ---------------------------------------------------------------------------
@@ -646,10 +745,6 @@ const TITLE_CLIP = 20;
 // 用户改标题时那个输入框的长度上限. **与上面那个不是一回事**: 上面管"列表上显示
 // 几个字", 这个管"能存多长" —— 数值同源 (框架与 BFF 都是 100), 改展示不该动到它.
 const MAX_TITLE_LENGTH = 100;
-
-// 搜索的防抖 (毫秒): 输入即搜, 但不能每敲一个字母就发一次请求 —— 三百毫秒是
-// 「手停下来」与「还觉得是实时的」之间那个常用的折中
-const SEARCH_DEBOUNCE_MS = 300;
 
 // 超过一天就不说「几小时前」了, 直接给日期 —— 那才是买家要的信息
 const HOUR = 3600;
@@ -701,7 +796,11 @@ function compactionNote(data) {
 function listItem(row) {
   // 一层容器 + 两个并列的按钮: 「点一下切过去」与「⋯」是两件事, 而按钮套按钮在
   // HTML 里不合法 (浏览器切起标签来会乱)
-  const item = el('div', 'agent-item');
+  //
+  // `pinned` 算**一处**: 画法 (那个类名) 与菜单文案 (置顶 / 取消置顶) 读的是同一个
+  // 值 —— 各算一遍的话, 哪天判据变了只会改到一处.
+  const pinned = Boolean(row.pinned_at);
+  const item = el('div', 'agent-item' + (pinned ? ' agent-item-pinned' : ''));
   item.dataset.conversationId = row.conversation_id;
   if (row.conversation_id === conversationId) item.classList.add('agent-item-on');
 
@@ -710,13 +809,14 @@ function listItem(row) {
   open.appendChild(titleNode(row));
   open.appendChild(el('span', 'agent-item-time', relativeTime(row.updated_at)));
   open.addEventListener('click', function () {
-    switchConversation(row.conversation_id);
+    // 第二参数 true: 这一条是从列表里点出来的, 而列表只列聊过话的 —— 它一定有内容
+    switchConversation(row.conversation_id, true);
   });
 
   const more = el('button', 'agent-item-more', '⋯');
   more.type = 'button';
   more.title = '更多';
-  const menu = actionMenu(row);
+  const menu = actionMenu(row, pinned);
   more.addEventListener('click', function (event) {
     event.stopPropagation();   // 别让这次点击顺带把「切会话」也触发了
     openMenu(menu);
@@ -737,12 +837,12 @@ function titleNode(row) {
   return el('span', 'agent-item-title', displayTitle(row.title));
 }
 
-function actionMenu(row) {
+function actionMenu(row, pinned) {
   // 一颗贴在这个条目上的小菜单. 三项各是一个按钮, 其中「置顶 / 取消置顶」
-  // **按当前状态换措辞** —— 后端把 `pinned_at` 一起给了, 不必再猜
+  // **按当前状态换措辞** —— 后端把 `pinned_at` 一起给了, 不必再猜.
+  // `pinned` 由 listItem 算好传进来: 与那条置顶的画法同源.
   const menu = el('div', 'agent-menu');
   menu.hidden = true;
-  const pinned = Boolean(row.pinned_at);
 
   const rename = el('button', null, '重命名');
   rename.type = 'button';
@@ -778,9 +878,9 @@ function openMenu(menu) {
 }
 
 function closeMenus() {
-  // **只管菜单**: 「点别处就放弃这次改名」由那个 input 自己的 `blur` 兜 (焦点一走
-  // 就还原). 放在这里做的话, 点「重命名」那一刻的事件会冒到 document, 把刚建出来
-  // 的 input 当场取消掉 —— 表现是"点了重命名没有任何反应" (真机上抓到过).
+  // **只管菜单**: 改名那个 input 由它自己的 `blur` 兜 (焦点一走就**提交**, `Escape`
+  // 才还原). 放在这里做的话, 点「重命名」那一刻的事件会冒到 document, 把刚建出来
+  // 的 input 当场收掉 —— 表现是"点了重命名没有任何反应" (真机上抓到过).
   Array.from(list.querySelectorAll('.agent-menu')).forEach(function (menu) {
     menu.hidden = true;
   });
@@ -844,29 +944,48 @@ function startRename(row) {
   input.maxLength = MAX_TITLE_LENGTH;
   input.addEventListener('keydown', function (event) {
     if (event.key === 'Enter') submitRename(row, input);
-    if (event.key === 'Escape') cancelRename(input);
+    if (event.key === 'Escape') cancelRename(input, row.title);
   });
   input.addEventListener('blur', function () {
-    // 点别处 = 放弃 (与 Escape 同一条出口): 改名字不该因为失焦就被写进去.
-    // 「正在提交」那一小段不算失焦 —— 提交成功之后它会跟着列表一起被换掉.
-    if (input.dataset.busy || !input.isConnected) return;
-    cancelRename(input);
+    // 点别处 = **提交** (ticket 25): 与回车同一条出口. 上一版这里是「放弃」, 理由
+    // 是"失焦可能只是误触, 不该把误触写成一次改名"; 用户真机上给的是另一条 ——
+    // 「名字我敲进去了、又点了别处, 那就算改完了」(deepseek 网页版就是这个手感).
+    //
+    // `busy` 那道守卫是给"提交已经在飞"的 (回车那一次; 成功之后列表重绘也会把它
+    // 摘掉, 那一次失焦同样要闭嘴).
+    //
+    // 剩下的两条出口在**失焦那一刻分不开**: `Escape` 也会让它失焦, 而 DOM 的移除
+    // 步骤是**先跑焦点修正、后真摘节点** —— 2026-09-23 量过: 失焦回调里
+    // `input.isConnected` 还是 true (`document.activeElement` 已经回到 body 了).
+    // 拿 `isConnected` 当守卫写在这里, Escape 会紧跟一次提交 (真机验收抓到的).
+    //
+    // 所以推一个**微任务**再问: 那时真被摘掉的已经 false (Escape / 列表重绘),
+    // 而"点别处"这条路上输入框还在原地 —— 于是只有它走到提交.
+    if (input.dataset.busy) return;
+    queueMicrotask(function () {
+      if (input.isConnected) submitRename(row, input);
+    });
   });
   title.replaceWith(input);
   input.focus();
   input.select();
 }
 
-function cancelRename(input) {
-  // 把 input 换回标题那一行 (没提交就是没发生)
+function cancelRename(input, title) {
+  // 把 input 换回标题那一行, 显示的是**原来的**标题 —— 没提交就是没发生.
+  // (上一版这里放的是输入框里那个半成品: 按 Escape 之后列表上显示着你刚敲的名字,
+  // 而库里一个字都没改. 那也是句假话.)
   if (!input.isConnected) return;
-  input.replaceWith(el('span', 'agent-item-title', displayTitle(input.value || '')));
+  input.replaceWith(el('span', 'agent-item-title', displayTitle(title)));
 }
 
 async function submitRename(row, input) {
   const title = input.value.trim();
   if (!title || title === row.title) {
-    cancelRename(input);   // 没改 / 改成了空白: 当没发生, 一个请求都不发
+    // 改成了空白 / 压根没改: 当没发生, 一个请求都不发.
+    // 「标题不许清空」就是这一支 —— 清空之后列表上会是一行空白, 而这一段没有
+    // 回退来源 (标题是首句截断来的, 不是随时能重算的).
+    cancelRename(input, row.title);
     return;
   }
   input.dataset.busy = '1';
@@ -875,10 +994,12 @@ async function submitRename(row, input) {
     title: title,
   });
   if (problem) {
-    // 没成: 把 input 放回可编辑状态并**留在原地** (用户的输入还在, 改一下再试),
-    // 错误话术挂在列表上面
-    delete input.dataset.busy;
-    input.focus();
+    // 没成: **回滚成原来的标题** + 列表上一句提示. 两条入口 (回车 / 失焦) 共用
+    // 这一套 —— 失焦那条尤其不能抢焦点: 用户已经点到别处了, 把焦点拽回来等于
+    // 打断他刚点的那一下.
+    // 代价写明: 他刚敲的名字没了, 得重打一遍. 上一版是"留在原地 + 抢回焦点"
+    // (输入还在, 改一下再试), 但那只在回车那条路上成立.
+    cancelRename(input, row.title);
     actionFailed(problem);
     return;
   }
@@ -909,12 +1030,14 @@ async function deleteConversation(row) {
     return;
   }
   // 删掉的是正在聊的那一段 → 换一段干净的 (总不能把人留在一段已经不在列表里的
-  // 对话上: 他继续问, 那一段却已经"删了")
+  // 对话上: 他继续问, 那一段却已经"删了").
+  // 换上的编号是刚生成的 ⇒ 这一段**一定没有历史**, 于是不拉历史、不转圈, 直接摆横幅.
   if (row.conversation_id === conversationId) {
     conversationId = newConversationId();
     rememberConversationId(conversationId);
     showConversationTag();
     clearChat();
+    setChatPlaceholder(hint);
   }
   await refreshAfterAction();
 }
@@ -960,8 +1083,8 @@ function lockSwitching(locked) {
 }
 
 // 谁发的那一次列表请求 (下面那个闸门用). 列表会被好几个地方拉: 首屏 / 每轮答完 /
-// 搜索的防抖 / 三个管理动作之后的刷新 —— 而这些**可以重叠** (搜着搜着, 上一轮
-// 答完的那次刷新正好回来), 于是**慢的那一份会把快的那一份盖掉**.
+// 按下搜索 (或清空输入框) / 三个管理动作之后的刷新 —— 而这些**可以重叠** (搜着搜着,
+// 上一轮答完的那次刷新正好回来), 于是**慢的那一份会把快的那一份盖掉**.
 let listRequests = 0;
 
 async function loadConversations() {
@@ -996,45 +1119,59 @@ async function loadConversations() {
   renderList(payload.conversations || []);
 }
 
-// 搜索: 输入即搜, 但敲字的时候不发请求 —— 手停下来 300ms 才发一次. 清空输入框
-// 就是恢复全量列表 (搜索词为空 => 后端不筛).
+// 搜索: **按按钮或回车才发请求** (ticket 25 —— 上一版是"输入即搜"的 300ms 防抖).
+// 唯一的例外是**清空输入框**: 它立刻恢复全量列表, 理由是"把词删掉"这个动作本身
+// 就是"我不搜了" (搜索词为空 => 后端不筛).
+//
+// `searchTerm` 是**已提交的**那个词, 不是输入框里的实时值 —— `renderList` 用它决定
+// 空列表说的是「没搜到相关的对话」还是「还没有历史对话」, 那必须按"我按过搜索"算,
+// 不能按"我正在打字"算.
 let searchTerm = '';
 
-function onSearchInput() {
+function submitSearch() {
+  // 同一个词再按一次也**照发** (不拿"词没变"当理由挡掉): 按按钮是用户的明确意图,
+  // 而他再按一次的理由常常是"上次没搜出来" —— 而列表这条路失败是**静默**的
+  // (`loadConversations` 的 catch 直接 return), 挡掉之后按钮看着就像坏了.
   searchTerm = searchBox.value.trim();
-  window.clearTimeout(searchTimer);
-  searchTimer = window.setTimeout(function () {
-    loadConversations();
-  }, SEARCH_DEBOUNCE_MS);
+  loadConversations();
 }
 
-let searchTimer = null;
+function onSearchInput() {
+  // 只有"从有词变成空"才立刻重拉; 别的输入一律等按钮或回车
+  if (!searchBox.value.trim() && searchTerm) {
+    searchTerm = '';
+    loadConversations();
+  }
+}
 
 function clearChat() {
-  // 主区清空. 摘下去的 hint **留着**: 它只是被 remove 过, 没被销毁 —— 一段干净的
-  // 对话又该有那句「试试这样问」, 直接放回去比再造一个省事, 那几个示例按钮的监听
-  // 也还在.
+  // 主区清空 (切会话 / 新对话用). 摆什么**不在这里定** —— 谁清空谁接着调
+  // `loadHistory` (它按 `mayHaveHistory` 选转圈或横幅), 或自己 `setChatPlaceholder`.
+  // 上一版在这里无条件把横幅放回去, 那正是「点进去先蹦横幅」的根因.
   chat.replaceChildren();
-  if (hint) chat.appendChild(hint);
+  chatPlaceholder = null;
 }
 
-async function switchConversation(id) {
+async function switchConversation(id, mayHaveHistory) {
   // 三道门: 正在答 (半截事件会落进另一段对话里) / 没有编号 / 点的就是当前这段
   if (!finished || !id || id === conversationId) return;
+  // `mayHaveHistory` 说这一段是「从列表里点出来的」(它一定已经有内容 —— 列表只列
+  // 聊过的) 还是「刚生成的」(一定没有). 它只影响画法, 不影响取数.
   conversationId = id;
   rememberConversationId(id);
   showConversationTag();
   clearChat();
   markCurrent();
-  // 新的一段先拉一次历史 (失败会被 loadHistory 自己吞掉, 降级成空历史) ——
+  // 新的一段先拉一次历史 (失败会由 loadHistory 收成「没加载出来 + 重试」) ——
   // 与刷新页面走的是同一条路, 于是"切过去看到的"与"刷新后看到的"必然一致.
-  await loadHistory();
+  await loadHistory(mayHaveHistory);
 }
 
 function startNewConversation() {
   // 新对话**不落库**: 换一个编号就够了, 会话行是第一条消息发出去时由记录器建的
   // (issue 17 的懒创建) —— 所以点了新对话又不用, 列表里不会多出一条空壳.
-  switchConversation(newConversationId());
+  // 第二参数 false = 这段编号刚生成, 一定没有历史: 不转圈, 直接摆横幅.
+  switchConversation(newConversationId(), false);
 }
 
 form.addEventListener('submit', function (event) {
@@ -1049,9 +1186,14 @@ stop.addEventListener('click', stopAsking);
 
 newButton.addEventListener('click', startNewConversation);
 
+// 搜索那一行的 form: 点按钮与按回车都走这一个出口
+searchForm.addEventListener('submit', function (event) {
+  event.preventDefault();
+  submitSearch();
+});
 searchBox.addEventListener('input', onSearchInput);
-// 点页面上别处就收起菜单 (以及放弃那次就地改名): 菜单开着却点不动别的东西,
-// 是最容易被当成"页面卡住了"的一种小毛病
+// 点页面上别处就收起菜单 (改名那个 input 由它自己的 `blur` 兜 —— 点是提交,
+// `Escape` 才是还原): 菜单开着却点不动别的东西, 是最容易被当成"页面卡住了"的小毛病
 document.addEventListener('click', closeMenus);
 
 document.querySelectorAll('.agent-example').forEach(function (button) {
@@ -1063,7 +1205,9 @@ document.querySelectorAll('.agent-example').forEach(function (button) {
 });
 
 input.focus();
-loadHistory();
+// 首屏这一拍: `mayHaveHistoryAtBoot` 说这段编号是 sessionStorage 里读回来的 (可能
+// 有历史 → 转圈) 还是刚生成的 (一定没有 → 横幅直接在场, 首屏那份是服务端渲染的).
+loadHistory(mayHaveHistoryAtBoot);
 // 首屏拉一次左栏 (issue 19). 与读历史各拉各的: 一个答「这段聊了什么」, 一个答
 // 「我聊过哪几段」—— 两个都可能失败, 谁失败都不该拖住另一个.
 loadConversations();
