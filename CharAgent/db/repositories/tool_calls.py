@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 from CharAgent.db.entities import ToolCall, ToolCallStatus
 from CharAgent.db.errors import DataConfigError, DataStoreError
 from CharAgent.db.repositories.base import PgRepository
-from CharAgent.db.schema import tool_calls
+from CharAgent.db.schema import runs, tool_calls
 
 
 def build_tool_call(
@@ -36,6 +36,8 @@ def build_tool_call(
     tool_name: str,
     arguments: str = "",
     status: ToolCallStatus = ToolCallStatus.PENDING,
+    approval_prompt: str | None = None,
+    approval_needs: Sequence[str] | None = None,
     created_at: datetime | None = None,
 ) -> ToolCall:
     """造一条工具调用记录 (不落库) —— 批量写之前先把行备好时用.
@@ -52,6 +54,9 @@ def build_tool_call(
         tool_name: 工具名.
         arguments: 模型填的原始 JSON 字符串 (不预解析).
         status: 初始状态.
+        approval_prompt / approval_needs: 挂起等人时**要问用户什么** (#25):
+            给用户看的那句话, 以及还缺什么 (机器可读的短名字). 只有 `needs_approval`
+            那一条会带; None = 不是要人批的调用.
         created_at: 显式时刻 (测试用); None 则取当下 (UTC).
     """
     moment = created_at if created_at is not None else datetime.now(UTC)
@@ -66,6 +71,8 @@ def build_tool_call(
         duration_ms=None,
         approved_by=None,
         approved_at=None,
+        approval_prompt=approval_prompt,
+        approval_needs=None if approval_needs is None else list(approval_needs),
         created_at=moment,
         updated_at=moment,
     )
@@ -83,6 +90,8 @@ class ToolCallsRepository(PgRepository):
         tool_name: str,
         arguments: str = "",
         status: ToolCallStatus = ToolCallStatus.PENDING,
+        approval_prompt: str | None = None,
+        approval_needs: Sequence[str] | None = None,
         created_at: datetime | None = None,
     ) -> ToolCall:
         """记下一条工具调用 (刚发起时通常是 pending).
@@ -95,6 +104,8 @@ class ToolCallsRepository(PgRepository):
             arguments: **模型填的原始 JSON 字符串** (不预解析 —— 畸形 JSON 正是
                 自纠错路径的信号, 解析了反而丢证据).
             status: 初始状态.
+            approval_prompt / approval_needs: 挂起等人时要问用户什么 (见
+                `build_tool_call`); None = 不是要人批的调用.
             created_at: 显式时刻 (测试用); None 则取当下.
 
         Returns:
@@ -110,6 +121,8 @@ class ToolCallsRepository(PgRepository):
             tool_name=tool_name,
             arguments=arguments,
             status=status,
+            approval_prompt=approval_prompt,
+            approval_needs=approval_needs,
             created_at=created_at,
         )
         async with self._session() as session:
@@ -197,8 +210,10 @@ class ToolCallsRepository(PgRepository):
         result: object | None = None,
         duration_ms: int | None = None,
         approved_by: str | None = None,
+        approval_prompt: str | None = None,
+        approval_needs: Sequence[str] | None = None,
     ) -> bool:
-        """更新一条调用的状态 (以及随之而来的结果 / 耗时 / 审批人).
+        """更新一条调用的状态 (以及随之而来的结果 / 耗时 / 审批人 / 要问什么).
 
         Args:
             run_id / message_id / tool_call_id: 定位哪一条 (三列主键).
@@ -206,6 +221,11 @@ class ToolCallsRepository(PgRepository):
             result: 执行结果或可操作错误信息; None 表示不动这一列 (不是「清空」).
             duration_ms: 耗时; None 表示不动.
             approved_by: 审批人 (#25); 给了它就会一并记下审批时刻.
+            approval_prompt / approval_needs: 挂起等人时要问用户什么 (#25). 为什么要
+                能**补写**: 那条行是「执行前那一拍」建的 (那时还不知道要不要人批),
+                裁决出来之后才在这一拍补上 —— 建行走的是幂等插入 (已有的跳过),
+                于是这两列只能靠这一笔写进去.
+                **None = 不动这一列** (与 result 同一条约定): 绝大多数调用没有它们.
 
         Returns:
             bool: 改到了 True; False = 没有这一条.
@@ -219,6 +239,10 @@ class ToolCallsRepository(PgRepository):
         if approved_by is not None:
             values["approved_by"] = approved_by
             values["approved_at"] = now
+        if approval_prompt is not None:
+            values["approval_prompt"] = approval_prompt
+        if approval_needs is not None:
+            values["approval_needs"] = list(approval_needs)
 
         statement = (
             update(tool_calls)
@@ -229,6 +253,73 @@ class ToolCallsRepository(PgRepository):
         )
         async with self._session() as session:
             return bool(session.execute(statement).rowcount)
+
+    async def record_decision(
+        self, run_id: str, message_id: str, tool_call_id: str, *, decided_by: str
+    ) -> bool:
+        """记下**谁在什么时候给了一次挂起的结论** (#25); 状态一个字都不碰.
+
+        与 `set_status` 的分工: 那个推进的是「这条调用现在到哪一步了」, 这个是
+        「人什么时候拍的板」. 两者**刻意分开**, 因为它们的时刻不同: 人点确认的那
+        一刻, 那条调用还没执行 (它在恢复那一段里才跑), 而执行完又要写一次状态 ——
+        合成一条语句的话, 后写的那次会把先写的时刻冲掉.
+
+        ADR-0014 把「批了没有」定成一对列 (`approved_at IS NULL` = 还没批), 而
+        「还有没有未决挂起」的判据是 `status = needs_approval AND approved_at IS
+        NULL` —— 于是这一笔同时是**闸门**: 写下去之后, 那次挂起就不再拦新提问了.
+
+        Args:
+            run_id / message_id / tool_call_id: 定位哪一条 (三列主键).
+            decided_by: 给结论的人 (业务侧的属主标识).
+
+        Returns:
+            bool: 改到了 True; False = 没有这一条.
+        """
+        statement = (
+            update(tool_calls)
+            .where(tool_calls.c.run_id == run_id)
+            .where(tool_calls.c.message_id == message_id)
+            .where(tool_calls.c.tool_call_id == tool_call_id)
+            .values(
+                approved_by=decided_by,
+                approved_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+            )
+        )
+        async with self._session() as session:
+            return bool(session.execute(statement).rowcount)
+
+    async def list_pending_approvals(self, thread_id: str) -> list[ToolCall]:
+        """列出一段会话里**还挂着等人批**的调用 (早的在前).
+
+        判据是 ADR-0014 定下的那一条 (`status = needs_approval` 且
+        `approved_at IS NULL`), 「属于本会话」靠 join 运行行拿到 —— 这张表只有
+        `run_id`, 而会话是运行行的属性.
+
+        两个调用方都用它, 但问的是不同的问题:
+        - 服务端收新提问时问「这段会话还挂着吗」(`SessionRegistry` 的闸门)
+        - `GET /history` 问「挂着的是哪一条」(前端刷新之后重建确认卡)
+
+        **一行 = 一次挂起**: 框架一次只挂一条 (见 `agent/loop.py`), 所以正常情况下
+        最多一条; 返回列表是因为**判据**允许多条 (历史数据 / 别的调用方写进来的),
+        而「只认第一条」这种裁量不该藏在这一层.
+
+        Args:
+            thread_id: 哪段会话.
+
+        Returns:
+            list[ToolCall]: 未决的挂起调用 (按发起时刻正序).
+        """
+        statement = (
+            select(ToolCall)
+            .join(runs, runs.c.run_id == tool_calls.c.run_id)
+            .where(runs.c.thread_id == thread_id)
+            .where(tool_calls.c.status == ToolCallStatus.NEEDS_APPROVAL.value)
+            .where(tool_calls.c.approved_at.is_(None))
+            .order_by(tool_calls.c.created_at.asc(), tool_calls.c.message_id.asc())
+        )
+        async with self._session() as session:
+            return list(session.scalars(statement))
 
     @staticmethod
     def _params(call: ToolCall) -> dict[str, object]:
@@ -244,6 +335,8 @@ class ToolCallsRepository(PgRepository):
             "duration_ms": call.duration_ms,
             "approved_by": call.approved_by,
             "approved_at": call.approved_at,
+            "approval_prompt": call.approval_prompt,
+            "approval_needs": call.approval_needs,
             "created_at": call.created_at,
             "updated_at": call.updated_at,
         }

@@ -141,7 +141,7 @@ async def _seed_run(
         result="这一单已经申请过退款",
         duration_ms=31,
     )
-    await RunsRepository(db).finish(
+    await RunsRepository(db).settle(
         run.run_id,
         status=RunStatus.FINISHED,
         model=model,

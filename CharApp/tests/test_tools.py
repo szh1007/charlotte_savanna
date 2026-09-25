@@ -1,4 +1,4 @@
-"""17 个工具: 名字 / 参数契约 / 结果与两种失败的翻译.
+"""18 个工具: 名字 / 参数契约 / 结果与两种失败的翻译.
 
 工具是模型能对这个商城做的**全部**事情, 所以这里测的是它对外的那份契约:
 
@@ -16,27 +16,43 @@ from __future__ import annotations
 
 import inspect
 import json
+from collections.abc import Mapping
 from typing import Any
 
 import httpx
 import pytest
-from conftest import BUYER_ID, TOOL_NAMES, agent_url
+from conftest import BUYER_ID, ORDER_NO, PAYMENT_PASSWORD, TOOL_NAMES, agent_url
 
 from CharAgent.agent.utils.events import tool_result_data
 from CharAgent.tests.mock_llm import make_tool_call
-from CharAgent.tool import Tool, execute_tool
+from CharAgent.tool import Tool, ToolActionableError, execute_tool
 from CharApp.minimall.client import MinimallClient, MinimallError
-from CharApp.minimall.tools import RefusedActionError, build_tools
+from CharApp.minimall.tools import (
+    PAYMENT_PASSWORD_FIELD,
+    RefusedActionError,
+    build_tools,
+)
 
 
-def tools_of(client: MinimallClient, user_id: int = BUYER_ID) -> dict[str, Tool]:
+def tools_of(
+    client: MinimallClient,
+    user_id: int = BUYER_ID,
+    *,
+    one_shot: Mapping[str, str] | None = None,
+) -> dict[str, Tool]:
     """工具名 → 工具 (装配是纯函数, 每个用例现装一份, 互不干扰)."""
-    return {item.name: item for item in build_tools(client, user_id)}
+    return {item.name: item for item in build_tools(client, user_id, one_shot=one_shot)}
 
 
-async def call(client: MinimallClient, name: str, **kwargs: Any) -> str:
-    """调一个工具并返回它回填给模型的文本."""
-    return await tools_of(client)[name].fn(**kwargs)
+async def call(
+    client: MinimallClient,
+    name: str,
+    *,
+    one_shot: Mapping[str, str] | None = None,
+    **kwargs: Any,
+) -> str:
+    """调一个工具并返回它回填给模型的文本 (代付那一条要带一次性载荷)."""
+    return await tools_of(client, one_shot=one_shot)[name].fn(**kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -44,15 +60,15 @@ async def call(client: MinimallClient, name: str, **kwargs: Any) -> str:
 # ---------------------------------------------------------------------------
 
 
-async def test_there_are_exactly_seventeen_tools(client) -> None:
-    """正好 17 个, 名字与顺序都钉住 (多一个少一个都是契约变更)."""
+async def test_there_are_exactly_eighteen_tools(client) -> None:
+    """正好 18 个, 名字与顺序都钉住 (多一个少一个都是契约变更)."""
     names = tuple(item.name for item in build_tools(client, BUYER_ID))
 
     assert names == TOOL_NAMES
 
 
 async def test_every_tool_is_async(client) -> None:
-    """17 个工具全是异步函数.
+    """18 个工具全是异步函数.
 
     这不是风格要求: 框架把**同步**工具函数扔进 `asyncio.to_thread` 执行
     (`tool/executor.py` 的 `_invoke`), 同步工具会互相排队占满线程池 ——
@@ -71,7 +87,7 @@ async def test_every_tool_is_async(client) -> None:
 async def test_every_description_says_when_to_use_it(client) -> None:
     """每个工具的说明都写清了「什么时候该用」—— 模型选工具只看这一句.
 
-    判据取「使用」二字: 17 个工具的说明都写成「……时使用」的句式 (见 tools.py).
+    判据取「使用」二字: 18 个工具的说明都写成「……时使用」的句式 (见 tools.py).
     这条不检查措辞好不好, 只拦住「忘了写说明」—— 漏写时模型只能靠名字猜.
     写工具格外要紧: `cancel_my_order` 与 `request_refund` 长得像, 模型分不清就
     会拿其中一个去试另一个该做的事.
@@ -322,8 +338,8 @@ async def test_the_same_client_serves_two_buyers(client, mall) -> None:
 # ---------------------------------------------------------------------------
 
 # 一条订单号 (24 位) 与一个商品 slug: 下面那张表里要重复用好几遍, 提出来免得
-# 每行都长到折行 (折行之后"哪个工具打哪条路径"反而看不清)
-ORDER_NO = "202609191230450000031234"
+# 每行都长到折行 (折行之后"哪个工具打哪条路径"反而看不清). 订单号取自 conftest
+# —— 假商城的 mock 路由按那个值挂, 两处各写一份就会有一处打不中.
 SLUG = "redmi-note-13"
 
 # 每个写工具 → (方法, 端点路径, 调用参数, 期望的请求体)
@@ -519,3 +535,177 @@ async def test_a_write_fault_is_raised_not_swallowed(client, mall) -> None:
 
     with pytest.raises(MinimallError):
         await call(client, "add_to_cart", slug="p")
+
+
+# ---------------------------------------------------------------------------
+# 代付 (issue 35): 密码从闭包来, 从不进参数表也不进商城之外的地方
+# ---------------------------------------------------------------------------
+# 这一节测的是 ADR-0015 那条通路在工具这一层的样子. 三件事分开测:
+#
+#   - **到得了**: 闭包里的密码进了请求体 (没有它, 密码就没送到商城);
+#   - **不该去的时候不去**: 闭包里没有密码时一次端点都不打 (空密码撞一次只会
+#     白烧一条失败路径);
+#   - **失败说人话**: 密码错那一条要明说"不要重试"(密码是一次性的).
+#
+# 「密码不在 schema 里」那条守卫在 `test_provider.py` (与身份那条同一个判据).
+
+PASSWORD = PAYMENT_PASSWORD
+
+# 一次性载荷的两种写法: 装配时从运行上下文挑出来的, 或空 (普通提问那一路)
+PAYLOAD: dict[str, str] = {PAYMENT_PASSWORD_FIELD: PASSWORD}
+
+
+def _pay_url() -> str:
+    return agent_url(f"orders/{ORDER_NO}/pay/")
+
+
+def _paid_receipt() -> httpx.Response:
+    """商城付款成功时的回执 (字段照 `AgentOrderPaidSerializer` 抄)."""
+    return httpx.Response(
+        200,
+        json={
+            "order_no": ORDER_NO,
+            "status": "paid",
+            "status_display": "已付款",
+            "total_amount": "2598.00",
+            "balance_remaining": "8101.00",
+        },
+    )
+
+
+async def test_pay_sends_the_closure_password_in_the_body(client, mall) -> None:
+    """密码进了请求体 —— 而它是从**闭包**来的, 不是从参数表来的.
+
+    请求体那一栏是契约: 商城侧认的字段名, 拼错一个就是 400 (密码错还是 400,
+    工具层分不出「字段名错了」与「密码错了」—— 因为两边都是 400).
+    """
+    route = mall.request("POST", _pay_url()).mock(return_value=_paid_receipt())
+
+    text = await call(client, "pay_my_order", order_no=ORDER_NO, one_shot=PAYLOAD)
+
+    assert route.called, "代付没有打到付款端点"
+    assert json.loads(route.calls[0].request.content) == {
+        PAYMENT_PASSWORD_FIELD: PASSWORD
+    }
+    assert json.loads(text)["balance_remaining"] == "8101.00", "回执要照转给模型"
+    assert PASSWORD not in text, "回填给模型的那段文本里不该有密码原文"
+
+
+@pytest.mark.parametrize(
+    "one_shot",
+    [
+        None,  # 这次运行压根没有载荷 (普通提问)
+        {},  # 恢复了, 但用户什么都没输
+        {"something_else": PASSWORD},  # 键名不对 —— 与没给等价
+        {PAYMENT_PASSWORD_FIELD: ""},  # 给了个空的
+    ],
+    ids=["no-payload", "empty-payload", "wrong-key", "empty-password"],
+)
+async def test_pay_without_a_password_never_calls_the_mall(
+    client, mall, one_shot: dict[str, str] | None
+) -> None:
+    """闭包里没有密码 → **一次端点都不打**, 回一句「没有拿到授权」.
+
+    这是本片最容易做错的一处: 顺手用空密码去撞一下, 看起来"至少试过了", 实际是
+    拿买家的失败次数换我们自己的一次偷懒 —— 还可能把账号锁进某种风控.
+
+    断言落在两处: 端点**零调用**(用打桩的调用记录) 与 消息说清了"没有执行".
+    抛而不返回的理由与 `RefusedActionError` 同一条 (见那张用例的 docstring).
+    """
+    route = mall.request("POST", _pay_url()).mock(return_value=_paid_receipt())
+
+    with pytest.raises(ToolActionableError) as excinfo:
+        await call(client, "pay_my_order", order_no=ORDER_NO, one_shot=one_shot)
+
+    assert not route.called, "没有密码就不该打商城"
+    text = str(excinfo.value)
+    assert "没有执行" in text, "别让模型以为付了"
+    assert "不要重试" in text
+    assert "密码" in text, "下一步是让买家重新输一次密码, 这句话得说出来"
+
+
+async def test_a_wrong_password_says_dont_retry(client, mall) -> None:
+    """密码错 → 商城的原话 + 「不要重试」(ADR-0015 点名要写死的那一句).
+
+    为什么这句非写不可: 密码是一次性的 (它随这次恢复一起消失), 模型重试拿的是
+    同一个已经不在的载荷 —— 撞的还是同一个结果, 而每一次撞都是一次真实失败
+    (还可能撞进风控).
+
+    顺带钉住**这条错误消息里没有密码原文**: 它会回填给模型、也会被日志与轨迹记下来
+    (它是 `RefusedActionError` 的消息), 而"密码不进任何一句会留痕的文本"正是 issue
+    29 那条线的业务侧半边 —— 商城给的那句「支付密码错误」本来就不含它, 这条守着
+    将来别有人顺手把请求体拼进错误里.
+    """
+    mall.request("POST", _pay_url()).mock(
+        return_value=httpx.Response(
+            400,
+            json={"error": {"code": "payment_failed", "message": "支付密码错误"}},
+        )
+    )
+
+    with pytest.raises(RefusedActionError) as excinfo:
+        await call(client, "pay_my_order", order_no=ORDER_NO, one_shot=PAYLOAD)
+
+    text = str(excinfo.value)
+    assert "支付密码错误" in text, "商城的原话照传"
+    assert "不要" in text and "重试" in text, "重试拿的是同一个已经不存在的载荷"
+    assert "重新说一次" in text, "要给出下一步 —— 否则模型只会再调一次"
+    assert excinfo.value.code == "payment_failed"
+    assert PASSWORD not in text, "错误消息会进日志与轨迹, 里面不该有密码原文"
+
+
+async def test_a_paid_order_is_reported_with_its_next_step(client, mall) -> None:
+    """已付款的单再付 → 商城说「状态不允许」, 按码补上「去看订单状态」.
+
+    与密码错分开: 这一条**不该重试是同一句话的不同理由** —— 一个是密码用掉了,
+    一个是这单本来就付过了. 两个码两条文案, 模型才不会把前者说成后者.
+    """
+    mall.request("POST", _pay_url()).mock(
+        return_value=httpx.Response(
+            409,
+            json={
+                "error": {
+                    "code": "invalid_order_status",
+                    "message": "订单当前的状态不允许这个操作",
+                }
+            },
+        )
+    )
+
+    with pytest.raises(RefusedActionError) as excinfo:
+        await call(client, "pay_my_order", order_no=ORDER_NO, one_shot=PAYLOAD)
+
+    assert "订单详情" in str(excinfo.value)
+    assert excinfo.value.code == "invalid_order_status"
+
+
+async def test_insufficient_balance_points_at_recharging(client, mall) -> None:
+    """余额不够 → 「先去充值」—— 这一条是唯一"还能救"的付款失败."""
+    mall.request("POST", _pay_url()).mock(
+        return_value=httpx.Response(
+            400,
+            json={"error": {"code": "insufficient_balance", "message": "余额不足"}},
+        )
+    )
+
+    with pytest.raises(RefusedActionError) as excinfo:
+        await call(client, "pay_my_order", order_no=ORDER_NO, one_shot=PAYLOAD)
+
+    assert "充值" in str(excinfo.value)
+
+
+async def test_the_pay_tool_asks_for_no_password_at_all(client) -> None:
+    """工具签名里只有 `order_no` —— 这一条是"密码只能在闭包里"的机械证据.
+
+    schema 那条断言 (test_provider) 看的是生成出来的参数表; 这一条看的是**函数
+    本体的签名**: 连一个给密码留的位置都没有. 两者是同一件事的两面 —— 前者能被
+    一次 schema 后处理绕过去, 后者不能.
+    """
+    pay = tools_of(client)["pay_my_order"]
+
+    assert set(inspect.signature(pay.fn).parameters) == {"order_no"}
+
+
+# 端到端那一层 (装配 → 工具 → 商城) 里, 载荷到不了工具时的行为由
+# `test_pay_without_a_password_never_calls_the_mall` 钉住; `one_shot` 这条通道
+# 在**提供者**那一侧的样子见 `test_provider.test_the_one_shot_payload_reaches_...`.

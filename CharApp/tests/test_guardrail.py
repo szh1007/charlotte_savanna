@@ -1,12 +1,16 @@
-"""护栏插件: 写操作预算 8 次 + 单笔金额上限 5000 元.
+"""护栏插件: 写操作预算 8 次 + 单笔金额上限 5000 元 + 代付挂起.
 
-这一条插件是 L2 的验收核心 —— 17 个工具里有 7 个能改数据, 而框架级的人工确认
+这一条插件是 L2 的验收核心 —— 那时 17 个工具里有 7 个能改数据, 而框架级的人工确认
 (L3) 还没来, 所以「模型连环下单」这件事全靠它拦. 测的就两件事:
 
 1. **拦得住**: 越界的那一次不执行 (商城那边一次请求都收不到), 理由回填给模型;
 2. **不误伤**: 只读操作一律不管; 预算内, 金额内的写操作照常放行; 新一轮运行归零.
 
-守卫的另一半 (身份不进 schema) 在 `test_provider.py`; 端到端那一次在
+L3b 起多了第三种表态 (issue 35): 代付那一条不说"不行", 说"等一下" —— 工具不执行,
+整次运行停在那里等人给结论. 它对预算的用法与前两条一样 (**拒绝优先于挂起**: 该拒
+的当场拒, 别让人白输一次密码).
+
+守卫的另一半 (身份与密码不进 schema) 在 `test_provider.py`; 端到端那一次在
 `test_cli.py` 与 `test_server.py` —— 这里测的是规则本身.
 """
 
@@ -18,16 +22,23 @@ import pytest
 from conftest import BUYER_ID, WRITE_TOOL_NAMES
 
 from CharAgent.hooks import Decision, HookPoint, HookRegistry
+from CharAgent.hooks.utils.types import Verdict
 from CharAgent.tests.mock_llm import make_tool_call
 from CharAgent.tool import Tool
 from CharApp.minimall.client import MinimallError
 from CharApp.minimall.guardrail import (
     MAX_ORDER_AMOUNT,
+    PAY_APPROVAL_PROMPT,
+    PAY_ORDER_TOOL,
     PLACE_ORDER_TOOL,
     WRITE_BUDGET,
     WriteGuardrail,
 )
-from CharApp.minimall.tools import WRITE_ANNOTATION_KEY, build_tools
+from CharApp.minimall.tools import (
+    PAYMENT_PASSWORD_FIELD,
+    WRITE_ANNOTATION_KEY,
+    build_tools,
+)
 
 # 假购物车: 护栏判金额只用得上 `get_cart` 这一个方法, 所以替身也就只有它
 # (协议按形状认, 与 MockLLM 同一套做法 —— 不必为它造一个完整的 MinimallClient).
@@ -261,6 +272,68 @@ async def test_the_amount_rule_only_looks_at_the_order() -> None:
         assert await verdict(guardrail, mall, name) is None
     assert mall.calls == 0
     assert guardrail.used == 4
+
+
+# ---------------------------------------------------------------------------
+# 代付: 不执行, 等人给结论 (L3b 的挂起)
+# ---------------------------------------------------------------------------
+
+
+async def test_pay_is_suspended_instead_of_refused() -> None:
+    """代付那一条的裁决是**挂起**而不是拒绝 —— 两者都不执行, 去向完全不同.
+
+    判据全落在 `Decision` 上: `verdict` 是第三态, 而且**带着两样给人看的东西** ——
+    一句话术 (前端印在卡上) 与一个缺失项 (前端据此渲染一个密码框). 少任何一样,
+    前端就弹不出那张能用的卡.
+
+    `needs` 里那个名字必须与工具/装配用的是同一个 (PAYMENT_PASSWORD_FIELD) ——
+    用户输的值就是按这个名字送回来的 (见 tools.py 的那条注释).
+    """
+    mall = FakeCart()
+    guardrail = make_guardrail(mall)
+
+    decision = await verdict(guardrail, mall, PAY_ORDER_TOOL)
+
+    assert decision is not None
+    assert decision.verdict is Verdict.REQUIRES_APPROVAL
+    assert decision.allowed is False
+    assert decision.needs == (PAYMENT_PASSWORD_FIELD,)
+    assert decision.prompt == PAY_APPROVAL_PROMPT
+    assert "支付密码" in decision.prompt, "这句话是给买家看的, 要说清他要做什么"
+    assert decision.reason is None, "挂起不是拒绝: 它没有回填给模型的失败文本"
+
+
+async def test_a_suspended_call_does_not_spend_the_budget() -> None:
+    """挂起那一次**没有执行**, 所以不占额度 (与拒绝同一条口径).
+
+    它确实会占掉恢复那一段的额度 —— 但那是另一次运行的另一本账 (恢复时会话要
+    重新装配, 账本从零开始), 不在这里.
+    """
+    mall = FakeCart()
+    guardrail = make_guardrail(mall)
+
+    await verdict(guardrail, mall, PAY_ORDER_TOOL)
+
+    assert guardrail.used == 0
+    assert mall.calls == 0, "挂起连购物车都不该去问 (它不判金额)"
+
+
+async def test_the_budget_beats_the_suspension() -> None:
+    """预算用完时**当场拒绝**, 不弹确认卡 —— 顺序上拒绝优先于挂起.
+
+    反过来的后果是白折腾: 买家输一次密码、点一次确认, 然后才被告知「今天的额度
+    用完了」. 那一次密码本来就不该被要.
+    """
+    mall = FakeCart()
+    guardrail = make_guardrail(mall)
+    for _ in range(WRITE_BUDGET):
+        await verdict(guardrail, mall, "add_to_cart")
+
+    decision = await verdict(guardrail, mall, PAY_ORDER_TOOL)
+
+    assert decision is not None
+    assert decision.verdict is Verdict.REJECT
+    assert str(WRITE_BUDGET) in decision.reason
 
 
 # ---------------------------------------------------------------------------

@@ -91,9 +91,11 @@ from CharAgent.server.conversations import (
 from CharAgent.server.history import (
     HISTORY_PATH,
     MESSAGES_FIELD,
+    PENDING_APPROVAL_FIELD,
     THREAD_ID_FIELD,
 )
 from CharAgent.server.utils.errors import (
+    ApprovalAlreadyHandledError,
     InvalidRequestError,
     RunNotFoundError,
     ServerAuthError,
@@ -101,6 +103,7 @@ from CharAgent.server.utils.errors import (
     ServerError,
     ThreadBusyError,
     ThreadNotFoundError,
+    ThreadSuspendedError,
 )
 from CharAgent.server.utils.types import (
     CANCELLED_CODE,
@@ -124,6 +127,7 @@ __all__ = [
     "MAX_TITLE_LENGTH",
     "MESSAGES_FIELD",
     "MESSAGE_FIELD",
+    "PENDING_APPROVAL_FIELD",
     "PINNED_AT_FIELD",
     "PINNED_FIELD",
     "PIN_PATH",
@@ -135,6 +139,7 @@ __all__ = [
     "TITLE_FIELD",
     "TITLE_PATH",
     "UPDATED_AT_FIELD",
+    "ApprovalAlreadyHandledError",
     "ContextProvider",
     "InvalidRequestError",
     "RunNotFoundError",
@@ -144,5 +149,6 @@ __all__ = [
     "SessionProvider",
     "ThreadBusyError",
     "ThreadNotFoundError",
+    "ThreadSuspendedError",
     "create_app",
 ]

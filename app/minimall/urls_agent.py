@@ -11,6 +11,7 @@ from .views_agent import (
     AgentOrderCancelView,
     AgentOrderDetailView,
     AgentOrderListView,
+    AgentOrderPayView,
     AgentProductDetailView,
     AgentProductListView,
     AgentProfileView,
@@ -47,6 +48,12 @@ urlpatterns = [
         "orders/<str:order_no>/cancel/",
         AgentOrderCancelView.as_view(),
         name="order_cancel",
+    ),
+    # 代付 (issue 35): 买家在自己页面上输的那次密码, 经恢复请求带到这里
+    path(
+        "orders/<str:order_no>/pay/",
+        AgentOrderPayView.as_view(),
+        name="order_pay",
     ),
     path("refunds/", AgentRefundView.as_view(), name="refunds"),
 ]

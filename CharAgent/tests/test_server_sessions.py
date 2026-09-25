@@ -28,6 +28,7 @@ from CharAgent.server.utils.errors import (
     ServerConfigError,
     ServerError,
     ThreadBusyError,
+    ThreadSuspendedError,
 )
 from CharAgent.stream import EventType, StreamEvent
 
@@ -269,7 +270,7 @@ async def test_a_session_that_is_still_running_is_never_evicted() -> None:
     running = await registry.acquire(context())  # 占着不放 (模拟一次运行中)
     await asyncio.sleep(0.06)  # 空闲计时早就超了, 但它在忙
 
-    assert registry.evict_idle() == (), "正忙的那个不该出现在淘汰名单里"
+    assert await registry.evict_idle() == (), "正忙的那个不该出现在淘汰名单里"
     assert registry.thread_ids == ("toy:chat-1",)
 
     registry.release(running.session.thread_id)
@@ -302,11 +303,11 @@ async def test_reading_an_entry_refreshes_its_idle_timer() -> None:
     registry.release(first.session.thread_id)
     await asyncio.sleep(0.06)
 
-    assert registry.entry("toy:chat-1") is None, "超时的那条在只读查里被清掉"
+    assert await registry.entry("toy:chat-1") is None, "超时的那条在只读查里被清掉"
 
     kept = await registry.acquire(context())
     registry.release(kept.session.thread_id)
-    assert registry.entry("toy:chat-1") is kept, "刚用过的当然还在"
+    assert await registry.entry("toy:chat-1") is kept, "刚用过的当然还在"
 
 
 async def test_evict_idle_reports_what_it_dropped_and_keeps_the_rest() -> None:
@@ -319,11 +320,11 @@ async def test_evict_idle_reports_what_it_dropped_and_keeps_the_rest() -> None:
     registry.release(right.session.thread_id)
     await asyncio.sleep(0.06)
 
-    dropped = registry.evict_idle()
+    dropped = await registry.evict_idle()
 
     assert set(dropped) == {"toy:left", "toy:right"}
     assert registry.thread_ids == ()
-    assert registry.evict_idle() == (), "再清一次什么都没了 (幂等)"
+    assert await registry.evict_idle() == (), "再清一次什么都没了 (幂等)"
 
 
 async def test_a_busy_session_is_not_dropped_even_when_it_looks_idle() -> None:
@@ -333,7 +334,7 @@ async def test_a_busy_session_is_not_dropped_even_when_it_looks_idle() -> None:
     await registry.acquire(context())
     await asyncio.sleep(0.06)
 
-    dropped = registry.evict_idle()
+    dropped = await registry.evict_idle()
 
     assert dropped == ()
     assert registry.thread_ids == ("toy:chat-1",)
@@ -397,3 +398,121 @@ async def test_an_evicted_session_comes_back_with_its_history() -> None:
     assert "订单到哪了" in seen, "新会话把上一段的提问水合回来了"
     assert "答好了" in seen, "上一段的答复也在"
     assert seen[-1] == "那什么时候能到"
+
+
+# ---------------------------------------------------------------------------
+# 未决挂起那一道闸门 (issue 34): 判据在库里, 而恢复与取消要放行
+# ---------------------------------------------------------------------------
+
+
+class FakeApprovals:
+    """挂起判据的替身: 一份「哪几段会话还挂着」的名单 (真判据在 PG, 见 app 那份).
+
+    为什么在这里替它: 本文件测的是**登记表**怎么用那个判据 (拦谁、放谁、不淘汰谁),
+    而判据本身是一条 SQL (由 issue 34 的 pg_db 用例与 server 那份端到端用例守).
+    """
+
+    def __init__(self, *threads: str) -> None:
+        self.threads = set(threads)
+        self.asked: list[str] = []
+
+    async def __call__(self, thread_id: str) -> bool:
+        self.asked.append(thread_id)
+        return thread_id in self.threads
+
+
+async def test_a_suspended_conversation_refuses_a_new_question() -> None:
+    """挂着等人的会话不许接新提问 (409, 码与「会话忙」分开) —— 而恢复放行.
+
+    两半都要: 拦是因为新的一句问话会与那次未决的调用撞在同一份存档上; 放行恢复
+    是因为那**正是**解决这次挂起的动作, 拦它等于把用户锁在门外.
+    """
+    provider = FakeSessions()
+    approvals = FakeApprovals("toy:chat-1")
+    registry = SessionRegistry(provider, suspended=approvals)
+
+    with pytest.raises(ThreadSuspendedError) as caught:
+        await registry.acquire(context())
+
+    assert caught.value.code == "thread_suspended"
+    assert caught.value.status_code == 409
+    assert provider.sessions == [], "被拦下的那次连会话都不该建"
+
+    # 恢复那条路照常放行 (它去解决这次挂起)
+    entry = await registry.acquire(context(), resuming=True)
+    assert entry.session.thread_id == "toy:chat-1"
+    registry.release("toy:chat-1")
+
+
+async def test_resuming_reassembles_the_session_with_this_context() -> None:
+    """`resuming=True` 会**丢掉缓存的那个会话**, 让业务用这次的上下文重新装配.
+
+    为什么非要这样 (而不是复用): 恢复会带一份**一次性载荷** (如支付密码), 而工具
+    是装配时用闭包捕获凭据的 —— 复用旧会话等于把那份载荷丢掉, 于是工具手里没有
+    它需要的东西. 代价很小: 会话的内存状态本来就从快照来 (那正是 resume 的定义).
+    """
+    provider = FakeSessions()
+    registry = SessionRegistry(provider)
+    first = await registry.acquire(context())
+    registry.release(first.session.thread_id)
+
+    again = await registry.acquire(context(), resuming=True)
+
+    assert again.session is not first.session, "重新装配了一个"
+    assert len(provider.sessions) == 2
+
+
+async def test_a_session_waiting_for_a_decision_is_never_evicted() -> None:
+    """挂着等人的会话不淘汰 (它是「正在干活」的另一形态).
+
+    淘汰只丢内存缓存, 但那种「用户回来点确认时那口记忆得重建」的代价没有理由白付
+    —— 而判据现成 (同一个查询).
+    """
+    provider = FakeSessions()
+    approvals = FakeApprovals()  # 一开始没挂着 (不然这一次 acquire 也会被拦下)
+    registry = SessionRegistry(provider, idle_ttl_seconds=0.05, suspended=approvals)
+    first = await registry.acquire(context())
+    registry.release(first.session.thread_id)
+    # 那次运行挂起了 (库里的那一行变了) —— 之后它就一直在等人给结论
+    approvals.threads.add("toy:chat-1")
+    await asyncio.sleep(0.06)
+
+    asked_before = approvals.asked.count("toy:chat-1")
+    dropped = await registry.evict_idle()
+
+    assert dropped == (), "还挂着的那段不该被淘汰"
+    assert registry.thread_ids == ("toy:chat-1",)
+    assert approvals.asked.count("toy:chat-1") > asked_before, "淘汰那一趟真的问过它"
+
+
+async def test_the_gate_is_not_consulted_when_it_is_not_configured() -> None:
+    """没注入判据 = 没有这道闸门 (没配记录层的装配): 行为与从前一字不变."""
+    provider = FakeSessions()
+    registry = SessionRegistry(provider)
+
+    entry = await registry.acquire(context())
+
+    assert entry.session.thread_id == "toy:chat-1"
+    assert await registry.has_pending_approval("toy:chat-1") is False
+
+
+async def test_forget_drops_one_conversation_on_purpose() -> None:
+    """`forget` 是明确动作: 丢掉那一段, 下一次 acquire 重新装配 (缓存而不是真相).
+
+    目前唯一的调用方是「取消一次挂起」: 那一刻会话内存里那份历史停在「欠着一条
+    调用的结果」的半路上, 而那条调用永远不会执行了 —— 那种形状发给模型会被上游
+    拒掉, 所以必须让这段缓存作废, 由下一次装配从快照水合 (那时欠着的那条会被补上).
+    """
+    provider = FakeSessions()
+    registry = SessionRegistry(provider)
+    first = await registry.acquire(context())
+    registry.release(first.session.thread_id)
+
+    assert registry.forget("toy:chat-1") is True
+    assert registry.thread_ids == ()
+    assert registry.forget("toy:chat-1") is False, "再丢一次就什么都没丢 (幂等)"
+
+    again = await registry.acquire(context())
+
+    assert again.session is not first.session, "重新装配了一个 (装配处会带上水合)"
+    assert len(provider.sessions) == 2

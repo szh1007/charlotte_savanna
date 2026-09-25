@@ -11,6 +11,8 @@
 - **decide (裁决类点)**: 无人注册 → 放行且不产生挂起点; 插件不表态 (None) /
   明确放行 → 放行; 任一拒绝 → 拒绝且原因取第一个拒绝者的; 插件坏了
   (抛异常 / 返回认不出的东西) → **fail closed** (按拒绝处理并记入 failures)
+- **第三态 (需人工确认)**: 三种形状各自的构造期校验; 拒绝**优先于**挂起
+  (不看注册顺序 —— 顺序是装配的偶然事实)
 
 被测对象是纯注册表 (不接 loop); loop 触发点集成见 test_loop_events.py.
 
@@ -19,8 +21,11 @@
 - 插上去的插头按登记顺序被叫到, 普通函数和 async 函数都认.
 - 观察点的插头坏了只烧自己的保险丝: 记一笔 (failures) 然后继续叫下一个, 不把
   整个问答搞砸. 它说什么都只是说说 (返回值没人看).
-- 带开关那个插座 (工具执行前) 上, 插头说的话算数: 说「不许」就真的不通电, 而
-  它自己坏了按「不许」处理 —— 悄悄失效的护栏比没有护栏更危险.
+- 带开关那个插座 (工具执行前) 上, 插头说的话算数: 说「不许」就真的不通电, 说
+  「这台得问人」就停下等人; 它自己坏了按「不许」处理 —— 悄悄失效的护栏比没有
+  护栏更危险.
+- 两块牌子同时举起来 (既有「不许」又有「得问人」) 时,**「不许」说了算** ——
+  要问的那件事压根不该问.
 - 但拔总电源 (CancelledError / 取消) 不算插头故障 —— 直接放行, 插件不许挡着
   用户点「停止」.
 """
@@ -38,6 +43,7 @@ from CharAgent.hooks import (
     HookFailure,
     HookPoint,
     HookRegistry,
+    Verdict,
 )
 from CharAgent.hooks.registry import INTERCEPT_FAILED_REASON
 
@@ -224,13 +230,61 @@ def test_a_rejection_must_carry_a_reason() -> None:
     with pytest.raises(HookConfigError, match="必须给出原因"):
         Decision.reject("   ")
     with pytest.raises(HookConfigError, match="必须给出原因"):
-        Decision(allowed=False)
+        Decision(Verdict.REJECT)
 
     assert Decision.reject("金额超上限").reason == "金额超上限"
+    assert Decision.reject("金额超上限").verdict is Verdict.REJECT
     assert Decision.allow().allowed is True
+    assert Decision.allow().verdict is Verdict.ALLOW
     assert Decision.allow().reason is None
     with pytest.raises(HookConfigError, match="放行不该带原因"):
-        Decision(allowed=True, reason="没人会读的备注")
+        Decision(Verdict.ALLOW, reason="没人会读的备注")
+
+
+def test_a_suspension_must_carry_a_prompt() -> None:
+    """挂起不给话术 → 构造期就报错 (前端会弹出一张没有字的确认卡)."""
+    with pytest.raises(HookConfigError, match="必须给出 prompt"):
+        Decision.requires_approval("   ")
+    with pytest.raises(HookConfigError, match="必须给出 prompt"):
+        Decision(Verdict.REQUIRES_APPROVAL)
+
+    decision = Decision.requires_approval(
+        "这一单要付款了, 需要你输一次支付密码", needs=("payment_password",)
+    )
+    assert decision.verdict is Verdict.REQUIRES_APPROVAL
+    # 三种态里只有放行算「放行」: 挂起的工具同样不执行
+    assert decision.allowed is False
+    assert decision.prompt == "这一单要付款了, 需要你输一次支付密码"
+    assert decision.needs == ("payment_password",)
+    assert decision.reason is None
+
+
+def test_the_three_shapes_refuse_each_others_fields() -> None:
+    """三种形状各自只带自己该带的东西 (混着填 = 写错了, 当场报)."""
+    # 挂起不是拒绝: reason 是回填给模型的失败文本, 而挂起这一轮不继续
+    with pytest.raises(HookConfigError, match="挂起不该带拒绝原因"):
+        Decision(Verdict.REQUIRES_APPROVAL, prompt="确认一下", reason="顺手的备注")
+    # 拒绝没有要去问的人, 自然也没有话术与缺失项
+    with pytest.raises(HookConfigError, match="拒绝不该带确认话术"):
+        Decision(Verdict.REJECT, reason="超预算", prompt="要确认吗")
+    with pytest.raises(HookConfigError, match="拒绝不该带确认话术"):
+        Decision(Verdict.REJECT, reason="超预算", needs=("payment_password",))
+    # 放行什么都没说
+    with pytest.raises(HookConfigError, match="放行不该带原因"):
+        Decision(Verdict.ALLOW, prompt="没人会读的话")
+    with pytest.raises(HookConfigError, match="放行不该带原因"):
+        Decision(Verdict.ALLOW, needs=("payment_password",))
+    # needs 里每一项都要有名字: 空串会让前端渲染出一个没有名字的输入框
+    with pytest.raises(HookConfigError, match="非空短名字"):
+        Decision.requires_approval("确认一下", needs=("  ",))
+
+
+def test_a_pure_yes_no_confirmation_needs_nothing_extra() -> None:
+    """纯是 / 否的确认 (如「下单前确认一下」) 的 needs 是空的 —— 合法形状."""
+    decision = Decision.requires_approval("确认要下单吗")
+
+    assert decision.needs == ()
+    assert decision.prompt == "确认要下单吗"
 
 
 async def test_decide_on_empty_registry_allows_without_suspending() -> None:
@@ -288,6 +342,55 @@ async def test_decide_uses_the_first_rejection_reason() -> None:
     assert decision.reason == "写操作次数已达上限"
     assert calls == ["first", "second"], "后面的插件照常被叫到 (不短路)"
     assert registry.failures == []
+
+
+async def test_decide_returns_the_first_suspension() -> None:
+    """要人工确认的那一条: 结论原样带回 (话术与缺失项都要在), 取第一个说的人.
+
+    两条都要看到被叫过 (裁决点不短路), 但一次只挂一条 —— 后面那条对前端没有
+    增量信息 (确认卡一次只弹一张).
+    """
+    calls: list[str] = []
+
+    def first(**kwargs: object) -> Decision:
+        calls.append("first")
+        return Decision.requires_approval("要输支付密码", needs=("payment_password",))
+
+    async def second(**kwargs: object) -> Decision:
+        calls.append("second")
+        return Decision.requires_approval("要确认下单")
+
+    registry = HookRegistry()
+    registry.register(DECIDE_POINT, first)
+    registry.register(DECIDE_POINT, second)
+
+    decision = await registry.decide(DECIDE_POINT, turn=1)
+
+    assert decision.verdict is Verdict.REQUIRES_APPROVAL
+    assert decision.prompt == "要输支付密码"
+    assert decision.needs == ("payment_password",)
+    assert calls == ["first", "second"], "第二条照常被叫到 (不短路)"
+    assert registry.failures == []
+
+
+async def test_a_rejection_outranks_a_suspension_whatever_the_order() -> None:
+    """拒绝优先于挂起 —— 两个注册顺序各验一遍.
+
+    业务侧会同时挂「护栏 (超预算就拒)」与「需确认」两条规则, 而**顺序是装配的
+    偶然事实**: 靠顺序的话, 一个会超预算的操作在「需确认」排在前面时会先弹一张
+    确认卡, 用户输完密码才被告知「不行」.
+    """
+    reject = Decision.reject("单笔金额超过上限")
+    suspend = Decision.requires_approval("要输支付密码", needs=("payment_password",))
+    for order in ((reject, suspend), (suspend, reject)):
+        registry = HookRegistry()
+        for verdict in order:
+            registry.register(DECIDE_POINT, lambda v=verdict, **kw: v)
+
+        decision = await registry.decide(DECIDE_POINT, turn=1)
+
+        assert decision.verdict is Verdict.REJECT, f"顺序 {order} 下没让拒绝说了算"
+        assert decision.reason == "单笔金额超过上限"
 
 
 async def test_decide_fails_closed_when_a_plugin_raises() -> None:

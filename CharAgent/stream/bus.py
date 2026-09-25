@@ -29,8 +29,10 @@ final 之后又来事件会让界面在给出答案后继续跳动. 这些顺序
    同一 id 在**闭合前**不得重复开启 —— 注意只约束未闭合期间: 真实上游的
    tool_call_id 是逐响应重置的 (如 `call_0` 每轮重来), 跨轮复用同一 id 属
    正常现象, 不是乱序
-3. 仍有未闭合 tool_call 时不得发终局事件 (工具结果必须回填完)
-4. final / error 是终局: 之后不得再发任何事件 (含第二个终局)
+3. 仍有未闭合 tool_call 时不得发终局事件 (工具结果必须回填完);
+   **只有 `approval_required` 是例外** —— 它说的正是「有一条调用**故意**没回填」
+   (那条调用在等人批), 拿「工具没回填完」去拦它, 等于把「挂起」误判成乱序
+4. final / error / approval_required 是终局: 之后不得再发任何事件 (含第二个终局)
 
 reasoning 是**旁路通道** (#11): 思维链增量随时可发 (它不参与主序列, 也不
 改变状态), 但终局之后同样不再出现. context_compacted (#7) 同理: 它描述
@@ -38,6 +40,7 @@ reasoning 是**旁路通道** (#11): 思维链增量随时可发 (它不参与�
 主序列即:
 
     [thinking] → (tool_call → tool_result)+ → [thinking] → ... → final | error
+                                                              | approval_required
 
 分发顺序: sink 先, on_event hook 随后 —— 事件流出口优先 (前端不被插件拖慢),
 插件异常由 hook 注册表隔离留痕 (见 hooks/registry.py), sink 异常则向上传播
@@ -165,7 +168,10 @@ class EventBus:
                 )
             self._open.discard(call_id)
         elif event_type in TERMINAL_TYPES:
-            if self._open:
+            if self._open and event_type is not EventType.APPROVAL_REQUIRED:
+                # 这一条防的是「说跑完了, 可工具结果还没回填」—— 前端会以为那一轮
+                # 完了. 挂起恰恰相反: 那条欠着的调用**就是**在等人批, 事件把它
+                # 明说了, 所以放它过去 (未闭合的 id 留在集合里, 反正下一步就 _closed)
                 raise EventSequenceError(
                     f"仍有 {len(self._open)} 个工具调用未回填结果, 不能发终局事件:"
                     f" {sorted(self._open)}"

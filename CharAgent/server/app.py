@@ -54,7 +54,8 @@ final, 失败与取消有本层补的 error (见 runs.py), 之后流才收线.
 
     GET /history
       ├─ 1. ContextProvider.provide(request)   <- 与上两条**同一道门**
-      └─ 2. 查登记表 → 200 {"thread_id", "messages": [{role, content}, ...]}
+      └─ 2. 查登记表 → 200 {"thread_id", "messages": [{role, content}, ...],
+                            "pending_approval": {...} | null}
             没聊过的会话编号 → 空列表 (不是 404: 那是「还没聊过」)
 
 它存在的理由只有一个: 浏览器刷新会把页面那一份渲染丢光, 得有个地方把聊过的话
@@ -62,6 +63,11 @@ final, 失败与取消有本层补的 error (见 runs.py), 之后流才收线.
 (那是给人看的那份**持久**记录, 重启之后照样在, 见 db/recorder.py), 没给就读会话
 对象手上那份内存里的历史. 两条来源**不互相兜底** (理由见 history.py): 同一段对话
 刷新两次看到不一样的东西, 是最难查的一类 bug.
+
+`pending_approval` 是 issue 34 加的那一块: 有任何**未决挂起**时, 前端靠它把那张
+确认卡**重建**出来 (刷新之后卡消失 = 用户永远完不成那次代付). 判据是库里那一行
+(`status = needs_approval AND approved_at IS NULL`), 不是本进程的内存 —— 挂起跨得了
+重启. 没给库的装配里它恒为 null (那种装配里挂起态本来就没有家).
 
 本路由不建会话、不占会话、不产生任何运行.
 
@@ -72,6 +78,31 @@ final, 失败与取消有本层补的 error (见 runs.py), 之后流才收线.
       ├─ 1. ContextProvider.provide(request)   <- 与上两条**同一道门**
       └─ 2. 按 (tenant_id, user_id) 查记录表的会话行 → 200 {"conversations": [...]}
             只给「还活着、聊过话、没被删」的, 置顶的在前; 给了 q 就再筛一层
+
+**再加一条路**: 给人对一次挂起的结论, 让那次运行接着跑 (issue 34)::
+
+    POST /runs/{run_id}/resume  {"decision": "approve" | "reject", "data": {...}}
+      ├─ 1. ContextProvider.provide(request)   <- 与另两条**同一道门**
+      ├─ 2. 读 decision (只认 approve / reject) 与可选的一次性载荷 (400)
+      ├─ 3. 查这一次运行有没有未决的挂起 → 没有: 404 (与取消那条同源: 不区分几种
+      │      「不在」的情形)
+      ├─ 4. **幂等**: 逐条认领 (运行, 消息, 调用) 那把键 —— 已有 409 (在办 / 已办),
+      │      双击与重发在这里被挡住 (这不是兜底, 是主线: 恢复动的是钱)
+      ├─ 5. 记下「谁在什么时候给的结论」+ 把这次运行的载荷组好
+      └─ 6. 占住会话 (resuming=True) + 起任务 + 流成 SSE (与 POST /runs 同一条收尾)
+
+它**与 POST /runs 同构** (同一道身份门、同样的 SSE、同一条收尾路径), 三处不同:
+
+- **不拆成 approve / reject 两个端点**: 拒绝**也要恢复** —— 拒绝原因当作那条工具
+  调用的结果回填, 模型据此继续答 (它与「当场拒绝」是两条路, 见 CONTEXT.md 的
+  「恢复」词条). 拆成两个端点, 「恢复」这件事就有两处实现, 而它们只差一行.
+- **要幂等**: 那一次恢复补做的可能就是「给这一单付款」, 而双击 / 前端重试 / 断线
+  重连都会产生第二次请求. 键是 `(运行, 那一条 assistant 消息, 那一次调用)` ——
+  三列, 少一列在多轮之间会撞 (上游每轮从 `call_0` 重新编号).
+- **`data` 会进本次运行的载荷**: `approve` 时它并进 `RunContext.payload` (与
+  `X-User-Id` 完全同一条路, 业务自己取), 于是「一次性载荷」(如支付密码, ADR-0015)
+  到得了工具手里; 为此会话会被**重新装配**一次 —— 工具是装配时闭包捕获出来的,
+  复用上一段那个会话等于把这份载荷丢掉 (见 `SessionRegistry.acquire` 的 resuming).
 
 另有三条写动作挂在同一段前缀下 (#20), 都是 POST + `X-Conversation-Id` 头::
 
@@ -102,21 +133,29 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass, replace
 from functools import partial
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.responses import Response, StreamingResponse
 
-from CharAgent.agent import RunContext
+from CharAgent.agent import Approval, RunContext
+from CharAgent.db.entities import RunStatus, ToolCall, ToolCallStatus
 from CharAgent.db.errors import DbError
 from CharAgent.db.repositories.base import Database
+from CharAgent.db.repositories.idempotency import PgIdempotencyStore
 from CharAgent.db.repositories.messages import MessagesRepository
+from CharAgent.db.repositories.runs import RunsRepository
 from CharAgent.db.repositories.threads import (
     DEFAULT_LIST_LIMIT,
     ThreadsRepository,
 )
+from CharAgent.db.repositories.tool_calls import ToolCallsRepository
+from CharAgent.retry.idempotency import IdempotencyKey, IdempotencyStore
+from CharAgent.retry.utils.types import ClaimStatus
 from CharAgent.server.conversations import (
     CONVERSATION_ID_FIELD,
     CONVERSATIONS_FIELD,
@@ -136,9 +175,11 @@ from CharAgent.server.conversations import (
 from CharAgent.server.history import (
     HISTORY_PATH,
     MESSAGES_FIELD,
+    PENDING_APPROVAL_FIELD,
     THREAD_ID_FIELD,
     conversation_messages,
     conversation_of,
+    pending_approval_row,
 )
 from CharAgent.server.runs import (
     RunHandle,
@@ -150,6 +191,7 @@ from CharAgent.server.runs import (
 from CharAgent.server.sessions import SessionEntry, SessionRegistry
 from CharAgent.server.sse import sse_stream
 from CharAgent.server.utils.errors import (
+    ApprovalAlreadyHandledError,
     InvalidRequestError,
     RunNotFoundError,
     ServerError,
@@ -163,8 +205,23 @@ from CharAgent.server.utils.types import (
     SessionProvider,
 )
 
+# 恢复那条路 (与 POST /runs 并肩: 一条起新问题, 一条给旧挂起一个结论)
+RESUME_PATH = "/runs/{run_id}/resume"
+
+# 恢复请求体里的三个字段: 人的结论 + 可选的说明 + 可选的一次性载荷
+DECISION_FIELD = "decision"
+DATA_FIELD = "data"
+REASON_FIELD = "reason"
+APPROVE_DECISION = "approve"
+REJECT_DECISION = "reject"
+
 # 事件流不该被任何一层缓存 (中间代理缓存 SSE 会把它变成"跑完才到")
 SSE_HEADERS = {"cache-control": "no-cache"}
+
+# 收尾派出去的那几个后台任务 (结幂等键那种): 留着引用, 免得被垃圾回收掉 ——
+# 一个被回收的收尾任务会**静默消失** (asyncio 只给一条警告), 而它要写的那笔账
+# 就永远结不了. 做完自己从集合里出去.
+_pending_tasks: set[asyncio.Task[None]] = set()
 
 # 同一棵日志树 (`runs.py` 那条说明适用): 框架只在自己**没有调用方可以上抛**的
 # 那几个点上说话, 这里之所以算一个, 是因为越界的取消请求不该悄悄过去 (见 cancel_run).
@@ -176,6 +233,7 @@ def create_app(
     context_provider: ContextProvider,
     session_provider: SessionProvider,
     database: Database | None = None,
+    idempotency: IdempotencyStore | None = None,
 ) -> FastAPI:
     """装配一个 agent 服务应用 (业务拿到 app 自己决定怎么跑).
 
@@ -193,18 +251,33 @@ def create_app(
             history.py). 另外: **快照后端用 Postgres 时它还是写帧的前置**
             (帧的 `thread_id` 指向记录层的 `charagent_threads`, ticket 24) ——
             这种组合下不给它就没人建那一行, 第一帧会以外键失败告终.
+            **审批恢复那条路也要它**: 挂起态的家在 `charagent_tool_calls`
+            (ADR-0014), 没有库就没有那个家, 于是 `POST /runs/{id}/resume` 这条
+            路由**不注册** (与 `GET /conversations` 同一条规矩: 与其给一个骗人的
+            答案, 不如这条路由压根不存在).
+        idempotency: 恢复那条路的幂等登记簿 (issue 32 的那两个实现之一). None
+            (默认) 表示「有库就用 `PgIdempotencyStore`」—— 那次恢复补做的可能是
+            「给这一单付款」, 而两次恢复会跨进程 (关掉浏览器隔天再点), 所以默认
+            落在库里而不是进程内. 传进来是给**测试**用的 (进程内实现零依赖).
 
     Returns:
         FastAPI: 装好的应用. 业务可以再往上加自己的路由与中间件 (框架占
         `POST /runs` / `POST /runs/{run_id}/cancel` / `GET /history` 三条路,
-        给了 `database` 再多几条会话路由).
+        给了 `database` 再也一条 `POST /runs/{run_id}/resume` 与几条会话路由).
     """
-    registry = SessionRegistry(session_provider)
+    # 挂起那一道闸门的判据: 这段会话还有没有未决的挂起 (要查库, 见 sessions.py)
+    calls_repo = None if database is None else ToolCallsRepository(database)
+    runs_repo = None if database is None else RunsRepository(database)
+    approvals = None if calls_repo is None else _pending_approvals_of(calls_repo)
+    registry = SessionRegistry(session_provider, suspended=approvals)
     runs = RunRegistry()
     # 记录表那条线: 没给库就是 None, 于是下面两处各自退回「没有记录层」的行为
     # (历史读会话内存 / 会话列表这条路由不注册) —— 与从前逐字一样
     messages_repo = None if database is None else MessagesRepository(database)
     threads_repo = None if database is None else ThreadsRepository(database)
+    replay_guard: IdempotencyStore | None = idempotency
+    if replay_guard is None and database is not None:
+        replay_guard = PgIdempotencyStore(database)
 
     app = FastAPI()
     # 两张表挂到 app.state 上: 排查时看得见「现在有哪些会话 / 哪些运行在跑」,
@@ -280,17 +353,24 @@ def create_app(
         3. **对身份** —— 这次运行登记时算的是哪段会话 (`RunHandle.thread_id`) 与
            这次请求认出来的那段会话必须是同一个. 判据只有这一个, 请求体里没有
            任何字段能影响它 —— 「不能取消别人的运行」就是这么兑现的.
+            **挂起中的运行走另一条路** (issue 34): 它没有任务可取消 (那次 HTTP
+           请求早就结束了), 要收的是库里那两行 —— 见下面那一步.
         4. **`task.cancel()`** —— 取消就是这一下 (与客户端 Ctrl-C 走的同一套语义,
            见 `client/app.py` 的 KillSwitch). 之后不再等: 运行怎么收尾是它自己的
            事, 客户端等的是**事件流上的终局事件**, 不是这个响应.
+           **挂起中**的运行改为: 那条等着人批的调用落成 `cancelled` + 那次运行从
+           `waiting_user` 推进到 `cancelled` (状态机允许的那一步). 于是「这次挂起
+           被收掉了」在库里成立, 用户之后可以正常接着聊 (新提问不再被 409 拦下).
 
         Returns:
-            JSONResponse: 200 + `{"run_id", "status": "cancelling"}` —— 只声明
-            「请求收到了」, 不声明「已经停了」(那是事件流说了算的).
+            JSONResponse: 200 + `{"run_id", "status"}` —— 正在跑的是 `cancelling`
+            (只声明「请求收到了」, 不声明「已经停了」: 那是事件流说了算的); 挂起中
+            的是 `cancelled` (那一下是**当场**写完的, 没有事件流可等).
 
         Raises:
             ServerAuthError: 业务那个插座没认下这次请求 (框架翻成 401).
-            RunNotFoundError: 不在册 / 已结束 / 不属于这段会话 (框架翻成 404).
+            RunNotFoundError: 不在册 / 已结束 / 没有未决挂起 / 不属于这段会话
+                (框架翻成 404).
         """
         context = await context_provider.provide(request)
         handle = runs.get(run_id)
@@ -309,10 +389,140 @@ def create_app(
             # 任务的收尾回调是「稍后」跑的 (call_soon), 所以出册比任务结束晚一瞬 ——
             # 这一小段窗口里表里还有它, 却已经停稳了: 只认「还在跑的」, 别去 cancel
             # 一个已经结束的任务 (那一下什么也不会发生, 但回一个 200 就成了假话).
+            if await _cancel_suspension(
+                run_id,
+                context=context,
+                calls=calls_repo,
+                runs=runs_repo,
+                registry=registry,
+            ):
+                return JSONResponse({"run_id": run_id, "status": "cancelled"})
             raise RunNotFoundError(_not_running_message(run_id))
 
         handle.task.cancel()
         return JSONResponse({"run_id": run_id, "status": "cancelling"})
+
+    if calls_repo is not None and runs_repo is not None and replay_guard is not None:
+
+        @app.post(RESUME_PATH, response_class=StreamingResponse)
+        async def resume_run(run_id: str, request: Request) -> Response:
+            """给一次挂起一个结论, 让那次运行接着跑 (SSE, 与 `POST /runs` 同构).
+
+            七步, 顺序有意 (**认领键在前, 占会话在后**):
+
+            1. **先认证** —— 同一道门. 审批是有影响力的动作 (它决定一笔钱付不付),
+               不认识的人一个字都不该看到.
+            2. **再读请求体** —— `decision` 只认 `approve` / `reject`; 看不懂就
+               400, 不替它猜一个 (猜错了就是替人做了一次决定).
+            3. **查未决挂起** —— 这一次运行有哪几条调用在等人批; 一条都没有 → 404
+               (跑完了 / 压根没挂起过 / 不是这段会话的, 三种**共用同一条回答**, 与
+               取消那条同源: 本层分不出来, 也不该分).
+            4. **认领幂等键** —— 每个 `(运行, 消息, 调用)` 一把. 抢不到 → 409:
+               在办 (`approval_in_progress`) 或已办 (`approval_already_applied`).
+               **这一步是主线不是兜底**: 双击的第二下、前端重发、断线重连都会到这儿,
+               而那一次恢复补做的可能是「给这一单付款」.
+               **为什么认领排在占会话之前**: 「这一次审批是不是有人在办」该由那把键
+               回答 —— 它是**跨进程**的判据 (重启之后内存里那个「忙」字早没了, 而键
+               还在库里). 反过来说, 会话忙不忙只是本进程的一件事, 拿它当这道闸门
+               会把「另一个进程正在处理这次审批」漏过去.
+               **不配 TTL 是刻意的**: 一把会过期的键等于「过一会儿可以再点一次」,
+               而重放的是一笔付款. 真卡住了 (进程死在恢复的半路) 有另一条明路 ——
+               取消这次挂起重新发起 (`POST /runs/{id}/cancel`), 那条路上用户知道
+               自己在做什么.
+            5. **组载荷** —— `approve` 时 `data` 并进本次运行的上下文 (与 `X-User-Id`
+               同一条路: 框架不解释它, 原样交给业务的装配).
+            6. **占住会话 (resuming=True)** —— 跳过「有没有未决挂起」那道闸门
+               (我们正是在解决它), 并让业务用**这次的上下文**重新装配一次会话
+               (一次性载荷要进工具的闭包).
+               这一步**可能失败** (会话正忙 / 业务装配报错), 而上面那把键已经到手了
+               —— 失败时把它**放回去** (`_release_claims`), 否则这次挂起会被一把
+               没人管的键永久锁死.
+            7. **起任务 + 流成 SSE** —— 与 `POST /runs` 收尾同一条路 (任务自己的
+               收尾回调: 关流 / 解绑 / 放开 / 出册), 另外多出两笔**等运行结束才结**
+               的账 (见 `ApprovalBookkeeping`): 幂等键 (跑到头了标完成; 没跑成就释放,
+               于是用户能重试这一次恢复) 与「谁批的 / 什么时候批的」那一对列
+               (ADR-0014 —— 它是挂起那道闸门的判据, 所以**不能提前写**: 提前写了,
+               这次恢复要是死在半路, 用户既恢复不了也取消不了).
+
+            响应头同样带 `X-Run-Id` (就是路径里那个运行编号) —— 前端按它继续读流.
+
+            **路径里那个 `run_id` 是记录层那一行** (前端从 `GET /history` 的
+            `pending_approval.run_id` 取), 不是事件流里那个进程内编号 —— 两个编号
+            在框架里本来就是两回事 (见 `server/runs.py` 的 `new_run_id`): 前者是
+            「哪一次运行」, 后者是「这一次 HTTP 请求推的这条流」. 拿错了会 404
+            (`没有等着人确认的调用`), 不会做错事.
+
+            Returns:
+                StreamingResponse: 这次恢复的事件流 (终局事件照旧恰好一个).
+
+            Raises:
+                ServerAuthError: 业务那个插座没认下这次请求 (框架翻成 401).
+                InvalidRequestError: 请求体不成形 / `decision` 不是那两个值 (400).
+                RunNotFoundError: 这次运行没有未决的挂起 (框架翻成 404).
+                ApprovalAlreadyHandledError: 这一份审批已经有人在办 / 办完了 (409).
+                ThreadBusyError: 这段会话正有另一次运行在跑 (框架翻成 409).
+            """
+            context = await context_provider.provide(request)
+            approval, data = await read_approval(request)
+            pending = [
+                row
+                for row in await calls_repo.list_pending_approvals(context.thread_id)
+                if row.run_id == run_id
+            ]
+            if not pending:
+                raise RunNotFoundError(_not_pending_message(run_id))
+            # 一次性载荷并进本次运行的上下文 (与 X-User-Id 同一条路: 框架不解释它,
+            # 原样交给业务的装配). 只并 approve 的 —— 拒绝那一路没有东西要给工具
+            if approval.approved and data:
+                context = replace(context, payload={**context.payload, **data})
+            # 认领在前, 占会话在后: 「这一次审批有人在办」该由**那一把键**回答
+            # (它是跨进程的判据), 而不是由「会话忙不忙」顺带答一句. 代价是认领之后
+            # 还有可能失败 (会话忙 / 装配出错) —— 那一笔必须**放回去**, 否则这把键
+            # 永久卡在「在办」, 用户既恢复不了也不知道为什么 (见下面的 except)
+            keys = tuple(_approval_key(row) for row in pending)
+            claimed: list[IdempotencyKey] = []
+            try:
+                for key in keys:
+                    await _claim_or_refuse(replay_guard, key)
+                    claimed.append(key)
+                entry = await registry.acquire(context, resuming=True)
+            except BaseException:
+                await _release_claims(replay_guard, claimed)
+                raise
+            thread_id = context.thread_id
+
+            stream = RunStream(run_id)
+            entry.router.bind(stream)
+            task = asyncio.create_task(
+                # 任务名带上 run_id: 排查时能在任务列表里一眼找到是哪次运行
+                entry.session.resume(run_id=run_id, approval=approval),
+                name=f"charagent-resume:{run_id}",
+            )
+            runs.register(RunHandle(run_id=run_id, thread_id=thread_id, task=task))
+            task.add_done_callback(
+                partial(
+                    _finish_run,
+                    entry=entry,
+                    thread_id=thread_id,
+                    stream=stream,
+                    registry=registry,
+                    runs=runs,
+                    # 这两笔账都要等运行结束才知道怎么结 (见 ApprovalBookkeeping)
+                    bookkeeping=ApprovalBookkeeping(
+                        guard=replay_guard,
+                        keys=keys,
+                        calls=calls_repo,
+                        approvals=tuple(pending),
+                        decided_by=context.user_id if approval.approved else None,
+                    ),
+                )
+            )
+
+            return StreamingResponse(
+                sse_stream(stream, task),
+                media_type=SSE_MEDIA_TYPE,
+                headers={RUN_ID_HEADER: run_id, **SSE_HEADERS},
+            )
 
     @app.get(HISTORY_PATH)
     async def session_history(request: Request) -> JSONResponse:
@@ -337,24 +547,38 @@ def create_app(
         4. **方法**: 只登记 GET. 同一个路径上的别的写意图 (POST / DELETE) 由框架的
            路由层回 405 + `Allow: GET`, 不必在这里手写一段拒绝 —— 但**要有用例钉住**
            (看起来像「什么都不做」, 其实是被别处的机制挡下了).
+        5. **未决挂起一起带上** (issue 34): 有挂起时多一块 `pending_approval`, 前端
+           靠它把确认卡**重建**出来 —— 刷新之后卡消失, 用户就永远完不成那次代付.
+           判据在库里 (那一行 `needs_approval` 且还没批), 不在本进程内存.
 
         Returns:
-            JSONResponse: 200 + `{"thread_id": ..., "messages": [{"role", "content"}]}`.
+            JSONResponse: 200 + `{"thread_id": ..., "messages": [...],
+            "pending_approval": {...} | null}` (`pending_approval` 恒在, 没有时是
+            null —— 字段恒定比「有时多一个」好消费).
 
         Raises:
             ServerAuthError: 业务那个插座没认下这次请求 (框架翻成 401).
         """
         context = await context_provider.provide(request)
+        pending: dict[str, Any] | None = None
         if messages_repo is None:
             # 没有记录层: 读会话内存那份 (与从前一样), 过滤按角色
-            entry = registry.entry(context.thread_id)
+            entry = await registry.entry(context.thread_id)
             messages = [] if entry is None else conversation_of(entry.session.history)
         else:
             # 有记录层: 只读记录表 (已经按 hidden 过滤过), 读不到也不退回内存
             rows = await messages_repo.list_conversation(context.thread_id)
             messages = conversation_messages(rows)
+            # 挂起那一块也来自库 (与「这段会话还在等着人批吗」同一个查询)
+            pending = pending_approval_row(
+                await calls_repo.list_pending_approvals(context.thread_id)
+            )
         return JSONResponse(
-            {THREAD_ID_FIELD: context.thread_id, MESSAGES_FIELD: messages}
+            {
+                THREAD_ID_FIELD: context.thread_id,
+                MESSAGES_FIELD: messages,
+                PENDING_APPROVAL_FIELD: pending,
+            }
         )
 
     if threads_repo is not None:
@@ -507,6 +731,179 @@ def create_app(
     return app
 
 
+@dataclass(frozen=True, slots=True)
+class ApprovalBookkeeping:
+    """一次恢复**跑完之后**要结的两笔账: 幂等键 + 「谁批的」那一对列.
+
+    为什么打成一个包: 它们同进同出, 而且**都要等运行结束才知道怎么结** —— 那一次
+    恢复成了就标完成、记下是谁批的; 没成就把键释放掉 (用户该能重试), 而那一行**一个
+    字都不动** (还挂着, 闸门也还拦着).
+
+    为什么不在这之前就把 `approved_at` 写上 (「人已经点过确认了」): 那样一来, 那份
+    挂起在库里就不再是「未决」, 而**这次恢复还没跑完** —— 进程要是死在半路, 用户
+    既恢复不了 (没有未决的了) 也取消不了 (取消那条路也只认未决的), 那次挂起就成了
+    一个谁也碰不到的死结. 现在这样, 跑了半路的恢复留下的是「还挂着 + 键在办」:
+    他要么等一下重试 (键被释放之后), 要么走取消那条明路.
+
+    attributes:
+        guard: 这次认领幂等键的那个登记簿.
+        keys: 认领到的那几把键 (一次挂起一般只有一把, 见 loop 的「一次只挂一条」).
+        calls: 工具调用表的读写口 (记「谁批的」用它). **必填**: 这个包只在那条
+            带库的恢复路由里造出来 —— 没有库就没有那条路由 (见 `create_app`).
+        approvals: 这次要结的那几条挂起 (就是键对应的那几行).
+        decided_by: 谁给的结论; **None = 这次是拒绝** —— 拒绝不写 `approved_by`
+            (那一列的字面意思是「谁批的」, 而没有人批准过它; 拒绝本身记在状态与
+            结果里, 见 `ToolCallsRepository.set_status`).
+    """
+
+    guard: IdempotencyStore
+    keys: tuple[IdempotencyKey, ...]
+    calls: ToolCallsRepository
+    approvals: tuple[ToolCall, ...]
+    decided_by: str | None = None
+
+
+def _pending_approvals_of(
+    calls: ToolCallsRepository,
+) -> Callable[[str], Awaitable[bool]]:
+    """造「这段会话有没有未决挂起」那个判据 (交给会话登记表当闸门).
+
+    单独一个函数而不是就地写个 lambda: 判据要有**一个**出处 —— 会话登记表 (拦新
+    提问) 与历史接口 (重建确认卡) 问的是同一个问题, 两处各写一遍迟早在某一边漏掉
+    `approved_at IS NULL` 那一半.
+    """
+
+    async def suspended(thread_id: str) -> bool:
+        return bool(await calls.list_pending_approvals(thread_id))
+
+    return suspended
+
+
+def _approval_key(row: ToolCall) -> IdempotencyKey:
+    """一条未决的挂起 → 它那把幂等键.
+
+    键是**三列**: 运行 + 发起它的那条 assistant 消息 + 模型给的那次调用编号.
+    少一列在多轮之间会撞 —— 上游每轮都从 `call_0` 重新编号 (见 db/schema.py 那段
+    「为什么主键要三列」).
+    """
+    return IdempotencyKey(f"resume:{row.run_id}:{row.message_id}:{row.tool_call_id}")
+
+
+async def _release_claims(
+    guard: IdempotencyStore, claimed: Sequence[IdempotencyKey]
+) -> None:
+    """把刚认领到手的键**放回去** (那一次恢复没能跑起来的补救).
+
+    为什么要补这一手: 认领与占会话之间还隔着几步 (会话可能正忙、业务装配可能报错),
+    而那几步失败时这一次根本没跑 —— 键却已经认领了. 不放回去的话, 那一把会永久
+    卡在「在办」: 用户再点被 409 挡下, 而库里没有任何东西告诉他为什么. 释放
+    正是幂等协议里「动作失败就放行」那一手 (见 `retry/idempotency.py`).
+
+    **释放本身失败只记一笔, 不掩盖真正的失败原因**: 调用方是那条 except, 它正要
+    把原来的异常抛给上层 —— 这里再抛一个只会让人看不到真正发生了什么. 写不进去的
+    后果与上面那个「卡住」相同, 而它还有取消挂起那条明路 (`_cancel_suspension`).
+    """
+    for key in claimed:
+        try:
+            await guard.release(key)
+        except BaseException as exc:  # 没有调用方可以上抛 (见 docstring)
+            logger.warning(
+                "审批的幂等键没能放回去 (这把键会卡住): %s", exc, exc_info=True
+            )
+
+
+async def _claim_or_refuse(guard: IdempotencyStore, key: IdempotencyKey) -> None:
+    """认领这把键; 抢不到就当场回 409 (两情形用不同的码, 见下面的理由).
+
+    Args:
+        guard: 幂等登记簿 (issue 32 的实现之一).
+        key: 这一条挂起的键.
+
+    Raises:
+        ApprovalAlreadyHandledError: 已经有人在办 (`approval_in_progress`) 或已经
+            办完 (`approval_already_applied`). 两个码分开是为了让前端能说实话:
+            「提交中, 请稍候」与「这一条已经处理过了」对用户是两件事.
+    """
+    result = await guard.claim(key)
+    if result.status is ClaimStatus.CLAIMED:
+        return
+    if result.status is ClaimStatus.COMPLETED:
+        raise ApprovalAlreadyHandledError(
+            f"这次的审批已经处理过了 (键 {key.value!r} 已登记完成): "
+            "不必再点一次 —— 刷新页面对一下最新状态",
+            code="approval_already_applied",
+        )
+    raise ApprovalAlreadyHandledError(
+        f"这次的审批正在处理中 (键 {key.value!r} 已有人认领): "
+        "请等这一次跑完, 不要重复提交",
+        code="approval_in_progress",
+    )
+
+
+async def _cancel_suspension(
+    run_id: str,
+    *,
+    context: RunContext,
+    calls: ToolCallsRepository | None,
+    runs: RunsRepository | None,
+    registry: SessionRegistry,
+) -> bool:
+    """把一次**挂起中**的运行收掉 (给它一个「取消」的结论).
+
+    与「取消一次正在跑的运行」是两件事: 挂起的运行没有任务可取消 (它那次 HTTP 请求
+    早就结束了, 会话也放开了), 要收的是库里的两处:
+
+    - 那条等着人批的调用 → `cancelled` (**同时记下是谁收的**: 那一对列正是挂起
+      这道闸门的判据, 写完它新提问就放行了)
+    - 那次运行 → 从 `waiting_user` 推进到 `cancelled` (状态机允许的那一步)
+
+    两笔都由判据驱动: 只要那条调用行还是未决的, 它就是这次挂起; 一行都没有就说明
+    「没有未决挂起」, 于是这里什么都不做 (调用方按 404 处理).
+
+    Returns:
+        bool: 真的收到了一次挂起 True; 这次运行没有未决挂起 False.
+    """
+    if calls is None or runs is None:
+        return False
+    pending = [
+        row
+        for row in await calls.list_pending_approvals(context.thread_id)
+        if row.run_id == run_id
+    ]
+    if not pending:
+        return False
+    for row in pending:
+        await calls.set_status(
+            row.run_id,
+            row.message_id,
+            row.tool_call_id,
+            ToolCallStatus.CANCELLED,
+            approved_by=context.user_id,
+        )
+    # 推进那一行: 从「等人」到「取消」. 推进不成 (别人先动了手, 比如同时发来的两个
+    # 取消) 也算成功 —— 结果是同一个: 这次挂起已经被收掉了
+    await runs.try_transition(run_id, RunStatus.WAITING_USER, RunStatus.CANCELLED)
+    # 会话内存里那份历史停在「欠着这条调用的结果」的半路上, 而它永远不会执行了 ——
+    # 那种形状直接发给模型会被上游拒掉 (真机上就是这样: 取消之后问一句, 模型 API
+    # 回 400「assistant 带 tool_calls 后面必须跟上 tool 消息」). 丢掉这份缓存, 下一次
+    # 提问会重新装配并从快照水合 —— 那时欠着的那条会被补一条「结果未知」的回填
+    registry.forget(context.thread_id)
+    return True
+
+
+def _not_pending_message(run_id: str) -> str:
+    """「这次运行没有未决的挂起」那一句事实.
+
+    与 `_not_running_message` 同一个形状 (也同一个理由): 跑到这儿有四条来路 ——
+    已经恢复过了 / 被取消了 / 压根没有这个编号 / 不属于这段会话 —— 本层**刻意不
+    区分**, 因为区分等于确认「这个编号真实存在过」.
+    """
+    return (
+        f"运行 {run_id!r} 没有等着人确认的调用: 它可能已经恢复过, 可能被取消过, "
+        f"也可能压根没有这个编号 —— 本层刻意不区分这几种"
+    )
+
+
 def _not_running_message(run_id: str) -> str:
     """「这次运行不在册」那一句事实 —— 三种情况**共用同一条文本**.
 
@@ -619,6 +1016,48 @@ async def read_title(request: Request) -> str:
     return title
 
 
+async def read_approval(request: Request) -> tuple[Approval, dict]:
+    """请求体 → (人的结论, 一次性载荷) —— 恢复那条路读的两个字段.
+
+    `decision` **只认** `approve` / `reject` 两个值 (严格认类型与 `read_pinned`
+    同源): 拼错的字符串不能被悄悄当成拒绝 —— 那是一次**替人做的决定**, 而用户以为
+    自己批准了.
+
+    `data` 是可选的 (要并进本次运行载荷的那些东西, 如支付密码); 给了就必须是 JSON
+    对象 —— 拒绝那一路不看它 (没有东西要给工具).
+
+    `data.reason` 是可选的一句拒绝说明 (面向模型): 不给就用框架那句缺省文案
+    (见 `Approval.reject`), 它明确劝模型别重试 —— 再试一次就是再弹一张卡.
+
+    Raises:
+        InvalidRequestError: 不是 JSON 对象 / `decision` 不是那两个值 / `data` 不是
+            对象 / `reason` 不是字符串.
+    """
+    payload = await _read_object(request)
+    decision = payload.get(DECISION_FIELD)
+    data = payload.get(DATA_FIELD)
+    if data is not None and not isinstance(data, dict):
+        raise InvalidRequestError(
+            f"{DATA_FIELD!r} 应是 JSON 对象, 收到 {type(data).__name__}",
+            code="invalid_approval_data",
+        )
+    if decision == APPROVE_DECISION:
+        return Approval.approve(), data or {}
+    if decision == REJECT_DECISION:
+        reason = (data or {}).get(REASON_FIELD)
+        if reason is not None and not isinstance(reason, str):
+            raise InvalidRequestError(
+                f"{REASON_FIELD!r} 应是字符串, 收到 {type(reason).__name__}",
+                code="invalid_approval_reason",
+            )
+        return Approval.reject(reason), {}
+    raise InvalidRequestError(
+        f"{DECISION_FIELD!r} 只认 {APPROVE_DECISION!r} 或 {REJECT_DECISION!r}, "
+        f"收到 {decision!r}",
+        code="invalid_decision",
+    )
+
+
 async def read_pinned(request: Request) -> bool:
     """从请求体里取「置顶还是取消置顶」(#20 那条路由).
 
@@ -694,11 +1133,13 @@ def _finish_run(
     stream: RunStream,
     registry: SessionRegistry,
     runs: RunRegistry,
+    bookkeeping: ApprovalBookkeeping | None = None,
 ) -> None:
-    """任务收尾 (正常 / 失败 / 取消都恰好一次): 关流 + 解绑路由 + 会话放开 + 运行出册.
+    """任务收尾 (正常 / 失败 / 取消都恰好一次): 关流 + 解绑路由 + 会话放开 + 运行出册
+    (+ 恢复那条路还要结两笔账).
 
-    四件事都是同步的, 也都不需要 await —— 收尾路径上多一个 await 就多一处可能
-    被再次取消的地方.
+    四件登记动作都是同步的, 也都不需要 await —— 收尾路径上多一个 await 就多一处
+    可能被再次取消的地方 (**结那两笔账是唯一例外**: 它要写库, 于是派一个任务去做).
 
     为什么不等响应生成器来收 (两处都在收尾, 只相信一个): 生成器是**消费端**,
     它可能压根没被启动 (客户端在响应头发出去之前就走了), 也可能不被关闭 (硬断连
@@ -708,6 +1149,10 @@ def _finish_run(
     三件登记动作包在 `finally` 里: 关流那一步万一炸了 (它在跟异常对象打交道),
     会话也不能被永久占住、登记表里也不能留幽灵条目 —— 这些是**生命周期的保证**,
     优先级高于「把错误原样传上去」. 回调里的异常仍然会冒出来被 asyncio 打出来.
+
+    Args:
+        bookkeeping: 恢复那条路要结的两笔账 (幂等键 + 「谁批的」); None = 这不是
+            一次恢复 (起新问题那条路没有这些账).
     """
     try:
         close_stream(task, stream)
@@ -715,3 +1160,48 @@ def _finish_run(
         entry.router.unbind(stream)
         registry.release(thread_id)
         runs.finish(stream.run_id)
+        if bookkeeping is not None:
+            # 这里**不能直接 await** (本回调是同步的, 而且上面那几行不许被一个
+            # await 拖住): 派一个任务去结这两笔账
+            # 引用留着并挂到任务集里 (RUF006 的那条理由): 不留引用的话, 这个任务
+            # 可能被垃圾回收掉 —— 那时它会**静默消失**, 而那两笔账就永远结不了
+            settled = asyncio.create_task(
+                _settle_approvals(task, bookkeeping),
+                name=f"charagent-approvals:{stream.run_id}",
+            )
+            _pending_tasks.add(settled)
+            settled.add_done_callback(_pending_tasks.discard)
+
+
+async def _settle_approvals(
+    task: asyncio.Task[None], bookkeeping: ApprovalBookkeeping
+) -> None:
+    """把这次恢复的两笔账结掉: 跑完了标完成 + 记下是谁批的, 没跑成就释放键.
+
+    **不抛**: 它跑在一个独立的收尾任务里, 没有调用方接得住异常 —— 抛出去只会是
+    一条没人认领的 asyncio 警告. 写不进去就记一笔 (那条键会卡在「在办」, 用户下次
+    点会被 409 挡下 —— 这时他能走的路是取消这次挂起重新发起, 见 `resume_run`).
+
+    `BaseException` 也兜: 收尾任务在**事件循环关停**时会被取消 (进程退出), 那不该
+    变成一条 traceback 噪音 —— 而它要写的是一笔「这次审批处理过了」的账, 丢了大
+    不了下次点被挡住 (安全的那一侧).
+    """
+    applied = task.cancelled() is False and task.exception() is None
+    try:
+        for key in bookkeeping.keys:
+            if applied:
+                await bookkeeping.guard.complete(key, {"applied": True})
+            else:
+                await bookkeeping.guard.release(key)
+        if applied and bookkeeping.decided_by:
+            # 批过了而且真的做完了: 记下「谁在什么时候拍的板」(ADR-0014 的那一对列).
+            # 闸门问的正是这一对 —— 于是它到这里才打开, 而**不是**在前一步
+            for row in bookkeeping.approvals:
+                await bookkeeping.calls.record_decision(
+                    row.run_id,
+                    row.message_id,
+                    row.tool_call_id,
+                    decided_by=bookkeeping.decided_by,
+                )
+    except BaseException as exc:  # 没有调用方可以上抛的收尾路径 (见 docstring)
+        logger.warning("审批那两笔账没能结掉 (下次点会被挡住): %s", exc, exc_info=True)

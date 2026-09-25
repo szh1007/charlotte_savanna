@@ -210,7 +210,7 @@ def test_a_stranger_tool_gets_a_neutral_phrase() -> None:
 
 
 def test_every_tool_has_something_to_say() -> None:
-    """**17 个工具一个不少** —— 少一个的表现是页面上那一行掉进兜底.
+    """**18 个工具一个不少** —— 少一个的表现是页面上那一行掉进兜底.
 
     两边都要钉: 少了 = 买家看到一句模糊的话 (而且开发时看不出来); 多了 = 表里留着
     一个已经不存在的工具, 没人会去删.

@@ -34,10 +34,11 @@ User = get_user_model()
 
 TOKEN = "test-internal-token"
 
-# 17 个端点: (url name, 路径参数, 方法). 认证测试遍历用, 路径参数与请求体都取假值
-# —— 权限校验先于数据查询, 因此假 slug / 假订单号也能验证"被拒"这件事.
-# 后面 8 行是 issue 11 的写端点 (POST / PATCH / DELETE 各要单独验一遍: 认证挂在
-# 方法上, 只验 GET 会漏掉整片写操作面).
+# 18 个端点: (url name, 路径参数, 方法). 认证测试遍历用, 路径参数与请求体都取假值
+# —— 权限校验先于数据查询 (也先于请求体校验), 因此假 slug / 假订单号 / 空请求体
+# 也能验证"被拒"这件事.
+# 后面 9 行是写端点: issue 11 的 8 个 (POST / PATCH / DELETE 各要单独验一遍 ——
+# 认证挂在方法上, 只验 GET 会漏掉整片写操作面) 与 issue 35 的代付.
 AGENT_URLS = [
     ("product_list", {}, "get"),
     ("product_detail", {"slug": "whatever"}, "get"),
@@ -54,6 +55,7 @@ AGENT_URLS = [
     ("cart_clear", {}, "delete"),
     ("order_list", {}, "post"),
     ("order_cancel", {"order_no": "whatever"}, "post"),
+    ("order_pay", {"order_no": "whatever"}, "post"),
     ("refunds", {}, "post"),
     ("refunds", {}, "get"),
 ]
@@ -76,7 +78,7 @@ def _clear_minimall_cache():
 
 @override_settings(CHARAPP_INTERNAL_TOKEN=TOKEN)
 class AgentAuthTest(TestCase):
-    """内部令牌认证 — 全部 17 个端点, 三种失败方式."""
+    """内部令牌认证 — 全部 18 个端点, 三种失败方式."""
 
     def setUp(self):
         self.client = APIClient()

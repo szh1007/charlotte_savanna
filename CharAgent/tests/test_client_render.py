@@ -1,7 +1,7 @@
-"""client 终端渲染测试: 七类事件怎么画成一行字.
+"""client 终端渲染测试: 八类事件怎么画成一行字.
 
 场景 → 断言:
-- 七类事件各有一行版式, 标签是 `[thinking]` 这类方括号词 (可 grep)
+- 八类事件各有一行版式, 标签是 `[thinking]` 这类方括号词 (可 grep)
 - tool_call 的 arguments 是原始 JSON 字符串: 能解析就压成紧凑一行, 畸形就
   原样打并标注 (畸形本身是要给用户看的信息, #2)
 - tool_result 成功给「名字 ok (耗时): 摘要」, 失败给可操作错误
@@ -47,7 +47,7 @@ def rendered(event_type: EventType, *, color: bool = False, **data: Any) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 七类事件各一行
+# 八类事件各一行
 # ---------------------------------------------------------------------------
 
 
@@ -178,6 +178,36 @@ def test_context_compacted_line_reports_the_degradation() -> None:
     assert "ModelTimeoutError" in line
 
 
+def test_approval_required_line_shows_the_prompt_and_what_is_missing() -> None:
+    """approval_required: 哪一步 + 业务给的那句话 + 还缺什么 (#25 HITL)."""
+    line = rendered(
+        EventType.APPROVAL_REQUIRED,
+        tool_call_id="call_0",
+        tool_name="pay_my_order",
+        prompt="这一单要付款了, 需要你输一次支付密码",
+        needs=["payment_password"],
+        turn=1,
+    )
+    assert line.startswith("[approval_required] ")
+    assert "pay_my_order" in line
+    assert "这一单要付款了, 需要你输一次支付密码" in line
+    assert "payment_password" in line
+
+
+def test_approval_required_line_handles_a_yes_no_confirmation() -> None:
+    """纯是 / 否的确认 (needs 为空): 不印那个括号 (别留一对空括号)."""
+    line = rendered(
+        EventType.APPROVAL_REQUIRED,
+        tool_call_id="call_0",
+        tool_name="place_order",
+        prompt="确认要下单吗",
+        needs=[],
+        turn=2,
+    )
+    assert line.endswith("确认要下单吗")
+    assert "还缺" not in line
+
+
 def test_final_line_reports_end_state_not_the_body() -> None:
     """final 只报「怎么结束的」; 正文由调用方从 LoopResult.content 打 (权威值)."""
     line = rendered(
@@ -204,12 +234,16 @@ def test_error_line_carries_code_and_message() -> None:
 
 
 def test_unknown_event_type_is_printed_raw_not_dropped() -> None:
-    """未知事件类型 (如以后新增的 approval_required) 原样吐出, 不 KeyError 也不丢."""
+    """未知事件类型 (以后新增、本文件还没跟上的那种) 原样吐出, 不 KeyError 也不丢.
+
+    造一个枚举里现在没有的名字来验这条兜底: `approval_required` 以前是这里的样本,
+    但 issue 34 把它落成真事件之后, 它走的就是正经渲染那条路了 (见上一条).
+    """
     printer = EventPrinter(color=False)
     line = printer.format_event(
-        StreamEvent(type=cast(EventType, "approval_required"), seq=1, data={"a": 1})
+        StreamEvent(type=cast(EventType, "brand_new_event"), seq=1, data={"a": 1})
     )
-    assert line.startswith("[approval_required]")
+    assert line.startswith("[brand_new_event]")
     assert "{'a': 1}" in line
 
 

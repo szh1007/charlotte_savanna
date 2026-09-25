@@ -83,6 +83,7 @@ from CharAgent.client import (
     use_utf8_stdio,
 )
 from CharAgent.db import PgDatabase
+from CharAgent.retry.idempotency import IdempotencyStore
 from CharAgent.server import ServerAuthError, create_app
 from CharAgent.stream import EventSink
 from CharApp.minimall.client import HEADER_TOKEN, HEADER_USER_ID
@@ -308,7 +309,12 @@ def build_service(writer: Callable[[str], Any]) -> MinimallService:
     )
 
 
-def create_minimall_app(service: MinimallService, config: ServerConfig) -> FastAPI:
+def create_minimall_app(
+    service: MinimallService,
+    config: ServerConfig,
+    *,
+    idempotency: IdempotencyStore | None = None,
+) -> FastAPI:
     """装配客服服务应用: 框架的 `create_app` + 业务的两个插座.
 
     怎么跑 (uvicorn / 测试里的 ASGI transport / 别的) 由调用方决定 —— 与框架同一条
@@ -317,6 +323,13 @@ def create_minimall_app(service: MinimallService, config: ServerConfig) -> FastA
     Args:
         service: 进程级零件与装配.
         config: 监听地址 / 端口 / 校验令牌.
+        idempotency: 审批恢复那条路的幂等登记簿 (见框架 `create_app` 的同名参数).
+            None (默认) 表示「有库就用库里的那份」—— **生产两个入口都不传**, 于是
+            两次恢复跨得了进程 (关掉浏览器隔天再点也认得出这是同一笔付款).
+            传进来是给**用例**用的: 假库跑不了 `PgIdempotencyStore` 那条
+            `INSERT ... RETURNING` (它认的是真 SQL 的冲突语义). 为什么透传而不是
+            让用例自己搭一个 app: 这条路由**是"接线"的一部分** —— 绕开本函数就等于
+            绕开了「业务把库交给框架了吗」那一步, 而那一步正是服务层用例要守的.
 
     Returns:
         FastAPI: 装好的应用 —— 框架占那七条路 (问一句 / 停一次 / 读历史 / 列会话,
@@ -336,6 +349,7 @@ def create_minimall_app(service: MinimallService, config: ServerConfig) -> FastA
         # GET /conversations (前端左侧列表要的). 没配库时这里是 None, 那两条路
         # 各自退回「没有记录层」的样子 (见 create_app 的说明).
         database=service.database,
+        idempotency=idempotency,
     )
 
 

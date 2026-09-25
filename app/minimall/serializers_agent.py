@@ -21,6 +21,7 @@ from .models import (
     Order,
     OrderItem,
     Product,
+    Profile,
     RefundRequest,
     ShippingAddress,
 )
@@ -267,6 +268,23 @@ class AgentRefundCreateSerializer(serializers.Serializer):
     order_no = serializers.CharField()
 
 
+class AgentOrderPaySerializer(serializers.Serializer):
+    """代付: 请求体里**只有**买家的支付密码 (6 位).
+
+    `write_only` 与买家面那个 (`serializers.PayOrderSerializer`) 同一档, 但这里的
+    理由更硬: 这个体走的是**助手这条链** —— 那份密码是用户在自己页面上输的, 由恢复
+    请求带进来 (ADR-0015), 不该有任何一条路径把它渲染回响应体.
+
+    形状校验照抄买家面 `PayOrderSerializer` (恰好 6 位): 端点只拦形状, 「密码对不对」
+    是 service 在锁内问 `Profile.check_payment_password` 的事 —— 这里放开一位,
+    不等于那边也放开 (与本节其他请求体同一条纪律).
+    """
+
+    payment_password = serializers.CharField(
+        write_only=True, min_length=6, max_length=6
+    )
+
+
 # ---------------------------------------------------------------------------
 # 写操作的返回体
 # ---------------------------------------------------------------------------
@@ -332,3 +350,41 @@ class AgentOrderCancelSerializer(AgentOrderDetailSerializer):
     def get_restocked_count(self, obj) -> int:
         """这次回滚了几件库存 —— 数字来自订单明细 (它就是当初扣掉的那批)."""
         return sum(item.quantity for item in obj.items.all())
+
+
+class AgentOrderPaidSerializer(AgentOrderDetailSerializer):
+    """付款的回执: 订单详情 + 付完之后**余额还剩多少**.
+
+    「付了多少」不另立字段 —— 它就是同一份体里的 `total_amount` (付款付的正是整单
+    金额). 两个字段报同一个数只会让模型犹豫该念哪一个; 真的出现部分付款那天, 那
+    才是它值得单列的时候.
+
+    名字用**过去式** (`Paid`) 与请求体那个 (`AgentOrderPaySerializer`) 分开: 一个
+    是 `payment_password` 的请求, 一个是付完之后那张订单. 两个同名类在同一个模块里
+    并存, import 时谁都会抓错.
+    """
+
+    balance_remaining = serializers.SerializerMethodField()
+
+    class Meta(AgentOrderDetailSerializer.Meta):
+        fields = [
+            *AgentOrderDetailSerializer.Meta.fields,
+            "balance_remaining",
+        ]
+
+    def get_balance_remaining(self, obj) -> str:
+        """付完之后买家的余额 —— **重新查一次**, 不用内存里那份.
+
+        `pay_order` 在锁里改的余额, 而端点手上那个买家对象是请求一开始读出来的:
+        它的 `Profile` 一旦在别处被读过, 就是**付款之前**的数. 回执里报一个过期的
+        余额, 买家会以为助手少扣了钱 —— 所以这里一律以库里的当前值为准.
+
+        没有档案时给 "0.00" (与 `AgentProfileSerializer.get_balance` 同一档):
+        走得通付款就一定查得到档案 (`pay_order` 要锁它), 这个分支是防御性的.
+        """
+        balance = (
+            Profile.objects.filter(user_id=obj.user_id)
+            .values_list("balance", flat=True)
+            .first()
+        )
+        return f"{balance:.2f}" if balance is not None else "0.00"

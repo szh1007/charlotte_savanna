@@ -27,7 +27,7 @@
        快照 (供 checkpoint 落盘).
 - turn_count  整个 run 里模型决策了几次 = 几次 generate 调用.
 
-循环怎么停 (三种停法, 区别很重要):
+循环怎么停 (四种停法, 区别很重要):
 1. 模型自己停: 读完历史后决定不再调工具, 直接给出最终答复
    (finish_reason=stop) -> 正常结束, outcome=FINISHED, content=最终答复
    例外: 模型没答完就被截断 (finish_reason=length), 内容不完整不能当答案
@@ -44,6 +44,11 @@
    半截, 不能当最终答复返回, outcome=SERVER_INTERRUPTED. 资源不足属瞬态,
    官方指引稍后重试 —— 但**重试不归本层** (归重试层), 本层只如实上报,
    由调用方决定是否重放
+4. 挂起等人停 (#25 HITL): 模型要调一个**需要用户本人确认**的工具 (裁决点回了
+   requires_approval), 于是那条调用**不执行**、整次运行停在半路 —— outcome=
+   SUSPENDED, 那条调用在历史里欠着结果, 人给了结论再从存档点接着跑
+   (AgentLoop.resume 的 approval). 它与上面三种的根本区别: 上面三种都是「这一段
+   跑完了」, 它只是**停住**, 所以下游不收尾、不写终态
 
 本文件其他要点:
 - 错误自纠错 (#2): 工具失败不终止 —— 失败原因以 tool 消息回填给模型
@@ -79,8 +84,9 @@
    reasoning 事件, 工具轮产 thinking + tool_call + tool_result, 收尾产恰好
    一个终局事件 (正常 final / 异常 error)
 3. hook (HookRegistry): 六个生命周期触发点 (扩展点), 空注册零开销.
-   其中 before_tool_execute 是**裁决类**点: 插件在那里可以拒绝 —— 被拒的
-   工具不执行, 拒绝原因当作一条工具失败回填 (走的就是下面的错误回填通道)
+   其中 before_tool_execute 是**裁决类**点: 插件在那里可以拒绝 (工具不执行,
+   拒绝原因当作一条工具失败回填, 走的就是下面的错误回填通道), 也可以要求人工
+   确认 (那条调用不执行, 整次运行挂在半路等人, 见循环怎么停第 4 条)
 
 存档线 (依然是「只加不改」):
 - 配了 saver + thread_id 时, 每 Turn 结束把进度落成一帧快照 (历史 + 计数器),
@@ -92,8 +98,10 @@
 - 续跑走 resume(快照): 把快照里的历史与计数器当起点接着跑 —— 已经做完的事都在
   历史里, 所以不会重做 (#5). 计数器一起接续, 于是「整个 run 最多几轮 / 多少
   token」的预算跨断点仍然算数
-- 快照停在「工具调用还没有结果」的半路时 (人工审批挂起点 #25), resume 先补做
-  那几条调用再继续, **不重复问模型一次** —— 「从挂起点恢复而非重跑」
+- 快照停在「工具调用还没有结果」的半路时 (人工审批挂起点 #25), resume 先了结
+  那几条调用再继续, **不重复问模型一次** —— 「从挂起点恢复而非重跑」. 而**了结
+  必须先有人的结论** (`approval=`: 批了就执行, 拒了就把原因当结果回填), 因为
+  那几条调用可能正是「给这一单付款」: 没有结论时本层当场报错, 不替人按确认键
 - 从**老**快照恢复 = time-travel: 新落的帧把 parent_id 指向那帧老快照, 历史就
   此岔出一条新分支 (#5)
 - 落盘失败**向上抛** (与 event_sink 同一条规矩): 存不下快照是严重问题, 悄悄吞掉
@@ -139,6 +147,7 @@ from CharAgent.agent.utils.events import (
     tool_result_data,
 )
 from CharAgent.agent.utils.messages import (
+    APPROVAL_ALREADY_PENDING_TEXT,
     TRUNCATION_CONDENSE_TEXT,
     TRUNCATION_CONTINUE_TEXT,
     accumulate_usage,
@@ -148,6 +157,8 @@ from CharAgent.agent.utils.messages import (
 )
 from CharAgent.agent.utils.types import (
     SERVER_INTERRUPTED,
+    Approval,
+    ApprovalRequest,
     LoopOutcome,
     LoopResult,
     LoopState,
@@ -160,14 +171,16 @@ from CharAgent.agent.utils.types import (
 from CharAgent.checkpoint.base import CheckpointSaver
 from CharAgent.checkpoint.utils.pending import pending_tool_calls
 from CharAgent.checkpoint.utils.types import (
+    SUSPENSION_REASON_APPROVAL,
     Checkpoint,
     CheckpointMetadata,
     CheckpointSource,
     CheckpointState,
+    Suspension,
     check_identifier,
 )
 from CharAgent.hooks.registry import HookRegistry
-from CharAgent.hooks.utils.types import HookPoint, ModelCallPhase
+from CharAgent.hooks.utils.types import HookPoint, ModelCallPhase, Verdict
 from CharAgent.model.protocol import ChatModel
 from CharAgent.model.utils.errors import ModelStatusError
 from CharAgent.model.utils.types import (
@@ -214,23 +227,25 @@ def _facts_of(
     calls: Sequence[ModelToolCall],
     *,
     index: int,
-    executions: Sequence[ToolExecution] | None = None,
+    results: Sequence[ToolExecution | ApprovalRequest] | None = None,
 ) -> list[ToolCallFact]:
-    """工具调用 (加它们的执行结果) → 事实列表 (记录层按它写 `charagent_tool_calls`).
+    """工具调用 (加它们的去向) → 事实列表 (记录层按它写 `charagent_tool_calls`).
 
-    两拍共用它: `executions` 为 None 是**执行前**那一拍 (状态是 PENDING, 还没有结果
+    两拍共用它: `results` 为 None 是**执行前**那一拍 (状态是 PENDING, 还没有结果
     与耗时), 给了就是**执行后**那一拍 (结论与耗时都在手上了). 合成一个函数而不是
     写两遍: 两拍的字段必须逐一对应 (少一个字段, 库里那一行就少一列事实).
 
     Args:
         calls: 模型这一轮要求的调用 (顺序即模型给的顺序).
         index: 发起它们的 assistant 消息在本次 run 历史里的下标.
-        executions: 与 calls 一一对应的执行结果; None 表示还没执行.
+        results: 与 calls 一一对应的去向 —— 一次执行的结果 (`ToolExecution`),
+            或者一条「要人批, 所以没执行」的裁决 (`ApprovalRequest`); None 表示
+            还没跑到执行那一步.
 
     Returns:
         list[ToolCallFact]: 与 calls 同序.
     """
-    if executions is None:
+    if results is None:
         return [
             ToolCallFact(
                 message_index=index,
@@ -241,7 +256,23 @@ def _facts_of(
             for call in calls
         ]
     facts: list[ToolCallFact] = []
-    for call, execution in zip(calls, executions, strict=True):
+    for call, result in zip(calls, results, strict=True):
+        if isinstance(result, ApprovalRequest):
+            # 没执行的第三条去路 (前两条是成功与失败): 它在等人批. 状态直接是
+            # needs_approval —— 那是**结论**而不是过程 (「模型刚发起」那一拍早写
+            # 过了), 而话术与缺失项一起带上, 于是库里那一行自己就够前端重建卡片
+            facts.append(
+                ToolCallFact(
+                    message_index=index,
+                    tool_call_id=call.id,
+                    tool_name=call.name,
+                    arguments=call.arguments,
+                    outcome=ToolCallOutcome.NEEDS_APPROVAL,
+                    approval_prompt=result.prompt,
+                    approval_needs=result.needs,
+                )
+            )
+            continue
         facts.append(
             ToolCallFact(
                 message_index=index,
@@ -251,12 +282,10 @@ def _facts_of(
                 # 被护栏拒绝的那条也走这里 (它是 ok=False 的一次「执行」): 它同样
                 # 是一次调用, 同样要留下一行 —— 「模型想做什么」的证据不能漏
                 outcome=(
-                    ToolCallOutcome.SUCCEEDED
-                    if execution.ok
-                    else ToolCallOutcome.FAILED
+                    ToolCallOutcome.SUCCEEDED if result.ok else ToolCallOutcome.FAILED
                 ),
-                result=execution.content if execution.ok else execution.error,
-                duration_ms=round(execution.duration_ms),
+                result=result.content if result.ok else result.error,
+                duration_ms=round(result.duration_ms),
             )
         )
     return facts
@@ -401,12 +430,26 @@ class AgentLoop:
     # 工具执行
     # ------------------------------------------------------------------
 
-    async def _execute_one(self, call: ModelToolCall, *, turn: int) -> ToolExecution:
-        """执行单个工具调用: 查表 → 请插件裁决 → execute_tool (#2).
+    async def _execute_one(
+        self, call: ModelToolCall, *, turn: int, approved: bool = False
+    ) -> ToolExecution | ApprovalRequest:
+        """跑单个工具调用: 查表 → 请插件裁决 → execute_tool (#2); 或停在等人批.
 
         未知工具 (模型幻觉) 直接给可操作错误, **不进裁决点** —— 那道门是给
         「真实存在但这次不许跑」的工具准备的, 一个不存在的工具本来就不会执行,
         没有可拦的东西 (拦截插件因此总能拿到 tool 对象, 不必判空).
+
+        Args:
+            call: 模型要求的这一次调用.
+            turn: 第几轮 (裁决点的载荷).
+            approved: 人已经批过这一条 (HITL 的恢复段传 True, 见 resume). 它只抵消
+                「需人工确认」那一种裁决 —— **护栏的拒绝照常生效**: 挂起期间世界
+                可能变了 (预算用完 / 额度关闭), 那些规矩不该因为人点过一次确认就
+                静默放行.
+
+        Returns:
+            ToolExecution | ApprovalRequest: 执行结果, 或者一条「要人批, 所以没
+            执行」的裁决 (调用方据此挂起).
         """
         tool = self._tool_map.get(call.name)
         if tool is None:
@@ -423,33 +466,57 @@ class AgentLoop:
         decision = await self._hooks.decide(
             HookPoint.BEFORE_TOOL_EXECUTE, turn=turn, call=call, tool=tool
         )
-        if not decision.allowed:
+        if decision.verdict is Verdict.REJECT:
             # 被拒 = 这次工具调用失败, 走现成的「工具错误」通道回填 (拒绝原因是
             # Decision 的不变量: 拒绝必有原因, 见 hooks/utils/types.py)
             return ToolExecution(tool_name=call.name, ok=False, error=decision.reason)
+        if decision.verdict is Verdict.REQUIRES_APPROVAL and not approved:
+            # 要人批: 这一条不执行, 把裁决原样交出去 (由调用方决定挂起谁; 见
+            # _handle_tool_turn). prompt 与 needs 的取值由 Decision 的构造期校验
+            # 保证 (挂起必有话术), 所以这里不必再判空
+            return ApprovalRequest(
+                call=call,
+                prompt=decision.prompt,
+                needs=decision.needs,
+                turn=turn,
+            )
         return await execute_tool(tool, arguments=call.arguments)
 
     async def _execute_parallel(
-        self, calls: Sequence[ModelToolCall], *, turn: int
-    ) -> list[ToolExecution]:
+        self,
+        calls: Sequence[ModelToolCall],
+        *,
+        turn: int,
+        approved: frozenset[str] = frozenset(),
+    ) -> list[ToolExecution | ApprovalRequest]:
         """并行执行同一 assistant 消息的全部 tool_call (#1).
 
         return_exceptions=True 表示单条失败不中断整体 (部分失败语义);
         execute_tool 自身保证永不抛异常, 该参数是防御性显式声明 ——
         父 task 被 cancel (kill switch) 时 gather 仍会取消全部子任务并在
         await 点抛 CancelledError 传播, 不会把取消吞成普通失败.
+
+        Args:
+            calls: 同一轮里的全部调用 (顺序即模型给的顺序).
+            turn: 第几轮.
+            approved: 已经被人批过的调用编号集合 (HITL 恢复段传; 见 `_execute_one`).
+                编号按 `tool_call_id` 认 —— 上游每轮从 `call_0` 重新编号, 所以它
+                只在**同一批**里有意义, 而调用方的集合正是按同一批算的.
         """
         outcomes = await asyncio.gather(
-            *(self._execute_one(call, turn=turn) for call in calls),
+            *(
+                self._execute_one(call, turn=turn, approved=call.id in approved)
+                for call in calls
+            ),
             return_exceptions=True,
         )
-        executions: list[ToolExecution] = []
+        results: list[ToolExecution | ApprovalRequest] = []
         for call, outcome in zip(calls, outcomes, strict=True):
-            if isinstance(outcome, ToolExecution):
-                executions.append(outcome)
+            if isinstance(outcome, ToolExecution | ApprovalRequest):
+                results.append(outcome)
             else:
                 # 防御分支: 单个子任务被独立取消等非预期异常 (正常不达)
-                executions.append(
+                results.append(
                     ToolExecution(
                         tool_name=call.name,
                         ok=False,
@@ -457,7 +524,7 @@ class AgentLoop:
                         exception=outcome,
                     )
                 )
-        return executions
+        return results
 
     # ------------------------------------------------------------------
     # 主循环
@@ -549,6 +616,7 @@ class AgentLoop:
         *,
         loop_id: str | None = None,
         run_id: str | None = None,
+        approval: Approval | None = None,
     ) -> LoopResult:
         """从一帧快照接着跑 (断点续跑 / time-travel 的入口, #5).
 
@@ -558,7 +626,8 @@ class AgentLoop:
 
         两处与 run() 不同, 写在这里免得踩坑:
         - **只补做挂起点欠下的调用**: 快照停在「工具还没有结果」的半路 (人工审批
-          挂起, #25) 时, 先执行那几条调用再继续, 不重复问模型一次
+          挂起, #25) 时, 先执行那几条调用再继续, 不重复问模型一次 —— 而执行它们
+          必须先有人的结论 (`approval=`, 见下)
         - **事件序号从 1 重来**: 事件总线与 run 同生命周期 (每次 resume 都是一次
           新的执行), 续拉要看的是这一次的 seq
 
@@ -567,6 +636,18 @@ class AgentLoop:
             loop_id: 本次循环执行的编号; None 表示沿用快照里的那个 —— 「还是
                 同一次执行接着跑」(想另起一次就显式传新的). 与 `run_id` 不是一个
                 东西: 后者是记录层那一行账的编号, 由调用方给 (见 `run`).
+            run_id: 记录层那一行账的编号 (#22); None 表示这一段没有账 (没配记录层 /
+                调用方没开账). 传进来的编号会盖到**本次落的每一帧**上: HITL 的第二
+                段传的是原来那一行 (同一次运行接着跑 —— 命令行 `--resume` 则是新开
+                一行, 见 `ChatSession.resume`). 分工与 `loop_id` 的区别正在这里:
+                那个是「哪一次循环执行」(结构事实, 默认沿用), 这个是「记在哪一行账
+                上」(业务选择, 必须显式给).
+            approval: **人对这次挂起的结论** (#25 HITL); None 表示没有结论 —— 那
+                时这帧若欠着工具调用就当场报错 (见下), 因为「补做」等于把那条调用
+                真的执行掉. 批准 (`Approval.approve()`) 就照常补做; 拒绝
+                (`Approval.reject(原因)`) 则不执行, 把原因当那条调用的结果回填给
+                模型, 让它换个说法继续答 (拒绝**也要恢复**). 快照没有挂起时用不上
+                (传了也不影响).
 
         Returns:
             LoopResult: 本次执行的结果 —— turns 只含本次的轮次, turn_count 是
@@ -574,9 +655,10 @@ class AgentLoop:
 
         Raises:
             LoopConfigError: 本 loop 没配 saver / thread_id; 这帧快照属于别的会话
-                (拿错存档会把两段对话搅在一起, 必须拦下); 或者这帧的身份说明被剥离
+                (拿错存档会把两段对话搅在一起, 必须拦下); 这帧的身份说明被剥离
                 了 (帧 v5, 见 prompt/ref.py) 而调用方没有按引用把正文补回来 ——
-                补它要读盘, 那是会话层的事 (prompt.ref.restore_identity).
+                补它要读盘, 那是会话层的事 (prompt.ref.restore_identity); 或者这帧
+                是挂起点而调用方没有给 `approval` (没有人的结论就不补做).
         """
         if self._saver is None or self._thread_id is None:
             raise LoopConfigError(
@@ -612,6 +694,9 @@ class AgentLoop:
             # 调用方给 (本次续跑自己那一行账), 没给就是 None
             loop_id=loop_id or checkpoint.loop_id,
             run_id=run_id,
+            # 人的结论原样往下带 (没给就是 None: 挂起点那条路会在 _run 里被拦下,
+            # 而不是悄悄把欠着的调用执行掉)
+            approval=approval,
             # 引用从帧里来 (上面那条护栏保证了它已经被还原进历史), 不由调用方给
             prompt_ref=None,
         )
@@ -623,6 +708,7 @@ class AgentLoop:
         resume: Checkpoint | None,
         loop_id: str | None,
         run_id: str | None = None,
+        approval: Approval | None = None,
         prompt_ref: dict[str, str] | None = None,
         summary: str | None = None,
         summary_covers: int = 0,
@@ -666,7 +752,21 @@ class AgentLoop:
             # 调用补做完再继续 —— 那一轮模型早就决策过了, 不必再问它一次
             pending = pending_tool_calls(state.history)
             if pending:
-                response, calls = await self._complete_pending_turn(state, bus, pending)
+                if approval is None:
+                    # **没有人的结论就不补做** (DESIGN #25 的「绝不自动执行」):
+                    # 欠着的那条调用可能正是「给这一单付款」, 而补做就是把它真的
+                    # 执行掉 —— 框架绝不替人按这个确认键. 拦在这里, 命令行那条
+                    # `--resume` 就不会把一次挂起悄悄变成一次执行
+                    raise LoopConfigError(
+                        f"这帧快照是一次人工审批的挂起点 (还欠 {len(pending)} 条工具"
+                        f"调用的结果): 恢复它必须先有人给的结论 (approval=), 因为"
+                        "补做的就是把人批过的那一条真的执行掉 —— 没有结论时框架"
+                        "不替人做这个决定 (命令行那条路请在客服页面上确认, 或改用"
+                        "一条新提问接着聊)"
+                    )
+                response, calls = await self._complete_pending_turn(
+                    state, bus, pending, approval
+                )
                 await self._record_turn(
                     state,
                     response,
@@ -703,6 +803,11 @@ class AgentLoop:
 
             # 3. 每 Turn 结束: 历史快照 (供 checkpoint 落盘) + after_turn hook
             #    工具调用事实随这一轮的记录一起交给落库协作者 (见 _record_turn)
+            if state.outcome is LoopOutcome.SUSPENDED:
+                # 挂起那一帧有自己的标签: 读历史的人一眼看得出「这次运行停在这儿
+                # 等人」—— 它既不是普通一轮, 也不是补做挂起后落的那一帧 (那个叫
+                # SUSPENSION, 说的是「欠的调用补做完了」)
+                source = CheckpointSource.APPROVAL
             await self._record_turn(state, response, source=source, calls=calls)
             # 第一帧之后一律按普通轮记 (FORK 只指「从快照长出来的那一帧」)
             source = CheckpointSource.LOOP
@@ -723,6 +828,9 @@ class AgentLoop:
             # 最后一帧的编号: 下一轮提问拿它当 parent_id, 同一段会话的快照
             # 就串成一条链 (没配 saver 时恒为 None)
             last_checkpoint_id=state.last_checkpoint_id,
+            # 停在谁那儿等人 (#25): 非空时终局事件是 approval_required, 而恢复要
+            # 带上人的结论 (见 emit_terminal 与 resume)
+            approval=state.approval,
             # 用量分解随结果交回调用方 (记录层拿它们填 runs 的归因列);
             # 身份说明的引用也一起 —— 记录层用它填 runs.prompt_version
             prompt_ref=state.prompt_ref,
@@ -907,11 +1015,19 @@ class AgentLoop:
     ) -> list[ToolCallFact]:
         """工具轮处理: 叙述归 thinking → assistant 入历史 → 并行执行 → 回填 + 事件.
 
-        两条保真约定:
+        三条保真约定:
         - assistant 带 tool_calls 的消息**先入历史**, 保证「tool 消息紧跟对应
           assistant」的配对结构 (#10); 随后整体批量回填, 保持并行语义 (#1)
         - 工具轮打断拼合链 (content_parts.clear): 它之前的正文属过程叙述,
           不是最终答复的一部分 —— 弃之, 否则会混进最终答案
+        - **要人批的那一条不回填**: 它的结果就那么欠着, 那正是挂起的形状 ——
+          恢复时 `pending_tool_calls` 按「带 tool_calls 的 assistant 后面缺 tool
+          消息」把它找出来, 只补做它一条 (见 `_complete_pending_turn`)
+
+        **一次挂起只挂一条** (ADR-0014 的边界): 同一批里若有两条都要审批, 只挂
+        第一条 (按模型给的顺序), 其余以「请先处理前一条」的理由回填成普通失败 ——
+        「一次确认配一份一次性载荷」要求载荷归属无歧义, 而两张确认卡同时弹出来,
+        用户输的那个密码到底给了哪一条就成了说不清的事.
 
         Returns:
             list[ToolCallFact]: 本轮那几条调用的事实 (含结果与耗时) —— 交给调用方
@@ -953,24 +1069,47 @@ class AgentLoop:
         # 「交过哪些」只有一个口径 (state.flushed), 两拍各数各的迟早会对不上
         state.flushed = index + 1
 
-        executions = await self._execute_parallel(
-            response.tool_calls, turn=state.turn_count
+        held = await self._execute_parallel(response.tool_calls, turn=state.turn_count)
+        suspended = next(
+            (item for item in held if isinstance(item, ApprovalRequest)), None
         )
-        for call, execution in zip(response.tool_calls, executions, strict=True):
-            state.history.append(tool_wire(call.id, execution))
+        results: list[ToolExecution | ApprovalRequest] = []
+        for call, result in zip(response.tool_calls, held, strict=True):
+            if isinstance(result, ApprovalRequest):
+                if result is not suspended:
+                    # 同一批里第二条要批的: 不挂起它, 按普通工具失败回填 (理由见
+                    # 方法 docstring 的「一次挂起只挂一条」)
+                    result = ToolExecution(
+                        tool_name=call.name,
+                        ok=False,
+                        error=APPROVAL_ALREADY_PENDING_TEXT,
+                    )
+                else:
+                    results.append(result)
+                    # 结果欠着: 不 append tool 消息, 也不发 tool_result 事件 ——
+                    # 「那一条还没有结果」是这次挂起的全部内容
+                    continue
+            results.append(result)
+            state.history.append(tool_wire(call.id, result))
             # 结果事件按**调用顺序**(非完成顺序)产出: 并发下事件序列确定,
             # 且与历史回填顺序一致 (快照测试不 flaky)
             await bus.emit(
                 EventType.TOOL_RESULT,
-                **tool_result_data(call, execution, turn=state.turn_count),
+                **tool_result_data(call, result, turn=state.turn_count),
             )
             await self._hooks.fire(
                 HookPoint.ON_TOOL_EXECUTED,
                 turn=state.turn_count,
                 call=call,
-                execution=execution,
+                execution=result,
             )
-        return _facts_of(response.tool_calls, index=index, executions=executions)
+        if suspended is not None:
+            # 这一轮到此为止: 上面那条调用欠着结果, 进度与「欠着谁」一起落进这一帧
+            # (见 _save_checkpoint), 终局事件也换成 approval_required
+            state.approval = suspended
+            state.outcome = LoopOutcome.SUSPENDED
+            state.done = True
+        return _facts_of(response.tool_calls, index=index, results=results)
 
     def _handle_truncation(self, state: LoopState, response: ModelResponse) -> None:
         """length 截断处理 (#10): 重试超限放弃 / CONDENSE 精简重答 / CONTINUE 续写.
@@ -1204,13 +1343,28 @@ class AgentLoop:
         state.last_checkpoint_id = checkpoint.checkpoint_id
 
     async def _complete_pending_turn(
-        self, state: LoopState, bus: EventBus, pending: list[ModelToolCall]
+        self,
+        state: LoopState,
+        bus: EventBus,
+        pending: list[ModelToolCall],
+        approval: Approval,
     ) -> tuple[ModelResponse, list[ToolCallFact]]:
-        """补做完挂起时欠下的工具调用 (恢复专用), 返回还原出的那轮响应与事实.
+        """把挂起时欠下的工具调用**了结掉** (恢复专用), 返回还原出的那轮响应与事实.
 
         场景: 快照停在「模型已经要调这几个工具、但结果还没回填」—— 人工审批的
         挂起点 (#25) 正是这种形状. 恢复时不必再问模型一次 (它那一轮早就决定过
-        了), 直接把欠的调用执行掉、结果回填, 这一轮才算完; 然后循环继续往下走.
+        了), 把这几条调用结掉、结果回填, 这一轮才算完; 然后循环继续往下走.
+
+        **两种结论, 两条路** (由 `approval` 决定):
+
+        | 人的结论 | 这几条调用 | 模型看到什么 |
+        |---|---|---|
+        | 批准 | 真的执行 (跳过「需人工确认」那一种裁决, 见 `_execute_one`) | 工具结果 |
+        | 拒绝 | **不执行** | 一条失败结果, 正文是拒绝的原因 |
+
+        拒绝那条不是「运行终止」而是「换个说法接着答」: 拒绝原因走的就是工具失败
+        那条回填通道 (模型的自纠错路径), 于是它可以说「好的, 那我不付了, 你可以
+        自己到订单页付」—— 而这次运行照常收尾.
 
         为什么能还原出 ModelResponse: wire 历史里那条 assistant 消息就是模型当初
         说的话 (正文与 tool_calls 原样存在里面), 这里只是把它变回对象交给
@@ -1238,24 +1392,46 @@ class AgentLoop:
             # 事件与工具轮同序: 先全部声明「要调什么」, 再执行 (并行语义 #1)
             await bus.emit(EventType.TOOL_CALL, **tool_call_data(call, turn=turn))
 
-        executions = await self._execute_parallel(pending, turn=turn)
-        for call, execution in zip(pending, executions, strict=True):
-            state.history.append(tool_wire(call.id, execution))
+        if approval.approved:
+            # 批过了: 这几条不再因为「需人工确认」停下 (人已经给过结论), 照常执行
+            results: list[
+                ToolExecution | ApprovalRequest
+            ] = await self._execute_parallel(
+                pending, turn=turn, approved=frozenset(c.id for c in pending)
+            )
+        else:
+            # 拒了: 一条都不执行, 拒绝原因当作每条调用的失败结果回填 (ok=False 的
+            # 那次「执行」—— 与护栏拒绝、参数校验失败走的是同一条通道)
+            results = [
+                ToolExecution(tool_name=call.name, ok=False, error=approval.reason)
+                for call in pending
+            ]
+        for call, result in zip(pending, results, strict=True):
+            if isinstance(result, ApprovalRequest):
+                # 正常到不了 (批准那一路已把这几条划进 approved; 拒绝那一路根本
+                # 没走裁决点). 真到了说明裁决的语义被改坏了 —— 这一条没有结果可以
+                # 回填, 补一条明确的失败, 别让历史里那条调用一直欠着
+                result = ToolExecution(
+                    tool_name=call.name,
+                    ok=False,
+                    error=APPROVAL_ALREADY_PENDING_TEXT,
+                )
+            state.history.append(tool_wire(call.id, result))
             await bus.emit(
                 EventType.TOOL_RESULT,
-                **tool_result_data(call, execution, turn=turn),
+                **tool_result_data(call, result, turn=turn),
             )
             await self._hooks.fire(
                 HookPoint.ON_TOOL_EXECUTED,
                 turn=turn,
                 call=call,
-                execution=execution,
+                execution=result,
             )
 
         state.turn_count = turn
         return (
             self._response_for_pending(state, pending),
-            _facts_of(pending, index=index, executions=executions),
+            _facts_of(pending, index=index, results=results),
         )
 
     @staticmethod
@@ -1331,6 +1507,20 @@ class AgentLoop:
                 reasoning_tokens=state.reasoning_tokens,
                 cache_hit_tokens=state.cache_hit_tokens,
                 cache_miss_tokens=state.cache_miss_tokens,
+                # 挂起那一条欠着的调用也写进进度: 恢复时 `pending_tool_calls` 是从
+                # **历史**里把欠账找出来的 (它认「带 tool_calls 的 assistant 后面
+                # 缺 tool 消息」), 而这个字段是给人和排查看的「这一帧为什么停」
+                suspension=(
+                    None
+                    if state.approval is None
+                    else Suspension(
+                        reason=SUSPENSION_REASON_APPROVAL,
+                        pending=[state.approval.call],
+                        # ADR-0014: 本项目永远不给 approval_id 接线 (挂起的全部状态
+                        # 由那次调用自己那一行 + 这里的 pending 表达)
+                        approval_id=None,
+                    )
+                ),
             ),
             metadata=metadata,
             parent_id=state.last_checkpoint_id,

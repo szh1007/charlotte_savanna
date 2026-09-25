@@ -47,6 +47,7 @@ from CharAgent.db.recorder import (
 )
 from CharAgent.db.repositories.tool_calls import ToolCallsRepository
 from CharAgent.model import FinishReason
+from CharAgent.model.utils.types import ModelResponse
 from CharAgent.tool import ToolActionableError, tool
 
 THREAD_ID = "toy:u-9f3a:chat-1"
@@ -627,6 +628,8 @@ def fact(
     outcome: ToolCallOutcome = ToolCallOutcome.PENDING,
     result: str | None = None,
     duration_ms: int | None = None,
+    approval_prompt: str = "",
+    approval_needs: tuple[str, ...] = (),
 ) -> ToolCallFact:
     """造一条工具调用事实 (用例只关心其中一两项时, 其余给合理默认)."""
     return ToolCallFact(
@@ -637,6 +640,8 @@ def fact(
         outcome=outcome,
         result=result,
         duration_ms=duration_ms,
+        approval_prompt=approval_prompt,
+        approval_needs=approval_needs,
     )
 
 
@@ -952,3 +957,115 @@ async def test_the_unfinished_notice_does_not_take_a_wire_index() -> None:
     contents = [row["content"] for row in database.rows_of("charagent_messages")]
     assert UNFINISHED_TURN_TEXT in contents, "说明行必须真的落库"
     assert contents.count("订单到哪了") == 1, "提问行不重复写"
+
+
+# ---------------------------------------------------------------------------
+# 续跑段落的记账 (ticket 33): 不收尾的那一种
+# ---------------------------------------------------------------------------
+
+
+async def test_a_segment_that_leaves_the_run_row_alone() -> None:
+    """不结账 (`finish_run=False`): 消息照写, 运行行一笔不碰.
+
+    这种情形只出现在 HITL 的续跑段上 —— 那一次运行横跨挂起等待期, 这一段跑完了
+    它还没结束, 于是状态 / 账目 / 结束时刻 / 金额全都不能写 (写下去就是替收尾的
+    那一段做决定, 而它可能还要再挂起一次).
+
+    为什么消息要照写: 它们记的是这一段**产生的事实** (模型答了什么、调了什么工具),
+    与那一次运行结没结账无关 —— 不写的话用户在会话记录里看不到这一段.
+    """
+    database = FakeRecordDatabase()
+    rec = recorder(database)
+    # 开账那一刻那一行的样子: 状态 running、账目为零、没有结束时刻
+    run_id = await rec.begin(thread_id=THREAD_ID, title="订单到哪了")
+
+    written = await rec.record(
+        thread_id=THREAD_ID, result=result(), run_id=run_id, finish_run=False
+    )
+
+    assert written is True
+    [run] = database.rows_of("charagent_runs")
+    assert run["status"] == RunStatus.RUNNING.value, "那一次运行还没结束"
+    assert run["finished_at"] is None
+    assert run["turn_count"] == 0, "账目也留着 —— 收尾那一段拿到的才是累计值"
+    assert run["total_cost"] is None, "没结账就不算钱 (算了也没地方放)"
+    messages = database.rows_of("charagent_messages")
+    assert [row["role"] for row in messages] == ["user", "assistant"]
+    assert {row["run_id"] for row in messages} == {run_id}, "这一段的消息仍属于那次运行"
+
+
+async def test_a_failed_segment_without_a_question_writes_only_the_notice() -> None:
+    """续跑段失败 (`question=None`): 只写「这一轮没答完」, 不编一句用户提问.
+
+    编一句出来最省事, 但那条 `user` 行会让记录撒谎 —— 「只有真由用户输入产生的
+    消息才是 user」是这一层立着的一条硬规矩 (见 db/conversation.py).
+    """
+    database = FakeRecordDatabase()
+    rec = recorder(database)
+    run_id = await rec.begin(thread_id=THREAD_ID, title="")
+
+    written = await rec.record_unfinished(
+        thread_id=THREAD_ID,
+        question=None,
+        status=RunStatus.FAILED,
+        run_id=run_id,
+    )
+
+    assert written is True
+    messages = database.rows_of("charagent_messages")
+    assert [(row["role"], row["content"]) for row in messages] == [
+        ("system", UNFINISHED_TURN_TEXT)
+    ]
+    [run] = database.rows_of("charagent_runs")
+    assert run["status"] == RunStatus.FAILED.value
+
+
+async def test_a_suspension_writes_what_to_ask_as_the_run_waits() -> None:
+    """挂起那一段的收尾 (issue 34): 运行行落成 `waiting_user`, 而那条调用带上要问什么.
+
+    两处一起看, 因为它们是同一件事的两个落点:
+    - 运行行: `waiting_user` 且 **没有结束时刻** —— 那一次运行还开着, 人给了结论
+      才接着跑 (状态由 `RUN_STATUS_FOR_OUTCOME` 从 SUSPENDED 翻过来)
+    - 工具调用行: `needs_approval` + 话术 + 缺失项 —— 刷新页面之后前端靠它重建那张
+      确认卡 (没有话术就是一张没有字的卡)
+    """
+    database = FakeRecordDatabase()
+    rec = recorder(database)
+    run_id = await rec.begin(thread_id=THREAD_ID, title="帮我付了这一单")
+    messages = [TWO_LINES[0], ASSISTANT_CALL]
+    suspended = result(
+        content=None,
+        outcome=LoopOutcome.SUSPENDED,
+        messages=messages,
+        turns=[
+            TurnRecord(
+                turn=1,
+                response=ModelResponse(
+                    content=None, finish_reason=FinishReason.TOOL_CALLS
+                ),
+                messages=list(messages),
+                tokens=0,
+                elapsed_ms=0.0,
+                calls=[
+                    fact(
+                        outcome=ToolCallOutcome.NEEDS_APPROVAL,
+                        name="pay_order",
+                        approval_prompt="要输支付密码",
+                        approval_needs=("payment_password",),
+                    )
+                ],
+            )
+        ],
+    )
+
+    await rec.record(thread_id=THREAD_ID, result=suspended, run_id=run_id, since=1)
+
+    [run] = database.rows_of("charagent_runs")
+    assert run["status"] == RunStatus.WAITING_USER.value, "挂起不是终态"
+    assert run["finished_at"] is None, "那一次运行还开着"
+    [row] = database.rows_of("charagent_tool_calls")
+    assert row["status"] == "needs_approval"
+    assert row["approval_prompt"] == "要输支付密码"
+    assert row["approval_needs"] == ["payment_password"]
+    assert row["approved_at"] is None
+    assert row["approved_by"] is None

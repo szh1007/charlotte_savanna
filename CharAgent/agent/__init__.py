@@ -42,6 +42,9 @@ from CharAgent.agent.utils.errors import (
     LoopConfigError,
 )
 from CharAgent.agent.utils.types import (
+    APPROVAL_REJECTED_TEXT,
+    Approval,
+    ApprovalRequest,
     LoopOutcome,
     LoopResult,
     ToolCallFact,
@@ -52,7 +55,10 @@ from CharAgent.agent.utils.types import (
 )
 
 __all__ = [
+    "APPROVAL_REJECTED_TEXT",
     "AgentLoop",
+    "Approval",
+    "ApprovalRequest",
     "CalibratedTokenCounter",
     "CompactionConfigError",
     "CompactionPolicy",

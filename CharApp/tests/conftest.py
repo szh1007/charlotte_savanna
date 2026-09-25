@@ -28,7 +28,12 @@ AGENT_BASE_URL = "http://minimall.test/api/minimall/agent/"
 TOKEN = "test-internal-token"
 BUYER_ID = 3
 
-# 17 个工具的名字 (顺序即注册顺序: 9 个只读在前, 8 个写接在后面) ——
+# 代付用的那次支付密码 (issue 35). 三个测试文件都要它 (工具 / 提供者 / 端到端) ——
+# 各写一份的表现是「同一个护栏在三个文件里被验成三种样子」, 所以摆在这里.
+# 值与买家 ID 同一个道理: 一个在别处不会出现的怪串, 于是"它没漏出去"这类断言有意义.
+PAYMENT_PASSWORD = "135791"
+
+# 18 个工具的名字 (顺序即注册顺序: 9 个只读在前, 8 个写接在后面, 代付收尾) ——
 # 工具与提供者两组用例共用同一份期望
 TOOL_NAMES = (
     "search_products",
@@ -48,13 +53,17 @@ TOOL_NAMES = (
     "cancel_my_order",
     "request_refund",
     "list_my_refunds",
+    "pay_my_order",
 )
 
-# **会改数据**的那 7 个 (护栏的判据是注解, 而注解的含义就是"会改数据").
+# **会改数据**的那 8 个 (护栏的判据是注解, 而注解的含义就是"会改数据").
 #
-# 为什么不是上面那 8 个: L2 一次加了 8 个工具, 但 `list_my_refunds` 只是**读**
+# 为什么不是上面那 9 个: L2 一次加了 8 个工具, 但 `list_my_refunds` 只是**读**
 # 退款列表 —— 它不该占买家的写操作预算, 也不该被金额规则管 (见 tools.py 的
-# 那一节说明). 「8 个写工具」是这一批的名字, 「7 个会改数据」才是注解的判据.
+# 那一节说明). 「9 个写工具」是这两批的名字, 「8 个会改数据」才是注解的判据.
+#
+# `pay_my_order` (issue 35) 排在最后: 它同样是**写**, 只是它的"改"要买家本人点
+# 一次头 (护栏让它挂起, 见 guardrail.py) —— 注解与预算照旧适用.
 WRITE_TOOL_NAMES = (
     "add_to_cart",
     "update_cart_item",
@@ -63,6 +72,7 @@ WRITE_TOOL_NAMES = (
     "place_order",
     "cancel_my_order",
     "request_refund",
+    "pay_my_order",
 )
 
 
@@ -207,6 +217,17 @@ CANCELLED_ORDER: dict[str, Any] = {
     "restocked_count": 1,
 }
 
+PAID_ORDER: dict[str, Any] = {
+    **ORDER_DETAIL,
+    "status": "paid",
+    "status_display": "已付款",
+    # 付款只发生一次 (待付款 → 已付款), 所以这份样本里也没有发货与收货的时间戳;
+    # 代付的回执比取消多一样新东西: 付完之后余额还剩多少.
+    "shipped_at": None,
+    "status_timeline": ORDER_DETAIL["status_timeline"][:2],
+    "balance_remaining": "8101.00",
+}
+
 EMPTY_CART: dict[str, Any] = {"items": [], "total_count": 0, "total_amount": "0.00"}
 
 WRITE_ENDPOINTS: dict[tuple[str, str], Any] = {
@@ -216,6 +237,7 @@ WRITE_ENDPOINTS: dict[tuple[str, str], Any] = {
     ("DELETE", "cart/clear/"): EMPTY_CART,
     ("POST", "orders/"): ORDER_DETAIL,
     ("POST", f"orders/{ORDER_NO}/cancel/"): CANCELLED_ORDER,
+    ("POST", f"orders/{ORDER_NO}/pay/"): PAID_ORDER,
     ("POST", "refunds/"): REFUND,
     ("GET", "refunds/"): [REFUND],
 }
@@ -258,7 +280,7 @@ def mall() -> Iterator[respx.MockRouter]:
     两条开关的取舍:
     - `assert_all_mocked` 保持默认的 True —— 没注册的请求直接报错, 于是「路径
       拼错了」当场就红, 而不是悄悄连出去.
-    - `assert_all_called` 关掉 —— `mock_all` 会把 17 个端点一次铺满 (端到端用例
+    - `assert_all_called` 关掉 —— `mock_all` 会把 18 个端点一次铺满 (端到端用例
       需要「模型想调哪个都有得调」), 而每个用例只用到其中一两个.
     """
     with respx.mock(assert_all_called=False) as router:
@@ -266,7 +288,7 @@ def mall() -> Iterator[respx.MockRouter]:
 
 
 def mock_all(mall: respx.MockRouter) -> dict[str, respx.Route]:
-    """把 17 个端点全部挂上 (端到端用例用: 模型想调哪个都有得调).
+    """把 18 个端点全部挂上 (端到端用例用: 模型想调哪个都有得调).
 
     返回的字典键**一律是 `"方法 路径"`** (`"GET cart/"` / `"POST cart/items/"`), 用例
     按它去翻哪条被调过. 方法必须进键里: 同一个 `orders/` 上 GET 与 POST 是两条

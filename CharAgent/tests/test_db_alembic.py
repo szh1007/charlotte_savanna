@@ -108,7 +108,7 @@ def _reflect(connection: Connection) -> MetaData:
 
 
 def test_upgrade_head_creates_every_table_on_an_empty_schema(migrated, _engine):
-    """空库跑 `upgrade head`: 五张业务表齐全.
+    """空库跑 `upgrade head`: 六张业务表齐全.
 
     这是一条关键验收 (「alembic 首次迁移在空库可执行」) —— 从零建库
     是每个新环境的第一件事, 它在半路报错的话后面什么都做不了.
@@ -182,7 +182,7 @@ def test_alembic_version_records_the_head_revision(migrated, _engine):
             {"name": f"{ALEMBIC_SCHEMA}.{VERSION_TABLE}"},
         ).scalar()
 
-    assert version == "0003_run_cost_columns"
+    assert version == "0005_tool_call_approval_columns"
     assert test_schema_version, (
         "版本表没落在测试 schema 里 (version_table_schema 没生效)"
     )
@@ -200,7 +200,7 @@ def test_upgrade_head_is_idempotent(migrated, _engine):
             text(f"SELECT version_num FROM {ALEMBIC_SCHEMA}.{VERSION_TABLE}")
         ).scalar()
 
-    assert version == "0003_run_cost_columns"
+    assert version == "0005_tool_call_approval_columns"
 
 
 def test_the_version_row_records_the_step_that_just_ran(migrated, _engine):
@@ -219,7 +219,11 @@ def test_the_version_row_records_the_step_that_just_ran(migrated, _engine):
 
     2026-09-25 加上第三条 (ticket 28 的 0003) —— 它给运行行加了一列 (成本明细),
     并把金额那一列改成可空 (收尾算不出来时留 NULL, 与「花 0 元」分开).
-    三步走完, 那条设计照旧成立: 迁移是**库该长成什么样**的历史, 每一版都算数.
+    同一天又加上第四条 (ticket 32 的 0004) —— 新建幂等登记表, 让「同一件动作被
+    执行两遍」这件事有地方挡 (HITL 的挂起-恢复跨进程, 进程内 dict 挡不住).
+    还是同一天, 第五条 (issue 34 的 0005) —— 给工具调用表补两列 (挂起时给用户看
+    的那句话与还缺什么), 于是刷新页面之后确认卡重建得出来.
+    五步走完, 那条设计照旧成立: 迁移是**库该长成什么样**的历史, 每一版都算数.
     """
     with _engine.connect() as connection:
         row = connection.execute(
@@ -233,12 +237,12 @@ def test_the_version_row_records_the_step_that_just_ran(migrated, _engine):
             )
         ).one()
 
-    assert row.version_num == "0003_run_cost_columns"
-    assert row.name == "运行成本两列: 金额改成收尾写死 + 明细列", (
+    assert row.version_num == "0005_tool_call_approval_columns"
+    assert row.name == "挂起态补两列: 给用户看的那句话与还缺什么", (
         "标题取的是脚本 docstring 的**首段** (alembic 的 `Script.doc` 就是这么切的)"
     )
-    assert row.versions == 3, "空库到 head 走了三步 (0001 → 0002 → 0003)"
-    assert row.from_rev == "0002_thread_management", "当前这一版是从 0002 上来的"
+    assert row.versions == 5, "空库到 head 走了五步 (0001 → ... → 0005)"
+    assert row.from_rev == "0004_idempotency_keys", "当前这一版是从 0004 上来的"
     assert row.at and row.by, "时刻与执行者都该是真值 (钩子写在同一步的事务里)"
 
 

@@ -24,8 +24,9 @@ P2 进度影响.
 - 唯一的例外: 拔总电源 (用户点「停止」/ kill switch) 不算插件故障 —— 插件
   不许挡着取消, 这类信号直接放行.
 - 工具开跑前那一个点装的是**带开关的插座**: 插头说一句「这台不许开」, 主循环
-  就真的不给它通电 (那个工具不执行), 并把插头给的理由转告模型. 放行 / 拒绝的
-  裁决只在这一个点上算数.
+  就真的不给它通电 (那个工具不执行), 并把插头给的理由转告模型; 插头还可以说
+  「这台得问人」(需人工确认), 那整次运行就停在半路等人 —— 裁决 (放行 / 拒绝 /
+  需人工确认) 只在这一个点上算数.
 - 一个必须说清的分寸: 「短路只烧自己保险丝」那套 (插件坏了记一笔、照常往下走)
   只管观察点; 带开关的插座上, 插头自己坏了按**不让开**处理 (fail closed) ——
   悄悄失效的护栏比没有护栏更危险 (没有护栏时人还知道自己没装).
@@ -46,7 +47,8 @@ P2 进度影响.
 - before_tool_execute: **工具执行前** (裁决类, 用 decide 触发). 载荷: turn,
   call (要调的工具), tool (这个调用命中的 Tool 对象 —— 插件判断「这算什么操作」
   就看它的 annotations; 模型编出来的工具名在到达这里之前就被拦下了, 故必有值).
-  插件返回 None / Decision.allow() 放行, 返回 Decision.reject(原因) 则工具不跑
+  插件返回 None / Decision.allow() 放行, 返回 Decision.reject(原因) 则工具不跑,
+  返回 Decision.requires_approval(话术) 则**整次运行停在半路等人** (#25 HITL)
 - on_tool_executed: 每条工具执行完成 (结果已回填; **被拒绝的调用也走这里** ——
   它同样产出一条失败态的 ToolExecution). 载荷: turn, call, execution
 - on_event: 每个 StreamEvent 分发后. 载荷: event
@@ -80,7 +82,13 @@ import inspect
 from typing import Any
 
 from CharAgent.hooks.utils.errors import HookConfigError, HookError
-from CharAgent.hooks.utils.types import Decision, HookFailure, HookFn, HookPoint
+from CharAgent.hooks.utils.types import (
+    Decision,
+    HookFailure,
+    HookFn,
+    HookPoint,
+    Verdict,
+)
 
 # 插件抛异常时的哨兵返回值 (异常已记入 failures): 必须与「插件返回 None」(不表态,
 # 放行) 分得开 —— 前者在裁决点上是 fail closed, 后者是放行.
@@ -178,20 +186,28 @@ class HookRegistry:
             await self._call(point, hook, kwargs)  # 返回值按观察类点处置: 忽略
 
     async def decide(self, point: HookPoint, **kwargs: Any) -> Decision:
-        """请某点的插件裁决 (注册顺序), 返回放行 / 拒绝 —— 裁决类点用.
+        """请某点的插件裁决 (注册顺序), 返回放行 / 拒绝 / 需人工确认 —— 裁决类点用.
 
         与 fire 的两处不同, 都是刻意的:
 
-        1. **返回值有语义**: 插件返回 Decision.reject(原因) 即拒绝; 返回
-           Decision.allow() 或 None (不表态) 即放行. **任一插件拒绝就拒绝**
-           (原因取第一个拒绝者的 —— 拒绝的当场结论就一条, 后面几条对模型没有
-           增量信息, 于是不去收集它们: 没有消费方的收集只是白存). 全部放行 /
-           无人注册 → 放行.
+        1. **返回值有语义**: 插件返回 Decision.reject(原因) 即拒绝, 返回
+           Decision.requires_approval(prompt) 即挂起等人, 返回 Decision.allow()
+           或 None (不表态) 即放行. **全部放行 / 无人注册 → 放行**.
         2. **异常 fail closed**: 插件抛异常, 或返回了既不是 Decision 也不是
            None 的东西 (写错了), 一律**按拒绝处理**并记入 failures —— 与 fire
            的「插件出错不拖垮用户任务」相反. 理由见模块 docstring: 这道护栏坏
            掉了就等于没有, 而用户以为有. 拒绝原因是框架给的固定文案 (原始异常
            在 failures 里, 不回填给模型).
+
+        **拒绝优先于挂起** (不看注册顺序): 遍历完所有插件, 任一拒绝直接生效;
+        一个都没有时才看有没有要求人工确认的. 理由: 业务侧会同时挂「护栏 (超预算
+        就拒)」与「需确认」两条规则, 而**顺序是装配的偶然事实** (谁先注册上来的),
+        「该不该做」却应当是**内容决定**的 —— 靠顺序的话, 一个**会超预算**的操作
+        在「需确认」排在前面时会先弹确认卡, 用户确认完才被拒 (白问一次, 而且他
+        已经输了密码).
+
+        同一个方向上的多条裁决只取第一个 (**先到的那句**): 拒绝的当场结论就一条,
+        后面几条对模型没有增量信息; 挂起也一样 (一次只挂一条, 见 agent/loop.py).
 
         空注册时立即返回放行, 且**不产生挂起点** (没有 await 到任何人 ——
         判定与返回在同一个事件循环步里完成).
@@ -204,17 +220,28 @@ class HookRegistry:
             **kwargs: 该点的载荷 (见模块 docstring 表).
 
         Returns:
-            Decision: 放行 (无人注册 / 全部放行) 或拒绝 (含原因).
+            Decision: 放行 (无人注册 / 全部放行) / 拒绝 (含原因) / 需人工确认
+            (含话术与缺失项). 后两者都让工具不执行, 但去向完全不同 (见 Decision).
         """
         handlers = self._handlers.get(point)
         if not handlers:
             return Decision.allow()
-        rejection: Decision | None = None  # 第一个拒绝者的裁决 (后面的不再收集)
+        # 两个位置各记「第一个」: 拒绝与挂起分开收, 最后按优先级取 —— 合成一个
+        # 变量就又要靠顺序决定, 而那正是这条改动要消掉的东西
+        rejection: Decision | None = None
+        approval: Decision | None = None
         for hook in handlers:
             verdict = self._verdict(point, hook, await self._call(point, hook, kwargs))
-            if verdict is not None and rejection is None:
-                rejection = verdict
-        return rejection if rejection is not None else Decision.allow()
+            if verdict is None:
+                continue
+            if verdict.verdict is Verdict.REJECT:
+                if rejection is None:
+                    rejection = verdict
+            elif approval is None:
+                approval = verdict
+        if rejection is not None:
+            return rejection
+        return approval if approval is not None else Decision.allow()
 
     def _verdict(self, point: HookPoint, hook: HookFn, outcome: Any) -> Decision | None:
         """把一次插件调用的结果翻译成裁决: None = 放行, Decision = 说了算的那句.
@@ -224,7 +251,8 @@ class HookRegistry:
           用户以为它在. 宁可拒 (故障看得见: 原因里写着插件出错, failures 里有原始
           异常), 也不静默放行
         - 返回 None → 放行 (插件常常只关心一部分工具调用, 不关心的直接 return)
-        - 返回 Decision → 按它说的算
+        - 返回 Decision → 按它说的算 (放行也归一成 None, 于是调用方只看「谁说了
+          算」)
         - 返回别的 (写错的 return) → 拒绝 + 记一条 HookError: 若当成放行, 一个写错
           `return "拒绝"` 的护栏就会**静默失效** —— 正是上面那条要防的样子
         """

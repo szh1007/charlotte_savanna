@@ -1,4 +1,5 @@
-"""Agent 内部端点 (CharApp 助手专用): 9 个只读 (issue 02) + 8 个写 (issue 11).
+"""Agent 内部端点 (CharApp 助手专用): 只读 9 个 (issue 02) + 写 8 个 (issue 11)
++ 代付 1 个 (issue 35), 共 18 条.
 
 前缀 /api/minimall/agent/, 认证 = X-Internal-Token (未配置即全拒, fail closed);
 需要买家身份的端点再带 X-User-Id, 身份由调用方声明 (信任模型与生产化路径
@@ -43,6 +44,8 @@ from .serializers_agent import (
     AgentOrderCreateSerializer,
     AgentOrderDetailSerializer,
     AgentOrderListSerializer,
+    AgentOrderPaidSerializer,
+    AgentOrderPaySerializer,
     AgentProductDetailSerializer,
     AgentProductListSerializer,
     AgentProfileSerializer,
@@ -70,6 +73,7 @@ from .services import (
     cancel_order,
     clear_cart,
     create_order,
+    pay_order,
     remove_cart_item,
     request_refund,
     update_cart_item,
@@ -150,8 +154,9 @@ ERROR_CODES: dict[str, AgentErrorSpec] = {
 # 用例遍历 `OrderServiceError` 的子类来保证不漏; 漏了的那条会退化成兜底码,
 # 上层就只能说「出错了」.
 #
-# 余额不足与金额越界这两个码, 8 个端点现在触发不到 (支付走 L3 的挂起, 金额由
-# 管理员批准时定), 但码先立着: 工具层按码写文案, 缺了就没法区分.
+# 与钱有关的三个码在 issue 11 就立着了, 但当时只有"状态不允许"那条走得到 (取消一张
+# 已付款的单). 「密码错」与「余额不够」要等 issue 35 的 `AgentOrderPayView` 才有入口
+# —— 三条各自的下一步不同 (重输 / 充值 / 看状态), 工具层按码写文案.
 EXCEPTION_CODES: dict[type[OrderServiceError], str] = {
     ProductUnavailableError: "product_unavailable",
     OutOfStockError: "out_of_stock",
@@ -495,6 +500,27 @@ class AgentOrderCancelView(AgentEndpointView):
         return Response(
             AgentOrderCancelSerializer(cancel_order(_own_order(buyer, order_no))).data
         )
+
+
+class AgentOrderPayView(AgentEndpointView):
+    """付款 (POST orders/<order_no>/pay/) —— 用买家的支付密码付掉自己的一笔订单.
+
+    形状与取消那条 (上面) 一样: 认人 → 取自己的单 → 调 service → 返回序列化结果.
+    **不写 try/except** —— 密码错 / 余额不够 / 状态不允许都由 service 抛, 基类的
+    `handle_exception` 按 `EXCEPTION_CODES` 统一翻 (那三条码早就在表里: 它们在
+    issue 11 登记时就等着这个入口).
+
+    密码从请求体来, 只活这一次请求: 它不落库 (没有哪一列装它)、不进日志 (Django
+    的请求日志只记路径)、也不进响应. 要回到用户手里只有一条路 —— 他在页面上自己
+    输的那一次 (ADR-0015).
+    """
+
+    def post(self, request, order_no):
+        buyer = _resolve_buyer(request)
+        data = self._validated_data(AgentOrderPaySerializer)
+        # 用返回值渲染: pay_order 判的是锁内那份实例, 传进去的这份可能已过期
+        paid = pay_order(_own_order(buyer, order_no), data["payment_password"])
+        return Response(AgentOrderPaidSerializer(paid).data)
 
 
 class AgentRefundView(AgentEndpointView):

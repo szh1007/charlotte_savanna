@@ -291,6 +291,12 @@ class ToolCall(Base):
             而不是甩一句 422 —— 模型要靠这句话自己改对).
         duration_ms: 耗时; 追问「这个工具为什么慢」看它.
         approved_by / approved_at: HITL 审批人与时刻 (#25); NULL = 无需审批或还没批.
+            这一对同时是**闸门**: `approved_at IS NULL` 说明那次挂起还没结论, 于是
+            这段会话不许接新提问 (`server/sessions.py` 的判据).
+        approval_prompt / approval_needs: 挂起时**问用户什么** (#25): 给用户看的那
+            句话 (业务给的话术) 与还缺什么 (机器可读的短名字, 如
+            `["payment_password"]`). 刷新页面之后, 前端靠这一行重建那张确认卡 ——
+            没有它们, 用户看到一张没有字的卡. NULL = 这一条不是要人批的调用.
         created_at / updated_at: 发起 / 状态最后变化的时刻.
     """
 

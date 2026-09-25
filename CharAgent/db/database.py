@@ -164,7 +164,7 @@ class PgDatabase:
     async def create_tables(self, tables: Sequence[Table] | None = None) -> None:
         """把表建出来 (已存在的跳过 —— 幂等, 重复调用安全).
 
-        表从哪儿来: 不传就取 `db/schema.py` 的 `ALL_TABLES` (本包那五张) ——
+        表从哪儿来: 不传就取 `db/schema.py` 的 `ALL_TABLES` (本包那六张) ——
         database 层只负责「怎么连库」, 表定义仍只有 schema 一处 (这里的延迟
         import 就是为了不让连接层反向依赖表定义层).
 
@@ -184,7 +184,7 @@ class PgDatabase:
 
         Args:
             tables: 要建的表; None 表示 `db/schema.py` 的 ALL_TABLES
-                (本包那五张). 传空列表 = 什么都不做.
+                (本包那六张). 传空列表 = 什么都不做.
 
         Raises:
             DataStoreError: 建表失败 (权限不足 / 连接断了).

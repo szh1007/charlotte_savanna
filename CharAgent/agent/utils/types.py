@@ -3,10 +3,12 @@
 对齐 model/utils/types.py 的组织惯例 —— 行为 (AgentLoop.run 的循环语义)
 在 agent/loop.py, 类型定义集中于此供 loop / guard / 门面共享引用.
 
-- LoopOutcome: Loop 结束原因全集 (guard 触发点 + loop 分支放弃点)
+- LoopOutcome: Loop 结束原因全集 (guard 触发点 + loop 分支放弃点 + 挂起等人)
 - TruncationStrategy: length 截断的两种处理路径 (#10)
 - ToolCallOutcome / ToolCallFact: 一次工具调用的事实 (落库协作者据此写
   `charagent_tool_calls`, DESIGN #41 的 tool_call 那一层)
+- ApprovalRequest / Approval: 挂起与恢复的两头 —— 一条调用被裁决为「需人工确认」
+  时停下的样子, 以及人给出的结论 (#25 HITL)
 - TraceSink: 运行**进行中**把刚产生的东西交给记录层的出口 (可选零件, ticket 27)
 - TurnRecord: 每轮结束时的消息历史完整快照 (供 checkpoint 落盘)
 - LoopState: AgentLoop 一次 run 的内存工作数据 (run 与其分支方法之间传递,
@@ -26,18 +28,21 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
+from CharAgent.agent.utils.errors import LoopConfigError
 from CharAgent.model.utils.types import (
     FinishReason,
     ModelMessage,
     ModelResponse,
+    ModelToolCall,
 )
 
 
 class LoopOutcome(StrEnum):
-    """Loop 结束原因全集 (loop 与 guard 共享): 自然完成 / 软限制 / 截断放弃 / 上游中断.
+    """Loop 结束原因全集 (循环与 guard 共享): 自然完成 / 软限制 / 截断放弃 /
+    上游中断 / 挂起等人.
 
-    FINISHED / TRUNCATION_LIMIT / SERVER_INTERRUPTED 由 AgentLoop 判定;
-    MAX_TURNS / TOKEN_BUDGET / TIME_LIMIT 由 LoopGuard.check_after_turn 判定.
+    FINISHED / TRUNCATION_LIMIT / SERVER_INTERRUPTED / SUSPENDED 由 AgentLoop
+    判定; MAX_TURNS / TOKEN_BUDGET / TIME_LIMIT 由 LoopGuard.check_after_turn 判定.
     """
 
     FINISHED = "finished"  # 模型给出最终答案 (finish_reason=stop), 正常结束
@@ -49,6 +54,11 @@ class LoopOutcome(StrEnum):
     # 可能只是半截, 故不作最终答复返回. 资源不足属瞬态, 重放决策留给调用方
     # (框架重试归重试层)
     SERVER_INTERRUPTED = "server_interrupted"
+    # 挂起等人给结论 (#25 HITL): 模型这一轮要调一个需要用户本人确认的工具, 于是
+    # **不执行它**, 把进度连同那条欠着的调用一起存档等人. 它**不是**结束 —— 人给
+    # 了结论就从存档点接着跑 (同一次运行的下一段), 所以下游要能把它与「这一轮答完
+    # 了」分开: 前者不收尾、不写终态, 后者才收尾
+    SUSPENDED = "suspended"
 
 
 # 服务端中断的 finish_reason (非模型自然结束): 生成被打断, content 可能只是
@@ -106,6 +116,11 @@ class ToolCallFact:
         outcome: 这一条现在的状态 (执行前那一拍是 PENDING).
         result: 回填给模型的文本 (成功) 或可操作原因 (失败); 还没结论时为 None.
         duration_ms: 执行耗时 (毫秒); None = 还没跑到计时那一步 (与 0 毫秒是两回事).
+        approval_prompt / approval_needs: 只有被裁决为**需人工确认**的那一条才带
+            (挂起等人, #25): 给用户看的那句话术与还缺什么. 落库后刷新页面, 前端
+            靠库里这两列加上 `tool_name` 就能重建那张确认卡 (issue 36). 其余情形
+            是空串 / 空元组 —— 「不是挂起」与「挂起了但没什么话要说」在本框架里
+            不会同时出现 (挂起必有话术, 见 Decision 的构造期校验).
     """
 
     message_index: int
@@ -115,6 +130,89 @@ class ToolCallFact:
     outcome: ToolCallOutcome = ToolCallOutcome.PENDING
     result: str | None = None
     duration_ms: int | None = None
+    # 挂起那一条才会有 (裁决为「需人工确认」时随事实一起交出去): 给用户看的那句
+    # 话术与还缺什么. 记录层拿它们填 `charagent_tool_calls` 那两列 —— 于是刷新
+    # 页面之后, 前端靠库里那一行就能**重建**那张确认卡 (issue 36 的刷新恢复)
+    approval_prompt: str = ""
+    approval_needs: tuple[str, ...] = ()
+
+
+@dataclass(slots=True, frozen=True)
+class ApprovalRequest:
+    """一条调用被裁决为「需人工确认」: 工具没执行, 整次运行就此停在半路等人.
+
+    它是**裁决的结果**, 不是执行的结果 —— 所以与 `ToolExecution` 分开: 那一类的
+    每一件都会变成一条回填给模型的工具消息 (连「结果未知」那种占位也算), 而这一
+    件**什么都不回填**: 历史里那条 assistant 消息的这次调用就那么欠着, 直到有人
+    给出结论. 「欠着一份结果」正是挂起的形状 (`checkpoint/utils/pending.py` 就是
+    按它把欠着的调用找出来的), 恢复时补做的也是它.
+
+    attributes:
+        call: 那条要人批的调用 (原样, 恢复时按它补做).
+        prompt: 给用户看的一句话 (来自 `Decision.requires_approval`, 框架只搬运).
+        needs: 机器可读的缺失项 (同上); 空元组 = 纯是 / 否的确认.
+        turn: 它发生在第几轮 (与 tool_call 事件同一个口径: 前端按它在会话流里
+            原位插那张确认卡).
+    """
+
+    call: ModelToolCall
+    prompt: str
+    needs: tuple[str, ...] = ()
+    turn: int = 0
+
+
+# 人拒绝一次挂起时, 回填给模型的那句话 (缺省文案; 调用方可以给更贴上下文的一句).
+# 与 hooks 的 INTERCEPT_FAILED_REASON 同一个位置: 都是「一条工具调用没执行」的
+# 事实性说明 + 劝退重试, 由框架写 —— 面向**模型**, 不是给用户看的文案.
+# 「不要重试」这句必须写: 模型收到一条失败结果的本能是换个参数再试, 而再试一次
+# 就是再弹一张确认卡 (用户刚刚说不).
+APPROVAL_REJECTED_TEXT = (
+    "用户没有批准这次操作: 这一步没有执行, 也不要重试它 —— "
+    "请如实告知用户, 并在需要时给出不依赖它的别的做法"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class Approval:
+    """人对一次挂起的结论 (恢复那一头的入口参数): 批了, 还是拒了.
+
+    与 `Decision` 的三态**不是一回事**, 别混: 那个是**插件在运行中**表的态 (要不
+    要停下来问人), 这个是**人给出的结论** (问完了, 接着跑). 恢复必须带上它 ——
+    挂起点欠着的调用可能就是付款, 而恢复的默认动作正是「把它补做完」, 没有结论
+    就补做等于框架替人按了确认键 (DESIGN #25「绝不自动执行」).
+
+    attributes:
+        approved: True = 批准 (欠着的调用照常补做); False = 拒绝 (它们不执行, 原因
+            当作工具结果回填, 模型据此继续答 —— 拒绝**也要恢复**, 这与「当场
+            拒绝」是两条路).
+        reason: 拒绝的原因 (面向模型的一句话); 批准时必须为 None.
+    """
+
+    approved: bool
+    reason: str | None = None
+
+    def __post_init__(self) -> None:
+        """构造期校验 (与 Decision 同一套取舍): 拒绝必须有原因, 批准不带原因."""
+        if not self.approved and not (self.reason or "").strip():
+            raise LoopConfigError(
+                "拒绝一次挂起必须给出原因 (该原因会作为那条工具调用的结果回填给"
+                "模型): 用 Approval.reject('为什么不行') 构造"
+            )
+        if self.approved and self.reason is not None:
+            raise LoopConfigError(
+                f"批准不该带原因 (没人会读它): reason={self.reason!r}, "
+                "用 Approval.approve() 构造"
+            )
+
+    @classmethod
+    def approve(cls) -> Approval:
+        """批准 (欠着的调用照常补做)."""
+        return cls(approved=True)
+
+    @classmethod
+    def reject(cls, reason: str | None = None) -> Approval:
+        """拒绝 (不给原因就用框架那句缺省文案, 见 APPROVAL_REJECTED_TEXT)."""
+        return cls(approved=False, reason=reason or APPROVAL_REJECTED_TEXT)
 
 
 @runtime_checkable
@@ -201,6 +299,10 @@ class LoopState:
             每轮覆盖, 落帧时进 `CheckpointMetadata.view` (ticket 22 第 4 件) ——
             「当时它发出去的是什么」由此可查. None = 这一轮还没投影过 (挂起补做那
             一轮没有模型调用) 或压根没配压缩策略.
+        approval: 本次运行**停在谁那儿等人** (#25 HITL); None = 没挂起. 它一出
+            现, 这次运行就到此为止 (`done` 同时置 True): 挂起帧要落盘 (进度 + 欠着
+            的调用), 终局事件也换成「需人工确认」那一个. 落帧时由它推出
+            `CheckpointState.suspension` (两份表示同源, 见 `_save_checkpoint`).
         last_checkpoint_id: 最近落盘那一帧快照的编号. 下一帧的 parent_id 指向它,
             于是同一会话的快照串成一条链; 从老快照恢复时链就从那里岔出去, 形成
             新分支 (#5 time-travel).
@@ -240,6 +342,7 @@ class LoopState:
     flushed: int = 0
     last_checkpoint_id: str | None = None
     view: dict[str, Any] | None = None
+    approval: ApprovalRequest | None = None
     summary: str | None = None
     summary_covers: int = 0
     prompt_ref: dict[str, str] | None = None
@@ -298,6 +401,10 @@ class LoopResult:
         summary / summary_covers: 这一段 run 结束时生效的压缩进度 (#7). 要接着
             聊下一段, 就把它们连同 messages 一起递给 AgentLoop.run —— 于是滚动
             摘要跨 run 成立 (不然每段 run 都会把同一段旧历史重压一遍).
+        approval: 这一段**停在哪儿等人** (#25 HITL); None = 没挂起. 非空时
+            `outcome` 必是 SUSPENDED, 且「终局事件」是 `approval_required` 而不是
+            final (由 `emit_terminal` 从它派生) —— 前端据此渲染确认卡, 而调用方
+            要恢复这次运行就得把人的结论递回来 (见 AgentLoop.resume 的 approval).
         last_checkpoint_id: 这一段 run 落的**最后一帧**快照编号; None 表示没配
             saver (或这一帧都没落成). 接着问下一句时把它当 `run(parent_id=...)`
             递回去, 同一段会话的快照就连成一条链而不是每次提问多一条新根.
@@ -323,6 +430,7 @@ class LoopResult:
     summary: str | None = None
     summary_covers: int = 0
     last_checkpoint_id: str | None = None
+    approval: ApprovalRequest | None = None
     prompt_ref: dict[str, str] | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None

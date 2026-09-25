@@ -13,20 +13,22 @@ P0 前六项交付后，运行时能跑，但**业务数据无处落库**：谁�
 里（快照只存「接着跑要用的」，不回答「查得到、看得到」）。
 
 本层把五个实体定死（thread / run / message / tool_call / checkpoint），用
-alembic 把 Postgres 结构纳入版本管理，并提供四个取数口（仓储）。
+alembic 把 Postgres 结构纳入版本管理，并提供五个取数口（仓储）。加上第六张表
+`charagent_idempotency_keys`（幂等登记簿，**没有实体** —— 它没有「业务视角」的
+那一半，只有「认领」一个动作，见 `schema.py` 与 `repositories/idempotency.py`）。
 
 ## 文件分工
 
 | 文件 | 管什么 |
 |------|--------|
-| `schema.py` | **表定义唯一来源**（五张 `Table`；迁移与快照存储都从这里取） |
+| `schema.py` | **表定义唯一来源**（六张 `Table`；迁移与快照存储都从这里取） |
 | `entities.py` | 五个实体 + 四个状态枚举（`Thread` / `Run` / `Message` / `ToolCall` / `CheckpointRow`） |
 | `state.py` | 运行状态机规则（合法迁移表 + 结束原因映射） |
 | `conversation.py` | 会话消息分层（哪几条给前端看） |
 | `database.py` | 连库与事务（`PgDatabase`：同步引擎 + `asyncio.to_thread`） |
 | `config.py` | 连接配置（环境变量 → 连接串） |
 | `errors.py` | 三类错误（配置错 / 状态迁移非法 / 库出错） |
-| `repositories/` | 四个取数口（会话 / 运行 / 消息 / 工具调用） |
+| `repositories/` | 五个取数口（会话 / 运行 / 消息 / 工具调用 / 幂等登记） |
 | `../alembic/` | 迁移脚本（结构变更的历史，**只追加不改写**；2026-09-23 发布前压缩过一次，见下文「既有迁移」） |
 
 > 迁移目录在 `CharAgent/alembic/`（**不在 `db/` 里面**）—— 这是 alembic 的
@@ -83,14 +85,16 @@ pytest -m pg_db
 迁移。（唯一一次例外是 2026-09-23 的压缩：那时还没发布，只有本机这一个库用过那些
 编号，压掉不欠谁的 —— 发布之后不再有这种例外。）
 
-**既有迁移**（两条）：
+**既有迁移**（四条）：
 
 | 编号 | 做了什么 | 备注 |
 |------|---------|------|
 | `0001_core` | 五张业务表 + 版本表的两列审计信息 | 上面那次压缩的产物：此前是四条（`0001_core` / `0002_run_usage_breakdown` / `0003_migration_audit_log` / `0004_frame_run_linkage`），合并后的脚本长什么样、与当时那条 head 差在哪三处，都写在脚本的 docstring 里 |
 | `0002_thread_management` | `charagent_threads` 补两列（`pinned_at` / `deleted_at`） | **压缩之后的第一条增量迁移** —— 「只追加不改写」这条规矩从它开始真正被执行（ticket 20 的会话管理动作） |
+| `0003_run_cost_columns` | `charagent_runs` 加一列（`total_cost_detail`）并把 `total_cost` 改成可空 | 成本口径改成「收尾算好写死」（ticket 28，取舍见 ADR-0018）；改成可空是为了把「没算出来」（NULL）与「真的花了 0 元」分开 |
+| `0004_idempotency_keys` | 新建 `charagent_idempotency_keys`（幂等登记簿） | HITL 的挂起-恢复跨进程，进程内 dict 挡不住重放（ticket 32，依据 ADR-0017）；**只加一张表，不碰任何既有表** |
 
-两条都是**手写**的：那份 `op.create_table` / `op.add_column` 是逐列核对过的结果，
+四条都是**手写**的：那份 `op.create_table` / `op.add_column` 是逐列核对过的结果，
 而纪律的真正保险不是 `--autogenerate` 这个动作，是 `pytest -m pg_db` 里那条
 「迁移结果与表定义逐列零差异」的比对 —— 手写脚本一样要过它。
 
@@ -126,7 +130,7 @@ head**（后续 `upgrade` 直接报错），所以它天生不是「一行一条
 
 **这张表为什么叫这个名字、为什么不写在 `db/schema.py` 里**：名字不能用 alembic
 默认的 `alembic_version`（通名会撞，撞了的后果是「别人的迁移读到我们的版本号，
-于是该建的表被跳过」，与五张业务表同一个理由），在 `alembic/env.py` 的
+于是该建的表被跳过」，与业务表同一个理由），在 `alembic/env.py` 的
 `VERSION_TABLE` 里定义、只那一处；它也不进 `schema.py` 的表定义 —— `version_num`
 与主键名都由 alembic 定，我们声明一份只会与它打架，而 `alembic check` 会按
 `version_table` 把它从代码侧与库侧**两边**排除，不声明照样零差异。`name` /
@@ -135,11 +139,11 @@ head**（后续 `upgrade` 直接报错），所以它天生不是「一行一条
 **若 autogenerate 冒出一堆与本次无关的差异**（尤其是 `charagent_checkpoints` 的
 类型或注释），说明代码与库已经漂移了 —— 先查清原因，别把那串差异一起提交。
 
-## P1 / P2 的追加路径（结构已预留）
+## 追加路径（结构已预留）
 
 | 阶段 | 加什么 | 怎么加 |
 |------|--------|--------|
-| **P1** | 幂等表 `idempotency_keys`（**仅此一张**） | 在 `schema.py` 里按同样风格加 `Table`（`charagent_` 前缀），自增下一号迁移（`000N_<slug>`，现有 head 见 `alembic/versions/`，或查 `charagent_migrations`） |
+| **P1** | ~~幂等表 `idempotency_keys`（**仅此一张**）~~ | **已建**（2026-09-25，ticket 32）：`0004_idempotency_keys` → 表名 `charagent_idempotency_keys`。它挡什么、过期怎么算、为什么不做后台清理，见 `schema.py` 那张表的注释与 `repositories/idempotency.py` 的模块 docstring |
 
 > **2026-09-18**：原列在本行的 `tickets` / `escalations` / `approvals` / `audit_logs` **四张业务表已移出框架**（分层剥离）—— 它们归业务侧独立维护，走自己的迁移链与版本表，与本文的追加流程无关。框架侧只留 `idempotency_keys`（请求幂等属运行时能力）。
 | **P2** | `events` 表（事件溯源 #12）、`memories` 表、`cost_entries` 表 | 自增下一号迁移 |

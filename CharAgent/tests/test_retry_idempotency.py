@@ -18,6 +18,8 @@
 
 from __future__ import annotations
 
+from uuid import uuid4
+
 import pytest
 from doubles import RecordingSleep
 
@@ -81,6 +83,31 @@ def test_rejection_message_reports_actual_length() -> None:
     """拒绝消息带实际长度: 排查时不必去数超长键有多少字符 (消息可操作)."""
     with pytest.raises(IdempotencyKeyError, match="实际长度 256"):
         IdempotencyKey.parse("x" * 256)
+
+
+def test_a_three_part_tool_call_key_is_shaped_by_the_caller_but_checked_here() -> None:
+    """调用方那份三列拼出来的键: 合法拼法通过, 拼歪的在**进存储之前**就被挡住.
+
+    键由调用方拼 (框架只约束形状, 不定义拼法): 上游每轮都从 `call_0` 重新编号,
+    所以真正唯一的身份是三列 —— `run_id` + `message_id` + `tool_call_id`
+    (见 `db/schema.py` 里 `charagent_tool_calls` 那段主键注释). uuid 的十六进制
+    与 `:` / `-` / `.` 都在白名单里, 拼出来天然合法.
+
+    为什么这条值得写: 拼歪了必须**在这里**就报出来, 而不是等到写库 —— 那时报错的
+    地方 (某个 SQL 或主键) 离出错的地方 (谁拼的键) 已经很远了.
+    """
+    run_id, message_id, tool_call_id = (uuid4().hex for _ in range(3))
+
+    key = IdempotencyKey.parse(f"{run_id}:{message_id}:{tool_call_id}")
+    assert key.value.count(":") == 2
+
+    # 夹了空白 (拼的时候用了空格当分隔符)
+    with pytest.raises(IdempotencyKeyError, match="允许字符"):
+        IdempotencyKey.parse(f"{run_id} {message_id} {tool_call_id}")
+    # 太长的第一段把总长顶到 266 (> 255): 报的是长度, 不是字符集 (两条判据都在
+    # 同一句消息里, 所以这里点名长度那一半, 免得读的人以为是空格的问题)
+    with pytest.raises(IdempotencyKeyError, match="实际长度 266"):
+        IdempotencyKey.parse(f"{'x' * 200}:{message_id}:{tool_call_id}")
 
 
 # ---------------------------------------------------------------------------

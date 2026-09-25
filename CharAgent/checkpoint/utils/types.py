@@ -132,6 +132,16 @@ class CheckpointSource(StrEnum):
     LOOP = "loop"  # 本次运行正常跑出来的一轮
     FORK = "fork"  # 本次运行是从一帧快照接着跑的, 这是它落下的第一帧
     SUSPENSION = "suspension"  # 补做挂起时欠下的工具调用, 因此落下的那一帧
+    # 一次人工审批的**挂起点**那一帧 (工具还没执行, 等人给结论 #25 HITL).
+    # 与上面那个 SUSPENSION 是**两头**: 那个是「欠的活补做完了」, 这个是「刚开始
+    # 欠」—— 两个都叫 suspension 会让人读反, 所以这一个用「审批」这个更窄的词
+    APPROVAL = "approval"
+
+
+# `Suspension.reason` 目前唯一会用到的短标签 (面向机器判断): 这次挂起是「有一条
+# 工具调用要人批」(#25 HITL). 写成常量而不是各处写字面量 —— 写帧的 (agent/loop.py)
+# 与读帧的都认它; 将来若出现别的挂起理由 (如「优雅停机」), 这一族标签就派上用场.
+SUSPENSION_REASON_APPROVAL = "needs_approval"
 
 
 @dataclass(slots=True)

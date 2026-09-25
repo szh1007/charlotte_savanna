@@ -1,9 +1,11 @@
 """CharAgent 测试共享替身 (doubles): 时钟 / 睡眠 / 随机源 / 假 Redis / 事件收集.
 
-替身清单 (六个): FakeClock / RecordingSleep / FixedRandom 服务 #61 的确定性
-(时间与随机性可注入) · FakeRedisClient 服务 checkpoint 的 Redis 实现 ·
-EventCollector 服务事件流断言与快照 (#4/#63) · FakeRecordDatabase 服务记录表
-那条线 (#17: 记录员写入、接口读回, 三个测试文件共用一份).
+替身清单 (不标个数 —— 数与代码同步是平白多一处会漂的地方): FakeClock /
+RecordingSleep / FixedRandom 服务 #61 的确定性 (时间与随机性可注入) ·
+FakeRedisClient 服务 checkpoint 的 Redis 实现 · EventCollector 服务事件流断言与
+快照 (#4/#63) · FakeRecordDatabase 服务记录表那条线 (#17: 记录员写入、接口读回,
+三个测试文件共用一份) · PendingAwareDatabase 在那之上补一条「按未决筛」的语义
+(#25 的挂起-恢复, 框架与业务两边的用例共用).
 
 与 `tests/helpers.py` 的分工: helpers 放 wire 样本与常量 (「真实响应长什么样」),
 本文件放**测试替身** —— 注入被测代码的缝, 让时间与随机性在测试里完全确定
@@ -38,7 +40,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from CharAgent.db.entities import Message, Run, Thread, ToolCall
+from CharAgent.db.entities import Message, Run, Thread, ToolCall, ToolCallStatus
 from CharAgent.db.errors import DataStoreError
 from CharAgent.stream.utils.types import EventType, StreamEvent
 
@@ -567,6 +569,43 @@ class FakeRecordDatabase:
             {name: getattr(row, name) for name in columns}
             for row in getattr(self, attribute)
         ]
+
+
+class PendingAwareSession(FakeRecordSession):
+    """假会话 + 一件它按设计不做的事: **按「未决」筛**那一条查询.
+
+    框架的判据是 SQL 里的 `status = 'needs_approval' AND approved_at IS NULL`
+    (还要 join 回会话), 而假库**不过滤** (见上面 `FakeRecordSession`: 过滤是 SQL
+    的事, 由 pg_db 用例守). 离线用例要验的却是「闸门跟着状态走」—— 那两列在
+    Python 侧补上, 于是「挂起时拦住、批完放开」这一串能离线跑通.
+
+    **真 SQL (含 join 回会话、含别人的会话取不走) 由 pg_db 用例守**
+    (`test_server_approval_db.py`).
+
+    **为什么搬进 doubles** (issue 35): 现在有两个消费方 —— 框架的 HITL 用例与业务
+    的代付用例 (业务那条要恢复端点真的能查到挂起那一行). 放这儿与 `EventCollector`
+    同源: 断的不是 SQL, 而 SQL 那半由 pg_db 用例拿真库验.
+    """
+
+    def scalars(self, statement: Any) -> list[Any]:
+        """工具调用那张表只交**未决**的行出去 (语义见类 docstring)."""
+        rows = super().scalars(statement)
+        if statement.column_descriptions[0]["entity"] is not ToolCall:
+            return rows
+        return [
+            row
+            for row in rows
+            if row.status == ToolCallStatus.NEEDS_APPROVAL.value
+            and row.approved_at is None
+        ]
+
+
+class PendingAwareDatabase(FakeRecordDatabase):
+    """把上面那个会话装进一个假库 (要验挂起-恢复的用例统一用它)."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.session = PendingAwareSession(self)
 
 
 def record_message(

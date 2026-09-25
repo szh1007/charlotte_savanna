@@ -35,6 +35,7 @@ from conftest import (
     AGENT_BASE_URL,
     BUYER_ID,
     ORDER_NO,
+    PAYMENT_PASSWORD,
     PROFILE,
     TOKEN,
     agent_url,
@@ -45,8 +46,9 @@ from fastapi import FastAPI
 from CharAgent.checkpoint import InMemoryCheckpointSaver
 from CharAgent.checkpoint import config as checkpoint_config
 from CharAgent.model.utils.types import ModelMessage, ModelResponse, Usage
+from CharAgent.retry.idempotency import InMemoryIdempotencyStore
 from CharAgent.server import RUN_ID_HEADER
-from CharAgent.tests.doubles import FakeRecordDatabase
+from CharAgent.tests.doubles import FakeRecordDatabase, PendingAwareDatabase
 from CharAgent.tests.mock_llm import (
     MockLLM,
     make_tool_call,
@@ -81,6 +83,7 @@ from CharApp.minimall.config import (
     server_config_from_env,
     thinking_from_env,
 )
+from CharApp.minimall.guardrail import PAY_APPROVAL_PROMPT
 from CharApp.minimall.redaction import TOOL_PHRASES
 from CharApp.minimall.server import (
     DEFAULT_CONVERSATION_ID,
@@ -91,6 +94,7 @@ from CharApp.minimall.server import (
     uvicorn_config,
 )
 from CharApp.minimall.service import TENANT_WEB, MinimallService, build_context
+from CharApp.minimall.tools import PAYMENT_PASSWORD_FIELD
 
 # 测试里给这个服务起的名字: respx 放行这个 host 上的请求 (交给 ASGI app),
 # 其余照旧拦给假商城
@@ -200,6 +204,23 @@ def parse_sse(body: str) -> list[dict[str, Any]]:
 def terminal_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """终局事件 (final / error) —— 一条流里恰好一个."""
     return [event for event in events if event["event"] in ("final", "error")]
+
+
+# 第三种终局: 挂起等人 (issue 35 才走得到的那一支). **单列一个名字**而不是并进上面
+# 那条 —— 上面那条被十几条既有用例共用, 并进去等于把它们的判据悄悄放宽 (将来多出一
+# 个"意外的挂起"就再也报不出来).
+APPROVAL_TERMINAL = "approval_required"
+
+
+def terminal_of(events: list[dict[str, Any]]) -> dict[str, Any]:
+    """这条流的终局事件 (三种之一), 以及"恰好一个"这条判据 (挂起那支用)."""
+    terminals = [
+        event
+        for event in events
+        if event["event"] in ("final", "error", APPROVAL_TERMINAL)
+    ]
+    assert len(terminals) == 1, f"终局事件应当恰好一个: {[e['event'] for e in events]}"
+    return terminals[0]
 
 
 def as_text(events: Any) -> str:
@@ -906,7 +927,7 @@ def test_build_service_wires_the_process_level_parts(
 
     assert isinstance(service.client, MinimallClient)
     assert session.thread_id == context.thread_id
-    assert len(session.tool_names) == 17, "零件接全了: 工具从上下文里装了出来"
+    assert len(session.tool_names) == 18, "零件接全了: 工具从上下文里装了出来"
     assert service.thinking is False, "env 里的思考模式开关没接到零件上"
     assert service.compaction is not None, "压缩旋钮没接到零件上 (env → ContextConfig)"
     assert service.compaction.keep_turns == 4, "接到零件上的还是默认值, 不是 env 那个"
@@ -1126,6 +1147,148 @@ def test_the_template_lists_every_variable_the_business_reads() -> None:
         ENV_CONTEXT_WATERMARK,
     ):
         assert name in text, f".env.example 缺少 {name}"
+
+
+# ---------------------------------------------------------------------------
+# 代付那条路 (issue 35): 一句话 → 挂起 → 输密码 → 那一单付掉
+# ---------------------------------------------------------------------------
+
+# 用户在自己页面上输的那次密码 (与工具/提供者两组用例同一个常量; 真机上它只活
+# 在这一次恢复里)
+PAY_PASSWORD = PAYMENT_PASSWORD
+
+
+def serving_with_approvals(model: Any, client: Any) -> Any:
+    """接上记录表**且**给得出挂起那一行 —— 代付那条端到端要的装配.
+
+    三处与 `serving` 不同, 都只在用例里才需要:
+
+    - 库是 `PendingAwareDatabase` (假库不过滤, 而挂起的判据在 SQL 里, 见 doubles.py)
+      —— 挂起态的家在记录表里 (ADR-0014), 没有库就没有那条路由;
+    - 幂等登记簿换成进程内那份 —— 假库跑不了 `PgIdempotencyStore` 的
+      `INSERT ... RETURNING` (生产两个入口都用库里的那份, 见 `create_minimall_app`);
+    - 于是这几条用例走的是 `create_minimall_app` (不是绕过它自己搭 app): 挂起与恢复
+      **是"接线"的一部分**, 绕开工厂就等于绕开「业务把库交给框架了吗」那一步.
+    """
+    return create_minimall_app(
+        MinimallService(
+            client=client,
+            model=model,
+            saver=InMemoryCheckpointSaver(),
+            database=PendingAwareDatabase(),
+        ),
+        ServerConfig(host=DEFAULT_SERVER_HOST, port=DEFAULT_SERVER_PORT, token=TOKEN),
+        idempotency=InMemoryIdempotencyStore(),
+    )
+
+
+async def test_a_payment_run_suspends_then_settles_with_the_password(
+    mall, client
+) -> None:
+    """ADR-0015 的那条通路**整条走一遍**: 挂起 → 恢复(带密码) → 商城收到那个密码.
+
+    为什么这一条非有不可 —— 它把三片各自测过的东西串成一条线: 那条裁决让运行停在
+    半路 (35)、恢复请求的 `data` 并进载荷并让会话**重新装配** (34)、新装配出来的
+    工具闭包拿着那份密码打商城 (35). 这三处任何一处接错这条都红, 而它们各自的单测
+    全是绿的 —— 「零件都对、装起来是错的」正是端到端那一次的用处.
+
+    顺带钉住三个"永不"里最容易被破的那一个: 两条 SSE 流里都搜不到密码原文. 它只该
+    出现在**打给商城**的那个请求体里 —— 那一次商城会校验它, 别处一律不留.
+
+    装配上有一处**非它不可**: 恢复那条路由只在配了库的装配里存在 (挂起的判据在
+    记录表里, 不在内存里), 所以这条用例用 `serving_with_approvals` 而不是 `serving`.
+    """
+    allow_app(mall)
+    routes = mock_all(mall)
+    pay_route = routes[f"POST orders/{ORDER_NO}/pay/"]
+    model = MockLLM.scripted(
+        [
+            tool_call_response(
+                make_tool_call("pay_my_order", f'{{"order_no": "{ORDER_NO}"}}')
+            ),
+            text_response("这一单付好了, 余额还剩 8101.00 元。"),
+        ]
+    )
+    app = serving_with_approvals(model, client)
+
+    # --- 第一步: 模型要付, 运行停在挂起上等人 -------------------------------
+    response = await ask(app, "帮我把这单付了")
+    events = parse_sse(response.text)
+
+    assert response.status_code == 200
+    assert not pay_route.called, "挂起那一次绝不执行 —— 钱一分没动"
+    terminal = terminal_of(events)
+    assert terminal["event"] == APPROVAL_TERMINAL, "这次请求到此为止 (挂起也是终局)"
+    approval = terminal["data"]
+    assert approval["tool_name"] == "pay_my_order"
+    assert approval["prompt"] == PAY_APPROVAL_PROMPT, "给买家看的那句话要原样出去"
+    assert approval["needs"] == [PAYMENT_PASSWORD_FIELD], "缺什么由前端据此渲染"
+    assert PAY_PASSWORD not in response.text
+
+    # --- 第二步: 用户刷新拿到那张卡, 输密码并点确认 (走恢复端点) --------------
+    # 恢复的是**记录层**那个 run_id (卡上带的那个), 不是这次 HTTP 请求的流编号:
+    # 前端唯一拿得到它的地方就是 /history 的 pending_approval —— 这里照那条路走.
+    async with talking_to(app) as http:
+        history = await http.get("/history", headers=headers())
+        pending = history.json()["pending_approval"]
+        resumed = await http.post(
+            f"/runs/{pending['run_id']}/resume",
+            json={
+                "decision": "approve",
+                "data": {PAYMENT_PASSWORD_FIELD: PAY_PASSWORD},
+            },
+            headers=headers(),
+        )
+
+    assert resumed.status_code == 200
+    assert pay_route.called, "恢复了工具才真的跑 —— 这一单是这时候付的"
+    assert json.loads(pay_route.calls[0].request.content) == {
+        PAYMENT_PASSWORD_FIELD: PAY_PASSWORD
+    }, "闭包里的密码就是用户输的那一个 (不是空的, 也不是编的)"
+    assert PAY_PASSWORD not in resumed.text, "密码不进事件流"
+    final = terminal_of(parse_sse(resumed.text))["data"]
+    assert "付好了" in final["content"], "模型拿得到回执, 答得出这一单的结果"
+
+
+async def test_a_refused_payment_settles_without_paying(mall, client) -> None:
+    """用户在卡上点「取消」→ 那一单**不付**, 而这次运行照常收尾.
+
+    拒绝与挂起在界面上只差一个按钮, 在链路上却是一整条不同的分支: 工具一次都不跑,
+    拒绝原因当作那条调用的失败结果回填, 模型据此换个说法接着答 (而不是这次对话就
+    此中断). 这条与上一条合起来证明「两个按钮各干各的」.
+    """
+    allow_app(mall)
+    routes = mock_all(mall)
+    pay_route = routes[f"POST orders/{ORDER_NO}/pay/"]
+    model = MockLLM.scripted(
+        [
+            tool_call_response(
+                make_tool_call("pay_my_order", f'{{"order_no": "{ORDER_NO}"}}')
+            ),
+            text_response("好的, 那你自己在订单页付。"),
+        ]
+    )
+    app = serving_with_approvals(model, client)
+
+    response = await ask(app, "帮我把这单付了")
+    async with talking_to(app) as http:
+        history = await http.get("/history", headers=headers())
+        run_id = history.json()["pending_approval"]["run_id"]
+        resumed = await http.post(
+            f"/runs/{run_id}/resume",
+            json={"decision": "reject", "reason": "先不付了"},
+            headers=headers(),
+        )
+
+    assert response.headers[RUN_ID_HEADER], "流编号照旧在响应头上 (前端靠它读流)"
+    assert resumed.status_code == 200
+    assert not pay_route.called, "拒绝就是拒绝 —— 一分钱都不该动"
+    events = parse_sse(resumed.text)
+    assert terminal_of(events)["event"] == "final", "拒绝之后运行照常收尾 (不是挂起)"
+    rejected = [event for event in events if event["event"] == "tool_result"]
+    assert rejected and rejected[0]["data"]["status"] == "error", (
+        "没做成的那一次要记成失败 (页面按 status 选话术)"
+    )
 
 
 # ---------------------------------------------------------------------------

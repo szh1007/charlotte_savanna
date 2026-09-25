@@ -1,6 +1,7 @@
 """Agent 写端点测试 (CharApp issue 11).
 
-接缝: Django 测试客户端直接打 /api/minimall/agent/ 的 8 个写操作端点.
+接缝: Django 测试客户端直接打 /api/minimall/agent/ 的 9 个写端点 (issue 11 的
+8 个 + issue 35 的代付).
 业务规则本身归 `test_services.py`, 这里管的是「助手那条路走不走得通」——
 动作真改了库 / 买家之间互相够不着 / 每种业务拒绝都带自己的错误码.
 
@@ -38,6 +39,11 @@ from app.minimall.views_agent import ERROR_CODES, EXCEPTION_CODES
 User = get_user_model()
 
 TOKEN = "test-internal-token"
+
+# 代付用的两个密码 (issue 35): 一个是这个买家设的那个 (setUp 里设的), 一个是
+# 故意错的. 提出来是为了让「哪条用例在验密码本身」一眼看得出来.
+GOOD_PASSWORD = "123456"
+WRONG_PASSWORD = "000000"
 
 
 def _url(name, kwargs=None):
@@ -463,6 +469,148 @@ class AgentOrderWriteTest(AgentWriteTestBase):
         self.assertEqual(response.status_code, 404)
 
 
+class AgentOrderPayTest(AgentWriteTestBase):
+    """代付 (POST orders/<no>/pay/) —— 请求体里只有一样东西: 买家的支付密码.
+
+    这一片的边界 (issue 35): 密码**只在这一个请求体里**活着, 它不落库、不回显、
+    不出现在任何一句话里. 判据全在 `pay_order` 那条锁内路径上, 端点只做三件事 ——
+    认人, 取自己的单, 把 service 的异常翻成错误码.
+    """
+
+    def _unpaid_order(self, quantity: int = 2) -> Order:
+        item = self._add_item(quantity)
+        return create_order(self.buyer, [item.id], self.address.id)
+
+    def pay(self, order_no, password: str = GOOD_PASSWORD, *, user=None):
+        """打一次代付端点 (密码默认给对的那个 —— 只有一条用例故意给错).
+
+        收订单**号**而不是订单对象: 有一条用例要打一个根本不存在的号;
+        `user=False` 表示不带身份头 (与基类 `call` 同一个约定).
+        """
+        return self.call(
+            "post",
+            "order_pay",
+            {"order_no": order_no},
+            user=user,
+            body={"payment_password": password},
+        )
+
+    def test_pay_with_the_right_password_marks_paid_and_returns_receipt(self):
+        """带对密码 → 订单 `paid`、余额扣减, 回执答得出「付了多少、还剩多少」."""
+        order = self._unpaid_order()
+
+        response = self.pay(order.order_no)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["status"], "paid")
+        self.assertEqual(response.data["status_display"], "已付款")
+        self.assertEqual(response.data["total_amount"], "20.00")
+        self.assertEqual(response.data["balance_remaining"], "9980.00")
+        self.assertIsNotNone(response.data["paid_at"])
+        order.refresh_from_db()
+        self.assertEqual(order.status, Order.Status.PAID)
+        self.assertEqual(self._balance(), Decimal("9980.00"))
+
+    def test_wrong_password_is_a_distinguishable_code(self):
+        """错密码 → `payment_failed`, **不是**兜底的 `order_rejected`, 钱一分不动.
+
+        码分得开才有意义: 工具按码写文案 (「密码不对, 重新发起一次」与「余额不够,
+        先充值」是两句不同的话). 顺带钉住密码不回显 —— 错误体里只有一句中文.
+        """
+        order = self._unpaid_order()
+
+        response = self.pay(order.order_no, WRONG_PASSWORD)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.code(response), "payment_failed")
+        self.assertNotEqual(self.code(response), "order_rejected")
+        self.assertNotIn("000000", str(response.data), "错误体里不许回显密码")
+        order.refresh_from_db()
+        self.assertEqual(order.status, Order.Status.PENDING)
+        self.assertEqual(self._balance(), Decimal("10000.00"))
+
+    def test_insufficient_balance_is_its_own_code(self):
+        """余额不够 → `insufficient_balance` (与密码错分开 —— 下一步该做的事不同)."""
+        Profile.objects.filter(user=self.buyer).update(balance=Decimal("10.00"))
+        order = self._unpaid_order()
+
+        response = self.pay(order.order_no)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.code(response), "insufficient_balance")
+        order.refresh_from_db()
+        self.assertEqual(order.status, Order.Status.PENDING)
+        self.assertEqual(self._balance(), Decimal("10.00"))
+
+    def test_paying_a_paid_order_409(self):
+        """已付款的单再付一次 → `invalid_order_status`, 而且**只扣了一次钱**.
+
+        这条是「双击 / 重发会不会扣两次」在商城这一侧的兜底: 状态判在锁内, 第二次
+        连密码都不会去校验.
+        """
+        order = self._paid_order()  # 20.00, 付款后余额 9980.00
+
+        response = self.pay(order.order_no)
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(self.code(response), "invalid_order_status")
+        self.assertEqual(self._balance(), Decimal("9980.00"))
+
+    def test_pay_other_users_order_404(self):
+        """别人的订单一律当没有 (与只读那条同一条规矩: 不存在与不属于你不区分)."""
+        item = CartItem.objects.create(
+            cart=Cart.objects.create(user=self.other),
+            product=self.product,
+            quantity=1,
+        )
+        theirs = create_order(self.other, [item.id], self.other_address.id)
+
+        response = self.pay(theirs.order_no)
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(self.code(response), "order_not_found")
+        theirs.refresh_from_db()
+        self.assertEqual(theirs.status, Order.Status.PENDING)
+
+    def test_pay_unknown_order_404(self):
+        response = self.pay("202601010000000000000000")
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(self.code(response), "order_not_found")
+
+    def test_a_missing_password_is_an_invalid_request(self):
+        """没带密码 → `invalid_request` (形状问题), 而不是「密码错」那个业务码."""
+        order = self._unpaid_order()
+
+        response = self.call("post", "order_pay", {"order_no": order.order_no}, body={})
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.code(response), "invalid_request")
+        order.refresh_from_db()
+        self.assertEqual(order.status, Order.Status.PENDING)
+
+    def test_a_password_of_the_wrong_length_is_an_invalid_request(self):
+        """恰好 6 位 —— 长度不对在**端点**就被拦下, 不去烧一次 service 的失败路径.
+
+        断言里带上「不回显」: 短密码是个短字符串, 它出现在错误体里的机会比长密码
+        大得多 (DRF 的校验消息本身不带值, 这条守着它以后也别带).
+        """
+        order = self._unpaid_order()
+
+        response = self.pay(order.order_no, "12345")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.code(response), "invalid_request")
+        self.assertNotIn("12345", str(response.data))
+
+    def test_missing_user_header_400(self):
+        order = self._unpaid_order()
+
+        response = self.pay(order.order_no, user=False)
+
+        self.assertEqual(response.status_code, 400)
+
+
 class AgentRefundWriteTest(AgentWriteTestBase):
     """申请退款与我的退款列表."""
 
@@ -619,10 +767,15 @@ class AgentErrorMappingTest(SimpleTestCase):
         self.assertEqual(len(codes), len(set(codes)))
 
     def test_unreachable_but_required_codes_exist(self):
-        """金额越界 / 余额不足: 8 个端点触发不到, 但码要在.
+        """金额越界 / 余额不足: 码要在.
 
-        金额由管理员批准时定 (`request_refund` 不带金额), 余额不足要等 L3 的支付
-        挂起 —— 两个码现在没有入口, 但工具层按码写文案时它们必须存在.
+        「余额不足」到 issue 35 有了入口 (代付端点, 见 `AgentOrderPayTest`) —— 它
+        的用例与这一条不重复: 那条断的是「真触发时码对不对」, 这条断的是「这张表
+        里有没有它」(工具层按码写文案, 缺了就说不清下一步).
+
+        **金额越界仍然没有入口**: 退款金额由管理员批准时定 (`request_refund` 不带
+        金额), 助手那条路上没有哪一步会传一个金额进来. 这是它现在唯一的意义 ——
+        留着是因为删掉它等于把「这个码缺席」这件事从表里抹掉.
         """
         self.assertEqual(ERROR_CODES["invalid_refund_amount"].status, 400)
         self.assertEqual(ERROR_CODES["insufficient_balance"].status, 400)

@@ -23,6 +23,11 @@
 | | | · **修订** (截断续写的几段合成一条) |
 | | | · 运行行终态 · 会话活动时刻 |
 
+> **收尾不收运行行的那一种情形** (ticket 33 补): HITL 的挂起被批准之后, 同一次运行
+> 会**接着跑第二段**. 第二段跑完时那一次运行还没结束 (可能再挂起, 也可能就此收尾)
+> —— 该往那一行写什么只有收尾的那一段知道. 于是两个收尾入口各多一个 `finish_run`
+> 开关, 关掉它时上表最后一格里的「运行行终态」不做, 消息 / 调用 / 活动时刻照做.
+
 **为什么从「收尾一次性写」改成「产生即落库」** (2026-09-24, ticket 27):
 `charagent_tool_calls.message_id` 是指向消息行的**外键**, 而那条 assistant 行今天只在
 收尾才写、编号还是插入时随机生成的 —— 于是「工具调用行在执行前落 pending、挂起那条
@@ -208,6 +213,36 @@ class RunFacts:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class RunSettlement:
+    """运行行**收尾那一笔**: 这一段跑完之后, 那一行长什么样.
+
+    为什么打成一个包 (与 `RunFacts` 同一条理由): 这四样**必须同进同出** —— 状态说
+    「这次跑成什么样」、账目说「花在哪儿」、金额说「折成多少钱」、最后一帧说「当时
+    它看到什么」, 少一样那一行自己就说不通. 打成包之后, 「这一段不收尾」于是也
+    只要说一次: 传 None (见 `_write`).
+
+    **None 的那一种情形** (HITL 的第二段, ticket 33): 这一段跑完了, 但**这一次运行**
+    还没结束 (可能再挂起, 也可能就此收尾) —— 那一行该写什么只有收尾那一段知道,
+    于是这一段一笔都不碰它. 账目与金额不会因此丢: 续跑接着数计数器, 收尾那一段
+    拿到的结果里就是这一整趟的累计值.
+
+    attributes:
+        status: 这一段跑完时那一行的状态 (由 outcome 推出来, 见 `_write` 的调用方).
+            **不一定是终态**: 挂起等人那一段落的是 `waiting_user` —— 这一段的结局
+            就是「停在这儿等人」, 而那一行还开着 (人给了结论才接着跑).
+        facts: 这一趟的账目 (续跑段给的是**累计**值 —— 计数器从快照接着数).
+        cost: 这一趟的钱 (算好的算式, 或算不出来的原因).
+        last_checkpoint_id: 本段落下的最后一帧; None = 这一段没落帧 (或调用方没给)
+            —— 它是「顺 parent_id 往回走 = 本次运行落的每一帧」的起点.
+    """
+
+    status: RunStatus
+    facts: RunFacts
+    cost: RunCost
+    last_checkpoint_id: str | None = None
+
+
 class RunRecorder(Protocol):
     """SPI: 「把一轮运行记下来」这件事的形状 (ChatSession 认它, 不认具体实现).
 
@@ -222,6 +257,11 @@ class RunRecorder(Protocol):
     | `begin` | 跑之前 | 把这一轮的运行行先建出来 (状态 running), 返回编号 |
     | `record` | 跑完了 | 推进那一行到终态 + 写消息行 + 落 `last_checkpoint_id` |
     | `record_unfinished` | 没跑完 (取消 / 失败) | 同上, 只是终态不同、没有账目 |
+
+    后两个各有一个 `finish_run` 开关 (ticket 33 补): 关掉它 = 这一段跑完了, 但
+    **这一次运行**还没结束 (HITL 挂起之后续跑的那一段). 那时消息 / 调用 / 会话活动
+    时刻照写, 运行行一笔不碰 —— 那一行横跨挂起等待期, 该写什么由收尾的那一段说
+    (见 `RunSettlement` 的 None 那一段).
 
     为什么「先建行」: 快照帧是在运行**中途**逐轮落盘的, 而 `checkpoints.run_id` 是
     指向运行行的外键 —— 行不在, 帧就盖不上编号 (见 `begin` 的说明).
@@ -261,6 +301,7 @@ class RunRecorder(Protocol):
         since: int = 0,
         summary: str | None = None,
         model: str | None = None,
+        finish_run: bool = True,
     ) -> bool:
         """记下**一次跑完的运行** (含 visible / hidden 消息 + 推进运行行).
 
@@ -276,6 +317,8 @@ class RunRecorder(Protocol):
                 (上一轮那份) 只有会话手上有.
             model: 这次用的模型名 —— 结果里没有它 (loop 手上是个薄协议的模型对象,
                 名字只有装配处知道), 所以由调用方递进来; None 表示没给.
+            finish_run: 要不要把运行行结掉. False = 这一段跑完了但那次运行还没结束
+                (HITL 续跑的第二段): 消息 / 调用 / 会话活动照写, 运行行一笔不碰.
 
         Returns:
             bool: 记上了 True; 没记上 (库不可用 / 没有那一行) False.
@@ -286,24 +329,29 @@ class RunRecorder(Protocol):
         self,
         *,
         thread_id: str,
-        question: str,
+        question: str | None,
         status: RunStatus,
         run_id: str | None = None,
         since: int = 0,
         model: str | None = None,
+        finish_run: bool = True,
     ) -> bool:
         """记下**一次没答完的运行** (取消 / 失败那一轮).
 
         Args:
             thread_id: 算哪段会话.
-            question: 用户那一句提问 (页面上已经显示了, 记录里不能少).
+            question: 用户那一句提问 (页面上已经显示了, 记录里不能少); **None =
+                这一段不是提问触发的** (续跑段): 那一段没有「用户说过的话」可写,
+                于是记录里只留一句「这一轮没答完」.
             status: 这次运行的终态 (cancelled / failed).
             run_id: 同 `record` —— `begin` 建的那一行; None 表示没得推进.
             since: 那一句提问在本次 run wire 历史里的下标. 提问行**在提问时就已经
                 落过库** (ticket 27 起由 `flush` 写), 这里给下标是为了让它落在同一
                 行上而不是再写一条 (编号是算出来的) —— 给错会多出一条重复的提问行.
+                `question` 为 None 时它用不上 (没有从 wire 历史来的行).
             model: 这次用的模型名 (同 `record`); 这一轮没有账目, 但模型是跑之前
                 就定下的配置事实, 照样记得下来.
+            finish_run: 同 `record` —— False = 这一段没收尾 (那一次运行还没结束).
 
         Returns:
             bool: 记上了 True; 没记上 False.
@@ -433,6 +481,7 @@ class ConversationRecorder:
         since: int = 0,
         summary: str | None = None,
         model: str | None = None,
+        finish_run: bool = True,
     ) -> bool:
         """记下这次跑完的运行 (消息按可见性落库 + 推进运行行 + 刷会话的活动时刻)."""
         lines = recorded_transcript(result.messages, result.content, since=since)
@@ -460,18 +509,28 @@ class ConversationRecorder:
                     hidden=False,
                 )
             )
-        facts = RunFacts.of(result, model=model)
+        # 不结账 (HITL 续跑的第二段) 时这一笔整个不给: 状态 / 账目 / 金额 / 最后一帧
+        # 都不写, 也不去算钱 —— 算了也没地方放 (见 RunSettlement)
+        settlement: RunSettlement | None = None
+        if finish_run:
+            facts = RunFacts.of(result, model=model)
+            settlement = RunSettlement(
+                status=run_status_for_outcome(result.outcome),
+                facts=facts,
+                # 只有真的开了账 (`begin` 建出那一行) 才算钱: 没有那一行就没有开始
+                # 时刻, 也就判不了峰谷 —— `_write` 会按「没账目」整轮不写
+                cost=await self._cost_of(facts, run_id)
+                if run_id is not None
+                else RunCost(gap=CostGap.NO_MOMENT, model=model),
+                # 本段落的最后一帧: 有了它, 「这次花了多少」与「当时它看到了什么」就
+                # 对到同一件事上 (顺 parent_id 往回走 = 本次运行落的每一帧)
+                last_checkpoint_id=result.last_checkpoint_id,
+            )
         return await self._write(
             thread_id=thread_id,
             lines=lines,
             run_id=run_id,
-            status=run_status_for_outcome(result.outcome),
-            facts=facts,
-            # 只有真的开了账 (`begin` 建出那一行) 才算钱: 没有那一行就没有开始
-            # 时刻, 也就判不了峰谷 —— `_write` 会按「没账目」整轮不写
-            cost=await self._cost_of(facts, run_id)
-            if run_id is not None
-            else RunCost(gap=CostGap.NO_MOMENT, model=model),
+            settlement=settlement,
             # 工具调用的事实全在逐轮记录里 (运行中那两拍用的也是它): 这里一并交给
             # 写入路径 —— 缺的行补上, 有结论的推进到终态 (见 _write_calls)
             calls=[fact for turn in result.turns for fact in turn.calls],
@@ -479,24 +538,29 @@ class ConversationRecorder:
             # 「产生时那一拍写下的形态」: 与上面那份目标形态比一比, 不同的才需要
             # 修订 (截断续写时几段合成一条 / 早先那几段退成隐藏行)
             produced=visible_transcript(result.messages, since=since),
-            # 本段落的最后一帧: 有了它, 「这次花了多少」与「当时它看到了什么」就
-            # 对到同一件事上 (顺 parent_id 往回走 = 本次运行落的每一帧)
-            last_checkpoint_id=result.last_checkpoint_id,
         )
 
     async def record_unfinished(
         self,
         *,
         thread_id: str,
-        question: str,
+        question: str | None,
         status: RunStatus,
         run_id: str | None = None,
         since: int = 0,
         model: str | None = None,
+        finish_run: bool = True,
     ) -> bool:
         """记下这一轮没答完 (提问 + 一条可见说明) —— 取消 / 失败那一轮走这里."""
+        # 提问那一行只有「由提问触发的运行」才有 (question=None 是续跑段: 那一段
+        # 起于一次人工批准, 没有谁说过的哪句话可以写)
+        asked = (
+            [TranscriptLine(role="user", content=question, reasoning=None)]
+            if question is not None
+            else []
+        )
         lines = [
-            TranscriptLine(role="user", content=question, reasoning=None),
+            *asked,
             TranscriptLine(
                 role="system",
                 content=UNFINISHED_TURN_TEXT,
@@ -505,20 +569,30 @@ class ConversationRecorder:
             ),
         ]
         # 没跑完那一轮没有账可记: 五个分解字段都是 None (「没有」, 不是「零」) ——
-        # 但模型名照样带上: 它是跑之前就定下的配置事实, 不是跑出来的账目
+        # 但模型名照样带上: 它是跑之前就定下的配置事实, 不是跑出来的账目.
+        # 不结账 (续跑段) 时连这一笔都不给 —— 那一行横跨挂起等待期, 该写什么由
+        # 收尾的那一段说
+        settlement = (
+            RunSettlement(
+                status=status,
+                facts=RunFacts(model=model),
+                # 没跑完那一轮没有账目 (五列全是 None), 也就没有金额 —— 明细里
+                # 如实写一句原因, 而不是让那一列空着不解释
+                cost=RunCost(gap=CostGap.UNFINISHED, model=model),
+            )
+            if finish_run
+            else None
+        )
         return await self._write(
             thread_id=thread_id,
             lines=lines,
             run_id=run_id,
-            status=status,
-            facts=RunFacts(model=model),
-            # 没跑完那一轮没有账目 (五列全是 None), 也就没有金额 —— 明细里
-            # 如实写一句原因, 而不是让那一列空着不解释
-            cost=RunCost(gap=CostGap.UNFINISHED, model=model),
+            settlement=settlement,
             # 提问那一行**在提问时就已经落过库了** (ticket 27 起): 这里要它落在
-            # 同一行上 —— 给下标就够, 编号是算出来的 (写第二遍是幂等的)
+            # 同一行上 —— 给下标就够, 编号是算出来的 (写第二遍是幂等的).
+            # 没有提问 (续跑段) 就一条都不来自 wire 历史, 编号只能随机给
             since=since,
-            produced=[lines[0]],
+            produced=[asked[0]] if asked else None,
         )
 
     async def flush(
@@ -625,13 +699,10 @@ class ConversationRecorder:
         thread_id: str,
         lines: list[TranscriptLine],
         run_id: str | None,
-        status: RunStatus,
-        facts: RunFacts,
-        cost: RunCost,
+        settlement: RunSettlement | None,
         calls: Sequence[ToolCallFact] = (),
         since: int = 0,
         produced: Sequence[TranscriptLine] | None = None,
-        last_checkpoint_id: str | None = None,
     ) -> bool:
         """六步写入 (会话行 / 运行行收尾 / 消息补齐 / 修订 / 调用行 / 活动时刻).
 
@@ -653,15 +724,20 @@ class ConversationRecorder:
         None 说明 `begin` 那一步没成 —— 那就整轮不写 (连消息行也不写: 消息行的
         `run_id` 列是外键), 落进 `_missed` 如实报一句.
 
+        **`settlement` 为 None 时那一行不动** (HITL 续跑的第二段, ticket 33): 消息 /
+        调用 / 会话活动时刻照写 (它们记的是**事实**, 与运行行结没结账无关), 只有
+        运行行那一笔跳过 —— 它横跨挂起等待期, 该写什么由收尾的那一段说.
+
         只兜 `DbError` (数据库那一族的错, 仓储抛的就是它): 别的异常是框架自己的
         bug, 该留 traceback 给人看 —— 悄悄吞掉会让记录从此错下去, 那比一次报错
         难查得多.
 
         Args:
-            thread_id / lines / run_id / status / facts: 见本模块 docstring.
-            cost: 这一轮花了多少钱 (算好的算式, 或算不出来的原因) —— 由**调用方**
-                交给它: 「跑完了没跑完」只有调用方知道 (空账目既可能是「没跑完」,
-                也可能是「跑完了但一点用量都没有」), 让这里去猜会用错那一边.
+            thread_id / lines / run_id: 见本模块 docstring.
+            settlement: 运行行收尾那一笔 (状态 / 账目 / 金额 / 最后一帧); None =
+                这一段不收尾 (那一次运行还没结束). 为什么由**调用方**给而不是这里
+                从 `lines` 推: 「跑完了没跑完」只有调用方知道 (空账目既可能是「没
+                跑完」, 也可能是「跑完了但一点用量都没有」), 让这里去猜会用错那边.
             calls: 这一轮的工具调用事实 (含运行中没写上、要在这儿补的那些).
             since: `lines` 的第 0 条在本次 run wire 历史里的下标 (算编号用).
             produced: `lines` 里**来自 wire 历史**那一段「产生时的形态」
@@ -694,17 +770,21 @@ class ConversationRecorder:
         ]
         try:
             await self._ensure_thread(thread_id, title_for(lines))
-            await self._runs.finish(
-                run_id,
-                status=status,
-                last_checkpoint_id=last_checkpoint_id,
-                **asdict(facts),
-                # 金额只在算得出来时写 (仓储那边也只在这时候动那一列): 算不出来
-                # 就留着 NULL —— 「没算出来」不是「没花钱」, 更不是把已有的金额
-                # 清掉. 明细两种情形都写: 它是「这笔钱怎么来的」或「为什么没有」
-                total_cost=cost.total if cost.known else None,
-                total_cost_detail=cost.to_detail(),
-            )
+            # 运行行那一笔 (六步里的第二步): 这一段不收尾 (settlement=None, HITL 的
+            # 续跑段) 就跳过它 —— 那一行横跨挂起等待期, 该写什么由收尾那段说;
+            # 下面那几步照走 (它们记的是这一段**产生的事实**, 与结没结账无关)
+            if settlement is not None:
+                await self._runs.settle(
+                    run_id,
+                    status=settlement.status,
+                    last_checkpoint_id=settlement.last_checkpoint_id,
+                    **asdict(settlement.facts),
+                    # 金额只在算得出来时写 (仓储那边也只在这时候动那一列): 算不出来
+                    # 就留着 NULL —— 「没算出来」不是「没花钱」, 更不是把已有的金额
+                    # 清掉. 明细两种情形都写: 它是「这笔钱怎么来的」或「为什么没有」
+                    total_cost=settlement.cost.total if settlement.cost.known else None,
+                    total_cost_detail=settlement.cost.to_detail(),
+                )
             # 消息行带上 run_id: 它们确实属于这次执行 —— 审计时「这几条是哪一次
             # 问答产生的」靠它 (列注释: NULL 表示不是 agent 跑出来的)
             #
@@ -779,11 +859,16 @@ class ConversationRecorder:
         必然漂移).
 
         归属靠 `fact.message_index` 算 (`message_id_for`), 于是**同一次运行的第二段**
-        (审批恢复) 能直接寻址第一段写下的那一行. 反过来说: 若补做的那条调用, 发起它
-        的 assistant 行不属于**本次** run (CLI `--resume` 开的是新的一次运行, 而快照里
-        那条 assistant 行是上一次运行写的), 这个编号在本次 run 里没有对应的消息行 ——
-        外键会拦下, 降级成一条 warning. **那条路由 issue 33 定**: HITL 恢复沿用挂起
-        那次运行的编号 (本来就是同一次运行), 或者把那条 assistant 行按本次运行补写一行.
+        (审批恢复) 能直接寻址第一段写下的那一行.
+
+        反过来说: 若补做的那条调用, 发起它的 assistant 行不属于**本次** run (命令行
+        `--resume` 开的是新的一次运行, 而快照里那条 assistant 行是上一次运行写的),
+        这个编号在本次 run 里没有对应的消息行 —— 外键会拦下, 降级成一条 warning.
+        **这条路 issue 33 定了, 走的是上面那条**: HITL 的续跑沿用挂起那次运行的编号
+        (本来就是同一次运行), 于是补做的调用直接寻址第一段写下的那一行. 剩下那半边
+        (命令行从**挂起点**续跑) 今天到不了: 挂起点只由 HITL 产生 (issue 34), 而命令行
+        那条是「接着上次聊」. 真到了那一天, 修法在这里已经记下 —— 按帧里的 `run_id`
+        反查那条 assistant 行的编号, 或把它按本次运行补写一行.
         """
         if not calls:
             return
@@ -814,6 +899,11 @@ class ConversationRecorder:
                 tool_call_status_for_outcome(fact.outcome),
                 result=fact.result,
                 duration_ms=fact.duration_ms,
+                # 要人批的那一条把「问什么」带上 (挂起那一刻就落库): 刷新页面之后
+                # 前端靠这两列重建确认卡, 而**只能在这一笔写** —— 上面建行那一拍
+                # 不知道要不要人批 (裁决还没发生), 而建行走的是幂等插入 (已有的跳过)
+                approval_prompt=fact.approval_prompt or None,
+                approval_needs=fact.approval_needs or None,
             )
 
     async def _ensure_thread(self, thread_id: str, title: str) -> None:
@@ -909,6 +999,7 @@ __all__ = [
     "ConversationRecorder",
     "RunFacts",
     "RunRecorder",
+    "RunSettlement",
     "normalize_title",
     "title_for",
 ]

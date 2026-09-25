@@ -12,8 +12,15 @@
    (IN_PROGRESS) → 完成 (COMPLETED, 带结果); 动作失败要 release 放行,
    否则该键永久卡在「在途」, 后续合法重试全被挡住.
 
-P0 的边界 (P1 补齐): 进程内 dict, **无 TTL / 无持久化 / 跨实例失效**,
-也没有 Saga 补偿 —— 生产形态是 Redis SETNX + TTL 续租 + owner 校验.
+边界 (本文件这个实现): 进程内 dict, **无 TTL / 无持久化 / 跨实例失效**,
+也没有 Saga 补偿. **持久化那一半已于 2026-09-25 落地** (ticket 32):
+`db/repositories/idempotency.py` 的 `PgIdempotencyStore` 把同一套协议落在
+Postgres 上 (默认不过期, 配了 ttl 就有过期判定 + 过期后可重新认领). 它**不在本
+包** —— 协议与内存实现归这里 (本包零数据库依赖), 要持久化的人去 db 包取.
+
+仍没做的两件: **owner 校验** (同一把键过期后被重新认领时, 前一手动作的 complete
+会写进后来那一手的行 —— Redis 版该带的正是它) 与 **Saga 补偿** (HITL 的挂起-恢复
+没有「正向多步」可补偿, 用不上, 见 DESIGN #17 段).
 
 **调用方: HITL 挂起-恢复 (2026-09-24 改判)**. 本模块挡的是「**同一个动作被执行
 两次**」, 而框架里此前**不存在这条路径** —— 重试只包模型调用
@@ -37,9 +44,10 @@ P0 的边界 (P1 补齐): 进程内 dict, **无 TTL / 无持久化 / 跨实例�
    个: 没有真实触发场景. 下次被想起的合理解释是「真机上一次工具卡住了」,
    那时它直接接在本模块上.
 
-随之要**连持久化存储一起补** (`db/README.md` 已规划 `idempotency_keys`
-表, P1): P0 这个进程内 dict 记不住跨进程的重放, 而两次恢复跨进程 (两次 HTTP
-请求可能落同一个进程, 也可能不是). 改判同时记在 `docs/DESIGN.md` 的 #17 段.
+随之**把持久化存储一起补上了** (ticket 32, 已落地): 本文件这个进程内 dict
+记不住跨进程的重放, 而两次恢复跨进程 (两次 HTTP 请求可能落同一个进程, 也可能
+不是). 实现是 `db/repositories/idempotency.py` 的 `PgIdempotencyStore` + 表
+`charagent_idempotency_keys`; 改判同时记在 `docs/DESIGN.md` 的 #17 段.
 
 大白话版: 幂等键 = 快递单号, 存储 = 单号台账. 同一单号来两次: 第一次登记
 「在办」并真的去办, 办完标「已办」并记结果; 第二次来直接告诉你「已办, 结果
@@ -105,7 +113,8 @@ class IdempotencyKey:
 
 
 class IdempotencyStore(Protocol):
-    """幂等记录存储协议 (SPI): P0 进程内实现, P1 补 Redis / PG 实现.
+    """幂等记录存储协议 (SPI): 进程内见 `InMemoryIdempotencyStore`, 持久化见
+    `CharAgent.db.PgIdempotencyStore` (Redis 版仍属 P1).
 
     三个动作构成一次鉴权往返: 动作执行**前** claim (拿到才执行), 成功后
     complete (记结果), 失败后 release (放行合法重试).
@@ -137,9 +146,10 @@ class InMemoryIdempotencyStore:
 
     并发说明: 单事件循环内 dict 读改写之间没有 await, 天然原子 —— 同一 key
     的并发认领在进程内不会同时拿到执行权. **跨进程不适用** (多实例要靠
-    Redis SETNX).
+    `PgIdempotencyStore` 那种让数据库来判的实现).
 
-    边界 (P1 补齐): 无 TTL / 无持久化 (进程重启即遗忘) / 无 Saga 补偿.
+    边界: 无 TTL / 无持久化 (进程重启即遗忘) / 无 Saga 补偿. 要跨进程就把
+    `CharAgent.db.PgIdempotencyStore` 接上 —— 三个动作的语义与这里一致.
     """
 
     def __init__(self) -> None:

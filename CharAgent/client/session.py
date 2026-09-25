@@ -65,6 +65,7 @@ from dataclasses import replace
 
 from CharAgent.agent import (
     AgentLoop,
+    Approval,
     CompactionPolicy,
     LoopGuard,
     LoopResult,
@@ -402,13 +403,40 @@ class ChatSession:
         )
         return result
 
-    async def resume(self) -> LoopResult | None:
+    async def resume(
+        self,
+        *,
+        run_id: str | None = None,
+        approval: Approval | None = None,
+    ) -> LoopResult | None:
         """从最新一帧快照接着跑; 没有可恢复的快照时返回 None.
 
         「不重复已完成动作」在这里是**免费**得到的: 起点是快照里的消息历史,
         而已经执行过的工具结果就在那份历史里 —— loop 不会去重跑它们. 快照恰好
         停在「工具调用还没有结果」的半路时 (人工审批挂起点), loop 还会先
-        把那几条欠着的调用补做完再继续 (checkpoint/utils/pending.py).
+        把那几条欠着的调用**了结掉**再继续 (checkpoint/utils/pending.py) ——
+        而了结必须先有人的结论 (`approval=`, 见下).
+
+        **两种「接着跑」不是一回事** (这是本方法最要紧的一处, ticket 33):
+
+        - **不传 `run_id`** (命令行的 `--resume`): 这是**新的一次运行** —— 新的一段
+          「从提问到答复终止」, 只是从旧快照起跑. 于是照 `ask` 的样子开一行新账
+          (`_begin_run` → 跑 → `_record`), 帧与消息都指向那一行.
+        - **传 `run_id`** (HITL 的审批恢复, issue 34): 这是**同一次运行的第二段**
+          —— 那一行**不新建**, 而收尾那一笔照常写上去 (它记的是这一段的结局:
+          跑完了 / 上游中断 / 又挂起了一次). 这一段落的帧与消息全部指回那一行.
+
+        为什么是参数而不是「`resume` 一律沿用」: 命令行那条如果也沿用, 一次
+        `--resume` 会在同一天里往同一行账上叠三段互不相干的对话, 「这次运行花了
+        多少」当场失去意义. **判据是「是不是同一次运行的第二段」**, 只有调用方
+        知道答案, 所以由调用方给.
+
+        Args:
+            run_id: 本次续跑算哪一行运行; None (默认) = 这是新的一次运行, 编号由
+                本方法自己开出来.
+            approval: 人对这次挂起的结论 (issue 34 的恢复路径); None = 没有结论
+                —— 那帧若欠着工具调用, loop 会当场报错 (**不**悄悄把那条调用执行
+                掉, 理由见 `AgentLoop.resume`). 没有挂起的普通续跑传不传都一样.
 
         Returns:
             LoopResult | None: 本次续跑的结果; None 表示这个会话没有任何快照
@@ -419,14 +447,54 @@ class ChatSession:
             CheckpointError: 读取快照失败.
             PromptNotFoundError: 这帧的身份说明不在盘上了 (那段会话用的那版提示词
                 被删了) —— 编不出正文就不猜, 见 prompt/ref.py 的 deref_prompt.
+            LoopConfigError: 这帧是挂起点而调用方没有给 `approval`.
             asyncio.CancelledError: 续跑期间又被 Ctrl-C 打断 (同样可再续).
+
+        Note:
+            记账与 `ask` 同一条规矩 (**旁挂的**, 记录员失败不影响本方法返回结果),
+            只有一处不同: 续跑不是提问触发的, 于是没有「用户那句话」要当场落库
+            (不调 `_flush`), 失败时也只写一句「这一轮没答完」而不是「提问 + 没答完」
+            (见 `_record_unfinished`).
         """
         checkpoint = await self._saver.load_latest(self._thread_id)
         if checkpoint is None:
             return None
         # 身份说明被剥离过的帧 (v5) 先补回来再交给 loop —— 补它要读盘, 而 loop 不碰
         # 磁盘; 不补的话 loop 会当场拦下 (见 AgentLoop.resume 的护栏)
-        result = await self._run(self._loop.resume(self._restore(checkpoint)))
+        restored = self._restore(checkpoint)
+        # 这一段产生的消息从第几条开始: 起点的长度就是下标基准, 与 loop 的落库
+        # 协作者同一个口径 (`flushed = len(messages)`) —— 两边算的编号必须对得上,
+        # 否则收尾会把运行中已经写过的行再写一遍 (那会变成两条一样的消息)
+        since = len(restored.state.messages)
+        # 摘要「新不新」的基准要在跑之前取 (与 `ask` 同一条: _run 会把它覆盖掉)
+        before_summary = self._summary
+        # 没传 run_id = 这一次是新的一次运行: 那一行由这一段开出来, 于是它的收尾
+        # **必须**落到那一行上 (没落的行会永远停在 running).
+        finish_run = run_id is None
+        if run_id is None:
+            run_id = await self._begin_run()
+        try:
+            result = await self._run(
+                self._loop.resume(restored, run_id=run_id, approval=approval)
+            )
+        except BaseException as exc:
+            # 失败与取消那一段**不碰**别人开的账 (finish_run 仍是上面那个值): 那次
+            # 运行还没结束 (它还等着人给结论), 这一段只是它的第二段 —— 把 failed
+            # 写上去等于把一次还能恢复的运行判死, 用户只能重新问一遍. 而那一段自己
+            # 开的账必须收掉, 否则那一行永远停在 running
+            await self._record_unfinished(
+                None, exc, run_id=run_id, since=since, finish_run=finish_run
+            )
+            raise
+        # 跑到了结局就记上去 —— 包括「又挂起一次」(那时写的是 waiting_user, 不是
+        # 终态), 以及这次运行的终态. 于是「谁收尾」不靠调用方传, 而是看这一段真的
+        # 跑成了什么
+        await self._record(
+            result,
+            run_id=run_id,
+            since=since,
+            summary=result.summary if result.summary != before_summary else None,
+        )
         return result
 
     async def frame_count(self) -> int | None:
@@ -477,8 +545,9 @@ class ChatSession:
         (工具结果等), 而会话历史里只有用户那句提问. 不收回来的话, 模型下一轮
         就看不到上一轮做过什么, 只能重做一遍.
 
-        记账不在这里 (见 `ask`): 「这一轮问了什么」「新压出来的摘要」都是那次提问
-        的事, 而 `resume` 根本没有这两项 —— 它们不该双双挂成 Optional 传进来.
+        记账不在这里 (见 `ask` / `resume`): 那两拍各自知道该交什么 —— 提问那一句、
+        摘要新不新、这一段要不要给运行行收尾, 都不是「跑一次 loop」能回答的. 本方法
+        只管把跑完的状态收进会话 (`_history` / 摘要 / 下一帧挂在谁下面).
         """
         try:
             result = await pending
@@ -571,11 +640,15 @@ class ChatSession:
         run_id: str | None,
         since: int,
         summary: str | None = None,
+        finish_run: bool = True,
     ) -> None:
         """把这一轮交给记录员 (没配记录员 = 一步都不走).
 
-        `run_id` 是 `_begin_run` 那一步建出来的行 —— 收尾是**推进**它, 不是另起
+        `run_id` 是 `_begin_run` 那一步建出来的行 —— 收尾是**写那一行**, 不是另起
         一行 (帧上的编号已经指向它了).
+
+        `finish_run` 照原样转给记录员 (见 `resume` 的说明): False = 这一段的账
+        不归它收 (那一次运行还开着, 等着人给结论).
         """
         if self._recorder is None:
             return
@@ -588,15 +661,17 @@ class ChatSession:
             since=since,
             summary=summary,
             model=self._model_name,
+            finish_run=finish_run,
         )
 
     async def _record_unfinished(
         self,
-        question: str,
+        question: str | None,
         error: BaseException,
         *,
         run_id: str | None,
         since: int,
+        finish_run: bool = True,
     ) -> None:
         """把「这一轮没答完」交给记录员 (取消与失败都算).
 
@@ -606,6 +681,10 @@ class ChatSession:
 
         `since` 是那句提问在本次 run 历史里的下标 —— 提问行在提问那一刻就落过库了
         (ticket 27), 记录员按它把那一行**认出来**而不是再写一条.
+
+        `question` 为 None 表示这一段不是提问触发的 (续跑段): 那一段没有「用户说过
+        的话」可写, 记录里只留一句「这一轮没答完」—— 编一句假的提问出来会让记录
+        从此撒谎. `finish_run` 同 `_record`.
         """
         if self._recorder is None:
             return
@@ -621,6 +700,7 @@ class ChatSession:
             run_id=run_id,
             since=since,
             model=self._model_name,
+            finish_run=finish_run,
         )
 
     async def _flush(

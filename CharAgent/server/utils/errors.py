@@ -11,6 +11,8 @@
 | ServerConfigError | 业务 (任一回调) | 503 | 配置缺失 / 服务没就绪 (如令牌没配) |
 | InvalidRequestError | 框架 | 400 | 请求体不成形 (不是 JSON / 缺字段 / 标题不合法) |
 | ThreadBusyError | 框架 | 409 | 同一会话已有一次运行在跑 (不并发写) |
+| ThreadSuspendedError | 框架 | 409 | 这段会话有一次未决挂起 (等人给结论) |
+| ApprovalAlreadyHandledError | 框架 | 409 | 同一份审批被提交了第二次 (在办 / 已办) |
 | RunNotFoundError | 框架 | 404 | 取消时这次运行已不在册 (跑完了 / 不存在 / 不是你的) |
 | ThreadNotFoundError | 框架 | 404 | 改标题 / 置顶 / 删除时这段会话不在册 |
 
@@ -120,6 +122,57 @@ class ThreadBusyError(ServerError):
         message: str,
         *,
         code: str = "thread_busy",
+        status_code: int = 409,
+    ) -> None:
+        super().__init__(message, code=code, status_code=status_code)
+
+
+class ThreadSuspendedError(ServerError):
+    """这段会话有一次**未决的挂起** (有工具调用在等人给结论) —— 框架自己抛.
+
+    **与 `ThreadBusyError` 分开, 虽然状态码相同**: 前端要能区分「在跑」与「等人」
+    —— 前者提示「上一句还在答」, 后者该把那张确认卡推到用户面前. 合成一个 409 会
+    让前端只能猜, 而猜错的表现是「用户点了确认之后以为已经提交, 其实什么也没发生」.
+
+    为什么挂起期间不许发新提问: 那种情况下会话**不忙** (挂起时运行已经收尾, 登记表
+    上放开了), 于是新提问会从最新快照起跑 —— 而那份快照停在一个「欠着结果」的半路
+    上, 新的一句问话会与那次未决的确认搅在一起. 闸门因此必须比「忙」宽一档.
+
+    闸门的判据在**库里** (`status = needs_approval AND approved_at IS NULL`), 不在
+    内存集合: 挂起可能跨进程重启 (见 `server/sessions.py`), 内存里那点状态活不过
+    重启 —— 而「重启之后就管不住了」正是最危险的那种失效 (它不报警).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "thread_suspended",
+        status_code: int = 409,
+    ) -> None:
+        super().__init__(message, code=code, status_code=status_code)
+
+
+class ApprovalAlreadyHandledError(ServerError):
+    """这一份审批已经有人给过结论了 —— 框架自己抛 (重复的恢复请求).
+
+    两种情形, 用两个码分开 (由抛出方给):
+
+    | 码 | 什么时候 | 前端该做什么 |
+    |---|---|---|
+    | `approval_in_progress` | 上一次请求还在跑 | 提示「提交中」, 别再发 |
+    | `approval_already_applied` | 上一次已经办完 | 刷新看最新状态 |
+
+    为什么是 409 而不是 404: 用户点的**就是同一张卡**, 而这张卡确实处理过了 ——
+    回 404 会让前端以为「没有这件事」, 而真相是「这件事刚做完」. 前端的正确反应也
+    完全不同 (前者该重建卡片, 后者该把卡片切成「已提交」).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "approval_already_handled",
         status_code: int = 409,
     ) -> None:
         super().__init__(message, code=code, status_code=status_code)

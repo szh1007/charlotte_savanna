@@ -26,7 +26,11 @@ from CharAgent.db.entities import Run, RunStatus
 from CharAgent.db.errors import DataConfigError, DataStoreError
 from CharAgent.db.repositories.base import PgRepository
 from CharAgent.db.schema import runs
-from CharAgent.db.state import TERMINAL_RUN_STATUSES, ensure_transition
+from CharAgent.db.state import (
+    SETTLEABLE_RUN_STATUSES,
+    TERMINAL_RUN_STATUSES,
+    ensure_transition,
+)
 
 
 class RunsRepository(PgRepository):
@@ -107,7 +111,7 @@ class RunsRepository(PgRepository):
                 ) from exc
             return self._one(session, run.run_id)
 
-    async def finish(
+    async def settle(
         self,
         run_id: str,
         *,
@@ -126,19 +130,28 @@ class RunsRepository(PgRepository):
         total_cost_detail: Mapping[str, Any] | None = None,
         moment: datetime | None = None,
     ) -> bool:
-        """把一次跑完的运行**落定**: 推进 `add` 建的那一行到终态, 账目一起写上.
+        """把这一段运行的**结局**写到 `add` 建的那一行上 (账目一起写上).
 
         它替换掉了 `add_terminal` (2026-09-23, ticket 22), 因为编号的产生时机变了:
         快照帧在运行**中途**逐轮落盘, 而 `charagent_checkpoints.run_id` 是指向这一行
-        的**外键** —— 行必须在跑之前就建出来 (`add`), 终态这一笔于是成了一条带
+        的**外键** —— 行必须在跑之前就建出来 (`add`), 结局这一笔于是成了一条带
         WHERE 的 UPDATE, 而不是回来补一条 INSERT.
 
-        状态校验分两半: 「给的是不是终态」当场判 (一条历史记录不该停在半路),
-        「这个终态合不合法」交给状态机 (`ensure_transition`, 从 running 出发).
+        名字在 ticket 34 从 `finish` 改成 `settle`: 它现在也写**非终态** —— 挂起等
+        人那一段落的是 `waiting_user` (那一次运行还没结束, 人给了结论才接着跑).
+        「finish」会让人以为这一行被结掉了; 「settle」说的是「这一段的账先记上」,
+        与调用方那个 `RunSettlement` 同一个词.
+
+        状态校验分两半: 「给的是不是一段运行能有的结局」当场判
+        (`SETTLEABLE_RUN_STATUSES`: 终态三种 + `waiting_user`), 「这个结局合不合法」
+        交给状态机 (`ensure_transition`, 从 running 出发).
+
+        **`finished_at` 只在终态那一次写**: 挂起等人时留空 —— 那一列说的正是「这一
+        行还没结」. 于是「查还在等人的运行」是一条干净的 SQL (`finished_at IS NULL`).
 
         Args:
             run_id: 哪一行 (`add` 那一步返回的编号).
-            status: 终态之一 (finished / failed / cancelled).
+            status: 这一段的结局 —— finished / failed / cancelled / **waiting_user**.
             model: 这次用的模型名 —— 与发给 API 的那个**逐字一致** (取
                 `prompt/load.py` 的 `resolve_model_name`); None 表示调用方没给
                 (框架自己不知道模型对象的名字, 见 `ChatModel` 那份薄协议).
@@ -160,6 +173,8 @@ class RunsRepository(PgRepository):
                 ② 给了值就按**当前列重算并覆盖** —— 用量那五列是累计值, 重算出来
                 的就是那一刻的总额 (比如挂起补做之后接着跑, 金额跟着新用量涨).
                 「重算」不是「累加」: 累加会把前面那段算两次.
+                挂起那一段照样算钱: 钱确实花了 (那一轮真问过模型), 恢复那一段收尾时
+                会按累计用量重算一遍, 两笔都对得上.
             moment: 显式时刻 (测试用); None 则取当下 (UTC) —— 更新与结束两个时刻
                 取同一个值: 这是一次落定, 不是两个真实时刻.
 
@@ -168,14 +183,15 @@ class RunsRepository(PgRepository):
             这一次的运行行不在库里 (调用方按「这一轮没记上账」处理, 别再插一条).
 
         Raises:
-            DataConfigError: 给的状态不是终态 (那是调用方搞错了).
-            InvalidTransitionError: 这个终态不是 running 的合法去向.
+            DataConfigError: 给的状态不是一段运行能有的结局 (那是调用方搞错了).
+            InvalidTransitionError: 这个结局不是 running 的合法去向.
         """
-        if status not in TERMINAL_RUN_STATUSES:
-            allowed = ", ".join(sorted(item.value for item in TERMINAL_RUN_STATUSES))
+        if status not in SETTLEABLE_RUN_STATUSES:
+            allowed = ", ".join(sorted(item.value for item in SETTLEABLE_RUN_STATUSES))
             raise DataConfigError(
-                f"落定一次运行只能给终态 ({allowed}), 实际: {status.value!r}"
-                " —— 记录中的运行本来就该有个结局"
+                f"一段运行的结局只能是 ({allowed}), 实际: {status.value!r}"
+                " —— 过程态 (waiting_tool / retrying) 说的是「正在做什么」, "
+                "不是「最后成了什么样」"
             )
         ensure_transition(RunStatus.RUNNING, status)
         stamp = moment if moment is not None else datetime.now(UTC)
@@ -193,8 +209,10 @@ class RunsRepository(PgRepository):
             "cache_miss_tokens": cache_miss_tokens,
             "turn_count": turn_count,
             "updated_at": stamp,
-            "finished_at": stamp,
         }
+        if status in TERMINAL_RUN_STATUSES:
+            # 只有真结束的那一次写它 (见 docstring): 挂起那一段留空
+            values["finished_at"] = stamp
         if last_checkpoint_id is not None:
             values["last_checkpoint_id"] = last_checkpoint_id
         if total_cost is not None:

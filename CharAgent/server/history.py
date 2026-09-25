@@ -36,6 +36,17 @@
 「哪些该给人看」这件事已经由 `hidden` 列回答过了 (写入时定的, 见
 db/conversation.py), 这里再筛一次角色等于把那条说明吞掉.
 
+**未决挂起也在这里面** (issue 34): 响应多一个字段 `pending_approval`, 有未决挂起
+时是那一次调用 (含重建确认卡要的四样: 哪一条 / 哪个工具 / 问什么 / 缺什么), 没有
+时是 None. **不新建表、不新建端点**: 挂起态的宿主本来就是
+`charagent_tool_calls` 那一条 (`status = needs_approval AND approved_at IS NULL`,
+ADR-0014), 这里只是把它读出来交给前端.
+
+为什么这条字段必须在历史接口上 (而不是只靠事件流): 前端读的是**记录**(transcript),
+而挂起态在工具调用表 —— 两条读取路径. 少了它, 刷新页面之后那张确认卡就消失, 而
+用户**永远没法完成那次代付** (卡没了, 也就没有地方点确认). 它是「刷新恢复」的全部
+实现.
+
 **只读**: 本模块一行都不碰会话状态, 有副作用的那条路是 `POST /runs`.
 """
 
@@ -44,15 +55,24 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
-from CharAgent.db.entities import Message
+from CharAgent.db.entities import Message, ToolCall
 from CharAgent.model.utils.types import ModelMessage
 
 # 只读历史的路由 (与 POST /runs 并肩: 同一道门认身份, 一个跑一个看)
 HISTORY_PATH = "/history"
 
-# 响应体的两个字段: 这段对话是谁的 + 它的对话正文
+# 响应体的字段: 这段对话是谁的 + 它的对话正文 + 有没有等着人确认的挂起
 THREAD_ID_FIELD = "thread_id"
 MESSAGES_FIELD = "messages"
+PENDING_APPROVAL_FIELD = "pending_approval"
+
+# 未决挂起那一块里的四个键 —— 与 `approval_required` 事件的载荷同源 (前端一套
+# 渲染逻辑吃两边: 事件流里来的与刷新之后重建的, 长得一样)
+APPROVAL_RUN_ID_FIELD = "run_id"
+APPROVAL_TOOL_CALL_ID_FIELD = "tool_call_id"
+APPROVAL_TOOL_NAME_FIELD = "tool_name"
+APPROVAL_PROMPT_FIELD = "prompt"
+APPROVAL_NEEDS_FIELD = "needs"
 
 # 内存那份来源交出去的两种角色 (记录表那份不用它 —— `hidden` 列已经筛过了).
 # 老实现留下的白名单: 会话历史里 system 是业务对模型说的话, tool 是工具正文
@@ -105,11 +125,54 @@ def conversation_messages(rows: Iterable[Message]) -> list[dict[str, Any]]:
     return [{"role": row.role, "content": row.content} for row in rows]
 
 
+def pending_approval_row(rows: Iterable[ToolCall]) -> dict[str, Any] | None:
+    """未决挂起的那些行 → 交给前端的**一块**, 或者 None (没有挂着的东西).
+
+    交出去的是**能重建一张确认卡**的最小集 (白名单, 与 `conversation_messages`
+    同一条纪律):
+
+    | 键 | 给谁用 |
+    |---|---|
+    | `run_id` | 前端 POST 恢复时指名道姓要的那一次运行 |
+    | `tool_call_id` / `tool_name` | 把卡片插在会话流里那一次调用的位置上 |
+    | `prompt` | 卡片上那句**给用户看的话** (业务给的, 框架原样转) |
+    | `needs` | 机器可读的缺失项: 含 `payment_password` 就渲染一个密码框, |
+    | | 空就只给两个按钮 |
+
+    **只取第一条**: 框架一次只挂一条 (`agent/loop.py` 的「一次挂起只挂一条」),
+    所以正常情形下这里就只有一条; 真出现多条时, 交出去的那条是**最早的**那个
+    (与 `ToolCallsRepository.list_pending_approvals` 的排序一致), 而不是最后一条
+    —— 用户欠的账按先来后到还.
+
+    Args:
+        rows: `list_pending_approvals` 的产出 (已经按会话与「未决」筛过).
+
+    Returns:
+        dict[str, Any] | None: 那一块; 没有未决挂起时 None (前端按空处理).
+    """
+    for row in rows:
+        return {
+            APPROVAL_RUN_ID_FIELD: row.run_id,
+            APPROVAL_TOOL_CALL_ID_FIELD: row.tool_call_id,
+            APPROVAL_TOOL_NAME_FIELD: row.tool_name,
+            APPROVAL_PROMPT_FIELD: row.approval_prompt,
+            APPROVAL_NEEDS_FIELD: list(row.approval_needs or ()),
+        }
+    return None
+
+
 __all__ = [
+    "APPROVAL_NEEDS_FIELD",
+    "APPROVAL_PROMPT_FIELD",
+    "APPROVAL_RUN_ID_FIELD",
+    "APPROVAL_TOOL_CALL_ID_FIELD",
+    "APPROVAL_TOOL_NAME_FIELD",
     "DISPLAY_ROLES",
     "HISTORY_PATH",
     "MESSAGES_FIELD",
+    "PENDING_APPROVAL_FIELD",
     "THREAD_ID_FIELD",
     "conversation_messages",
     "conversation_of",
+    "pending_approval_row",
 ]

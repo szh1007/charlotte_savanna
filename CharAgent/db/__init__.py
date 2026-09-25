@@ -22,7 +22,7 @@
 | `config.py` | 连接配置 (环境变量 → 连接串) |
 | `cost.py` | 成本折算: 收尾那一刻按当时价目表算好金额 (写进 runs, 事后不重算) |
 | `errors.py` | 三类错误 (配置错 / 状态迁移非法 / 库出错) |
-| `repositories/` | 四个取数口 (会话 / 运行 / 消息 / 工具调用) |
+| `repositories/` | 五个取数口 (会话 / 运行 / 消息 / 工具调用 / 幂等登记) |
 | `recorder.py` | 会话记录: 一次运行收尾把这一轮写进上面几张表 |
 | | (本包**第一个生产调用方** —— 此前那几张表没有任何生产代码在用) |
 
@@ -48,6 +48,11 @@
 
     # 前端要的会话历史: 只有一问一答, 没有内部件
     history = await messages.list_conversation(thread.thread_id)
+
+幂等登记簿走的是另一条路 (它不挂在会话下面 —— 键由调用方拼出来): 一个真实动作
+执行**前**先 `PgIdempotencyStore.claim(key)`, 拿到执行权才做, 做完 `complete(key,
+result)`; 重复请求会拿到「有人在做」或既有结果, 于是同一件事只发生一次 (细节见
+`repositories/idempotency.py` 的模块 docstring).
 
 **快照 (checkpoint) 的读写不在这里**: 那个有断点续跑 / 翻历史 / time-travel 的
 一整套语义, 归 `checkpoint/postgres.py` 的 `PostgresCheckpointSaver`. 本包只提供
@@ -111,6 +116,7 @@ from CharAgent.db.recorder import ConversationRecorder, RunRecorder, title_for
 from CharAgent.db.repositories import (
     Database,
     MessagesRepository,
+    PgIdempotencyStore,
     PgRepository,
     RunsRepository,
     ThreadsRepository,
@@ -132,6 +138,7 @@ from CharAgent.db.schema import (
 from CharAgent.db.state import (
     ALLOWED_TRANSITIONS,
     RUN_STATUS_FOR_OUTCOME,
+    SETTLEABLE_RUN_STATUSES,
     TERMINAL_RUN_STATUSES,
     can_transition,
     ensure_transition,
@@ -142,6 +149,7 @@ __all__ = [
     "ALLOWED_TRANSITIONS",
     "ALL_TABLES",
     "RUN_STATUS_FOR_OUTCOME",
+    "SETTLEABLE_RUN_STATUSES",
     "TABLE_NAMES",
     "TERMINAL_RUN_STATUSES",
     "CheckpointRow",
@@ -158,6 +166,7 @@ __all__ = [
     "MessagesRepository",
     "PeakRule",
     "PgDatabase",
+    "PgIdempotencyStore",
     "PgRepository",
     "PriceTable",
     "PricingNotReadyError",

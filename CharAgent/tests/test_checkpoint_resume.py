@@ -7,8 +7,9 @@
 2. **观察值**: 每帧记下来源 (loop / fork / suspension) 与本轮用量 —— 回放调试的底子
 3. **不重复已完成动作**: 从快照接着跑, 已经跑过的工具不会再跑一遍 (#5 的验收点)
 4. **time-travel**: 从老快照恢复 → 新帧挂在老帧下面, 历史岔出一条新分支
-5. **挂起点恢复 (#25 打底)**: 快照停在「工具还没有结果」的半路时, 先补做欠的
-   调用再继续 —— 不重复问模型一次, 也不重跑已完成的轮次
+5. **挂起点恢复 (#25 打底)**: 快照停在「工具还没有结果」的半路时, 先了结欠的
+   调用再继续 —— 不重复问模型一次, 也不重跑已完成的轮次. **了结必须有人的结论**
+   (issue 34 起): 没有 `approval` 就当场报错, 而不是悄悄把那条调用执行掉
 
 外加三条边界: 配置写错 (saver 与 thread_id 不成对 / 拿错会话的快照), 落盘失败
 (向上抛, 不吞), 以及「普通 run 不替调用方补做欠账」这条行为边界.
@@ -27,7 +28,11 @@ from CharAgent.agent.guard import LoopGuard
 from CharAgent.agent.loop import AgentLoop
 from CharAgent.agent.utils.errors import LoopConfigError
 from CharAgent.agent.utils.messages import assistant_wire
-from CharAgent.agent.utils.types import LoopOutcome
+from CharAgent.agent.utils.types import (
+    APPROVAL_REJECTED_TEXT,
+    Approval,
+    LoopOutcome,
+)
 from CharAgent.checkpoint.memory import InMemoryCheckpointSaver
 from CharAgent.checkpoint.utils.errors import (
     CheckpointConfigError,
@@ -415,13 +420,15 @@ async def save_suspended_checkpoint(
 
 
 async def test_resume_completes_pending_tool_calls_before_asking_model():
-    """挂起恢复: 先补做欠下的调用, 再继续问模型 (顺序不能反)."""
+    """挂起恢复: 人批了之后先补做欠下的调用, 再继续问模型 (顺序不能反)."""
     counting = make_counting_tool(result="订单 B 已发货")
     saver = InMemoryCheckpointSaver()
     checkpoint = await save_suspended_checkpoint(saver)
     model = ScriptedModel([text_response("订单 B 已发货, 预计明天送达")])
 
-    result = await make_loop(model, [counting.tool], saver=saver).resume(checkpoint)
+    result = await make_loop(model, [counting.tool], saver=saver).resume(
+        checkpoint, approval=Approval.approve()
+    )
 
     assert counting.calls == ["B"]  # 欠的那一条补做了 (恰好一次)
     assert result.content == "订单 B 已发货, 预计明天送达"
@@ -431,6 +438,66 @@ async def test_resume_completes_pending_tool_calls_before_asking_model():
         "tool_call_id": "call_0",
         "content": "订单 B 已发货",
     }
+
+
+async def test_resuming_a_suspension_without_a_decision_is_refused():
+    """挂起点没有人的结论 → 当场报错, **绝不**悄悄把那条调用执行掉.
+
+    这是 issue 34 补上的一条硬护栏: 欠着的那条调用可能正是「给这一单付款」,
+    而 resume 的默认动作就是「把它补做完」—— 命令行 `--resume` 撞上一帧挂起点时
+    走的正是这条路 (它没有地方能拿到人的结论).
+    """
+    counting = make_counting_tool()
+    saver = InMemoryCheckpointSaver()
+    checkpoint = await save_suspended_checkpoint(saver)
+    loop = make_loop(
+        ScriptedModel([text_response("已发货")]), [counting.tool], saver=saver
+    )
+
+    with pytest.raises(LoopConfigError, match="必须先有人给的结论"):
+        await loop.resume(checkpoint)
+
+    assert counting.calls == [], "被拦下时那条调用一次都没跑"
+
+
+async def test_a_rejected_approval_backfills_the_reason_instead_of_executing():
+    """人拒了: 那条调用不执行, 拒绝原因当**工具结果**回填, 模型据此继续答.
+
+    与「当场拒绝」是两条路 (那条是插件自己给的结论): 这一条起于一次挂起, 经由
+    人的结论回到同一个「工具失败」通道 —— 于是模型不会重试它, 而是换个说法.
+    """
+    counting = make_counting_tool()
+    saver = InMemoryCheckpointSaver()
+    checkpoint = await save_suspended_checkpoint(saver)
+    model = ScriptedModel([text_response("好的, 那请你自己到订单页付款")])
+
+    result = await make_loop(model, [counting.tool], saver=saver).resume(
+        checkpoint, approval=Approval.reject("用户取消了这次付款")
+    )
+
+    assert counting.calls == [], "被拒绝的调用不执行"
+    assert result.content == "好的, 那请你自己到订单页付款"
+    assert result.outcome is LoopOutcome.FINISHED, "拒绝之后这次运行照常跑完"
+    # 模型看到的是那条调用的一条失败结果 (正文就是拒绝的原因)
+    assert model.calls[0]["messages"][-1] == {
+        "role": "tool",
+        "tool_call_id": "call_0",
+        "content": "用户取消了这次付款",
+    }
+
+
+async def test_a_rejection_without_a_reason_uses_the_framework_text():
+    """不给原因时用框架那句缺省文案 (它明确劝退重试 —— 再试一次就是再弹一张卡)."""
+    counting = make_counting_tool()
+    saver = InMemoryCheckpointSaver()
+    checkpoint = await save_suspended_checkpoint(saver)
+    model = ScriptedModel([text_response("好的")])
+
+    await make_loop(model, [counting.tool], saver=saver).resume(
+        checkpoint, approval=Approval.reject()
+    )
+
+    assert model.calls[0]["messages"][-1]["content"] == APPROVAL_REJECTED_TEXT
 
 
 async def test_resume_emits_events_for_completed_pending_calls():
@@ -445,7 +512,7 @@ async def test_resume_emits_events_for_completed_pending_calls():
         [counting.tool],
         saver=saver,
         event_sink=lambda event: seen.append(event.type),
-    ).resume(checkpoint)
+    ).resume(checkpoint, approval=Approval.approve())
 
     assert seen == [EventType.TOOL_CALL, EventType.TOOL_RESULT, EventType.FINAL]
 
@@ -458,7 +525,7 @@ async def test_resume_saves_a_frame_for_the_completed_pending_turn():
 
     await make_loop(
         ScriptedModel([text_response("已发货")]), [counting.tool], saver=saver
-    ).resume(checkpoint)
+    ).resume(checkpoint, approval=Approval.approve())
 
     frames = await frames_of(saver, "t-1")
     completed = frame_for_turn(frames, 2)  # 补做的那轮 = 第 2 轮
@@ -485,7 +552,7 @@ async def test_the_completed_pending_turn_has_no_view_in_its_frame() -> None:
         compactor=TrimAndSummarize(),
     )
 
-    await loop.resume(checkpoint)
+    await loop.resume(checkpoint, approval=Approval.approve())
 
     frames = await frames_of(saver, "t-1")
     completed = frame_for_turn(frames, 2)  # 补做的那轮

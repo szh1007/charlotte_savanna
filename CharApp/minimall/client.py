@@ -1,13 +1,13 @@
 """商城内部端点的异步客户端: 业务侧唯一一处「怎么跟商城说话」.
 
-打的是商城那 17 个内部端点 (9 个只读 + 8 个写; 前缀 `/api/minimall/agent/`,
+打的是商城那 18 个内部端点 (9 个只读 + 8 个写 + 代付; 前缀 `/api/minimall/agent/`,
 见 `app/minimall/urls_agent.py`), 一个端面一个方法.
 
 三条约束都不是随手定的:
 
 1. **必须异步** (`httpx.AsyncClient`). 框架把同步工具函数扔进
    `asyncio.to_thread` 执行 (见 `CharAgent/tool/executor.py` 的 `_invoke`),
-   同步客户端会把线程池占满 —— 17 个工具互相排队, 「多个查询同时进行」当场
+   同步客户端会把线程池占满 —— 18 个工具互相排队, 「多个查询同时进行」当场
    失效 (PRD §4.4)。
 2. **身份不在这里**. 本类只管「怎么打这个接口」, 不管「代表谁打」: 每个方法
    都要一个 `user_id`, 而它由 `tools.build_tools` 裹进工具的闭包, 于是永远
@@ -189,7 +189,7 @@ class MinimallClient:
         await self._http.aclose()
 
     # ------------------------------------------------------------------
-    # 传输: 17 个方法共用的一段
+    # 传输: 18 个方法共用的一段
     # ------------------------------------------------------------------
 
     async def _get(
@@ -413,10 +413,12 @@ class MinimallClient:
         return await self._get("addresses/", user_id=user_id)
 
     # ------------------------------------------------------------------
-    # 写操作 (issue 11 的 8 个端点): 一次调用完成一个动作
+    # 写操作 (issue 11 的 8 个端点 + issue 35 的代付): 一次调用完成一个动作
     # ------------------------------------------------------------------
     # 与只读那批同一条纪律: 每个方法都要一个 `user_id`, 由工具闭包提供 ——
     # 「改谁的数据」与「查谁的数据」在 wire 上是同一件事 (X-User-Id 头).
+    # 唯一的例外是 `pay_order` 还多要一个支付密码: 它**不是**身份, 而且它不是
+    # 从模型那里来的 (见那个方法的 docstring).
     #
     # 购物车四个动作回的**都是动作之后的整车**: 模型一句就能念出来 ("车里现在
     # 有两件, 一共 30 元"), 不用再补一次 GET.
@@ -464,6 +466,31 @@ class MinimallClient:
         `balance_returned` 恒为 "0.00" (取消只认待付款的单, 那种单从没扣过钱).
         """
         return await self._write("POST", f"orders/{order_no}/cancel/", user_id=user_id)
+
+    async def pay_order(
+        self, *, user_id: int, order_no: str, payment_password: str
+    ) -> dict:
+        """付款 —— 用买家的支付密码付掉自己的一笔订单 (**唯一**带凭据的方法).
+
+        请求体里那个密码是**唯一的例外**, 值得说清它为什么不算破例:
+
+        - 它进的是本类的**方法签名**, 而本类是业务进程内部的对象 —— 不是送给模型
+          的 wire schema. 真正不能进签名的是**工具** (`pay_my_order` 只收
+          `order_no`), 见 ADR-0015 与 tools.py 的那一节.
+        - 它是**运行时注入**的: 从恢复请求的一次性载荷里取出来, 由工具闭包递到这里
+          (见 provider.py), 模型从头到尾没看见过它.
+        - 因此它不落库 (没有哪一列装它)、不进消息、不进 `arguments` —— 三个"永不"
+          成立的前提是它只在这条调用链上活一次.
+
+        回执里除了订单详情还有 `balance_remaining` (付完之后余额剩多少) —— 模型
+        要念给买家的就是它.
+        """
+        return await self._write(
+            "POST",
+            f"orders/{order_no}/pay/",
+            user_id=user_id,
+            body={"payment_password": payment_password},
+        )
 
     async def request_refund(self, *, user_id: int, order_no: str) -> dict:
         """申请退款 —— **不带金额**: 退多少由管理员批准时协商 (PRD §4.5)."""

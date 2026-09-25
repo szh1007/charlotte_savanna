@@ -1,21 +1,21 @@
-"""电商客服的 17 个工具: 模型能对这个商城做的全部事情 (9 只读 + 8 写).
+"""电商客服的 18 个工具: 模型能对这个商城做的全部事情 (9 只读 + 8 写 + 代付).
 
 一句话理解: 每个工具 = 一次「业务动作」, 背后是 `client.py` 的一个方法。工具
 本身**不含逻辑**, 只做三件事: 声明参数 (写进 schema 给模型看)、带上身份调商城、
 把结果或「没有」翻成模型看得懂的话。
 
-四条贯穿全篇的约定:
+五条贯穿全篇的约定:
 
-1. **身份不进参数表** (PRD §4.2, 本项目的核心安全设计). 17 个工具的入参全是业务
+1. **身份不进参数表** (PRD §4.2, 本项目的核心安全设计). 18 个工具的入参全是业务
    字段 —— 没有一个叫 `user_id` 的参数。身份由 `build_tools(client, user_id)`
    在装配时裹进闭包, 模型既看不见也无从伪造。「查一下别人的订单」这条攻击路径
    因此**根本不存在**, 而不是「被挡住了」。
 2. **涉及「我」的工具一律用 my 标识** (PRD §4.4): `get_my_cart` / `list_my_orders`
    / `get_my_order` / `get_my_profile` / `list_my_addresses` / `cancel_my_order`
-   / `list_my_refunds`. 这既是给模型的语言提示 (「这个工具查的是当前对话者自己
-   的东西」), 也是给评审者的信号 —— 名字里的 my 就是「身份不可指定」那句话.
-   (购物车那四个写工具没带 my: 它们操作的对象是**车里的东西**而不是「我的档案」,
-   名字按动作本身叫更准 —— 见下面那一节的说明.)
+   / `list_my_refunds` / `pay_my_order`. 这既是给模型的语言提示 (「这个工具查的是
+   当前对话者自己的东西」), 也是给评审者的信号 —— 名字里的 my 就是「身份不可
+   指定」那句话. (购物车那四个写工具没带 my: 它们操作的对象是**车里的东西**而不是
+   「我的档案」, 名字按动作本身叫更准 —— 见下面那一节的说明.)
 3. **全部是 `async def`** (PRD §4.4). 框架把同步工具函数扔进线程池
    (`tool/executor.py` 的 `_invoke`), 同步工具会互相排队; 写成协程才真的并发.
    有一条测试专门遍历这些函数断言这一点.
@@ -25,6 +25,13 @@
    `{WRITE_ANNOTATION_KEY: True}`, 给业务侧的护栏插件认人用. 第 8 个 `list_my_refunds`
    **只是读**退款列表, 所以不打 —— 它不该占买家的写预算. 框架**只透传不解释**
    这个标记 (与 `RunContext.payload` 同一条纪律), 所以它也不进模型的 schema.
+   (L3b 的代付同样打它 —— 它确实会改钱数.)
+5. **一次性凭据也不进参数表** (ADR-0015, 与第 1 条同一条路). 代付要买家的支付
+   密码, 而它**只在恢复那一刻**由用户自己输进来 —— 走 `RunContext.payload` 进
+   闭包 (`build_tools(..., one_shot=)`), 与 `user_id` 一模一样。为什么非这样不可:
+   只要 `payment_password` 出现在 schema 里, 模型就会自己编一个填进去, 而编出来
+   的值会走 `arguments` 落库 —— 那三个"永不"当场失效。所以 `pay_my_order` 的签名
+   里只有 `order_no`, 密码在闭包里 (`_pay_my_order` 那一节)。
 
 金额一律**原样转达**, 不做 float 转换: 商城的序列化契约就是 2 位小数字符串
 (`serializers_agent.py`), 而二进制浮点表示不了 0.1 —— 模型只需要照读, 不需要
@@ -34,7 +41,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Annotated, Any
 
 from pydantic import Field
@@ -50,6 +57,20 @@ from CharApp.minimall.client import (
 
 # 写操作的标记键 (打在写工具的 annotations 上, 护栏插件靠它认人)
 WRITE_ANNOTATION_KEY = "writes"
+
+# 代付要的那份一次性凭据叫什么 (ADR-0015). **这个名字三处共用**, 所以只有一个
+# 出处: 护栏按它声明缺什么 (`Decision.requires_approval(needs=...)`), 用户在页面上
+# 输的那一格按它命名, 运行载荷照它送进来 (恢复请求的 `data: {"payment_password": …}`
+# 原样并进 `RunContext.payload`), 工具再按它从闭包里取. 一个字符串贯穿四层 ——
+# 拼错在任何一层都表现为「这次付款没有拿到授权」, 而不是一个能看懂的报错.
+PAYMENT_PASSWORD_FIELD = "payment_password"
+
+# 这一次运行**可能需要**的一次性凭据 (今天只有支付密码).
+#
+# 为什么要有这份清单: 装配时得从 `RunContext.payload` 里把凭据**挑出来**交给工具
+# 闭包 —— 载荷将来还会有别的业务字段 (语言 / 页面来源), 整个照搬进闭包不合适.
+# 它必须与护栏声明的 `needs` 是同一批名字, 有一条用例守着这件事 (test_provider).
+ONE_SHOT_FIELDS: tuple[str, ...] = (PAYMENT_PASSWORD_FIELD,)
 
 # 商品 slug 的形状 —— 商城侧的路由是 `<slug:slug>`, 这个 pattern 与它对齐.
 # 写进 schema 的好处是模型填错当场被拦, 而不是拼出一个打到别处的路径
@@ -161,6 +182,14 @@ _REFUSAL_HINTS: dict[str, str] = {
     "insufficient_stock": "可以让买家改小数量, 或换一件",
     "no_default_address": "让买家先在页面上加一条收货地址",
     "refund_already_in_progress": "用 list_my_refunds 看进度, 不要重复申请",
+    # 代付的两条 (issue 35). `payment_failed` 那句是 ADR-0015 点名要写死的:
+    # 密码是一次性的 (它随这次恢复一起消失), 自动重试等于拿同一个错密码再撞一次,
+    # 只会白烧一次写预算. 正确行为是让买家**重新说一次要付款**, 重走一遍挂起.
+    "payment_failed": (
+        "不要让买家重试这一次付款, 也不要再调 pay_my_order: 支付密码是一次性的, "
+        "重试撞的还是同一个结果. 让他重新说一次要付款, 再输一次密码"
+    ),
+    "insufficient_balance": "让买家先在页面上充值, 或换一笔金额小一点的订单",
 }
 
 
@@ -549,8 +578,9 @@ def _place_order(client: MinimallClient, user_id: int) -> Tool:
         """把**当前买家自己**购物车里的全部商品下成一笔订单, 返回订单号与明细.
         买家说「下单」「结账」「买了」时使用; 买什么还没定就先 search_products
         加 add_to_cart, 想先确认买什么就用 get_my_cart.
-        **下单不等于付钱** —— 下成的是待付款的订单, 付款要买家本人在商城的订单
-        页输支付密码; 也不要向买家承诺到货时间.
+        **下单不等于付钱**: 下成的是**待付款**的订单. 买家接着说「付了吧」就调
+        pay_my_order —— 那一单会停下来等他本人输一次支付密码, **不要向他要密码**,
+        也不要承诺到货时间.
         """
         return await _act(client.place_order, user_id=user_id, address_id=address_id)
 
@@ -628,6 +658,74 @@ def _list_my_refunds(client: MinimallClient, user_id: int) -> Tool:
 
 
 # ---------------------------------------------------------------------------
+# 代付 (issue 35): 工具签名里没有密码, 密码在闭包里
+# ---------------------------------------------------------------------------
+# 这一节只有一件事与上面三节不同: 它要一份**运行时凭据**, 而那份凭据不能出现在
+# 参数表里 (ADR-0015 的三个"永不", 前提正是这一条). 办法与身份一模一样 —— 装配
+# 时从 `RunContext.payload` 取出来, 用闭包裹住.
+
+# 闭包里没有密码时回给模型的那句话.
+#
+# **抛而不返回** —— 与 `RefusedActionError` 同一条理由 (2026-09-22 那次改判):
+# 返回的话框架把这次执行记成成功, 而页面上出现的是「付款已完成」, 可这一单根本没
+# 付. 抛出去才走失败那条路 (页面显示失败话术), 而模型收到的话一个字不变.
+#
+# 用 `ToolActionableError` 而不是 `RefusedActionError`: 这一次**根本没打商城**,
+# 没有商城那份错误码要留 (后者的 `code` 是留给插件看的商城码). 那句话里的三个要点
+# 缺一不可 —— 说清没做 (别让模型以为付了)、给出下一步 (重新发起)、劝住重试.
+_NO_AUTHORIZATION_TEXT = (
+    "这次付款没有拿到买家的授权 (没拿到支付密码), 所以**没有执行**: 订单没有"
+    "付款, 余额没有变. 请如实告诉买家这一步没做成, 并让他重新说一次要付款 "
+    "(他会再输一次密码); 不要重试这次调用, 也不要向他要密码."
+)
+
+
+def _pay_my_order(
+    client: MinimallClient, user_id: int, one_shot: Mapping[str, str] | None
+) -> Tool:
+    """代付工具: 签名里只有订单号, 密码从闭包 (`one_shot`) 里取.
+
+    Args:
+        client: 商城客户端.
+        user_id: 当前买家 (与其余工具同一个身份来源).
+        one_shot: 这一次运行拿到的一次性凭据 (恢复时由用户输进来, 见 provider.py);
+            None 表示这次运行没有凭据 —— 那么工具**不执行**, 直接回一句「没有拿到
+            授权」. 绝不用空密码去撞: 那会白烧一次业务侧的失败路径, 还可能把账号
+            锁进某种风控.
+    """
+
+    @tool(annotations={WRITE_ANNOTATION_KEY: True})
+    async def pay_my_order(
+        order_no: Annotated[
+            str,
+            Field(
+                description="24 位数字订单号; 从 list_my_orders / get_my_order 的"
+                "结果里取, 不要自己拼",
+                pattern=r"^\d{24}$",
+                examples=["202609191230450000031234"],
+            ),
+        ],
+    ) -> str:
+        """给**当前买家自己**的一笔**待付款**订单付款 (从余额里扣), 返回订单与
+        付款之后的余额. 买家说「帮我付了这单」「把这单钱付了」时使用.
+        **不要向买家索要支付密码, 也不要等他给你密码**: 他会在自己的页面上输一次,
+        这一步会停下来等他确认 —— 你只要照工具给的话说下去就好. 已经付过款的订单
+        再付一次会被拒 (那笔钱不会扣第二遍), 遇到这种情况照实转达, **不要重试**.
+        """
+        password = (one_shot or {}).get(PAYMENT_PASSWORD_FIELD)
+        if not password:
+            raise ToolActionableError(_NO_AUTHORIZATION_TEXT)
+        return await _act(
+            client.pay_order,
+            user_id=user_id,
+            order_no=order_no,
+            payment_password=password,
+        )
+
+    return pay_my_order
+
+
+# ---------------------------------------------------------------------------
 # 装配
 # ---------------------------------------------------------------------------
 
@@ -654,25 +752,47 @@ _BUILDERS: tuple[Callable[[MinimallClient, int], Tool], ...] = (
 )
 
 
-def build_tools(client: MinimallClient, user_id: int) -> tuple[Tool, ...]:
-    """把 17 个工具装到「这个客户端 + 这个买家」上.
+def build_tools(
+    client: MinimallClient,
+    user_id: int,
+    *,
+    one_shot: Mapping[str, str] | None = None,
+) -> tuple[Tool, ...]:
+    """把 18 个工具装到「这个客户端 + 这个买家 + 这一次的凭据」上.
 
-    身份 (`user_id`) 在这里被写进闭包 —— 这是它**唯一**进入工具的地方, 也因此
-    永远不会出现在任何一个工具的 schema 里 (PRD §4.2).
+    身份 (`user_id`) 与一次性凭据 (`one_shot`) 都在这里被写进闭包 —— 这是它们
+    **唯一**进入工具的地方, 也因此永远不会出现在任何一个工具的 schema 里
+    (PRD §4.2 与 ADR-0015 各管一半: 一个防"查别人的", 一个防"编一个密码填进去").
+
+    代付那个工厂**多收一个参数**, 于是它没有进上面那张 `_BUILDERS` 表 (那张表的
+    形状是 `(client, user_id) -> Tool`): 为了形状整齐把另外 17 个的签名都改一遍,
+    换来的只是好看, 而这一行的代价是"装配顺序"这件事在代码里要读两处 —— 值.
 
     Args:
         client: 商城客户端 (连接池与令牌在它手里)。
         user_id: 当前买家, 命令行取自 `--user-id`, 服务进程取自 Django 转发的
             请求头 —— 换的只是「从哪取」那一小段, 本函数一行不改。
+        one_shot: 这一次运行拿到的一次性凭据 (键名见 `ONE_SHOT_FIELDS`); None 表示
+            没有 —— 普通提问走的就是这一支 (挂起恢复那一次才带得动它).
 
     Returns:
-        tuple[Tool, ...]: 正好 17 个工具 (9 只读 + 8 写).
+        tuple[Tool, ...]: 正好 18 个工具 (9 只读 + 8 写 + 代付).
     """
-    return tuple(builder(client, user_id) for builder in _BUILDERS)
+    tools = [builder(client, user_id) for builder in _BUILDERS]
+    # 代付**接在最后** (与上面那条"加工具是往后接而不是插队"同一条)
+    tools.append(_pay_my_order(client, user_id, one_shot))
+    return tuple(tools)
 
 
-# 出去三个名字: 工具集, **写操作的标记键**, 以及「商城按规则拒了」那个异常. 前两个是
-# 跨模块的约定 (护栏插件与测试都要拿标记键去读工具身上的注解), 第三个是用例要断言的
-# 类型 —— 所以它虽然只在 `_act` 里抛, 也在门面上. `SLUG_PATTERN` 不是: 它只在本模块
-# 里用, 出去只会让「还有谁在用它」变得难查.
-__all__ = ["WRITE_ANNOTATION_KEY", "RefusedActionError", "build_tools"]
+# 出去五个名字: 工具集, **写操作的标记键**, 「商城按规则拒了」那个异常, 以及代付
+# 用的两个约定 —— 支付密码那个键名 (护栏声明 needs / 装配取载荷 / 工具取闭包, 三处
+# 同一个字符串) 与"哪些载荷是一次性凭据"那份清单. `SLUG_PATTERN` 与那句"没有授权"
+# 的文案不是: 前者只在本模块里用, 后者只由本模块的工具抛, 出去只会让「还有谁在用它」
+# 变得难查.
+__all__ = [
+    "ONE_SHOT_FIELDS",
+    "PAYMENT_PASSWORD_FIELD",
+    "WRITE_ANNOTATION_KEY",
+    "RefusedActionError",
+    "build_tools",
+]

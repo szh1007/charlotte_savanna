@@ -892,7 +892,7 @@ async def test_frames_and_runs_point_at_each_other_and_unlink_on_delete(
         state=CheckpointState(messages=[{"role": "user", "content": "在吗"}]),
     )
     await saver.save(frame)
-    assert await runs.finish(
+    assert await runs.settle(
         run.run_id, status=RunStatus.FINISHED, last_checkpoint_id=frame.checkpoint_id
     )
 
@@ -932,7 +932,7 @@ async def test_touch_reports_whether_it_hit_a_row(db: PgDatabase):
     assert await threads.touch("没有这个会话", moment=datetime.now(UTC)) is False
 
 
-async def test_finish_settles_the_row_that_begin_created(db: PgDatabase):
+async def test_settle_writes_the_ending_onto_the_row_that_begin_created(db: PgDatabase):
     """已跑完的运行**推进那一行**到终态 (行是 `add` 先建出来的, ticket 22).
 
     为什么不再是一条 INSERT 落成终态: 快照帧在运行**中途**逐轮落盘, 而
@@ -946,7 +946,7 @@ async def test_finish_settles_the_row_that_begin_created(db: PgDatabase):
     moment = datetime(2026, 9, 22, 12, 0, tzinfo=UTC)
 
     run = await runs.add(thread_id=thread_id, status=RunStatus.RUNNING)
-    assert await runs.finish(
+    assert await runs.settle(
         run.run_id,
         status=RunStatus.FINISHED,
         turn_count=3,
@@ -965,7 +965,7 @@ async def test_finish_settles_the_row_that_begin_created(db: PgDatabase):
     assert (loaded.input_tokens, loaded.cache_hit_tokens) == (None, None)
 
 
-async def test_finish_writes_the_usage_breakdown(db: PgDatabase) -> None:
+async def test_settle_writes_the_usage_breakdown(db: PgDatabase) -> None:
     """真库往返: 用量分解五列与提示词版本都写得进去、读得回来.
 
     真正要验的是**列本身** (0002 那条迁移建出来的类型与可空性): 单元测试用的是假
@@ -975,7 +975,7 @@ async def test_finish_writes_the_usage_breakdown(db: PgDatabase) -> None:
     thread_id = await _make_thread(db)
 
     run = await runs.add(thread_id=thread_id, status=RunStatus.RUNNING)
-    await runs.finish(
+    await runs.settle(
         run.run_id,
         status=RunStatus.FINISHED,
         total_tokens=4441,
@@ -995,14 +995,51 @@ async def test_finish_writes_the_usage_breakdown(db: PgDatabase) -> None:
     assert loaded.input_tokens + loaded.output_tokens == loaded.total_tokens
 
 
-async def test_finish_refuses_a_status_that_is_not_an_ending(db: PgDatabase):
-    """非要给个非终态就当场报错 (那是一次还没结束的运行, 该走状态推进那几条)."""
+async def test_settle_refuses_a_status_that_is_not_an_ending(db: PgDatabase):
+    """给一个**过程态**就当场报错 (那说的是「正在做什么」, 不是「最后成了什么样」).
+
+    挂起那一段给的 `waiting_user` 不算过程态 —— 它是那一段的结局 (见下一条),
+    所以这张拦截网放它过去.
+    """
     runs = RunsRepository(db)
     thread_id = await _make_thread(db)
     run = await runs.add(thread_id=thread_id, status=RunStatus.RUNNING)
 
     with pytest.raises(DataConfigError):
-        await runs.finish(run.run_id, status=RunStatus.RUNNING)
+        await runs.settle(run.run_id, status=RunStatus.WAITING_TOOL)
+    with pytest.raises(DataConfigError):
+        await runs.settle(run.run_id, status=RunStatus.RUNNING)
+
+
+async def test_settle_writes_the_suspension_without_closing_the_run(db: PgDatabase):
+    """挂起那一段: 落到 `waiting_user` 而 `finished_at` **留空** (那一次运行还开着).
+
+    这一条是 issue 34 的验收面之一. 两个后果都要钉住: ①「还在等人的运行」是一条
+    干净的 SQL (`finished_at IS NULL`); ② 这一行之后还能被恢复那一段推到终态
+    (终态一旦写上就再也回不去了, 见 state.py 的合法迁移表).
+    """
+    runs = RunsRepository(db)
+    thread_id = await _make_thread(db)
+    moment = datetime(2026, 9, 25, 10, 0, tzinfo=UTC)
+
+    run = await runs.add(thread_id=thread_id, status=RunStatus.RUNNING)
+    assert await runs.settle(
+        run.run_id, status=RunStatus.WAITING_USER, turn_count=1, moment=moment
+    )
+
+    suspended = await runs.get(run.run_id)
+    assert suspended.status == RunStatus.WAITING_USER
+    assert suspended.is_terminal is False
+    assert suspended.finished_at is None, "还在等人, 这不是终点"
+    assert suspended.turn_count == 1
+
+    # 恢复那一段收尾: 同一行推到终态 (waiting_user → finished 是合法迁移)
+    assert await runs.settle(
+        run.run_id, status=RunStatus.FINISHED, turn_count=3, moment=moment
+    )
+    finished = await runs.get(run.run_id)
+    assert finished.status == RunStatus.FINISHED
+    assert finished.finished_at == moment
 
 
 # ---------------------------------------------------------------------------
@@ -1389,3 +1426,175 @@ async def test_add_calls_skips_existing_rows_without_overwriting_conclusions(
         "已发货",
         142,
     )
+
+
+# ---------------------------------------------------------------------------
+# 未决挂起: 那条查询 / 谁批的 / 要问用户什么 (issue 34)
+# ---------------------------------------------------------------------------
+
+
+async def test_pending_approvals_are_found_by_conversation(db: PgDatabase):
+    """未决挂起按**会话**查得到 (判据: `needs_approval` 且还没批).
+
+    这条查询是两处的闸门: 服务端收新提问时问「这段会话还挂着吗」, 历史接口问
+    「挂着的是哪一条」(刷新之后重建确认卡). 它要 join 回运行行才拿得到会话 ——
+    工具调用表只有 `run_id`, 而会话是运行行的属性.
+    """
+    calls = ToolCallsRepository(db)
+    runs = RunsRepository(db)
+    messages = MessagesRepository(db)
+    thread_id = await _make_thread(db)
+    other_thread = await _make_thread(db)
+    run = await runs.add(thread_id=thread_id)
+    other_run = await runs.add(thread_id=other_thread)
+    turn, _ = await _two_assistant_messages(messages, thread_id, run)
+    other_turn, _ = await _two_assistant_messages(messages, other_thread, other_run)
+
+    # 本会话: 一条挂起 + 一条普通调用 (只有前者该被查出来)
+    await calls.add(
+        run_id=run.run_id,
+        message_id=turn,
+        tool_call_id="call_0",
+        tool_name="pay_order",
+        status=ToolCallStatus.NEEDS_APPROVAL,
+        approval_prompt="要输支付密码",
+        approval_needs=["payment_password"],
+    )
+    await calls.add(
+        run_id=run.run_id,
+        message_id=turn,
+        tool_call_id="call_1",
+        tool_name="query_order",
+        status=ToolCallStatus.SUCCEEDED,
+    )
+    # 别的会话也挂着一条: 它不该出现在本会话的结果里
+    await calls.add(
+        run_id=other_run.run_id,
+        message_id=other_turn,
+        tool_call_id="call_0",
+        tool_name="pay_order",
+        status=ToolCallStatus.NEEDS_APPROVAL,
+        approval_prompt="别人的",
+    )
+
+    [found] = await calls.list_pending_approvals(thread_id)
+
+    assert found.tool_call_id == "call_0"
+    assert found.approval_prompt == "要输支付密码"
+    assert found.approval_needs == ["payment_password"]
+    assert await calls.list_pending_approvals(other_thread) != [found], "各查各的"
+
+
+async def test_a_decided_or_finished_call_is_no_longer_pending(db: PgDatabase):
+    """批过 / 做完 / 取消过的都**不再**是未决 (那两列的语义).
+
+    判据是 `status = needs_approval` **且** `approved_at IS NULL` —— 缺任何一半都会
+    出错: 只看状态会把「批过但还没执行完的」当成还挂着 (闸门无谓地拦人), 只看
+    `approved_at` 会把「拒了 / 取消了的」也当成挂着 (用户被永远关在门外).
+    """
+    calls = ToolCallsRepository(db)
+    runs = RunsRepository(db)
+    messages = MessagesRepository(db)
+    thread_id = await _make_thread(db)
+    run = await runs.add(thread_id=thread_id)
+    turn, _ = await _two_assistant_messages(messages, thread_id, run)
+    for index in range(4):
+        await calls.add(
+            run_id=run.run_id,
+            message_id=turn,
+            tool_call_id=f"call_{index}",
+            tool_name="pay_order",
+            status=ToolCallStatus.NEEDS_APPROVAL,
+            approval_prompt="要输支付密码",
+        )
+    # call_0: 还没批 —— 唯一的未决
+    # call_1: 批了但还没执行完 (那一对列写上了)
+    await calls.record_decision(run.run_id, turn, "call_1", decided_by="alice")
+    # call_2: 执行完了 (状态推进到终态)
+    await calls.set_status(
+        run.run_id, turn, "call_2", ToolCallStatus.SUCCEEDED, result="付好了"
+    )
+    # call_3: 被取消 (收掉这次挂起)
+    await calls.set_status(
+        run.run_id, turn, "call_3", ToolCallStatus.CANCELLED, approved_by="alice"
+    )
+
+    pending = await calls.list_pending_approvals(thread_id)
+
+    assert [row.tool_call_id for row in pending] == ["call_0"]
+
+
+async def test_record_decision_stamps_who_and_when(db: PgDatabase):
+    """`record_decision` 只写「谁批的 / 什么时候」那一对, **不动状态**.
+
+    为什么与 `set_status` 分开: 它们的时刻不同 —— 人点确认的那一刻, 那条调用还没
+    执行 (它在恢复那一段里才跑), 而执行完又要写一次状态. 合成一条语句的话, 后写的
+    那次会把先写的时刻冲掉.
+    """
+    calls = ToolCallsRepository(db)
+    runs = RunsRepository(db)
+    messages = MessagesRepository(db)
+    thread_id = await _make_thread(db)
+    run = await runs.add(thread_id=thread_id)
+    turn, _ = await _two_assistant_messages(messages, thread_id, run)
+    await calls.add(
+        run_id=run.run_id,
+        message_id=turn,
+        tool_call_id="call_0",
+        tool_name="pay_order",
+        status=ToolCallStatus.NEEDS_APPROVAL,
+        approval_prompt="要输支付密码",
+    )
+
+    assert await calls.record_decision(run.run_id, turn, "call_0", decided_by="alice")
+
+    decided = await calls.get(run.run_id, turn, "call_0")
+    assert decided.approved_by == "alice"
+    assert decided.approved_at is not None
+    assert decided.status == ToolCallStatus.NEEDS_APPROVAL.value, "状态还没动"
+    assert decided.approval_prompt == "要输支付密码", "要问什么也还在"
+    # 没有这一条时如实回 False (调用方按「没改到」处理)
+    assert not await calls.record_decision(
+        run.run_id, turn, "call_absent", decided_by="alice"
+    )
+
+
+async def test_set_status_can_backfill_what_to_ask_the_user(db: PgDatabase):
+    """「要问用户什么」可以在推进状态时**补写**上去.
+
+    为什么需要补写: 那一行是「执行前那一拍」建的 (那时还不知道要不要人批), 而建行
+    走的是幂等插入 (已有的跳过) —— 于是裁决出来之后, 只有这一笔能把它写进去.
+    不给 (None) 时**不动那一列** (绝大多数调用没有它).
+    """
+    calls = ToolCallsRepository(db)
+    runs = RunsRepository(db)
+    messages = MessagesRepository(db)
+    thread_id = await _make_thread(db)
+    run = await runs.add(thread_id=thread_id)
+    turn, _ = await _two_assistant_messages(messages, thread_id, run)
+    await calls.add(
+        run_id=run.run_id, message_id=turn, tool_call_id="call_0", tool_name="pay_order"
+    )
+
+    await calls.set_status(
+        run.run_id,
+        turn,
+        "call_0",
+        ToolCallStatus.NEEDS_APPROVAL,
+        approval_prompt="要输支付密码",
+        approval_needs=["payment_password"],
+    )
+
+    row = await calls.get(run.run_id, turn, "call_0")
+    assert row.status == ToolCallStatus.NEEDS_APPROVAL.value
+    assert row.approval_prompt == "要输支付密码"
+    assert row.approval_needs == ["payment_password"]
+
+    # 再推进到终态时不给这两列: 已有的话术不被冲掉 (它是审计的一部分)
+    await calls.set_status(
+        run.run_id, turn, "call_0", ToolCallStatus.SUCCEEDED, result="付好了"
+    )
+
+    finished = await calls.get(run.run_id, turn, "call_0")
+    assert finished.result == "付好了"
+    assert finished.approval_prompt == "要输支付密码"

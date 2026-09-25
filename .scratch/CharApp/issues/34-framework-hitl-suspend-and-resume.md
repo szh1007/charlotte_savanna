@@ -1,6 +1,6 @@
 # 34 · 框架侧：HITL 挂起-恢复（`Decision` 第三值 + `approval_required` 事件 + `POST /runs/{id}/resume`）
 
-**Status:** todo
+**Status:** done
 
 **Type:** task
 
@@ -133,19 +133,187 @@ charagent_tool_calls.status = 'needs_approval' AND approved_at IS NULL AND run_i
 
 ## 验收
 
-- [ ] 一次需要审批的调用之后：`charagent_checkpoints` 那一帧有 `suspension`（`reason` / `pending` 各一条）、`charagent_tool_calls` 那一行是 `needs_approval` 且 `approved_at IS NULL`、`runs` 那一行是 `waiting_user`
-- [ ] `approval_required` 事件到达前端，且**它是终局事件**（流正常关闭，不是超时断的）
-- [ ] `GET history` 的响应里能读出未决挂起（含重建确认卡所需的四个字段）
-- [ ] `resume` 之后：`turn_count` 从挂起处接着数（不从 1 重来）、**前面已完成的轮次一步不重跑**（用 `MockLLM.calls` 断言调用次数）
-- [ ] `reject` 之后：模型收到的是**一条工具结果**（拒绝原因），并继续答（不是运行终止）
-- [ ] **同一 `(run_id, message_id, tool_call_id)` 的第二次 `resume` 不重放**（幂等键挡住）
-- [ ] 未决挂起期间：新提问 → 409 且错误类型与"会话忙"可区分；`resume` / `cancel` 正常放行
-- [ ] 进程**重启后**未决挂起仍然拦得住新提问（判据在 PG，不在内存）
-- [ ] `pytest` 全绿；`pytest -m pg_db` 通过；`ruff check` / `ruff format --check` 干净
+- [x] 一次需要审批的调用之后：`charagent_checkpoints` 那一帧有 `suspension`（`reason` / `pending` 各一条）、`charagent_tool_calls` 那一行是 `needs_approval` 且 `approved_at IS NULL`、`runs` 那一行是 `waiting_user`
+- [x] `approval_required` 事件到达前端，且**它是终局事件**（流正常关闭，不是超时断的）
+- [x] `GET history` 的响应里能读出未决挂起（含重建确认卡所需的四个字段）
+- [x] `resume` 之后：`turn_count` 从挂起处接着数（不从 1 重来）、**前面已完成的轮次一步不重跑**（用 `MockLLM.calls` 断言调用次数）
+- [x] `reject` 之后：模型收到的是**一条工具结果**（拒绝原因），并继续答（不是运行终止）
+- [x] **同一 `(run_id, message_id, tool_call_id)` 的第二次 `resume` 不重放**（幂等键挡住）
+- [x] 未决挂起期间：新提问 → 409 且错误类型与"会话忙"可区分；`resume` / `cancel` 正常放行
+- [x] 进程**重启后**未决挂起仍然拦得住新提问（判据在 PG，不在内存）
+- [x] `pytest` 全绿；`pytest -m pg_db` 通过；`ruff check` / `ruff format --check` 干净
+
+## 实施记录（2026-09-25）
+
+### 交付物八条
+
+| # | 内容 | 落在哪 |
+|---|------|--------|
+| 1 | `Decision` 第三值 | `hooks/utils/types.py`：新增 `Verdict`（allow / reject / requires_approval），`Decision` 从「两个字段」变成「三态 + 各自的字段」，构造期逐一校验；`allowed` 变成只读属性（放行之外的两态都不执行工具） |
+| 2 | loop 认第三值 + 挂起 | `agent/loop.py`：`_execute_one` 三分支（拒绝→失败回填 / 要人批→不回填 / 放行→执行）、`_handle_tool_turn` 一次只挂一条（同批其余按「请先处理前一条」回填）、`LoopOutcome.SUSPENDED`、`_save_checkpoint` 传 `suspension`、挂起帧的来源是**新增的** `CheckpointSource.APPROVAL` |
+| 3 | `EventType.APPROVAL_REQUIRED` + 终局集 | `stream/utils/types.py`（进 `TERMINAL_TYPES`）· `stream/bus.py`（那条「工具没回填完不许终局」的不变量给它开口子）· `agent/utils/events.py`（`approval_required_data` + `emit_terminal` 加一条分支）· `client/render.py`（CLI 那行版式） |
+| 4 | `POST /runs/{id}/resume` | `server/app.py`：七步（认证 → 读 body → 查未决 → 认领幂等键 → 组载荷 → 占会话 → 起任务/流成 SSE），拒绝与批准同一个端点 |
+| 5 | `SessionRegistry` 的闸门 | `server/sessions.py`：`acquire(context, resuming=)` + 注入的判据 `suspended=` + `evict_idle` 豁免；`ThreadSuspendedError`（409，码与「会话忙」分开） |
+| 6 | `runs` 行落 `waiting_user` | `db/state.py`（`RUN_STATUS_FOR_OUTCOME[SUSPENDED]` + 新常量 `SETTLEABLE_RUN_STATUSES`）· `db/repositories/runs.py`（`finish` → `settle`，非终态不写 `finished_at`） |
+| 7 | `GET /history` 带未决挂起 | `server/history.py`（`pending_approval_row` + 五个字段名）· `server/app.py`（响应多一个 `pending_approval`，恒在，没有时 null）· `db/repositories/tool_calls.py`（`list_pending_approvals`：join 回会话 + 两列判据） |
+| 8 | 用例 | 见下（离线 32 条 + 真库 8 条） |
+
+**除了票据点名的八件，还补了三处**（不做就是半截账）：
+
+- **`charagent_tool_calls` 加两列**（`approval_prompt` / `approval_needs` + 迁移 0005）：
+  票据第 7 条要的「够前端重建确认卡」四个字段里，`prompt` 与 `needs` 在库里**没有落点**
+  —— 它们只有挂起那一刻在内存里。而挂起态的家就是那一行（ADR-0014），于是把它们记在
+  那一行上：`approved_at` 管「批没批」，这两列管「问什么」。刷新页面之后 `GET /history`
+  靠它们把卡重建出来。
+- **恢复会重新装配一次会话**（`acquire(resuming=True)` 丢掉缓存的那个会话对象）：ADR-0015
+  的密码通路是「`data` → `RunContext.payload` → 装配时进工具闭包」，而会话是按 thread
+  缓存的（业务只在第一次装配）—— 复用旧会话等于把那份一次性载荷丢掉。代价很小：会话的
+  内存状态本来就从快照来（那正是 resume 的定义）。
+- **`resume()` 缺人的结论就报错**（`LoopConfigError`）：命令行 `--resume` 撞上一帧挂起点时
+  原先会**直接补做**那条调用 —— 而它可能就是「给这一单付款」。DESIGN #25 写着「绝不自动
+  执行」，于是没有 `approval` 就不补做。issue 33 记的「命令行从挂起点续跑今天到不了」在
+  本片变成了「到得了，但会被拦住」（挂起点从本片起真的存在了）。
+
+### 两处改判（都写进了代码注释）
+
+1. **拒绝优先于挂起**（票据已定）：`HookRegistry.decide` 从「取第一个非放行者」改成
+   「遍历完，任一拒绝直接生效；一个都没有时才看有没有要人批的」。顺序是装配的偶然事实，
+   「该不该做」应当是内容决定的 —— 否则一个会超预算的操作会先弹卡、用户输完密码才被拒。
+2. **ticket 33 的「第二段不碰那一行」→「第二段写这一段的结局」**：挂起那一段自己也要写
+   （写的是 `waiting_user`，不是终态），否则「它现在在等人」在库里没有落点；而「还没结束」
+   由 `finished_at IS NULL` 表达。唯一的例外是**失败/取消那一段不碰**（那一次运行还开着，
+   写 `failed` 会把还能恢复的运行判死）。`test_client_resume_db.py` 里那条用例的 docstring
+   记了这次改判。
+
+### 真机（2026-09-25，本机 Postgres + 真模型，脚本 `D:/__WorkSpace__/Temp/hitl34_real.py`）
+
+先给开发库应用了迁移 0005（`alembic upgrade head`：`0005_tool_call_approval_columns`）。
+
+会话 `hitl-34-real-1790328284`，一件玩具高危工具（`pay_order`）+ 一条「高危就要人批」的核查插件：
+
+| 步 | 期望 | 实际 |
+|---|---|---|
+| 问「帮我付了订单 …」 | 流停在确认 | `['reasoning', 'tool_call', 'approval_required']`；载荷 `tool_name=pay_order` / `prompt` / `needs=['payment_password']` |
+| 查库 | 三处都对 | `runs: waiting_user / finished_at=None / turn_count=1`；`tool_calls: needs_approval / approved_at=None`；帧 `suspension.reason=needs_approval`、`pending=[{id,name,arguments}]`、`source=approval` |
+| `GET /history` | 四样齐全 | `run_id` / `tool_call_id` / `tool_name` / `prompt` / `needs` ✓ |
+| 未决期间新提问 | 409 且码可区分 | `409 thread_suspended` |
+| 批准（带载荷） | 工具真跑 + 收尾 | 流 `['tool_call', 'tool_result', 'final']`；工具跑了一次；**装配过的载荷**：`[{}, {'payment_password': '888888'}]`（第二次装配才看得见载荷 ✓）；`runs: finished`；`tool_calls: succeeded + approved_by=u-1 + approved_at`；刷新后 `pending_approval=None` |
+| 第二次 resume | 不重放 | `404 run_not_found`；工具总跑次数 **1** |
+| 再挂一次 → cancel | 收得掉 | `200 {'status': 'cancelled'}`；刷新后 `pending_approval=None`；之后新提问 `200` |
+
+> **真机跑了三遍，第三遍才发现一个缺陷**（前两遍的输出里有一条被我当成「上一次尝试的
+> 残留」的 traceback，其实是同一个会话里的）: **取消一次挂起之后再问一句话，模型 API 回
+> 400**（`assistant message with 'tool_calls' must be followed by tool messages`）。根因:
+> 取消只改了库，而**会话内存**里那份历史仍停在「欠着那条调用的结果」的半路上 —— 那种
+> 形状在 MockLLM 面前看不出来（它不校验配对），只有真上游会当场拒。修法:
+> `POST /runs/{id}/cancel` 收掉挂起时把这段会话从登记表里**丢掉**（`SessionRegistry.forget`），
+> 下一次提问重新装配并从快照水合 —— 那时 `_seal_pending_calls` 会给那条调用补一条
+> 「结果未知」的回填，请求又是配对的. 补了一条离线用例盯**发给模型的那份历史是否配对**
+> （旧用例只断状态码，它一直是绿的）.
+
+`turn_count` 在恢复后是 **3**（挂起那轮 1 + 补做那轮 2 + 模型作答 3）—— 补做那一轮算一轮
+（它同样落一帧），这是 ticket 22 起就有的口径，票据那条验收要的「不从 1 重来、不重跑」
+都成立。那几行数据是这次的证据，留在开发库里；要清就
+`DELETE FROM charagent_threads WHERE thread_id LIKE 'hitl-34-real-%'`（运行 / 消息 / 帧 /
+工具调用跟着 CASCADE 走）。
+
+### 用例（新增 42 条）
+
+| 文件 | 断的是什么 |
+|------|-----------|
+| `tests/test_hooks.py`（+4） | 三种形状各自的构造期校验 · 纯是/否确认的 `needs` 为空合法 · 要人批那条原样带回（取第一个） · **拒绝优先于挂起（两个注册顺序各一遍）** |
+| `tests/test_loop_suspension.py`（新文件，12 条） | 要人批 → 不执行 + 终局事件是 approval_required（含四个字段）· 挂起帧（来源 / suspension / 轮数）· 同批只挂第一条 · 同批普通调用照跑 · 拒绝不是挂起 · 批准才执行（轮数接着数、不重跑）· **恢复时人批的抵消、护栏的拒绝照常生效** · 拒绝回填原因并继续答 · 缺省拒绝文案 · 没有结论就报错 · 普通快照无需结论 · 挂起不泄漏到下一段 |
+| `tests/test_server_approval.py`（新文件，12 条） | 事件流 + `/history` 的卡 · 批准 / 拒绝两条路 · `decision` 非法值 400 · **重复提交两种时相（已认领 / 已办完）各 409** · 没有挂起 404 · 未决期间 409（码与「会话忙」不同）而 resume/cancel 放行 · **取消挂起后闸门放开、且下一次提问发给模型的历史是配对的**（真机那个 400 的回归）· **认领之后失败会把键放回去** · 没配库这条路由不存在 · **真并发两下只跑一次** |
+| `tests/test_server_approval_db.py`（新文件，4 条） | 全流程真 SQL · **重启后仍然拦得住** · 别人的会话碰不到（join）· 幂等键真的落进 `charagent_idempotency_keys` |
+| `tests/test_server_sessions.py`（+5） | 挂着不许新提问而恢复放行 · **恢复会重新装配** · 等人的会话不淘汰 · 没注入判据就没有这道闸门 · **`forget` 按段丢掉缓存**（取消挂起那条路用的） |
+| `tests/test_db_store.py`（+4） | 未决那条查询（按会话 + 两列判据 + 别人的查不到）· 批过/做完/取消的都不再算未决 · `record_decision` 只记「谁批的」不动状态 · 推进状态时补写「要问什么」 |
+| `tests/test_db_recorder.py`（+1） | 挂起那一段的收尾：运行行 `waiting_user`（无结束时刻）+ 工具调用行带话术与缺失项 |
+| `tests/test_client_session.py`（+1）与 `test_client_resume_db.py`（+2） | 会话那一层走一次挂起→恢复（第一段交出 SUSPENDED、第二段执行）· 真库里 `waiting_user` → 恢复后 `finished` 且**只有一行** |
+| 既有用例的改动 | `test_checkpoint_resume.py` 4 条挂起恢复用例补 `approval=`（没有结论就不补做，那正是本片加的护栏）· `test_client_session.py` 的续段用例改成「settle 了」· `test_db_store.py` 的 `finish` → `settle` 与版本断言 · `test_client_render` / `test_stream` / `test_db_entities` / `test_root_facade` 的契约清单跟着加成员 |
+
+**十三条伪证（把实现改坏，看用例红不红，逐条都红）**：挂起帧不写 `suspension` · 恢复时
+不再抵消「需人工确认」（又挂了一次）· 没有结论也照常补做 · 恢复端不再认领幂等键 ·
+挂起那条事实写成 `pending`（真库用例）· 状态映射改成 `finished` · 闸门失效 ·
+批完不记「谁批的」· 拒绝也去执行工具 · **认领之后失败不再把键放回去** ·
+取消挂起不再写那一行 · 幂等存储的 `claim` 直接放行（真库用例）·
+**取消挂起不再丢掉那份会话缓存**（真机那个 400 的回归）。
+
+**命中一处冗余**（伪证的副产物）：`_write_calls` 原先在建行那一拍也写「要问什么」，而
+建行那一拍**永远拿不到**它（裁决还没发生，事实是 PENDING）—— 那一笔是死代码，删掉了；
+真正写它的是推进状态那一笔（幂等插入会跳过已存在的行，所以只有它能写）。
+
+### 两轴复核（`/code-review`）后的修补
+
+- **规范轴**：两处「半角括号后直接贴中文」（`db/repositories/idempotency.py` 与
+  `0004_idempotency_keys.py`，都是 issue 32 留下的、这次一起收掉）· `ApprovalBookkeeping.calls`
+  的 `| None` 是死守卫（唯一构造点就在「有库」那条分支里）→ 去掉 · 幂等键的格式串在用例里
+  抄了三遍且有一句注释说「用例直接借它」（不实）→ 每个文件留一处并改成说真话的注释
+  （**故意钉住格式**：格式一变那两条用例当场红）· `test_loop_suspension.py` 里指向
+  `test_server_app.py` 的指针过时（服务端那一半在新文件里）→ 改了 · 四处裸 `-> list:`
+  → 补元素类型。
+- **规格轴**：八条交付物、九条验收**没有缺失项**；三处偏差里两处是真的并已修：
+  ① `resume_run` 的 docstring 抬头与代码相反（写成「先占会话、后认领」，实际是先认领、
+  失败时放回去）→ 重写那七步；② `approval_required` 载荷多一个 `turn`（docstring 自称
+  「四个字段」却返回五个）→ docstring 改成「四样 + 轮次」（`turn` 与其它事件同一条惯例，
+  issue 36 的渲染要按它定位）。第三处（验收那句「幂等键挡住」与实际三种时相的分工）记进
+  上面的「残留」，代码不动。
+
+### 残留（都已记进代码注释或下一片）
+
+- **两次 `resume` 的三种时相各由谁挡住**（验收那条写的是「幂等键挡住」，实际是这样分工的）：
+  **第一次还在跑**（真并发 / 双击）→ 幂等键答 `409 approval_in_progress`（它管的正是
+  「有人在办」，而且是**跨进程**的那一个 —— 重启之后内存里的「忙」早没了）；**已经跑完**
+  → 那一行已推进成终态，查到的是「没有未决挂起」→ `404 run_not_found`（与「压根没这回事」
+  同一条回答）；**进程死在恢复的半路** → 键卡在「在办」→ `409 approval_in_progress`（同一
+  把键的跨进程语义）。三种都**不重放**，差别只是前端的话术；issue 36 按码分文案时要知情
+  （流程上「先认领键、后占会话」，就是为了让并发那一相由键回答，而不是被本进程的「会话忙」
+  顺带答一句）。
+- **幂等键不配 TTL**（刻意的）：一把会过期的键等于「过一会儿可以再点一次」，而重放的是一笔
+  付款。卡住时的明路是**取消这次挂起重新发起**（`POST /runs/{id}/cancel`，本片已实现）。
+- **挂起那一段照样算钱**：金额按当时的价目表写上去，恢复那一段收尾时按累计用量重算覆盖
+  （`runs.settle` 的既定语义：重算不是累加）。
+- **不做超时 / 不做角色分离**：与票据备注一致，理由见 note 的处置；`Suspension.approval_id`
+  保持 `None`（ADR-0014）。
+- **issue 35 起才有的业务侧**：`pay_my_order` 工具、真正的支付端点、`needs` 里那个
+  `payment_password` 怎么取 —— 本片只保证框架把载荷送到**装配那一刻**（真机已验证）。
 
 ## 备注
 
-- **不动 checkpoint 的恢复机制**：`loop.py:484-555` 的 `resume()` 三道护栏、`pending_tool_calls`、`_complete_pending_turn` **一行都不用改** —— 那条路径早就写好了（`session.resume()` 的 docstring 亲口承认「快照恰好停在『工具调用还没有结果』的半路时（**人工审批挂起点**），loop 还会把那几条欠着的调用补做完再继续」）。本片只补「**拦截 + 挂起**」那一半。
-- **不做超时**：挂起的 run 就挂着，用户可以用已有的 `POST /runs/{run_id}/cancel` 收掉。加超时要先有"超时了怎么办"的答案（降级？自动拒绝？），而那需要真实场景（见 ADR-0017 对 #15 的处置）。
+- **不动 checkpoint 的恢复机制**：`loop.py` 的三道护栏、`pending_tool_calls`、`_complete_pending_turn` 的补做顺序**一行没改** —— 本片只给它加了「必须有人给的结论」这一道前置。
+- **不做超时**：挂起的 run 就挂着，用户可以用已有的 `POST /runs/{run_id}/cancel` 收掉（本片把它扩到「挂起中」那一种：见 `_cancel_suspension`）。加超时要先有"超时了怎么办"的答案（降级？自动拒绝？），而那需要真实场景（见 ADR-0017 对 #15 的处置）。
 - **`runs` 行横跨挂起等待期**这件事**接受**：`finished_at` 会跨几小时是假数据，但真实耗时能从 `charagent_tool_calls` 的 `created_at` / `updated_at` 算出来（零新列）。查询侧的口径已写进 `CONTEXT.md` 的「运行」词条。
-- **角色分离（DESIGN #25 提过"发起方不得审批自己发起的挂起项"）本项目不做**：发起方是**模型**，确认人是**买家本人** —— 不存在"自己批自己"。这条要作为"核实后不做"记进收口，别留成沉默的缺席。
+- **角色分离（DESIGN #25 提过"发起方不得审批自己发起的挂起项"）本项目不做**：发起方是**模型**，确认人是**买家本人** —— 不存在"自己批自己"。这条要作为"核实后不做"记进收口（issue 38），别留成沉默的缺席。
+
+## 改了哪些文件
+
+| 文件 | 改了什么 |
+|------|---------|
+| `CharAgent/hooks/utils/types.py` | `Verdict` + `Decision` 三态（字段与校验重写） |
+| `CharAgent/hooks/registry.py` | `decide` 的拒绝优先 + docstring |
+| `CharAgent/hooks/__init__.py` · `CharAgent/__init__.py` | 门面导出 `Verdict` |
+| `CharAgent/agent/utils/types.py` | `LoopOutcome.SUSPENDED` · `ApprovalRequest` / `Approval` / `APPROVAL_REJECTED_TEXT` · `ToolCallFact` 两列 · `LoopState` / `LoopResult` 的 `approval` |
+| `CharAgent/agent/utils/events.py` | `approval_required_data` + `emit_terminal` 的挂起分支 |
+| `CharAgent/agent/utils/messages.py` | `APPROVAL_ALREADY_PENDING_TEXT`（同批第二条要批时的回填文案） |
+| `CharAgent/agent/loop.py` | `_execute_one` / `_execute_parallel` / `_handle_tool_turn` / `_facts_of` / `_complete_pending_turn` / `resume` / `_run` / `_save_checkpoint`（挂起与恢复的全部逻辑） |
+| `CharAgent/checkpoint/utils/types.py` | `CheckpointSource.APPROVAL` · `SUSPENSION_REASON_APPROVAL` |
+| `CharAgent/stream/utils/types.py` · `stream/bus.py` | 第八类事件 + 终局集 + 那条不变量的口子 |
+| `CharAgent/client/session.py` | `resume(run_id=, approval=)`；成功那一段一律写结局（失败那一段仍不碰） |
+| `CharAgent/client/render.py` | `approval_required` 的终端版式 + `SUSPENDED` 的结束语 |
+| `CharAgent/db/state.py` | `SUSPENDED → WAITING_USER` + `SETTLEABLE_RUN_STATUSES` |
+| `CharAgent/db/repositories/runs.py` | `finish` → `settle`（支持非终态、`finished_at` 只在终态写） |
+| `CharAgent/db/repositories/tool_calls.py` | `list_pending_approvals` · `record_decision` · `set_status` 补写「要问什么」· `build_tool_call` / `add` 两列 |
+| `CharAgent/db/schema.py` · `alembic/versions/0005_tool_call_approval_columns.py` | 工具调用表两列 + 迁移 |
+| `CharAgent/db/recorder.py` | `runs.settle` 的调用点 + 推进状态那一笔带「要问什么」 |
+| `CharAgent/db/entities.py` · `db/__init__.py` | 实体字段说明 + 导出新常量 |
+| `CharAgent/server/utils/errors.py` | `ThreadSuspendedError` · `ApprovalAlreadyHandledError` |
+| `CharAgent/server/sessions.py` | `acquire(resuming=)` + `suspended=` 判据 + `evict_idle` 豁免（改异步）+ `forget`（取消挂起时丢掉那份缓存） |
+| `CharAgent/server/history.py` | `pending_approval_row` + 字段名 |
+| `CharAgent/server/app.py` | `POST /runs/{id}/resume` + 取消挂起那条分支 + `pending_approval` + 装配（幂等登记簿 / 判据） |
+| `CharAgent/server/__init__.py` | 导出 `PENDING_APPROVAL_FIELD` |
+| `CharAgent/retry/idempotency.py` · `db/README.md` · `db/database.py` · `alembic/env.py` | 文档：幂等键的第一个真实调用方从「计划」改成「已接线」 |
+| `CharAgent/tests/*`（9 个既有 + 3 个新） | 见上表 |
+
+**没动的**：`checkpoint/` 的恢复机制（`pending_tool_calls` / `_seed_from_checkpoint` 一行没改）·
+`retry/` 的协议与两个存储实现 · `ask()` 的记账路径 · `ChatSession` 公开三动作的签名（只是
+`resume` 多了一个可选参数）· `client/app.py`（命令行那条路照旧：撞上挂起点会以一条清楚的
+错误停下）。

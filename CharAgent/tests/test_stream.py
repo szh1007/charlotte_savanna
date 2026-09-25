@@ -58,13 +58,14 @@ async def _open_and_close(bus: EventBus, call_id: str = "call_1") -> None:
 
 
 def test_event_types_cover_contract() -> None:
-    """七类事件与 API 契约的事件名一致 (P1 阶段另加 approval_required)."""
+    """八类事件与 API 契约的事件名一致 (approval_required 是 issue 34 落的那一个)."""
     assert [t.value for t in EventType] == [
         "thinking",
         "tool_call",
         "tool_result",
         "reasoning",
         "context_compacted",
+        "approval_required",
         "final",
         "error",
     ]

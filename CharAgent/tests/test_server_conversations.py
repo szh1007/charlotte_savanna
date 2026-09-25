@@ -37,6 +37,7 @@ from CharAgent.server import (
     LIMIT_QUERY,
     MAX_TITLE_LENGTH,
     MESSAGES_FIELD,
+    PENDING_APPROVAL_FIELD,
     PIN_PATH,
     PINNED_AT_FIELD,
     PINNED_FIELD,
@@ -446,7 +447,11 @@ async def test_the_other_routes_still_work_without_a_database() -> None:
         history = await http.get("/history", headers=headers())
 
     assert history.status_code == 200
-    assert history.json() == {THREAD_ID_FIELD: "toy:u-9f3a:1", MESSAGES_FIELD: []}
+    assert history.json() == {
+        THREAD_ID_FIELD: "toy:u-9f3a:1",
+        MESSAGES_FIELD: [],
+        PENDING_APPROVAL_FIELD: None,
+    }
 
 
 # ---------------------------------------------------------------------------

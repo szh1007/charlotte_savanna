@@ -90,6 +90,19 @@ ALLOWED_TRANSITIONS: dict[RunStatus, frozenset[RunStatus]] = {
     RunStatus.CANCELLED: frozenset(),
 }
 
+# 「一段运行的收尾」能给哪几种状态 (ticket 34 补的第四条).
+#
+# 它是终态三种**加上**一个非终态的 `waiting_user`: 挂起那一段跑完了 (这一段的
+# 结局就是「停在这儿等人」), 但那一次运行**还没结束** —— 人给了结论才接着跑.
+# 这一条同时决定了 `runs.finished_at` 写不写: 终态写, waiting_user 留空.
+#
+# 其余从 running 出发也走得到的状态 (waiting_tool / retrying) 刻意不在里面: 它们
+# 是**过程态**, 说的是「这会儿正在做什么」, 不是「这一段最后成了什么样」—— 收尾时
+# 写它们是错的, 而且错得没有任何报错 (那一行看起来只是「还在跑」).
+SETTLEABLE_RUN_STATUSES: frozenset[RunStatus] = TERMINAL_RUN_STATUSES | {
+    RunStatus.WAITING_USER
+}
+
 # --- agent loop 的结束原因 → 运行状态 -----------------------------------------
 #
 # 映射的原则: **「跑完了但没给出答案」不算失败**. guard 刹车 (轮数 / token /
@@ -107,6 +120,9 @@ RUN_STATUS_FOR_OUTCOME: dict[LoopOutcome, RunStatus] = {
     LoopOutcome.TIME_LIMIT: RunStatus.FINISHED,
     LoopOutcome.TRUNCATION_LIMIT: RunStatus.FINISHED,
     LoopOutcome.SERVER_INTERRUPTED: RunStatus.FAILED,
+    # 挂起等人 (#25 HITL): 不是失败也不是完成 —— 这一段的结局就是「停在这儿等人」,
+    # 那一次运行还开着 (恢复沿用同一个 run_id, 见 CONTEXT.md 的「运行」词条)
+    LoopOutcome.SUSPENDED: RunStatus.WAITING_USER,
 }
 
 # --- agent 侧的工具调用状态 → 工具调用行的状态 ---------------------------------

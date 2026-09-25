@@ -3,9 +3,10 @@
 大白话版 (本文件 = 主循环的「话术本」):
 - 分工: 主循环只管「什么时候喊」, 本文件管「喊什么措辞」—— 改文案不用碰
   循环逻辑.
-- 三种措辞: 工具调用怎么念 (工具名 + 参数原文 + 轮次); 工具结果怎么念 (成功
-  给摘要, 失败给「改一下就能用」的错误提示); 结束时报什么 (正常 → final
-  「答完了」; 刹车 / 上游中断 / 被安全策略拦截 → error「出问题了」).
+- 四种措辞: 工具调用怎么念 (工具名 + 参数原文 + 轮次); 工具结果怎么念 (成功
+  给摘要, 失败给「改一下就能用」的错误提示); 要人工确认时怎么念 (给用户看的
+  那句话 + 还缺什么, #25 HITL); 结束时报什么 (正常 → final「答完了」;
+  刹车 / 上游中断 / 被安全策略拦截 → error「出问题了」; 挂起等人 → 需要确认).
 - 一条硬规矩: 结束事件绝不撒谎 —— 机器人没给出答案时不许喊「答完了」.
   真话是「被刹车拦下了」, 道歉话术 (「请稍后再试」) 是产品文案, 归服务层,
   框架只陈述事实.
@@ -17,10 +18,13 @@
 分离:
 - tool_call_data / tool_result_data: 工具调用与结果 → 事件载荷 (参数保真为
   原始 JSON 字符串不预解析 #10; 成功结果只带截断摘要, 全文不进事件流)
+- approval_required_data: 一次挂起 → 事件载荷 (#25; 话术与缺失项由业务定,
+  这里只搬运)
 - context_compacted_data: 一次上下文压缩 → 事件载荷 (#7; 数值由策略算好,
   这里只搬运)
 - emit_terminal: run 的**单一终局出口** —— 从 LoopResult 派生恰好一个终局
-  事件 (正常结束 final / 异常结束 error), 避免调用方各写一份判定
+  事件 (正常结束 final / 异常结束 error / 挂起等人 approval_required), 避免
+  调用方各写一份判定
 - TERMINAL_ERROR_TEXT / terminal_error_code: 异常结束的 error 事件契约 ——
   **走 error 而非 final** (没有答复的结束不该有终局答复事件), code 取
   LoopOutcome 值; 文案只陈述事实, 用户可见的降级话术归服务层
@@ -30,7 +34,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from CharAgent.agent.utils.types import LoopOutcome, LoopResult
+from CharAgent.agent.utils.types import (
+    ApprovalRequest,
+    LoopOutcome,
+    LoopResult,
+)
 from CharAgent.model.utils.types import (
     FinishReason,
     ModelToolCall,
@@ -103,6 +111,28 @@ def tool_result_data(
     return data
 
 
+def approval_required_data(approval: ApprovalRequest) -> dict[str, Any]:
+    """一次挂起 → `approval_required` 事件载荷 (#25 HITL).
+
+    四样是前端重建一张确认卡要的全部: **哪一条**调用要批 (`tool_call_id` 与
+    `tool_name`, 前端按它把卡片插在会话流里那一次 tool_call 的位置上)、
+    **问什么** (`prompt`, 业务给的话术, 前端原样显示)、**缺什么** (`needs`, 机器
+    可读的短名字 —— 含 `payment_password` 就渲染一个密码框, 空就只给两个按钮).
+
+    第五个键 `turn` 与其他工具类事件同一个口径 (第几轮), 前端按它把卡片铺回会话流
+    的对应位置 —— 少了它, 卡片就只能挂在末尾.
+
+    框架只搬运: 不解释 `needs` 里那些名字是什么意思, 也不替业务写话术.
+    """
+    return {
+        "tool_call_id": approval.call.id,
+        "tool_name": approval.call.name,
+        "prompt": approval.prompt,
+        "needs": list(approval.needs),
+        "turn": approval.turn,
+    }
+
+
 def context_compacted_data(compiled: CompiledView, *, turn: int) -> dict[str, Any]:
     """一次上下文压缩 → context_compacted 事件载荷 (#7).
 
@@ -145,9 +175,18 @@ async def emit_terminal(bus: EventBus, result: LoopResult) -> None:
     """run 的单一终局出口: 从 LoopResult 派生**恰好一个**终局事件.
 
     正常结束 → final (content 为权威值, 前端收到即覆盖缓冲); 其余 → error
-    (code + 事实性文案). 终局事件与 LoopResult 同源 (同一份 outcome / content /
-    tokens / elapsed_ms), 保证 result 与事件流不会各说各话.
+    (code + 事实性文案); **挂起等人 → approval_required** (那一轮的答复还没发生,
+    所以既不是 final 也不是 error). 终局事件与 LoopResult 同源 (同一份 outcome /
+    content / tokens / elapsed_ms), 保证 result 与事件流不会各说各话.
+
+    三种终局都是**终局**: 客户端收到它就知道这次 HTTP 请求到此为止 (挂起那条也
+    一样 —— 前端据此渲染确认卡并保持输入框禁用, 等用户给结论后另开一次 resume).
     """
+    if result.approval is not None:
+        await bus.emit(
+            EventType.APPROVAL_REQUIRED, **approval_required_data(result.approval)
+        )
+        return
     code = terminal_error_code(result.outcome, result.finish_reason)
     if code is None:
         await bus.emit(

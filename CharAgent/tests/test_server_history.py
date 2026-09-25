@@ -48,6 +48,7 @@ from CharAgent.model.protocol import ChatModel
 from CharAgent.server import (
     HISTORY_PATH,
     MESSAGES_FIELD,
+    PENDING_APPROVAL_FIELD,
     THREAD_ID_FIELD,
     ServerAuthError,
     create_app,
@@ -193,7 +194,11 @@ async def test_a_conversation_that_never_started_is_empty_not_missing() -> None:
     response = await history(app)
 
     assert response.status_code == 200
-    assert response.json() == {THREAD_ID_FIELD: "toy:u-9f3a:1", MESSAGES_FIELD: []}
+    assert response.json() == {
+        THREAD_ID_FIELD: "toy:u-9f3a:1",
+        MESSAGES_FIELD: [],
+        PENDING_APPROVAL_FIELD: None,
+    }
 
 
 async def test_asking_for_history_does_not_start_a_conversation() -> None:
@@ -297,7 +302,11 @@ async def test_each_caller_only_sees_its_own_conversation() -> None:
     other = await history(app, user="u-0000")
 
     assert [m["content"] for m in mine.json()[MESSAGES_FIELD]] != []
-    assert other.json() == {THREAD_ID_FIELD: "toy:u-0000:1", MESSAGES_FIELD: []}
+    assert other.json() == {
+        THREAD_ID_FIELD: "toy:u-0000:1",
+        MESSAGES_FIELD: [],
+        PENDING_APPROVAL_FIELD: None,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -424,7 +433,11 @@ async def test_the_record_table_source_also_drops_fields_and_keeps_empty() -> No
     assert single == [{"role": "assistant", "content": None}], (
         "答复为 None 的那一行照样出现 (如实: 问了没答出来)"
     )
-    assert empty == {THREAD_ID_FIELD: "toy:u-9f3a:1", MESSAGES_FIELD: []}
+    assert empty == {
+        THREAD_ID_FIELD: "toy:u-9f3a:1",
+        MESSAGES_FIELD: [],
+        PENDING_APPROVAL_FIELD: None,
+    }
 
 
 async def test_a_broken_record_store_answers_with_a_clean_503() -> None:

@@ -1,11 +1,13 @@
-"""业务侧的护栏插件: 挂在「工具执行前」那一个点上的两条规则 (L2 的验收核心).
+"""业务侧的护栏插件: 挂在「工具执行前」那一个点上的三条规则 (L2 的验收核心).
 
 一句话理解: 助手从「只能看」变成「能改数据」之后, 得有东西拦得住它 —— 这个类
 就是那道闸. 它挂在框架的拦截点 (`HookPoint.BEFORE_TOOL_EXECUTE`) 上, 说一句
 「不行」, 那个写工具就真的不跑, 理由当作执行结果回填给模型 (框架的
-`Tool.annotations` 只透传不解释, 认不认 `writes` 是业务自己的事).
+`Tool.annotations` 只透传不解释, 认不认 `writes` 是业务自己的事). 到 L3 它还会
+说第二句话 —— 「等一下, 这得本人点头」, 那次工具也不跑, 但整次运行就此停住等人
+(挂起), 这是同一个点上的第三种表态 (`Decision.requires_approval`).
 
-两条规则与它们的数 (**数值为什么是这两个**, 见下面两条):
+三条规则 (前两条的数为什么是那两个数, 见下面):
 
 - **写操作预算 8 次**: 一次正常的购物流程 (加购 → 改量 → 下单 → 取消 → 申请退款)
   大约 6 到 8 次写操作, 8 不误伤; 而模型跑飞时连环下单**一定会撞上它**.
@@ -15,13 +17,20 @@
   批量下单**会被拦下, 请买家到页面自己确认. **大额消费本来就该由本人拍板**, 所以
   这不是误伤而是本意: 到 L3, 同一条规则会升级成「挂起 → 买家点确认」, 那时它才
   真的"能做成", 而不是换个地方做.
+- **代付挂起** (issue 35): 调 `pay_my_order` 的那一步**不执行**, 整次运行停在这里
+  等买家本人点头 —— 这是 L2 那句「框架级的人工确认是 L3 的事」兑现的地方, 也是
+  第三条规则与前两条的根本不同: 前两条是**拒绝** (当场有结论, 工具不跑), 这一条
+  是**挂起** (还没轮到它, 结论由本人给, 给完从存档点接着跑).
 
 **为什么要有它** (PRD §4.6 的补记): L2 的 17 个工具里有 7 个能改数据, 而同一
 阶段没有任何东西拦得住模型连环下单 —— 框架级的人工确认是 L3 的事. 它同时把
 「哪些工具是写操作」从散落的 7 个业务函数里提出来, 落到框架的一个统一属性上
-(`annotations`), 而不是在 17 个工具里各写一遍判断.
+(`annotations`), 而不是在每个写工具里各写一遍判断 (这个数会随加片涨).
 
 **这条护栏管到哪儿, 管不到哪儿** (说清, 否则它就是自我辩护):
+
+- 它管的是**助手发起的那条路**: 买家自己在订单页付款不经过它 (那是买家的手,
+  不是模型的), 所以"代付要不要本人确认"这件事对它才有意义.
 
 - 它管的是**这一次运行**: 预算在一轮问答里累计, 买家再问一句就是新的一轮,
   账本归零. 会话级的总额度不在这里 (那要靠 L3 的挂起逐笔确认).
@@ -39,7 +48,7 @@ from typing import Any
 from CharAgent.hooks import Decision, HookPoint, HookRegistry
 from CharAgent.tool import Tool
 from CharApp.minimall.client import MinimallClient
-from CharApp.minimall.tools import WRITE_ANNOTATION_KEY
+from CharApp.minimall.tools import PAYMENT_PASSWORD_FIELD, WRITE_ANNOTATION_KEY
 
 # 一次运行里的写操作预算 (为什么是 8, 见模块 docstring)
 WRITE_BUDGET = 8
@@ -51,6 +60,16 @@ MAX_ORDER_AMOUNT = Decimal("5000.00")
 
 # 金额只有在**下单**这一步才成为事实, 所以这条规则只盯它 (见 `_overspend_reason`)
 PLACE_ORDER_TOOL = "place_order"
+
+# 代付要挂起的那一条 (issue 35) —— 判据是工具名, 与金额那条同一个做法
+PAY_ORDER_TOOL = "pay_my_order"
+
+# 挂起时给**买家**看的那句话 (前端把它印在确认卡上, 原样显示).
+#
+# 与 `_BUDGET_REASON` 那种"回填给模型"的文案不同: 读者是买家本人, 而这句读完他
+# 就该知道下一步该干什么 (输一次密码). 标点照旧用半角 —— 全仓的用户可见文案都是
+# 这一种 (`APPROVAL_*` / `TERMINAL_ERROR_TEXT` 同样), ruff 的 RUF001 也认这个.
+PAY_APPROVAL_PROMPT = "这一单要付款了, 需要你输一次支付密码"
 
 # 预算用完时回给模型的话. 三条要点缺一不可: 说清是什么用完了 (不是"操作失败"),
 # 给出下一步 (买家自己能做), 劝住重试 (再调一次还是这个结果).
@@ -116,16 +135,27 @@ class WriteGuardrail:
         靠它身上的 `annotations`, 判断金额去问商城 —— 那两件事都不需要参数表,
         而参数表正是模型能编的地方.
 
-        顺序有意: **先认人, 再判预算, 最后判金额** —— 判金额要打一次商城, 能省
-        则省 (只读调用在第一步就返回了).
+        顺序有意: **先认人, 再判预算, 最后逐条判** —— 判金额要打一次商城, 能省
+        则省 (只读调用在第一步就返回了); 而**拒绝优先于挂起**: 预算已经用完时,
+        该当场说「不行」, 不该弹一张确认卡让买家白输一次密码.
 
         Args:
             tool: 命中的 Tool 对象; 写操作靠它的 `annotations` 认出来.
         """
         if not tool.annotations.get(WRITE_ANNOTATION_KEY):
-            return None  # 只读操作不管 —— 判断只看注解, 不去比对 17 个工具名字
+            return None  # 只读操作不管 —— 判断只看注解, 不去比对 18 个工具名字
         if self._used >= WRITE_BUDGET:
             return Decision.reject(_BUDGET_REASON)
+        if tool.name == PAY_ORDER_TOOL:
+            # 代付: **不执行, 等买家本人给结论** (挂起, #25). 它与上面那条拒绝的
+            # 区别不是"让不让", 而是"这个结论由谁在哪一刻给" —— 钱只能由本人点头.
+            # 排在预算之后 (上面那条): 该拒的当场拒, 别让人白输一次密码.
+            # 这里不记账: `_used` 记的是**真做过的**写操作, 而这一条还没做 (补做
+            # 发生在恢复那一段自己的账本里).
+            return Decision.requires_approval(
+                prompt=PAY_APPROVAL_PROMPT,
+                needs=(PAYMENT_PASSWORD_FIELD,),
+            )
         # **先记账再判金额**: 判金额中间有一次 await (打商城问购物车), 而同一轮里
         # 的几次调用是并发跑的 —— 读完再写会丢更新 (两次并行的下单都读到 7 就都
         # 放行了). 这里在同一个事件循环步里读完就写, 不会被打断.
@@ -161,4 +191,11 @@ class WriteGuardrail:
         )
 
 
-__all__ = ["MAX_ORDER_AMOUNT", "PLACE_ORDER_TOOL", "WRITE_BUDGET", "WriteGuardrail"]
+__all__ = [
+    "MAX_ORDER_AMOUNT",
+    "PAY_APPROVAL_PROMPT",
+    "PAY_ORDER_TOOL",
+    "PLACE_ORDER_TOOL",
+    "WRITE_BUDGET",
+    "WriteGuardrail",
+]

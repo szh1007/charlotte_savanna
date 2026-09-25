@@ -11,6 +11,13 @@
 - **中断续跑不重复已完成动作**: 脚本耗尽模拟「跑到一半被打断」, 第一轮的工具
   已经执行并落进快照; 换一个模型从快照接着跑, 那个工具**不会再跑一次**,
   且轮数 / token 按累计口径接续 (P0 验收第 4 条的核心防线)
+- **续跑的记账** (ticket 33 / issue 34): 两种「接着跑」各记在哪一行 —— 命令行
+  `--resume` (不传 `run_id`) 开一行新账并收尾它; 传了 `run_id` 的续段沿用那一行,
+  并把**这一段的结局**写回去 (挂起那一段写的是 waiting_user, 不是终态, 见 issue 34);
+  两种情形落的帧都指着自己那一行 (从前续跑落的帧是孤儿)
+- **HITL 的挂起与恢复** (issue 34): 一次要人批的调用让这一段停在 SUSPENDED (那条
+  调用一次都没跑), 带上人的结论再续才真的执行
+- 续跑不是提问触发的: 失败时只记一句「这一轮没答完」, 不编一句用户提问出来
 - 看存档: 历史表逐帧一行; 不留历史的后端 (Redis latest) 给出可执行提示
 - aclose 释放模型与存储 (谁建谁关)
 
@@ -28,7 +35,7 @@ import pytest
 from doubles import FakeRedisClient
 from mock_llm import MockLLM, make_tool_call, text_response, tool_call_response
 
-from CharAgent.agent import TrimAndSummarize
+from CharAgent.agent import Approval, LoopOutcome, TrimAndSummarize
 from CharAgent.checkpoint import (
     Checkpoint,
     CheckpointState,
@@ -313,6 +320,232 @@ async def test_resume_sends_the_checkpoint_history_to_the_model() -> None:
     assert dialogue(sent)[0] == {"role": "user", "content": "帮我回显 hi"}
     assert any(message.get("role") == "tool" for message in sent)
     assert sent[-1]["content"] == "第一段结尾"
+
+
+# ---------------------------------------------------------------------------
+# 续跑的记账 (ticket 33): 两种「接着跑」各记在哪一行
+# ---------------------------------------------------------------------------
+
+
+class ResumeRecorder:
+    """记下续跑那一段交给记录员的东西 (本节三个用例共用).
+
+    记的正好是「记在哪一行」的全部答案: `begin` 调没调 (新不新开账) · 收尾收到哪
+    一行 + `finish_run` (结不结账) · `since` 是多少 (记录层按它算消息编号, 必须与
+    运行中途落库那一拍同一个下标).
+
+    为什么 `unfinished` 不记 `since`: 那一条路上没有「用户那句话」要认回来
+    (提问是 None), 下标用不上.
+    """
+
+    def __init__(self) -> None:
+        self.begins: list[str] = []
+        self.settled: list[tuple[str | None, int, bool]] = []
+        self.unfinished: list[tuple[str | None, str | None, bool]] = []
+
+    async def begin(self, *, thread_id: str, title: str = "") -> str | None:
+        """开账那一拍: 记下标题候选, 交一个固定编号."""
+        self.begins.append(title)
+        return "run-new"
+
+    async def record(
+        self,
+        *,
+        thread_id: str,
+        result: Any,
+        run_id: str | None = None,
+        since: int = 0,
+        summary: str | None = None,
+        model: str | None = None,
+        finish_run: bool = True,
+    ) -> bool:
+        self.settled.append((run_id, since, finish_run))
+        return True
+
+    async def record_unfinished(
+        self,
+        *,
+        thread_id: str,
+        question: str | None = None,
+        status: Any,
+        run_id: str | None = None,
+        since: int = 0,
+        model: str | None = None,
+        finish_run: bool = True,
+    ) -> bool:
+        self.unfinished.append((question, run_id, finish_run))
+        return True
+
+
+async def test_a_cli_resume_opens_its_own_run_and_records_the_segment() -> None:
+    """命令行 `--resume` (不传 `run_id`): 这一段**自己开一行新账**, 并收尾它.
+
+    三样一起断: `begin` 调了 (新行) · 收尾 `finish_run=True` (这一行归这一段收) ·
+    `since` 就是交给 loop 的那份历史的长度 —— 运行中途落库那一拍 (`flush`) 用的是
+    同一个下标, 两边算出来的编号必须对得上, 否则收尾会把已经写过的行再写一遍.
+    """
+    saver = InMemoryCheckpointSaver()
+    first = make_session(
+        MockLLM.fixed(text_response("第一段")), saver=saver, thread_id="rec-cli"
+    )
+    await first.ask("第一问")
+
+    recorder = ResumeRecorder()
+    model = MockLLM.fixed(text_response("第二段"))
+    second = make_session(model, saver=saver, thread_id="rec-cli", recorder=recorder)
+
+    await second.resume()
+
+    assert recorder.begins == [""], "续跑不是提问触发的: 标题候选为空"
+    assert recorder.settled == [("run-new", len(model.calls[0]["messages"]), True)]
+    frames = await second.history_frames()
+    assert frames is not None and frames[-1].run_id == "run-new", (
+        "这一段落的帧指着新开的那一行 —— 从前它们是 None (记录层里的孤儿)"
+    )
+
+
+async def test_a_continuation_resume_keeps_the_run_and_settles_it() -> None:
+    """传了 `run_id` (HITL 的第二段): 不新开账, 但**跑到结局就写上去**.
+
+    两半都要断: 那一行**不新建** (它早就存在 —— 这一次运行横跨挂起等待期), 而
+    这一段的结局照常写回去 (跑完了就是终态, 又挂起一次就是 `waiting_user`).
+
+    ticket 33 在这里写的是「一笔都不碰」, issue 34 改判: 那一行要写的**不是**「这
+    一次运行结没结」, 而是「这一段跑成什么样」—— 挂起那一段自己也要写 (写的是
+    `waiting_user`, 不是终态), 否则「它现在在等人」这件事在库里没有落点.
+    """
+    saver = InMemoryCheckpointSaver()
+    first = make_session(
+        MockLLM.fixed(text_response("第一段")), saver=saver, thread_id="rec-hitl"
+    )
+    await first.ask("第一问")
+
+    recorder = ResumeRecorder()
+    model = MockLLM.fixed(text_response("第二段"))
+    second = make_session(model, saver=saver, thread_id="rec-hitl", recorder=recorder)
+
+    await second.resume(run_id="run-open")
+
+    assert recorder.begins == [], "第二段不新开账: 那一行早就存在"
+    assert recorder.settled == [("run-open", len(model.calls[0]["messages"]), True)]
+    frames = await second.history_frames()
+    assert frames is not None and frames[-1].run_id == "run-open", (
+        "这一段落的帧指回**同一次运行**那一行 (不另起一行)"
+    )
+
+
+class OutcomeRecorder:
+    """只记「每一段交给记录员的结局与行号」的记录员替身 (HITL 两段用).
+
+    与 `ResumeRecorder` 的分工: 那个看「记在哪一行」(begin 调没调 / finish_run 是
+    什么), 这个看「那一段跑成了什么」—— 挂起与恢复的区别正好只在这一处.
+    """
+
+    def __init__(self, run_id: str = "run-hitl") -> None:
+        self._run_id = run_id
+        self.outcomes: list[Any] = []
+        self.runs: list[str | None] = []
+
+    async def begin(self, *, thread_id: str, title: str = "") -> str | None:
+        """开账那一拍: 交一个固定编号 (第一段自己开的那一行)."""
+        return self._run_id
+
+    async def record(
+        self,
+        *,
+        thread_id: str,
+        result: Any,
+        run_id: str | None = None,
+        since: int = 0,
+        summary: str | None = None,
+        model: str | None = None,
+        finish_run: bool = True,
+    ) -> bool:
+        """收尾那一拍: 记下结局与行号."""
+        self.outcomes.append(result.outcome)
+        self.runs.append(run_id)
+        return True
+
+    async def record_unfinished(self, **kwargs: Any) -> bool:
+        """没跑完那一拍 (本用例不涉及): 什么都不记."""
+        return True
+
+
+async def test_a_suspension_stops_the_segment_and_the_decision_completes_it() -> None:
+    """会话这一层的 HITL 两段: 挂起停在半路, 带上人的结论才把那条调用做掉.
+
+    这是 issue 34 在**装配层**的面 (loop 那一侧由 `test_loop_suspension.py` 守,
+    真库那一侧由 `test_client_resume_db.py` 守, 那一份才断言 `runs` 行落成
+    `waiting_user`): 第一段交出的结局是 SUSPENDED, 而那条要人批的调用**一次都没
+    跑**; 第二段带着结论续, 它才真的执行, 而这次运行也在第二段收了尾.
+    """
+    ECHO_CALLS.clear()
+    saver = InMemoryCheckpointSaver()
+    hooks = HookRegistry()
+    hooks.register(
+        HookPoint.BEFORE_TOOL_EXECUTE,
+        lambda **kw: Decision.requires_approval(
+            "要输支付密码", needs=("payment_password",)
+        ),
+    )
+    recorder = OutcomeRecorder()
+    gated = MockLLM.scripted(
+        [tool_call_response(make_tool_call("echo", '{"text": "hi"}'))]
+    )
+    first = make_session(
+        gated, saver=saver, thread_id="client-hitl", hooks=hooks, recorder=recorder
+    )
+
+    suspended = await first.ask("帮我付了这单")
+
+    assert suspended.outcome is LoopOutcome.SUSPENDED
+    assert ECHO_CALLS == [], "挂起时那条调用一次都没跑"
+    assert recorder.outcomes == [LoopOutcome.SUSPENDED], "第一段自己开的那一行"
+    assert recorder.runs == ["run-hitl"]
+
+    # 第二段: 人批了, 同一次运行接着跑 (传回第一段那一行 + 结论)
+    second = make_session(
+        MockLLM.fixed(text_response("付好了")),
+        saver=saver,
+        thread_id="client-hitl",
+        recorder=recorder,
+    )
+    result = await second.resume(run_id="run-hitl", approval=Approval.approve())
+
+    assert result is not None and result.outcome is LoopOutcome.FINISHED
+    assert ECHO_CALLS == ["hi"], "批了之后那条调用才真的执行"
+    assert recorder.outcomes[-1] is LoopOutcome.FINISHED
+    assert recorder.runs[-1] == "run-hitl", "第二段记回同一行 (不新开账)"
+
+
+async def test_an_interrupted_resume_records_no_question() -> None:
+    """续跑被打断: 记一句「这一轮没答完」, 但**不编**一句用户提问出来.
+
+    这一段本来就不是提问触发的 —— 编一条 `user` 行会让记录撒谎 (「只有真由用户
+    输入产生的消息才是 user」是这一层立着的硬规矩). 新开的那一行照样收尾 (它是
+    这一段自己建的); 传进来的那一行不动.
+    """
+    saver = InMemoryCheckpointSaver()
+    first = make_session(
+        MockLLM.fixed(text_response("第一段")), saver=saver, thread_id="rec-broken"
+    )
+    await first.ask("第一问")
+
+    recorder = ResumeRecorder()
+    # 脚本为空 = 段落一开口就失败 (与真机上的模型报错同一条路)
+    broken = MockLLM.scripted([])
+    for run_id in (None, "run-open"):
+        session = make_session(
+            broken, saver=saver, thread_id="rec-broken", recorder=recorder
+        )
+        with pytest.raises(AssertionError):
+            await session.resume(run_id=run_id)
+
+    assert recorder.unfinished == [
+        # 自己开的那一行归自己收尾; 传进来的那一行留给收尾的那一段
+        (None, "run-new", True),
+        (None, "run-open", False),
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -738,6 +971,7 @@ async def test_the_session_hands_every_run_to_the_recorder() -> None:
             since: int = 0,
             summary: str | None = None,
             model: str | None = None,
+            finish_run: bool = True,
         ) -> bool:
             calls.append((thread_id, since, result.content))
             return True
@@ -751,6 +985,7 @@ async def test_the_session_hands_every_run_to_the_recorder() -> None:
             run_id: str | None = None,
             since: int = 0,
             model: str | None = None,
+            finish_run: bool = True,
         ) -> bool:
             calls.append((thread_id, -1, question))
             return True
@@ -795,6 +1030,7 @@ async def test_the_session_tells_the_recorder_which_model_ran() -> None:
             since: int = 0,
             summary: str | None = None,
             model: str | None = None,
+            finish_run: bool = True,
         ) -> bool:
             seen.append(model)
             return True
@@ -808,6 +1044,7 @@ async def test_the_session_tells_the_recorder_which_model_ran() -> None:
             run_id: str | None = None,
             since: int = 0,
             model: str | None = None,
+            finish_run: bool = True,
         ) -> bool:
             seen.append(model)
             return True
@@ -847,6 +1084,7 @@ async def test_an_interrupted_run_is_recorded_as_unfinished() -> None:
             since: int = 0,
             summary: str | None = None,
             model: str | None = None,
+            finish_run: bool = True,
         ) -> bool:
             calls.append(("finished", result.outcome))
             return True
@@ -860,6 +1098,7 @@ async def test_an_interrupted_run_is_recorded_as_unfinished() -> None:
             run_id: str | None = None,
             since: int = 0,
             model: str | None = None,
+            finish_run: bool = True,
         ) -> bool:
             calls.append((question, status))
             return True
@@ -911,6 +1150,7 @@ async def test_only_a_fresh_summary_is_handed_to_the_recorder() -> None:
             since: int = 0,
             summary: str | None = None,
             model: str | None = None,
+            finish_run: bool = True,
         ) -> bool:
             summaries.append(summary)
             return True
@@ -924,6 +1164,7 @@ async def test_only_a_fresh_summary_is_handed_to_the_recorder() -> None:
             run_id: str | None = None,
             since: int = 0,
             model: str | None = None,
+            finish_run: bool = True,
         ) -> bool:
             return True
 
@@ -1116,6 +1357,7 @@ async def test_an_interrupted_run_knows_where_its_question_was_written() -> None
             run_id: str | None = None,
             since: int = 0,
             model: str | None = None,
+            finish_run: bool = True,
         ) -> bool:
             unfinished.append((question, since))
             return True

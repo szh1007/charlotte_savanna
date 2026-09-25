@@ -1,6 +1,6 @@
 # 33 · 框架侧：`resume()` 记账（续跑段落脱离账本的问题）
 
-**Status:** todo
+**Status:** done
 
 **Type:** task
 
@@ -65,12 +65,87 @@ async def resume(self, *, run_id: str | None = None) -> LoopResult | None
 
 ## 验收
 
-- [ ] CLI `--resume` 之后，`charagent_runs` 多一行（**新**的一次运行），且它落的每一帧 `run_id` 指向那一行
-- [ ] 传了 `run_id` 的 `resume()`：**不新增** `runs` 行，落下的帧 `run_id` 指向传入的那一行
-- [ ] 传了 `run_id` 时，那一行的 `status` **没有被写成终态**（留给 issue 34 的恢复路径收）
-- [ ] `messages` 行也补上（今天续跑段落在记录表里同样是空白 —— 与帧同一条链）
-- [ ] 现有 1052 条用例不受影响；`ChatSession.ask()` 的记账行为一字不改
-- [ ] 真机：CLI 里 `--resume` 跑一次，`trace`（issue 28）能查到这一段
+- [x] CLI `--resume` 之后，`charagent_runs` 多一行（**新**的一次运行），且它落的每一帧 `run_id` 指向那一行
+- [x] 传了 `run_id` 的 `resume()`：**不新增** `runs` 行，落下的帧 `run_id` 指向传入的那一行
+- [x] 传了 `run_id` 时，那一行的 `status` **没有被写成终态**（留给 issue 34 的恢复路径收）
+- [x] `messages` 行也补上（今天续跑段落在记录表里同样是空白 —— 与帧同一条链）
+- [x] 现有 1052 条用例不受影响；`ChatSession.ask()` 的记账行为一字不改
+- [x] 真机：CLI 里 `--resume` 跑一次，`trace`（issue 28）能查到这一段
+
+## 实施记录（2026-09-25）
+
+### 交付物四条全部落地
+
+| # | 内容 | 落在哪 |
+|---|------|--------|
+| 1 | `ChatSession.resume(*, run_id=None)`；不传时开新账 | `client/session.py`：`_begin_run` →（跑）→ `_record`，与 `ask` 同一条链 |
+| 2 | loop 的 `resume` / `_run` 收 `run_id` | **issue 22 已经做好**，本片只补了 `AgentLoop.resume` 缺失的那条 Args 说明；`_seed_from_checkpoint` 照旧**不**恢复 run_id |
+| 3 | 传了 `run_id` 时不调 `runs.finish` | 记录层新增 `finish_run` 开关（`RunRecorder.record` / `record_unfinished`），关掉时**运行行一笔不碰**，其余五步照走 |
+| 4 | 用例 | 离线 3 条（`test_client_session.py`）+ 真库 2 条（新文件 `tests/test_client_resume_db.py`）+ 记录员 2 条（`test_db_recorder.py`） |
+
+**除了票据点名的四件，还补了两处**（都是「不做就会留下假数据」，不是顺手加的）：
+
+- **`record_unfinished` 的 `question` 变成可选**（`str | None`，**必填** —— 不许漏传）：续跑段不是提问触发的，而失败那一轮也要落一条「这一轮没答完」。不补的话，命令行 `--resume` 一旦失败，**它自己刚建的那一行运行会永远停在 `running`**。**不编那句提问**：编一条 `user` 行会让记录撒谎（「只有真由用户输入产生的消息才是 user」是这一层立着的硬规矩）。
+- **`RunSettlement`（收尾那一笔）打包**：状态 / 账目 / 金额 / 最后一帧这四样必须同进同出，打包之后「这一段不收尾」也只要说一次（传 None）。`_write` 的签名因此从 11 个参数降到 8 个。
+
+### 真机（2026-09-25，本机 Postgres + 真模型 deepseek-flash）
+
+**会话 `cli-resume-33b`**：先问一句（`-q`），再单独跑一次 `--resume`（stdin 关掉，交互模式读到 EOF 自行退出）。
+
+| | 运行行 | 轮数 / token | 帧 | 消息行 |
+|---|---|---|---|---|
+| 第一段 | `077e55b7…` `finished` | 1 / 1844 | 第 1 轮 → 指着 `077e55b7…` | user + assistant |
+| **续跑段** | `ebbed262…` `finished` | **2 / 3735**（累计口径） | 第 2 轮 → 指着 `ebbed262…` | **assistant（从前这一段一条都没有）** |
+
+- **多了一行**：2 行运行行，续跑段是**新的一次运行**（编号不同）✓
+- **帧不再是孤儿**：两帧各有归属（改之前续跑落的那一帧 `run_id` 是 `None`）✓
+- **消息补上了**：续跑段的答复落在它自己那一行下面 ✓
+- **`trace` 查得到**：`python -m CharAgent.client.trace ebbed2620530419fa4401603e28bd10f` 打出 `状态 finished · 累计 3735 token · 金额 ¥0.001489 (valley)` —— 一次运行的账在「两段」之后仍然是一条完整的账 ✓
+- 另有一个会话 `cli-resume-33-1790321329`（`--resume` 与一句提问连着跑的形态，3 行运行行 / 3 帧 / 5 条消息）—— 两趟都留着，可以自己用 psql 复盘；要清就 `DELETE FROM charagent_threads WHERE thread_id LIKE 'cli-resume-33%'`（运行行 / 消息 / 帧跟着 CASCADE 走）。
+
+**传了 `run_id` 的那条路没法在命令行上跑**（它由 HITL 的恢复端点触发，那是 issue 34），所以那一条的真库证据来自 `tests/test_client_resume_db.py`（真库、独立 schema）：手工建一行「还开着」的运行 → 传它的编号续跑 → 断言**没有新增行**、那一行还是 `running`、`finished_at` 空着、`turn_count` 还是 0，而帧与消息都指回它。
+
+### 用例（新增 7 条）
+
+| 文件 | 断的是什么 |
+|------|-----------|
+| `tests/test_client_session.py`（3 条，离线） | `--resume` 开新账并收尾（`begin` 调了、`finish_run=True`、`since` **就是**交给 loop 的那份历史的长度）· 传 `run_id` 时不新开账不结账（`finish_run=False`）· 续跑失败记的是「没答完」且 **question 是 None** |
+| `tests/test_client_resume_db.py`（2 条，真库） | 上面那两条验收在真库里的样子（运行行 / 帧 / 消息三种行一起看） |
+| `tests/test_db_recorder.py`（2 条，离线） | `finish_run=False` 时运行行一笔不碰（而消息照写）· `question=None` 时只写那句说明 |
+
+**`since` 这条为什么要专门断**：记录层按 `(run_id, 下标)` 算消息编号，运行中途那一拍（`flush`）用的是 `flushed = len(messages)`，收尾这一拍必须用**同一个基准** —— 对不上的话，同一条消息会写出**两行**。
+
+**两条真验过（把实现改坏，看用例红不红）**：
+
+| 临时改坏 | 结果 |
+|---------|------|
+| 记录员忽略 `finish_run`（照样结账） | 那条用例红：`- running` / `+ finished` |
+| 会话不把 `run_id` 交给 loop（改回从前） | 两条真库用例红，报的正是本片要修的症状：帧的 `run_id` 是 `None` |
+
+### 两轴复核（`/code-review`）后的修补
+
+- **一个开关三种写法**（`continuation` → `not continuation` → `not finish_run`）：改成开头一句 `finish_run = run_id is None`，少一层否定。
+- **`question` 从「有默认值」改成「必填、可为 None」**：漏传与「故意没有」不该长得一样（对齐 `_write(run_id: str | None, ...)` 的既有写法）。
+- **`record` 无条件构造 `facts` 再丢掉**：改成 `if finish_run:` 里的整块，顺带把金额那一段的条件表达式挪进块里。
+- 文档三处：`test_client_session.py` 的场景索引补上本片的条目 · `session.py` 里「见 `resume` 的那张表」（那张表已经改成列表）· `loop.py` 的 Args 补 `run_id`。
+- **复核照出来一条 latent，已按票据的要求定下来**：`db/recorder.py` 的 `_write_calls` 那段注释原本写着「若补做的那条调用，发起它的 assistant 行不属于本次 run，外键会拦下……**那条路由 issue 33 定**」。**本片的决定是它列的第一条**：HITL 的续跑沿用挂起那次运行的编号（本来就是同一次运行），于是补做的调用直接寻址第一段写下的那一行。剩下那半边（**命令行从挂起点续跑**）今天**到不了** —— 挂起点只由 HITL 产生（issue 34），而命令行那条是「接着上次聊」。修法已经写在那段注释里（按帧里的 `run_id` 反查那条 assistant 行，或按本次运行补写一行），留给真需要它的那一天。
+
+### 与 issue 34 的分界（守住）
+
+没有 `WAITING_USER`、没有 `Suspension`、没有 `Decision` / `LoopOutcome` 的改动；「挂起时那一行写什么」仍然归 34。本片只保证：**续跑段不碰那一行**，并且把「谁收尾」这个开关交出去。
+
+## 改了哪些文件
+
+| 文件 | 改了什么 |
+|------|---------|
+| `CharAgent/client/session.py` | `resume(*, run_id=None)`：开账 / 收尾 / 失败三拍接上记录层；`_record` / `_record_unfinished` 多一个 `finish_run`，后者的 `question` 可为 None |
+| `CharAgent/db/recorder.py` | `RunRecorder` 两个收尾入口的 `finish_run`；`question` 可选；`RunSettlement` 打包 + `_write` 只调一次 `runs.finish`；`_write_calls` 那段注释记下本片的决定 |
+| `CharAgent/agent/loop.py` | 只补 docstring：`resume` 的 `run_id` 那条 Args（代码在 issue 22 就位） |
+| `CharAgent/tests/test_client_session.py` | 新增 3 条离线用例 + 共用的记录员替身 `ResumeRecorder`；场景索引补条目；5 个既有替身补 `finish_run` |
+| `CharAgent/tests/test_client_resume_db.py` | **新文件**：2 条真库用例（验收的前两条 + 第三条） |
+| `CharAgent/tests/test_db_recorder.py` | 新增 2 条：不结账时运行行不动 · 无提问时不编 user 行 |
+
+**没动的**：`checkpoint/`（恢复机制一行没改，票据备注点名不用动）、`ask()` 的记账路径（`finish_run` 默认 True，行为逐字不变）、`ChatSession` 的公开三动作签名（只有 `resume` 多了一个可选参数）。
 
 ## 备注
 

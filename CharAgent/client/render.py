@@ -1,6 +1,6 @@
 """终端渲染: 把事件流与运行结果画成人能看懂的文本.
 
-一句话理解: 事件流 (stream 包产出的七类事件) 是**给机器读**的结构化数据 ——
+一句话理解: 事件流 (stream 包产出的八类事件) 是**给机器读**的结构化数据 ——
 类型 + 编号 + 载荷; 本文件负责把它翻成终端上一行行文字, 就像前端把同一份事件流
 渲染成聊天气泡. 差别只在画布: 那边是浏览器, 这边是终端.
 
@@ -31,9 +31,10 @@ from CharAgent.agent.utils.types import LoopOutcome, LoopResult
 from CharAgent.stream.utils.types import EventType, StreamEvent
 
 # ANSI 颜色码 (只在 color=True 时拼接; 关掉时文本与不加色完全一样).
-# 只列用到的: 加粗与黄色没有用武之地 (七类事件各占一色, 再分就是噪音)
+# 只列用到的: 加粗没有用武之地 (八类事件各占一色, 再分就是噪音)
 _RESET = "\033[0m"
 _DIM = "\033[2m"
+_YELLOW = "\033[33m"
 _CYAN = "\033[36m"
 _GREEN = "\033[32m"
 _RED = "\033[31m"
@@ -50,18 +51,20 @@ _TAGS: dict[EventType, str] = {
     EventType.TOOL_RESULT: "tool_result",
     EventType.REASONING: "reasoning",
     EventType.CONTEXT_COMPACTED: "context_compacted",
+    EventType.APPROVAL_REQUIRED: "approval_required",
     EventType.FINAL: "final",
     EventType.ERROR: "error",
 }
 
 # 每类事件的颜色 (thinking / reasoning / 压缩是过程信息, 调暗; 工具与结论分别用
-# 青 / 绿; 出错用红)
+# 青 / 绿; 要人确认用黄 —— 它是唯一一类「等你动手」的事件; 出错用红)
 _COLORS: dict[EventType, str] = {
     EventType.THINKING: _DIM,
     EventType.REASONING: _DIM,
     EventType.CONTEXT_COMPACTED: _DIM,
     EventType.TOOL_CALL: _CYAN,
     EventType.TOOL_RESULT: _GREEN,
+    EventType.APPROVAL_REQUIRED: _YELLOW,
     EventType.FINAL: _GREEN,
     EventType.ERROR: _RED,
 }
@@ -101,7 +104,7 @@ class EventPrinter:
     """事件出口 (EventSink 协议): 每来一个事件就往终端画一行.
 
     注入方式与 P1 的 SSE 出口、测试里的收集器完全一样 —— 它就是一个同步回调:
-    `AgentLoop(model=..., event_sink=EventPrinter())`. 七类事件各有各的版式,
+    `AgentLoop(model=..., event_sink=EventPrinter())`. 八类事件各有各的版式,
     见 `format_event`.
 
     Args:
@@ -126,8 +129,8 @@ class EventPrinter:
         """带颜色的方括号标签 (如 `[tool_call]`).
 
         未知事件类型不炸: 标签用类型取值原文 (``.get`` 的兜底), 颜色调暗 ——
-        以后新增 approval_required 这类事件时, 若本文件还没跟上, 用户看到的
-        是一行「[approval_required] {...}」而不是一个 KeyError.
+        以后往 EventType 里加新事件时, 若本文件还没跟上, 用户看到的是一行
+        「[新事件名] {...}」而不是一个 KeyError.
         """
         text = f"[{_TAGS.get(event_type, str(event_type))}]"
         return paint(text, _COLORS.get(event_type, _DIM), enabled=self._color)
@@ -135,7 +138,7 @@ class EventPrinter:
     def format_event(self, event: StreamEvent) -> str:
         """一个事件 -> 一行文本 (不直接输出, 好单测).
 
-        分派用 match 而不是查表: 七类事件的版式各有各的取值, 摆在这里一眼能
+        分派用 match 而不是查表: 八类事件的版式各有各的取值, 摆在这里一眼能
         对着各自的载荷逐条核. 新增事件类型 (如 approval_required) 时忘了加
         分支会走 `case _`, 原样吐出而不是静默丢掉.
         """
@@ -151,6 +154,8 @@ class EventPrinter:
                 body = self._line_reasoning(data)
             case EventType.CONTEXT_COMPACTED:
                 body = self._line_context_compacted(data)
+            case EventType.APPROVAL_REQUIRED:
+                body = self._line_approval_required(data)
             case EventType.FINAL:
                 body = self._line_final(data)
             case EventType.ERROR:
@@ -211,6 +216,21 @@ class EventPrinter:
         warning = data.get("warning")
         return line if not warning else f"{line} —— {warning}"
 
+    def _line_approval_required(self, data: dict[str, Any]) -> str:
+        """approval_required: 哪一步要人批 + 业务给的那句话 + 还缺什么 (#25).
+
+        打印话术与缺失项是**如实转述业务说过的** (框架只搬运): 终端用户看到的是
+        「要确认什么」, 而不是一句「需要审批」. 缺什么用括号附在末尾 —— 那是机器
+        可读的短名字, 用户看的主要是前面那句.
+        """
+        name = data.get("tool_name")
+        prompt = data.get("prompt") or ""
+        needs = data.get("needs") or []
+        line = paint(f"{name} 等你确认: {prompt}", _YELLOW, enabled=self._color)
+        if not needs:
+            return line
+        return f"{line} (还缺: {', '.join(str(item) for item in needs)})"
+
     def _line_final(self, data: dict[str, Any]) -> str:
         """final: 只报「怎么结束的」, 正文由调用方从 LoopResult.content 打印.
 
@@ -247,6 +267,9 @@ _OUTCOME_TEXT: dict[LoopOutcome, str] = {
     LoopOutcome.TIME_LIMIT: "达到时间上限, 被迫停下",
     LoopOutcome.TRUNCATION_LIMIT: "反复截断, 未能在重试上限内写完",
     LoopOutcome.SERVER_INTERRUPTED: "上游中断了本次生成",
+    # 挂起不是「答完了」也不是「出问题了」: 它是停在那儿等人 (命令行这条路上
+    # 到不了 —— 挂起只由业务侧的审批规则产生, 见 CharApp 的客服页)
+    LoopOutcome.SUSPENDED: "有一个操作等你确认, 停在这里了",
 }
 
 

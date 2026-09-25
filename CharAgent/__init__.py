@@ -45,7 +45,10 @@ from __future__ import annotations
 
 # --- agent: 手写 agent loop + 循环防护 + 上下文压缩 ------------------------
 from CharAgent.agent import (
+    APPROVAL_REJECTED_TEXT,
     AgentLoop,
+    Approval,
+    ApprovalRequest,
     CalibratedTokenCounter,
     CompactionConfigError,
     CompactionPolicy,
@@ -103,6 +106,7 @@ from CharAgent.db import (
     ALL_TABLES,
     ALLOWED_TRANSITIONS,
     RUN_STATUS_FOR_OUTCOME,
+    SETTLEABLE_RUN_STATUSES,
     TABLE_NAMES,
     TERMINAL_RUN_STATUSES,
     CheckpointRow,
@@ -119,6 +123,7 @@ from CharAgent.db import (
     MessagesRepository,
     PeakRule,
     PgDatabase,
+    PgIdempotencyStore,
     PgRepository,
     PriceTable,
     PricingNotReadyError,
@@ -173,6 +178,7 @@ from CharAgent.hooks import (
     HookPoint,
     HookRegistry,
     ModelCallPhase,
+    Verdict,
 )
 
 # --- model: ChatModel 协议 + 双适配器 --------------------------------------
@@ -281,12 +287,14 @@ from CharAgent.tool import (
 __all__ = [
     "ALLOWED_TRANSITIONS",
     "ALL_TABLES",
+    "APPROVAL_REJECTED_TEXT",
     "BACKEND_NAMES",
     "DEFAULT_CODEC",
     "IDENTITY_ROLE",
     "MASK_RULES",
     "RUN_STATUS_FOR_OUTCOME",
     "SCHEMA_VERSION",
+    "SETTLEABLE_RUN_STATUSES",
     "TABLE_NAMES",
     "TERMINAL_RUN_STATUSES",
     "TERMINAL_TYPES",
@@ -294,6 +302,8 @@ __all__ = [
     "WIPE",
     "WIPED",
     "AgentLoop",
+    "Approval",
+    "ApprovalRequest",
     "CalibratedTokenCounter",
     "ChatModel",
     "Checkpoint",
@@ -364,6 +374,7 @@ __all__ = [
     "OpenAIChatModel",
     "PeakRule",
     "PgDatabase",
+    "PgIdempotencyStore",
     "PgRepository",
     "PostgresCheckpointSaver",
     "PriceTable",
@@ -419,6 +430,7 @@ __all__ = [
     "TurnPair",
     "TurnRecord",
     "Usage",
+    "Verdict",
     "assistant_answer",
     "build_manual_schema",
     "build_pydantic_schema",

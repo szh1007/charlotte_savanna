@@ -1,7 +1,7 @@
 """表定义的**唯一定义处**: 表长什么样只在这一个文件里说.
 
-一句话理解: 这个文件是**数据库的户型图**. 五张业务表 (会话 / 运行 / 消息 / 工具
-调用 / 快照) 各有哪些列、哪列是主键、谁引用谁、建哪些索引, 全部写在这里.
+一句话理解: 这个文件是**数据库的户型图**. 六张业务表 (会话 / 运行 / 消息 / 工具
+调用 / 快照 / 幂等登记) 各有哪些列、哪列是主键、谁引用谁、建哪些索引, 全部写在这里.
 别处 (仓储 / 快照存储 / alembic 迁移 / 测试) 都从这里取, 不许自己再抄一份 ——
 抄两份的结果一定是「改了一份忘了另一份」, 然后代码与库悄悄对不上.
 
@@ -14,7 +14,9 @@
 
 对齐 entities.py 的实体字段表 —— 那个表是**业务视角**(这一列是干什么用的),
 本文件是**存储视角**(这一列在库里是什么类型、能不能为空). 两边应当是一一对应的,
-有出入就是有一处过时了.
+有出入就是有一处过时了 (**`charagent_idempotency_keys` 是例外, 它没有实体**:
+这张表没有「业务视角」的那一半, 只有「认领」一个动作, 形状由 `retry/` 的协议
+说了算 —— 理由见那张表的注释).
 
 **表名为什么一律带 `charagent_` 前缀** (而不是就叫 threads / runs / messages):
 本项目各子项目共用同一个 Postgres 库 (根 .env 的 PGSQL_*). `threads` / `runs` /
@@ -75,7 +77,7 @@ NAMING_CONVENTION = {
     "pk": "pk_%(table_name)s",
 }
 
-# 全库共用的元数据容器: 五张表都挂在它下面. alembic 的 autogenerate 拿它当
+# 全库共用的元数据容器: 六张表都挂在它下面. alembic 的 autogenerate 拿它当
 # 「代码侧应该长什么样」的基准, alembic/env.py 的 target_metadata 就是它.
 metadata = MetaData(naming_convention=NAMING_CONVENTION)
 
@@ -84,7 +86,7 @@ metadata = MetaData(naming_convention=NAMING_CONVENTION)
 # 因为某个状态改名就要改表结构.
 _ENUM_LEN = 32
 
-# --- 五张业务表 ---------------------------------------------------------------
+# --- 六张业务表 ---------------------------------------------------------------
 
 threads = Table(
     "charagent_threads",
@@ -448,6 +450,22 @@ tool_calls = Table(
         comment="HITL 审批时刻 (#25)",
     ),
     Column(
+        "approval_prompt",
+        Text,
+        nullable=True,
+        comment="挂起时**给用户看的那句话** (#25, 业务给的话术, 框架只搬运): "
+        "刷新页面之后靠它重建确认卡 —— 缺了它, 用户看到一张没有字的卡, "
+        "永远不知道该确认什么. NULL = 这一条不是要人批的调用",
+    ),
+    Column(
+        "approval_needs",
+        JSONB,
+        nullable=True,
+        comment="挂起时**还缺什么** (#25, 机器可读的短名字数组, 如 "
+        '["payment_password"]): 前端按它决定卡片上要不要渲染输入框. '
+        "框架不解释这些名字的含义, 原样透传; NULL = 这一条不是要人批的调用",
+    ),
+    Column(
         "created_at",
         DateTime(timezone=True),
         nullable=False,
@@ -556,7 +574,77 @@ checkpoints = Table(
     comment="会话快照: 一帧一行, 全历史都在 (agent/loop.py 每 Turn 末尾落一帧)",
 )
 
-# 五张业务表按依赖顺序排好, 建表时直接按这个顺序跑 (被引用的先建, 否则外键指向
+# 幂等登记簿 (#17): 一次**真实动作**一行 —— 这张表挡的不是「重复建 run」
+# (`runs.request_id` 管那件事, 见那张表的唯一约束), 而是「**同一次工具调用被
+# 执行两遍**」(HITL 的挂起-恢复被触发两次就是这条路径).
+#
+# **为什么这张表没有实体** (entities.py 里五实体没有它): 它「业务视角」的那一半
+# 短到只有一句话 —— 「这个动作做过了吗」; 而这句话已经由 `retry/` 的
+# `IdempotencyStore` 协议 + `ClaimResult` 说明白了. 再包一层实体只会多一个没人
+# 读的中间形状.
+#
+# **为什么键是主键而不是自增 + 唯一索引**: 键就是身份, 没有别的身份. 而认领的
+# 原子性恰好落在主键上 —— `ON CONFLICT (key)` 是「谁先插进去谁拿到执行权」那句
+# 话在数据库层的写法, 比「先查后插」多一道真正不会漏的闸 (与 `runs.request_id`
+# 那条唯一约束同一条理由).
+idempotency_keys = Table(
+    "charagent_idempotency_keys",
+    metadata,
+    Column(
+        "key",
+        String(255),
+        primary_key=True,
+        comment="幂等键本身 —— 长度上限 255 与 retry/idempotency.py 的 "
+        "MAX_KEY_LENGTH 同源 (那个模块构造时就挡掉超长与白名单外的字符, 于是这一列"
+        "只会收到合法值)",
+    ),
+    Column(
+        "status",
+        String(_ENUM_LEN),
+        nullable=False,
+        # 刻意**不给默认值**: 这一列只有认领那一个写入方, 而它一定显式写.
+        # 留个默认值反而是个静默陷阱 —— 谁插了一行不带状态, 默认「在途」会把
+        # 这把键永久挡住 (没有任何地方会红).
+        comment="认领状态 (ClaimStatus): in_progress = 有人在做 (重复请求会被挡回), "
+        "completed = 已做完且结果在 result 列. 三态里的 claimed 是**本次认领成功的"
+        "答复**, 不是存下来的状态 —— 谁拿到了执行权, 写下来的都是 in_progress",
+    ),
+    Column(
+        "result",
+        JSONB,
+        nullable=True,
+        comment="完成时的结果 (complete(key, result) 存下的东西, 可 JSON 序列化); "
+        "NULL = 还没做完 (在途)",
+    ),
+    Column(
+        "expires_at",
+        DateTime(timezone=True),
+        nullable=True,
+        comment="过期时刻 (NULL = 永不过期, 本框架的默认). **过了这一刻同一个"
+        "键可以重新认领** —— 那时它已经不是同一次操作了, 与「永不过期」是两种"
+        "口径, 这里取前者. 它只在**认领**那一刻定下, 之后完成与释放都不改它"
+        " (唯一例外是没有认领记录的补登, 那时按当下的配置现算一次)",
+    ),
+    Column(
+        "created_at",
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        comment="本次认领时刻 (过期被重新认领时随之改写 —— 那一行从此描述的是新的"
+        "那一次操作)",
+    ),
+    Column(
+        "updated_at",
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        comment="状态最后变化时刻 (认出「这条卡了多久」看它)",
+    ),
+    comment="幂等登记簿: 一条键一行 —— 认领过 / 正在做 / 做完了结果是啥 (#17 的"
+    "持久化底座, 调用方是 HITL 的挂起-恢复)",
+)
+
+# 六张业务表按依赖顺序排好, 建表时直接按这个顺序跑 (被引用的先建, 否则外键指向
 # 一个还不存在的表). SQLAlchemy 的 metadata.sorted_tables 也能算出来, 这里显式
 # 列一份是为了让「谁依赖谁」在文件里一眼可见.
 #
@@ -570,6 +658,9 @@ ALL_TABLES: tuple[Table, ...] = (
     messages,
     tool_calls,
     checkpoints,
+    # 幂等登记簿没有任何外键 (它不挂在会话 / 运行下面 —— 键是调用方拼出来的),
+    # 于是它排在哪都行, 放最后
+    idempotency_keys,
 )
 
 # 表名清单 (测试与运维脚本按名字找表用; 顺序与 ALL_TABLES 一致)
