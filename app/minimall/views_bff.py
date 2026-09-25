@@ -189,9 +189,6 @@ HISTORY_TIMEOUT = httpx.Timeout(connect=5.0, read=10.0, write=5.0, pool=5.0)
 # 的理由), 合并之后想单独调其中一条, 就得先把它们拆回来.
 CONVERSATIONS_TIMEOUT = httpx.Timeout(connect=5.0, read=10.0, write=5.0, pool=5.0)
 
-# 错误日志里最多带多少字符的上游正文 (够定位, 不把整页 HTML 塞进日志)
-_DETAIL_LIMIT = 200
-
 # 终局事件 (框架的契约: 一条流里恰好一个, 之后流才收线)
 TERMINAL_EVENTS = frozenset({"final", "error"})
 
@@ -310,13 +307,17 @@ def _frame_bytes(event: str, seq: int | bytes, data: dict) -> bytes:
 def _with_user_copy(frame: bytes) -> bytes:
     """错误帧换成人话, 其余原样返回 —— 唯一一处改动上游内容的地方.
 
-    只动 error 一类的理由: 终局 error 的 message 是**框架写给开发者的**事实说明
-    (「已达最大轮数限制...」), 直接摆给用户看既看不懂也不可操作; 别的事件要么是
-    给人看的正文 (final), 要么是助手服务已经写好的人话 (tool_* 那一句 `label` /
-    thinking / reasoning), 改它们等于替别人写话.
+    只动 error 一类的理由: 那条 message 是**写给开发者的**, 摆给用户看既看不懂也不
+    可操作 —— 而且它**不一定**是框架那句事实说明: 有的码 (真机上 `run_failed` 就是)
+    直接带异常文本, 里面可能有模型上游回的正文 (issue 29 在真机上见过那一串). 换成
+    人话既对用户友好, 也顺手把那段正文挡在浏览器之外. 别的事件要么是给人看的正文
+    (final), 要么是助手服务已经写好的人话 (tool_* 那一句 `label` / thinking /
+    reasoning), 改它们等于替别人写话.
 
     解析失败 (帧不合契约) 就原样转发: 让用户看到一句难看的话, 好过把终局事件
-    吞掉 —— 后者会让前端一直等下去.
+    吞掉 —— 后者会让前端一直等下去. (这一条**真的**把原文放给了浏览器, 所以上面
+    那条路径只适用于「能解析」的那一大类; 日志那边也因此不该再存一份, 见下面那行
+    `logger.warning`.)
     """
     if _event_name(frame) != "error":
         return frame
@@ -325,8 +326,16 @@ def _with_user_copy(frame: bytes) -> bytes:
         payload = json.loads(raw) if raw else None
         error = payload["error"]
         code = error["code"]
-    except (ValueError, TypeError, KeyError):
-        logger.warning("上游的 error 帧解析不了, 原样转发: %r", frame[:_DETAIL_LIMIT])
+    except (ValueError, TypeError, KeyError) as exc:
+        # 记「哪条帧、多少字节、解析为什么失败」, **不记帧的原文** (issue 29): 这一帧
+        # 本来就会**原样转发给浏览器** (下面那行 return), 要查它看页面收到的就行 ——
+        # 日志不必再存一份 (那一份会进检索与备份, 而这条帧的 message 里可能带着上游
+        # 异常文本, 见 `_with_user_copy` 的说明).
+        logger.warning(
+            "上游的 error 帧解析不了 (%s), 原样转发: %d 字节",
+            type(exc).__name__,
+            len(frame),
+        )
         return frame
 
     error["message"] = user_copy_for(code)
@@ -351,20 +360,6 @@ def iter_frames(chunks: Iterable[bytes]) -> Iterator[bytes]:
         yield buffer
 
 
-def _detail(response: httpx.Response, limit: int = _DETAIL_LIMIT) -> str:
-    """上游响应正文的一段摘要 (**只进日志**, 不进浏览器).
-
-    读正文可能自己就失败 (连接已经断了), 那就退回状态码 —— 排查要的是「哪儿
-    断的」, 日志里留一句「读不到」也够用.
-    """
-    try:
-        response.read()
-    except httpx.HTTPError as exc:
-        return f"<读不到正文: {type(exc).__name__}>"
-    text = response.text.strip()
-    return text[:limit] if text else "(空响应体)"
-
-
 def _refusal_code(response: httpx.Response) -> str:
     """上游拒绝转发时它给的错误码 (拿不到就退回「服务不可用」).
 
@@ -374,12 +369,50 @@ def _refusal_code(response: httpx.Response) -> str:
     别把它塌成一句「反正是失败」—— `thread_busy` (上一句还没答完) 与
     `unauthorized` (令牌配错了) 对用户是两回事: 前者等一等就好, 后者他做什么
     都没用.
+
+    Note:
+        **这也是日志里该记的那一半** (issue 29): 拒绝时记「状态码 + 这个码」就够定位,
+        上游的响应正文**不进日志** —— 那是**第三方返回的正文**, 本层没有它的字段知识
+        (不知道第 137 个字符是订单号还是商品名), 拿它去猜着脱敏正是 #26 说的碰运气.
+        正文本来就只在这里被读一次 (为了取这个码), 别的地方也不必读它.
     """
     try:
         response.read()
         return response.json()["error"]["code"]
     except (httpx.HTTPError, ValueError, TypeError, KeyError):
         return UNAVAILABLE_CODE
+
+
+def _log_refusal(
+    who: str, action: str, response: httpx.Response, *, level: int = logging.WARNING
+) -> str:
+    """上游拒绝时记一条日志: **状态码 + 错误码**, 把那个码返回给调用方 (issue 29).
+
+    三条路 (流式转发 / `_call_upstream` 那六条 / 取消) 共用这一处, 因为「拒绝时记
+    什么」是一条**纪律**, 不是三处巧合: 有状态码与错误码就够定位, 上游的响应**正文
+    一个字都不记** (那是第三方返回的正文, 本层没有按字段脱敏它的知识 —— 见
+    `_refusal_code` 的 Note). 收在一处之后, 想把正文加回来就得改这一个函数,
+    而不是在三条路里各塞一行.
+
+    Args:
+        who: 谁 (买家 + 会话编号), 只进日志.
+        action: 要做什么 (转发 / 读历史 / 列会话 / 取消...), 只进日志.
+        response: 上游的非 200 响应.
+        level: 流式那条路用 ERROR (用户当场拿不到答复), 其余用 WARNING.
+
+    Returns:
+        str: 上游给的错误码 (`_refusal_code` 取的那个; 拿不到就是「服务不可用」).
+    """
+    code = _refusal_code(response)
+    logger.log(
+        level,
+        "%s: 客服服务拒绝了这次%s: HTTP %d (%s)",
+        who,
+        action,
+        response.status_code,
+        code,
+    )
+    return code
 
 
 def _is_event_stream(response: httpx.Response) -> bool:
@@ -828,13 +861,7 @@ def open_upstream(user_id: int, question: Question) -> Upstream:
             raise RefusedError(502, UNAVAILABLE_CODE) from exc
 
         if response.status_code != 200:
-            code = _refusal_code(response)
-            logger.error(
-                "%s: 客服服务拒绝了这次转发: HTTP %d %s",
-                who,
-                response.status_code,
-                _detail(response),
-            )
+            code = _log_refusal(who, "转发", response, level=logging.ERROR)
             raise RefusedError(502, code)
         if not _is_event_stream(response):
             logger.error(
@@ -966,14 +993,7 @@ def _call_upstream(
 
     if response.status_code == 200:
         return response.content
-    code = _refusal_code(response)
-    logger.warning(
-        "%s: 客服服务拒绝了这次%s: HTTP %d %s",
-        who,
-        action,
-        response.status_code,
-        _detail(response),
-    )
+    code = _log_refusal(who, action, response)
     # 「这段会话不在了」是唯一一个对用户有意义的答案 (两个标签页里删掉了、别人替它
     # 删了) —— 那不是故障, 页面该照实说「它已经从列表里消失」. 别的 404 一律当接线
     # 故障 (对面根本没有这条路由 = 版本不齐 / 地址打错), 塌成 502.
@@ -1110,14 +1130,7 @@ def forward_cancel(user_id: int, cancellation: Cancellation) -> None:
 
     if response.status_code == 200:
         return
-    code = _refusal_code(response)
-    logger.warning(
-        "%s: 客服服务拒绝了这次取消 (运行 %s): HTTP %d %s",
-        who,
-        cancellation.run_id,
-        response.status_code,
-        _detail(response),
-    )
+    code = _log_refusal(who, f"取消 (运行 {cancellation.run_id})", response)
     if response.status_code == 404 and code == RUN_NOT_FOUND_CODE:
         raise RefusedError(404, code)
     raise RefusedError(502, code)

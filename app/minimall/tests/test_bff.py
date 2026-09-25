@@ -60,6 +60,9 @@ DELETE_URL = "/minimall/agent/conversations/delete/"
 BUYER_NAME = "bff_buyer"
 OTHER_NAME = "bff_other"
 
+# BFF 这一层自己的 logger 名字 (`views_bff.py` 里就是 `getLogger(__name__)`)
+BFF_LOGGER = "app.minimall.views_bff"
+
 # 写死两个 UUID 形状的对话编号 (前端每标签页生成一个, 见 agent.html)
 TAB_ONE = "6f1c2c1e-1a2b-4c3d-8e9f-0a1b2c3d4e5f"
 TAB_TWO = "2b7d9a10-aaaa-4bbb-8ccc-111222333444"
@@ -156,6 +159,11 @@ def _payload(body: str, event: str) -> dict:
     raise AssertionError(f"响应里没有 {event} 事件: {body!r}")
 
 
+def _logged_text(captured) -> str:
+    """抓下来的日志文本 (issue 29 的用例都拿它搜「有没有原文」)."""
+    return "\n".join(captured.output)
+
+
 @override_settings(CHARAPP_INTERNAL_TOKEN=TOKEN, CHARAPP_SERVER_URL=AGENT_URL)
 class BffTestBase(TestCase):
     """两个买家 + 一个已登录的客户端 (断言里反复要用)."""
@@ -247,6 +255,15 @@ class BffTestBase(TestCase):
         —— 改个格式不该红. 十几个用例都要它, 所以收成一处.
         """
         return " ".join(self.client.get(PAGE_URL).content.decode("utf-8").split())
+
+    def raw_page_source(self) -> str:
+        """客服页的源码**原文** (保留换行) —— 要断言「某句话在不在函数里」时用它.
+
+        `page_source()` 把空白压平了, 于是"这一行是顶层的还是函数内的"看不出来;
+        而"页面加载时拉一次历史"这类行为恰恰**靠位置**区分 (顶层那一句才是启动那一次,
+        函数里那些是别的手势触发的).
+        """
+        return self.client.get(PAGE_URL).content.decode("utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -426,6 +443,30 @@ class BffFailureTest(BffTestBase):
         self.assertEqual(body["error"]["code"], "unauthorized")
         self.assertNotIn("令牌不对", body["error"]["message"])
         self.assertEqual(body["error"]["message"], "客服这边出了点问题, 请稍后再试.")
+
+    def test_a_refusal_logs_the_status_and_the_code_but_not_the_body(self):
+        """上游拒绝时的日志: 状态码 + 错误码, **没有**上游正文 (issue 29).
+
+        为什么不打正文: 那是**第三方返回的正文**, 本层没有它的字段知识 —— 不知道第
+        137 个字符是订单号还是商品名, 拿它去猜着脱敏正是 #26 说的碰运气. 而
+        `_refusal_code` 已经把结构化的码取出来了: 有码就够定位, 正文是顺手多记的.
+        """
+        secret = "订单 202609191230450000031234 收货人 张三 手机 13800000003"
+        with respx.mock:
+            respx.post(RUNS_URL).mock(
+                return_value=httpx.Response(
+                    403, json={"error": {"code": "unauthorized", "message": secret}}
+                )
+            )
+            with self.assertLogs(BFF_LOGGER, level="WARNING") as captured:
+                r = self.post_question()
+
+        logged = _logged_text(captured)
+        self.assertEqual(r.status_code, 502, "对用户照旧是一句「服务不可用」")
+        self.assertIn("HTTP 403", logged, "状态码要在, 否则排查不知道上游怎么回的")
+        self.assertIn("unauthorized", logged, "错误码要在 (有码就够定位)")
+        for value in ("202609191230450000031234", "张三", "13800000003"):
+            self.assertNotIn(value, logged, f"上游正文进日志了: {value}")
 
     def test_a_busy_conversation_says_so_instead_of_blaming_the_service(self):
         """上游 409 thread_busy (同一段对话上一句还没答完) → 说清是「等一等」.
@@ -824,6 +865,27 @@ class BffCancelTest(BffTestBase):
         self.assertEqual(json.loads(r.content)["error"]["code"], "method_not_allowed")
         self.assertFalse(route.called)
 
+    def test_the_refusal_is_logged_without_the_upstream_body(self):
+        """取消被拒时的日志同样只记状态码与错误码 (issue 29; 这条自己一处).
+
+        与 chat / 读历史那两条同一个口径: 上游正文不进日志 —— 它有可能是**别人**
+        返回的一段带用户数据的正文, 而这一层没有把那种正文按字段脱敏的知识.
+        """
+        secret = "运行 9f3a1c2b4d5e6f7081a2b3c4d5e6f708 属于 13800000003"
+        with respx.mock:
+            self.mock_cancel(
+                httpx.Response(
+                    403, json={"error": {"code": "forbidden", "message": secret}}
+                )
+            )
+            with self.assertLogs(BFF_LOGGER, level="WARNING") as captured:
+                self.post_cancel()
+
+        logged = _logged_text(captured)
+        self.assertIn("HTTP 403", logged)
+        self.assertIn("forbidden", logged)
+        self.assertNotIn("13800000003", logged, "上游正文进日志了")
+
 
 # ---------------------------------------------------------------------------
 # 读历史: 刷新之后对话还在
@@ -965,6 +1027,28 @@ class BffHistoryTest(BffTestBase):
 
         self.assertEqual(r.status_code, 502)
         self.assertEqual(json.loads(r.content)["error"]["code"], "not_configured")
+
+    def test_the_refusal_is_logged_without_the_upstream_body(self):
+        """同一次拒绝的日志里只有状态码与错误码 (issue 29; 三条写路同一处改的).
+
+        这条走的是 `_call_upstream` (读历史 / 列会话 / 三个管理动作共用它) ——
+        与上面流式那条是两个函数, 所以各钉一条.
+        """
+        secret = "买家 13800000003 的地址是 文三路 100 号"
+        with respx.mock:
+            self.mock_history(
+                httpx.Response(
+                    403, json={"error": {"code": "forbidden", "message": secret}}
+                )
+            )
+            with self.assertLogs(BFF_LOGGER, level="WARNING") as captured:
+                self.read_history()
+
+        logged = _logged_text(captured)
+        self.assertIn("HTTP 403", logged)
+        self.assertIn("forbidden", logged)
+        self.assertNotIn("13800000003", logged, "上游正文进日志了")
+        self.assertNotIn("文三路", logged, "上游正文进日志了")
 
     def test_a_read_by_url_is_not_allowed(self):
         """**守卫测试**: GET 一律 405 —— 会话编号不能从 URL 上读, 也不该被塞进 URL.
@@ -1666,8 +1750,13 @@ class AgentPageTest(BffTestBase):
         compact = self.page_source()
 
         self.assertIn("'/minimall/agent/history/'", compact)
-        self.assertIn("loadHistory();", compact)
-        self.assertIn("renderHistory(payload.messages || [])", compact)
+        # 启动那一次拉历史要在**顶层** (不在任何函数里) —— 那一句才是"页面加载时恢复
+        # 一次". 用原文断言而不是压平后的源码: "在不在函数里"只有靠行首看得出来.
+        self.assertRegex(self.raw_page_source(), r"(?m)^loadHistory\(")
+        # 读回来的那份交给**同一套**渲染, 而且缺 `messages` 字段时当空列表 (上游换了
+        # 形状也不至于让页面崩)
+        self.assertRegex(compact, r"renderHistory\(messages\)")
+        self.assertRegex(compact, r"payload\.messages \|\| \[\]")
         self.assertIn("restoreTurn(message.content)", compact)
 
     def test_the_history_is_asked_for_with_post_not_get(self):
@@ -1745,18 +1834,23 @@ class AgentPageTest(BffTestBase):
     # 左栏: 会话管理动作与搜索 (issue 20)
     # ------------------------------------------------------------------
 
-    def test_the_sidebar_has_a_debounced_search_box(self):
-        """输入即搜, 但要防抖; 搜索词走**请求体**, 不进地址栏.
+    def test_the_sidebar_search_fires_on_submit_and_keeps_the_term_out_of_the_url(self):
+        """搜索**按按钮或回车才发**, 搜索词走请求体、不进地址栏.
 
-        防抖那条守的是「别每敲一个字母发一次请求」; 走请求体那条与「会话编号不进
-        URL」同源 —— 搜索词完全可能是一个订单号.
+        这一行是 ticket 25 改的 (页面上那句注释写着: 上一版是"输入即搜"的 300ms 防抖)
+        —— 名字与断言跟着改成"提交才搜": 守的还是「别每敲一个字母发一次请求」, 只是
+        实现从"防抖"换成了"等一个明确的手势".
+
+        走请求体那条与「会话编号不进 URL」同源 —— 搜索词完全可能是一个订单号 (issue 29
+        那个访问日志的洞, 漏的正是这个值).
         """
         compact = self.page_source()
 
         self.assertIn('id="conversation-search"', compact)
-        self.assertIn("searchBox.addEventListener('input', onSearchInput)", compact)
-        self.assertIn("window.setTimeout(function () {", compact)
-        self.assertIn("SEARCH_DEBOUNCE_MS", compact)
+        # 搜索那一行是个 form, 提交由它触发 (回车因此白送) —— 断"提交接上了搜索",
+        # 不钉监听器那一行的写法
+        self.assertRegex(compact, r"searchForm\.addEventListener\(\s*'submit'")
+        self.assertRegex(compact, r"submitSearch\(\)")
         self.assertIn("body: JSON.stringify({ query: searchTerm })", compact)
         self.assertNotIn("?q=", compact)
 
@@ -1794,7 +1888,10 @@ class AgentPageTest(BffTestBase):
 
         self.assertIn("el('input', 'agent-rename')", compact)
         self.assertIn("title.replaceWith(input)", compact)
-        self.assertIn("displayTitle(input.value || '')", compact)
+        # 取消改名换回去的是**原标题**那一行, 不是输入框里的半成品 —— 上一版这里显示
+        # 的是你刚敲的名字 (按 Escape 之后列表上写着新名字, 而库里一个字没改: 那是句
+        # 假话). 断的是「重绘用的是 title 这个原值」, 不钉整条语句怎么拼.
+        self.assertRegex(compact, r"displayTitle\(title\)")
         # 输入框的长度上限用**自己那个常量**, 不用列表的截断值 (改展示不该动校验)
         self.assertIn("input.maxLength = MAX_TITLE_LENGTH", compact)
 
@@ -1897,7 +1994,10 @@ class AgentPageTest(BffTestBase):
         """
         compact = self.page_source()
 
-        self.assertIn("switchConversation(newConversationId())", compact)
+        # 走的是**同一个**切换函数 (只是参数不同), 不是第二套代码 —— 两套迟早会漂,
+        # 而漂了只在"切过去看到的"与"刷新后看到的"其中一个方向上看得出来. 断到这里
+        # 就够, 不钉它带几个参数.
+        self.assertRegex(compact, r"switchConversation\(newConversationId\(\)")
         self.assertIn("chat.replaceChildren()", compact)
 
     def test_switching_a_conversation_never_touches_the_url(self):

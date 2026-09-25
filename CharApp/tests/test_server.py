@@ -40,6 +40,7 @@ from conftest import (
     agent_url,
     mock_all,
 )
+from fastapi import FastAPI
 
 from CharAgent.checkpoint import InMemoryCheckpointSaver
 from CharAgent.checkpoint import config as checkpoint_config
@@ -87,6 +88,7 @@ from CharApp.minimall.server import (
     build_service,
     create_minimall_app,
     logger,
+    uvicorn_config,
 )
 from CharApp.minimall.service import TENANT_WEB, MinimallService, build_context
 
@@ -961,6 +963,26 @@ def test_the_server_config_comes_from_the_env(monkeypatch) -> None:
 
     assert (config.host, config.port) == ("0.0.0.0", 9105)
     assert config.token == TOKEN, "校验令牌与打商城用的是同一个值"
+
+
+def test_the_uvicorn_settings_differ_from_the_defaults_only_in_the_access_log() -> None:
+    """uvicorn 的三个设置: 访问日志**关着**, 另两个照默认走 (issue 29).
+
+    访问日志为什么必须关: 它记的是「每条请求的 URL 与状态码」, 而列会话那条路的搜索词
+    走查询串 (`?q=`, 见 `views_bff` 的 `UPSTREAM_QUERY_FIELD`), 它完全可能是一个订单号
+    —— 前端特意把搜索词放进请求体, 正是这个理由 (到了这最后一跳没有别的形状可放).
+    关掉它看着只是一行配置, 其实是**一次性盖住所有**将来被带进 URL 的值的处置.
+
+    另两句断的是「这条改动没顺手带偏别的」: 监听地址照传, 日志级别照旧 (启动那一句
+    人话与 uvicorn 自己的错误都靠它).
+    """
+    config = uvicorn_config(
+        FastAPI(), ServerConfig(host="127.0.0.1", port=1007, token="tok")
+    )
+
+    assert config.access_log is False, "访问日志会记下整条 URL (含 ?q= 里的搜索词)"
+    assert config.log_level == "info", "启动那一句人话与 uvicorn 自己的错误还靠它"
+    assert (config.host, config.port) == ("127.0.0.1", 1007), "听哪儿照旧透传"
 
 
 def test_the_server_config_requires_a_token(monkeypatch) -> None:

@@ -1,11 +1,11 @@
-"""CharAgent: 从零手写 AI Agent 运行时框架 (九个包, 公共 API 汇聚导出).
+"""CharAgent: 从零手写 AI Agent 运行时框架 (十个包, 公共 API 汇聚导出).
 
 一句话理解: 本文件是**框架的门脸** —— 想用这个框架的人只 import 一次
 `CharAgent`, 就能拿到全部对外公共 API, 不必记住「哪个东西在哪个子包里」.
 各子包自己也各有一份门面 (`CharAgent.checkpoint.__all__` 等), 本文件是它们的
 合集, 不新造 API.
 
-汇聚的九个包 (P0 的八个 + 后来补的 `prompt`; 职责见下表):
+汇聚的十个包 (P0 的八个 + 后来补的 `prompt` 与 `redact`; 职责见下表):
 
 | 包 | 一句话 |
 |----|--------|
@@ -18,6 +18,7 @@
 | `checkpoint` | 快照序列化协议 + 内存 / Redis / Postgres 三实现 + 断点续跑 |
 | `db` | 五实体数据模型 + 表定义 + alembic 迁移 + 仓储 |
 | `prompt` | 提示词集中存放与按名加载 (`templates/*.prompt` + `load_prompt`) |
+| `redact` | 日志脱敏 (四条通用打码规则 + 业务声明的字段路径) |
 
 三条刻意的排除 (不是漏了, 理由各不同):
 
@@ -220,6 +221,19 @@ from CharAgent.prompt import (
     restore_identity,
 )
 
+# --- redact: 日志脱敏 (通用规则 + 业务声明的字段路径) -----------------------
+from CharAgent.redact import (
+    MASK_RULES,
+    WIPE,
+    WIPED,
+    Mask,
+    RedactConfigError,
+    RedactError,
+    Redactor,
+    RuleRedactor,
+    mask_text,
+)
+
 # --- retry: 重试退避 + 幂等键 ----------------------------------------------
 from CharAgent.retry import (
     ClaimResult,
@@ -270,12 +284,15 @@ __all__ = [
     "BACKEND_NAMES",
     "DEFAULT_CODEC",
     "IDENTITY_ROLE",
+    "MASK_RULES",
     "RUN_STATUS_FOR_OUTCOME",
     "SCHEMA_VERSION",
     "TABLE_NAMES",
     "TERMINAL_RUN_STATUSES",
     "TERMINAL_TYPES",
     "TOOL_RESULT_SUMMARY_LIMIT",
+    "WIPE",
+    "WIPED",
     "AgentLoop",
     "CalibratedTokenCounter",
     "ChatModel",
@@ -329,6 +346,7 @@ __all__ = [
     "LoopGuard",
     "LoopOutcome",
     "LoopResult",
+    "Mask",
     "Message",
     "MessageRole",
     "MessagesRepository",
@@ -355,6 +373,9 @@ __all__ = [
     "PromptRef",
     "PromptRefMismatchError",
     "PromptVariableError",
+    "RedactConfigError",
+    "RedactError",
+    "Redactor",
     "RedisCheckpointSaver",
     "RetryAttempt",
     "RetryCallback",
@@ -362,6 +383,7 @@ __all__ = [
     "RetryError",
     "RetryPolicy",
     "RetryingChatModel",
+    "RuleRedactor",
     "Run",
     "RunContext",
     "RunCost",
@@ -423,6 +445,7 @@ __all__ = [
     "is_retryable",
     "load_pricing",
     "load_prompt",
+    "mask_text",
     "message_id_for",
     "messages",
     "metadata",

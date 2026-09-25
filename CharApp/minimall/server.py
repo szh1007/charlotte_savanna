@@ -25,6 +25,12 @@ HTTP + SSE 那一层, 业务只接两个插座: 认证解析 (认下这次请求
 的出口 (命令行那条路给 False: 它的出口是开发者自己的终端). 装配处 (service.py) 收的
 是**必填参数**, 于是「某个入口忘了说自己的出口是不是浏览器」不存在默认值可兜.
 
+**日志也是脱敏后写的** (`log_redaction.py`, issue 29): 上面那条管**事件** (整条别
+出去), 这条管**日志** (打码后再出去). 本进程的日志出口由 `log_writer()` 包一层
+(手机号 / 邮箱按规则打码, 名单里其余字段整段抹掉), 于是重试提示里那段「供应商回的
+错误正文」落盘时已经认不出原文. 另一处同源但不同用的处置: uvicorn 的**访问日志整个
+关掉** (见 `uvicorn_config`) —— 那一条记的是整条 URL, 而 URL 里可能带搜索词.
+
 **身份与令牌**: 两个头都是 Django 转发来的 —— 浏览器 ↔ Django 是唯一真正验证
 「你是谁」的地方, 这里只是同一信任域内的转发 (PRD §4.10 的三层信任模型; 为什么
 敢信裸的 `X-User-Id` 见 `CharApp/docs/adr/0001-...`). 所以本进程不查库、不认
@@ -87,6 +93,7 @@ from CharApp.minimall.config import (
     server_config_from_env,
     thinking_from_env,
 )
+from CharApp.minimall.log_redaction import build_redactor, redacting_writer
 from CharApp.minimall.service import (
     STARTUP_ERRORS,
     TENANT_WEB,
@@ -332,6 +339,25 @@ def create_minimall_app(service: MinimallService, config: ServerConfig) -> FastA
     )
 
 
+def uvicorn_config(app: FastAPI, config: ServerConfig) -> uvicorn.Config:
+    """这个服务怎么跑 (uvicorn 的三个设置, 单独一处以便用例钉住它们).
+
+    除了「听哪儿」, 另两个都是**安全 / 可读性**的决定, 不是随手写的默认值:
+
+    - `access_log=False` (issue 29): 访问日志记的是整条 URL, 而本服务的 URL 里
+      **会带用户数据** —— 列会话那条路的搜索词走查询串 (`?q=`, 见
+      `app/minimall/views_bff.py` 的 `UPSTREAM_QUERY_FIELD`), 而它完全可能是一个
+      订单号 (前端特意把搜索词放进请求体, 正是这个理由; 到了这最后一跳没有别的
+      形状可放). 关掉它不是「少记一点」, 而是一次性地盖住**所有**将来被带进 URL
+      的值; 失去的那点观测由别处补 (启动 / 重试 / 降级那几行自己打, 外加 issue 28
+      的 `trace` 只读入口).
+    - `log_level="info"` 保留: 启动那一句人话与 uvicorn 自己的错误都靠它.
+    """
+    return uvicorn.Config(
+        app, host=config.host, port=config.port, log_level="info", access_log=False
+    )
+
+
 async def _serve(app: FastAPI, service: MinimallService, config: ServerConfig) -> None:
     """跑服务, 并在**同一个事件循环**里收尾.
 
@@ -344,9 +370,7 @@ async def _serve(app: FastAPI, service: MinimallService, config: ServerConfig) -
         Ctrl-C 停机时 uvicorn 收完尾会**把信号重新抛出来** (它的 `capture_signals`
         如此设计), 所以这里看到的不是一条干净返回 —— 由 `main` 接住.
     """
-    server = uvicorn.Server(
-        uvicorn.Config(app, host=config.host, port=config.port, log_level="info")
-    )
+    server = uvicorn.Server(uvicorn_config(app, config))
     try:
         await server.serve()
     finally:
@@ -372,6 +396,28 @@ def _configure_logging() -> None:
     logger.propagate = False
 
 
+def log_writer() -> Callable[[str], Any]:
+    """**交给框架的那个**日志出口: 先打码, 再写进本进程的日志 (issue 29).
+
+    说清它盖的范围: 它管的是「框架通过 `writer` 往日志里写的那几行」(现在就是重试
+    提示), **不是**本进程所有日志 —— 框架自己打的异常栈不经过这里 (它用
+    `charagent.<子包>` 那几个 logger, 框架目前没有统一的日志出口), 那条路还漏原文,
+    落点在 `CharAgent/docs/DESIGN.md` 的 #38 (日志结构化 + 全链路关联) —— 见
+    `CharApp/docs/adr/0019` 的「代价与边界」与 issue 29 的实现记录.
+
+    为什么包在这一层 (而不是在框架那侧的重试提示里): 上游模型报错的正文会顺着
+    「异常 → 重试提示 → writer」这条链一路走下来 (`CharAgent/model/parse.py` 的
+    `extract_error_message` 抠的就是供应商回的那段字), 而 writer 是**装配处**递给
+    框架的 —— 出口是日志就说明它会落盘, 落盘之后擦不干净, 所以只能在**写之前**
+    打码. 出口是终端的命令行那条路不经过这里 (不落盘, 见
+    `log_redaction.redacting_writer` 的 Note).
+
+    Returns:
+        Callable[[str], Any]: 包好的出口 (交给 `build_service` 当 `writer`).
+    """
+    return redacting_writer(logger.info, build_redactor())
+
+
 def main() -> int:
     """进程入口: 读环境 → 建零件 → 起服务 → 退出时收尾.
 
@@ -387,7 +433,7 @@ def main() -> int:
     use_utf8_stdio()
     try:
         config = server_config_from_env()
-        service = build_service(writer=logger.info)
+        service = build_service(writer=log_writer())
     except STARTUP_ERRORS as exc:
         # 配置类错误 (令牌没配 / API Key 没配 / 快照后端不认识): 报一句人话就退出,
         # traceback 对开机的人没有信息量 —— 与命令行入口同一条规矩, 同一份清单.

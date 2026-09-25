@@ -26,7 +26,7 @@ import pytest
 
 import CharAgent
 
-# 汇聚进根门面的框架包 (九层; client 与 server 刻意不在内, 见模块 docstring)
+# 汇聚进根门面的框架包 (十层; client 与 server 刻意不在内, 见模块 docstring)
 FRAMEWORK_PACKAGES = (
     "model",
     "tool",
@@ -37,6 +37,7 @@ FRAMEWORK_PACKAGES = (
     "checkpoint",
     "db",
     "prompt",
+    "redact",
 )
 
 # 同一份名单的「出口目」: 它们也是框架的包, 但刻意不进门面 (见模块 docstring)
@@ -82,7 +83,7 @@ def test_root_all_has_no_duplicates_and_no_ghosts() -> None:
 
 
 def test_package_facades_do_not_collide_with_each_other() -> None:
-    """九层之间不许有同名 API —— 根门面是它们的合集, 重名会让先导入的胜出."""
+    """十层之间不许有同名 API —— 根门面是它们的合集, 重名会让先导入的胜出."""
     seen: dict[str, str] = {}
     collisions: list[str] = []
     for package in FRAMEWORK_PACKAGES:
