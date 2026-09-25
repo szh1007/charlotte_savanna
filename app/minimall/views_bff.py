@@ -94,6 +94,7 @@ cookie 又是跨站可触发的 (`<img src>` 一行就够). 换成 POST + CSRF �
 
 from __future__ import annotations
 
+import atexit
 import contextlib
 import json
 import logging
@@ -188,6 +189,49 @@ HISTORY_TIMEOUT = httpx.Timeout(connect=5.0, read=10.0, write=5.0, pool=5.0)
 # 不是复用 HISTORY_TIMEOUT —— 三条路现在同值只是巧合 (取消那条的注释里写了它自己
 # 的理由), 合并之后想单独调其中一条, 就得先把它们拆回来.
 CONVERSATIONS_TIMEOUT = httpx.Timeout(connect=5.0, read=10.0, write=5.0, pool=5.0)
+
+# 与助手服务之间的连接: **整个进程共用一个 `httpx.Client`**, 进程退出时关掉.
+#
+# 上一版是每次请求新建一个, 当时的理由写在 `open_upstream` 的 docstring 里 (大意:
+# Django 没有可靠的进程退出钩子, 挂一个全局客户端就得指望没人来关). 那条理由对
+# **多 worker** 部署成立, 而本项目的部署是**单进程** —— 出处是
+# `CharAgent/server/sessions.py` 的「单进程」一节 (会话表与运行表都在进程内, 多
+# worker 下并发拦截当场失效), 本项目其它地方也照这个前提写 (任务系统 / 幂等 store).
+# 单进程下 `atexit` 是可靠的, 于是那笔代价换成了它的收益:
+#
+#   本机实测每条路都要 690~970 ms 一笔, 而且这笔钱花在**首字之前** —— 用户先看到一次
+#   空转 (issue 25 真机反馈「横幅先蹦一下」). 钱具体花在哪儿: `httpx.Client.__init__`
+#   会为「主传输 + 两个代理传输」各建一个 SSL 上下文, 而 `ssl.create_default_context()`
+#   里的 `load_verify_locations` (读系统证书库) 本机一次约 310 ms —— 三次就是 900 ms.
+#   而我们连的是 `http://127.0.0.1` (settings 的 CHARAPP_SERVER_URL), 那些上下文一次
+#   都用不上.
+#
+# 连接池在**流式响应**与普通请求之间共用, 这是安全的: `httpx.Client` 本身线程安全
+# (Django 的 runserver 带线程), 一条流占住的是它自己那条连接, 与别的请求各连各的.
+# 额度按下面 `_LIMITS` 配 —— 页面上同一时刻只跑一个运行 (`finished` 那道门管着), 所以
+# 并发最多是一条长连接加几条短请求, 十倍的余量够用. 额度真被占满时, 后到的请求会在
+# 池子上等到 `pool` 那个超时 (5 秒) 才失败, 而不是立刻回一句人话 —— 那正是要留余量
+# 的理由.
+#
+# 复用的代价 (上一版没有这一条, 因为每次都新建): 池子里那条闲置连接可能已经死了
+# (上游重启 / 被谁掐掉) —— 复用它的那一次会失败. **httpx 自己认得出这种情况**:
+# httpcore 在决定一条闲置连接还能不能用时, 除了 keepalive 到点, 还会看那个 socket
+# 是不是已经"可读" (对面关了连接才会有这个状态, `http11.py` 的 `server_disconnected`
+# 那一条), 认出来就换一条新连接. 本机实测 (直连): 上游杀掉再起回来, 下一次请求走的
+# 就是新连接, 用户看不到任何异常.
+#
+# 唯一漏得过去的是**请求恰好落在上游咽气的那一瞬** (对面关连接的信号还没到本机):
+# 那一次抛 `httpx.ReadError` (WinError 10054), 用户看到一次「客服暂时联系不上」,
+# 再点一次就好. 这里**刻意不做重发**: 那一瞬上游正不在, 重发换来的还是一句
+# 「联系不上」—— 多写一层代码、多一种"到底发了几次"的疑问, 换不来用户能看见的差别.
+# (issue 30 的实测脚本与数字记在该片票据里.)
+_LIMITS = httpx.Limits(max_connections=10, max_keepalive_connections=10)
+
+# 超时**不设在客户端上**: 三条路的耐心各不相同 (问答 120 秒 / 其余 10 秒), 共用一个
+# 客户端之后, 每个调用点各自把 `timeout=` 传进去. 客户端上那份默认值一旦被谁当成
+# 兜底依赖上, 「取消那条路只等十秒」这条就悄悄没了.
+_CLIENT = httpx.Client(limits=_LIMITS)
+atexit.register(_CLIENT.close)
 
 # 终局事件 (框架的契约: 一条流里恰好一个, 之后流才收线)
 TERMINAL_EVENTS = frozenset({"final", "error"})
@@ -464,8 +508,8 @@ class RefusedError(Exception):
 
     与框架的 `ServerError` 同款思路 (状态码与错误码都挂在异常上, 由出口统一翻成
     响应). 为什么用异常而不是一路 `return`: 读请求体与打开上游都在同一个 try 里,
-    谁先失败都该走同一条出口, 而且**打开上游失败时手里还攥着一个 httpx 客户端**
-    —— 异常能把栈带回出口, 那里统一收尾.
+    谁先失败都该走同一条出口, 而且**打开上游失败时手里已经攥着一条连接**
+    (共享客户端开出去的那条) —— 异常能把栈带回出口, 那里统一收尾.
 
     Note: 只带事实 (状态码 + 错误码), **不带用户话术** —— 文案由回响应那一处
     (`_refusal`) 统一从码推, 免得两个地方各存一份、哪天改岔了.
@@ -791,9 +835,11 @@ class Upstream:
     (`response.py` 的 `_set_streaming_content`), 响应一关就一定会调到它
     (`FileResponse` 用的也是这个机制), 两条收尾路径就都堵上了.
 
-    为什么用 `ExitStack` 而不是两个嵌套的 `with`: 资源的**生命周期跨越了两个作用域**
-    —— 连接要在视图里开 (好在返回响应之前知道成功失败), 却要活到流跑完. 拿一个
-    stack 把两份资源攒起来, 收尾时一次关掉 (顺序也对: 先关流再关客户端).
+    为什么用 `ExitStack` 而不是 `with`: 资源的**生命周期跨越了两个作用域** —— 连接
+    要在视图里开 (好在返回响应之前知道成功失败), 却要活到流跑完. 拿一个 stack 把它
+    托管起来, `close()` 就能重复调用 (`relay` 的 `finally` 与 Django 的响应收尾各调
+    一次是常态). 上一版这个 stack 里还攒着那个**每次新建的** `httpx.Client`, 现在
+    客户端是进程级共享的 (`_CLIENT`) —— 收尾只管那条流, 谁都不许把关不掉的东西交给它.
     """
 
     stack: contextlib.ExitStack
@@ -804,7 +850,7 @@ class Upstream:
         return relay(self)
 
     def close(self) -> None:
-        """关流 + 关客户端 (重复调用无副作用: `ExitStack` 只关一次).
+        """关掉上游那条流 (重复调用无副作用: `ExitStack` 只关一次).
 
         关不掉也要留一行日志 —— 收尾不该盖住真正的失败原因, 但也不该什么都不说
         (系统级规范 §6.3: 不静默吞异常).
@@ -835,9 +881,11 @@ def open_upstream(user_id: int, question: Question) -> Upstream:
     | 上游回 200 但不是 SSE (打错地址?) | 502 | `agent_unavailable` |
 
     Note:
-        用**每次请求一个** `httpx.Client`: Django 没有可靠的进程退出钩子 (WSGI
-        进程是被 kill 的), 挂一个全局客户端就得指望没人来关; 而一次问答只连一次
-        本机服务, 建连接的开销可以忽略.
+        连接来自**进程级共享**的那个客户端 (`_CLIENT`), 这次问答的耐心 (顶上的
+        `UPSTREAM_TIMEOUT`) 逐次传进去 —— 上一版是每次请求新建一个客户端.
+
+        共享依赖的前提是**单进程**部署, 出处见 `CharAgent/server/sessions.py` 的
+        「单进程」一节; 那个选择的代价与收益一并写在 `_CLIENT` 那一段.
     """
     who = _who_for(user_id, question.conversation_id)
     headers = _service_headers(
@@ -845,14 +893,14 @@ def open_upstream(user_id: int, question: Question) -> Upstream:
     )
     stack = contextlib.ExitStack()
     try:
-        client = stack.enter_context(httpx.Client(timeout=UPSTREAM_TIMEOUT))
         try:
             response = stack.enter_context(
-                client.stream(
+                _CLIENT.stream(
                     "POST",
                     _url(RUNS_PATH),
                     json={MESSAGE_FIELD: question.message},
                     headers=headers,
+                    timeout=UPSTREAM_TIMEOUT,
                 )
             )
         except httpx.HTTPError as exc:
@@ -981,10 +1029,14 @@ def _call_upstream(
     who = _who_for(user_id, conversation_id)
     headers = _service_headers(_internal_token(who, action), user_id, conversation_id)
     try:
-        with httpx.Client(timeout=timeout) as client:
-            response = client.request(
-                method, _url(path), headers=headers, params=params, json=payload
-            )
+        response = _CLIENT.request(
+            method,
+            _url(path),
+            headers=headers,
+            params=params,
+            json=payload,
+            timeout=timeout,
+        )
     except (httpx.HTTPError, httpx.InvalidURL) as exc:
         # `InvalidURL` 不是 `HTTPError` (基地址写错就够), 但它同样属于「这条链路
         # 根本没走通」, 该回同一句话而不是冒成 500
@@ -1120,8 +1172,9 @@ def forward_cancel(user_id: int, cancellation: Cancellation) -> None:
         _internal_token(who, "取消"), user_id, cancellation.conversation_id
     )
     try:
-        with httpx.Client(timeout=CANCEL_TIMEOUT) as client:
-            response = client.post(_cancel_url(cancellation.run_id), headers=headers)
+        response = _CLIENT.post(
+            _cancel_url(cancellation.run_id), headers=headers, timeout=CANCEL_TIMEOUT
+        )
     except (httpx.HTTPError, httpx.InvalidURL) as exc:
         # `InvalidURL` 不是 `HTTPError` (基地址写错就够), 但它同样属于"这条链路根本
         # 没走通", 该回同一句话, 而不是让它冒成一个 500

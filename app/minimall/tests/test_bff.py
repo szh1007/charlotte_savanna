@@ -18,13 +18,16 @@
 「上游收到了什么」的用例要把响应体收干 (这也是真机上的顺序: 浏览器读完整条流).
 """
 
+import inspect
 import json
+from unittest import mock
 
 import httpx
 import respx
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 
+from app.minimall import views_bff
 from app.minimall.models import Category, Product, Profile
 from app.minimall.views_bff import (
     MAX_MESSAGE_LENGTH,
@@ -400,6 +403,81 @@ class BffForwardingTest(BffTestBase):
         self.assertEqual(r.status_code, 405)
         self.assertFalse(route.called)
         self.assertEqual(json.loads(r.content)["error"]["code"], "method_not_allowed")
+
+
+# ---------------------------------------------------------------------------
+# 连接复用: 与助手服务之间只有一份连接池, 不是每次请求新建 (issue 30)
+# ---------------------------------------------------------------------------
+
+
+class BffSharedClientTest(BffTestBase):
+    """助手服务的连接是**进程级共享**的.
+
+    上一版每次请求新建一个 `httpx.Client`, 本机实测那是 690~970 ms 一笔, 而且花在
+    首字之前 (用户先看到一次空转). 这一组守的是「别再退回去」: 三条路 (流式问答 /
+    普通请求 / 取消) 走的是同一个客户端对象, 而且流跑完不会把它一起关掉 —— 后半句
+    是这次改动**自己会踩**的坑 (上一版 `Upstream` 收尾连客户端一起关).
+    """
+
+    def setUp(self):
+        super().setUp()
+        # 共享客户端上那三次发送各是打哪个地址: 三条路都汇到 `Client.send` (httpx 的
+        # `request` / `stream` / `post` 都从它出去), 拦一处就能看全.
+        self.sent_paths: list[str] = []
+        original = views_bff._CLIENT.send
+
+        def spy(request, **kwargs):
+            self.sent_paths.append(request.url.path)
+            return original(request, **kwargs)
+
+        patcher = mock.patch.object(views_bff._CLIENT, "send", side_effect=spy)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_all_three_paths_go_through_the_shared_client(self):
+        """流式问答 / 普通请求 / 取消 —— 三条路都落在同一份连接池上.
+
+        断言的是**路径清单**: 谁要是自己 `httpx.Client(...)` 新建一个, 它那一笔就
+        不会出现在这里 (少一格就红), 而这样的代码正是这次要退回去的东西.
+        """
+        with respx.mock:
+            self.mock_agent(_frame(1, "final"))
+            self.ask()
+            self.mock_history(httpx.Response(200, json=HISTORY_BODY))
+            self.read_history()
+            self.mock_cancel(httpx.Response(200, json={}))
+            self.post_cancel()
+
+        self.assertEqual(
+            self.sent_paths, ["/runs", "/history", f"/runs/{RUN_ID}/cancel"]
+        )
+
+    def test_the_stream_teardown_leaves_the_shared_client_open(self):
+        """流收尾只关那条流, 不关共享客户端.
+
+        上一版 `Upstream.stack` 里攒着**它自己新建的**客户端, 收尾时一并关掉是正确
+        的; 改成共享之后还留着那一下, 表现是**这一次问答之后整个进程的转发全废**
+        —— 下一次请求打在一个已经关掉的客户端上.
+        """
+        with respx.mock:
+            self.mock_agent(_frame(1, "thinking"), _frame(2, "final"))
+            self.ask()
+
+        self.assertFalse(views_bff._CLIENT.is_closed)
+
+    def test_the_shared_client_has_one_construction_site_and_a_shutdown_path(self):
+        """整个模块**只建一个**客户端, 并且挂上了关闭路径.
+
+        这一条是**文档 + 形状**守卫 (这事没有能跑的行为可断言): 共享的前提是进程
+        退出时 `atexit` 真的会跑, 而那条前提的出处 (`CharAgent/server/sessions.py`
+        的「单进程」一节) 必须写在文件里 —— 换多 worker 部署时, 还债的入口就是那段
+        注释. 条数断言挡的是「又冒出一个 `httpx.Client(...)`」(每请求一个正是上一版).
+        """
+        source = inspect.getsource(views_bff)
+
+        self.assertIn("atexit.register(_CLIENT.close)", source)
+        self.assertIn("CharAgent/server/sessions.py", source)
+        self.assertEqual(source.count("httpx.Client("), 1)
 
 
 # ---------------------------------------------------------------------------
@@ -2052,3 +2130,75 @@ class AgentPageTest(BffTestBase):
         # 两轮之间常常刚好插进一条工具行 (压缩 → 调工具 → 又压缩, 真机上的帧序
         # 就是这样), 比最后一个孩子会全漏 —— 这条第一版就写错了, 真机上抓到.
         self.assertIn("if (text === lastNote) return;", compact)
+
+    # ------------------------------------------------------------------
+    # 读历史那道闸门 (issue 30)
+    # ------------------------------------------------------------------
+
+    def test_a_stale_history_response_never_lands(self):
+        """连切会话时, 先发的那份历史被丢掉 (issue 30).
+
+        读历史有三个触发点 (首屏 / 重试按钮 / 切会话), 而切会话**可以连着切**: 两次
+        加载叠在一起, 先发的那次可能后回来 —— 那是**上一个会话**的历史, 画上去就是
+        两段对话混在一屏 (用户按最后点的那一段等, 看到的是别的). 办法与列表那条路
+        一样: 发之前取号, 回来比对, 旧的丢掉 —— 三步缺一, 这道门就形同虚设.
+        """
+        compact = self.page_source()
+
+        self.assertIn("let historyRequests = 0", compact)
+        self.assertIn("const ticket = ++historyRequests", compact)
+        # 比对那一步有**两处** (渲染前 + 失败那条路, 后者下面一条用例守它) —— 所以断
+        # 的是条数而不是"在不在": 只留一处的话, 另一条路会照旧把过期的那份画上去,
+        # 而 `assertIn` 一条也看不出来.
+        self.assertEqual(
+            compact.count("if (ticket !== historyRequests) return;"),
+            2,
+            "渲染前与失败路径各要一道, 缺一条就有一条路会漏",
+        )
+
+    def test_a_stale_history_failure_is_not_blamed_on_the_current_conversation(self):
+        """上一个会话的失败不许报到当前会话头上 —— 两条判据共用一个号.
+
+        失败那条路 (「历史没加载出来 + 重试」) 如果不比号, 表现是先切走的那个会话的
+        失败落在当前这一段上: 用户看到「没加载出来」而这一段其实是好的. 这条路
+        2026-09-23 已经因为**判据不同步**漏过一次 (那时它单独用 `finished`), 所以
+        这里守的是那一个号: `historyFailed` 取到号才动手, 四个落点
+        (一处定义 + 三处调用) 都带它.
+        """
+        compact = self.page_source()
+
+        self.assertEqual(
+            compact.count("historyFailed(ticket, mayHaveHistory)"),
+            4,
+            "三处失败落点都要把号传进去 (少一处就有一条路会给过期的那份动手)",
+        )
+
+    def test_the_ask_box_is_locked_until_the_history_is_there(self):
+        """历史还在路上时输入区是禁用的 —— 加载好了才能提问 (issue 30).
+
+        为什么锁: 切会话是**先清屏再画**的, 加载期间放行提问的话, 用户那一轮会被随后
+        到达的历史盖住或压在下面 (屏幕上两段东西混着排). 守三件: 那面旗拿起来、放下去
+        (收尾), 以及**只有一个出口**改 `input.disabled` —— 两处各写一遍就是谁后写谁赢.
+        """
+        compact = self.page_source()
+
+        self.assertIn("let historyLoading = false", compact)
+        self.assertIn("historyLoading = true", compact)
+        self.assertIn("function syncComposer()", compact)
+        # 拿起来之后**无论如何**都要放下 (正身里到处是提前 return, 摊在一起就会漏)
+        self.assertIn("await loadHistoryBody(ticket, mayHaveHistory)", compact)
+        self.assertRegex(compact, r"if \(ticket === historyRequests\) \{")
+        # 开关只许有 syncComposer 这一个出口 (别处再写一句 "input.disabled = false"
+        # 就是两处在抢同一个开关, 谁后写谁赢 —— 注释里那句解释不算)
+        self.assertEqual(
+            compact.count("input.disabled = locked"),
+            1,
+            "输入框的开关只该有 syncComposer 一个出口",
+        )
+        self.assertEqual(compact.count("send.disabled = locked"), 1)
+        # 示例按钮在**挂回聊天区时**要重算一次: 它被摘下来的那段时间状态会变 (提问
+        # 期间锁上), 不重算的话回到页面上是死的 —— 真机上抓到过 (答完一轮再点"新
+        # 对话", 那三个按钮点不动). `[^}]*` 卡在函数体内, 免得匹配到外面的调用.
+        self.assertRegex(
+            compact, r"function setChatPlaceholder\(node\) \{[^}]*syncComposer\(\);"
+        )

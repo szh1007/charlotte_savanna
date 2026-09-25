@@ -267,6 +267,28 @@ let sawTerminal = false;  // 这一轮见过终局事件没有 (final / error)
 let runId = null;         // 本轮运行的编号 (响应头里给的; 按「停止」要用它)
 let stopping = false;     // 已经按过停止, 正在等那条流收尾
 
+// 历史还在路上吗 (输入区要不要一起锁着). 为什么锁: 历史是**先清屏再画**的
+// (`switchConversation` 里那句 `clearChat`), 加载期间放行提问的话, 用户问出去之后
+// 历史才到, 那几轮会被 `renderHistory` 追加到他那一轮**下面** (或者反过来盖掉) ——
+// 屏幕上就成了两段东西混着排. 等它画完再放行, 就没有这个中间态.
+let historyLoading = false;
+
+// 输入区能不能用: 没有正在跑的问答, 也没有正在等的历史.
+// **只留这一个出口** (而不是在 `ask` / `end` / `loadHistory` / `setChatPlaceholder`
+// 里各写一遍 `input.disabled = ...`): 这几件事各自会变, 各写一遍就是"谁后写谁赢",
+// 迟早对不上. 摆在文件靠上的位置也有一层原因 —— 底下那些函数全都可能调到它, 而
+// `historyLoading` 是 `let` (声明之前访问会抛, 不是给个 undefined 就算了).
+function syncComposer() {
+  const locked = !finished || historyLoading;
+  input.disabled = locked;
+  send.disabled = locked;
+  // 示例按钮也是"提问"的一个入口 (它替用户填好问题再 dispatch 一个 submit) —— 一起
+  // 锁, 免得加载期间点下去"填了字却什么都没发生" (那正是这一页最忌的死样子).
+  document.querySelectorAll('.agent-example').forEach(function (button) {
+    button.disabled = locked;
+  });
+}
+
 function newConversationId() {
   // crypto.randomUUID 只在安全上下文里有 (https / localhost); 退路是时间戳 + 随机
   if (window.crypto && window.crypto.randomUUID) return window.crypto.randomUUID();
@@ -336,11 +358,19 @@ function setChatPlaceholder(node) {
   if (chatPlaceholder) chatPlaceholder.remove();
   chatPlaceholder = node;
   if (node) chat.appendChild(node);
+  // 挂回来的东西要按**现在**的状态重算一次: 示例按钮在聊天区里被摘下来的那段时间
+  // 状态可能已经变了 (提问期间会被锁上), 不重算的话它回到页面上是死的 —— 真机上
+  // 抓到过 (答完一轮再点"新对话", 那三个按钮点不动).
+  syncComposer();
 }
 
 // 读历史失败时摆什么: 本来在等内容才值得说「没加载出来」; 一段刚生成的编号没有
 // 内容可失败, 于是照旧摆横幅 (一句话都不多说 —— 用户没做错什么).
-function historyFailed(mayHaveHistory) {
+function historyFailed(ticket, mayHaveHistory) {
+  // 这一次还是**最新**的那一次吗: 快速连切会话时, 上一个会话那次的失败可能落在后面
+  // —— 摆上去就成了「当前这段加载失败」, 而它根本没失败. 与 `loadHistory` 末尾那道
+  // `ticket !== historyRequests` 是同一条纪律 (列表那条路的 `failed` 里也是这么写的).
+  if (ticket !== historyRequests) return;
   // 聊天区里**已经有他自己那一轮**了就不再动画面: 这条"历史没加载出来"是对上一次
   // 切换说的, 而失败行挂在那一轮**下面**在时序上是错的 (这次加载发生在那一轮之前).
   // 重试这条路也没堵死 —— 重新切一次会话就会再拉一遍.
@@ -450,8 +480,7 @@ function end() {
   stop.hidden = true;
   stop.disabled = false;
   stop.textContent = '停止';
-  input.disabled = false;
-  send.disabled = false;
+  syncComposer();
   lockSwitching(false);
   // 左栏顺手拉一次: 刚问完的这一轮可能正是这段会话的第一句 —— 会话行由记录器在
   // 「第一条消息发出去」时才建 (懒创建), 不重拉的话新会话要等下次打开页面才出现.
@@ -596,8 +625,7 @@ async function ask(question) {
   // 而能走到这里就说明上一轮已经结束了
   finished = false;
   sawTerminal = false;
-  input.disabled = true;
-  send.disabled = true;
+  syncComposer();
   // 正在答的时候切不动会话: 这一轮的事件还在往 `turn` 那块 DOM 里落, 半路换一段
   // 就会把半截过程画到另一段对话上 (结束时会由 end() 放开)
   lockSwitching(true);
@@ -676,6 +704,13 @@ function renderHistory(messages) {
   toBottom();
 }
 
+// 谁发的那一次读历史 (下面那个闸门用). 拉历史的地方有三个 (首屏 / 重试按钮 / 切会话),
+// 而这三个**可以叠在一起**: 切会话能连着切. 叠起来的表现是**先发的那次后回来**, 于是
+// 上一个会话的历史盖到当前这一段上 —— 用户看到的是另一段对话的内容. 与列表那条路同一
+// 套办法 (`listRequests`), 差别只在防的东西: 那边防「条件过期」(搜索词变了), 这边防
+// 「位置过期」(切走了).
+let historyRequests = 0;
+
 async function loadHistory(mayHaveHistory) {
   // `mayHaveHistory`: 这一次在等的东西**可能已经有内容**吗. 它同时决定两件事
   // (ticket 25):
@@ -683,6 +718,30 @@ async function loadHistory(mayHaveHistory) {
   //   - 失败了说不说: 本来该有内容才值得说「历史没加载出来」—— 给一段刚生成的
   //     编号报这句是纯噪音 (它本来就没有历史).
   if (!finished) return;   // 用户已经在问了, 别把历史盖到新一轮上
+  const ticket = ++historyRequests;
+  historyLoading = true;
+  syncComposer();
+  try {
+    await loadHistoryBody(ticket, mayHaveHistory);
+  } finally {
+    // 收工 (成功 / 失败 / 被丢掉) 都要走到这儿: 锁是**拿在这一次手里**的, 少放一次
+    // 输入区就永远锁着. 只有最新的那一次能真放 —— 连切会话时旧那次回来得早, 它一放
+    // 用户就能在还没画完的时候提问了.
+    if (ticket === historyRequests) {
+      historyLoading = false;
+      syncComposer();
+      // 首屏那一拍的光标原本是进页面就落在输入框里的, 而现在加载期间它被禁用了 ——
+      // 浏览器会把光标从禁用的元素上摘掉. 加载完再放回去, 免得用户还得先点一下.
+      // 只在**没人占着光标**时放 (他可能正在左栏改标题).
+      if (document.activeElement === document.body) input.focus();
+    }
+  }
+}
+
+// 读历史的正身 (取数 → 画). 与上面那个壳分开只为一件事: **收尾那一段必须无论如何
+// 都跑到** (`finally`), 而正身里到处是提前 return —— 摊在一起就得给每个 return 配一次
+// 解锁, 漏一个输入区就永远锁着.
+async function loadHistoryBody(ticket, mayHaveHistory) {
   setChatPlaceholder(mayHaveHistory ? el('div', 'agent-loading') : hint);
   let response;
   try {
@@ -698,23 +757,27 @@ async function loadHistory(mayHaveHistory) {
       body: JSON.stringify({ conversation_id: conversationId }),
     });
   } catch (err) {
-    historyFailed(mayHaveHistory);
+    historyFailed(ticket, mayHaveHistory);
     return;
   }
   if (!response.ok) {
-    historyFailed(mayHaveHistory);
+    historyFailed(ticket, mayHaveHistory);
     return;
   }
   let payload;
   try {
     payload = await response.json();
   } catch (err) {
-    historyFailed(mayHaveHistory);
+    historyFailed(ticket, mayHaveHistory);
     return;
   }
   // 等这份 JSON 的工夫, 用户可能已经把第一句问出去了 —— 那时渲染历史只会插到
   // 正在跑的那一轮前面, 看着像「回答张冠李戴」
   if (!finished) return;
+  // 也可能在等这份 JSON 的工夫又切了一段会话: 那这一段的历史该由**后发的那次**
+  // 来画, 手上这份是上一个会话的 (画上去两段对话就混在一屏里). 谁最新由编号说了算
+  // —— 与列表那条路末尾那道 `ticket !== listRequests` 同一条纪律.
+  if (ticket !== historyRequests) return;
   const messages = payload.messages || [];
   // 一段空对话该有的样子是**横幅** (那句"试试这样问"加三个示例按钮): 走到这里
   // 就是「加载完了、而这段什么都没有」—— 横幅的真条件. 上一版是 `clearChat()`
@@ -1209,7 +1272,10 @@ function startNewConversation() {
 form.addEventListener('submit', function (event) {
   event.preventDefault();
   const question = input.value.trim();
-  if (!question || !finished) return;
+  // 三道门: 空问题 / 正在答 / **历史还在路上** (最后那道是 issue 30 加的: 历史画完
+  // 之前放行的话, 他那一轮会被随后到达的历史盖住或压在下面 —— 输入区那时是禁用的,
+  // 这道门是给"程序化触发"兜底).
+  if (!question || !finished || historyLoading) return;
   input.value = '';
   ask(question);
 });
