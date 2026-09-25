@@ -182,7 +182,7 @@ def test_alembic_version_records_the_head_revision(migrated, _engine):
             {"name": f"{ALEMBIC_SCHEMA}.{VERSION_TABLE}"},
         ).scalar()
 
-    assert version == "0002_thread_management"
+    assert version == "0003_run_cost_columns"
     assert test_schema_version, (
         "版本表没落在测试 schema 里 (version_table_schema 没生效)"
     )
@@ -200,7 +200,7 @@ def test_upgrade_head_is_idempotent(migrated, _engine):
             text(f"SELECT version_num FROM {ALEMBIC_SCHEMA}.{VERSION_TABLE}")
         ).scalar()
 
-    assert version == "0002_thread_management"
+    assert version == "0003_run_cost_columns"
 
 
 def test_the_version_row_records_the_step_that_just_ran(migrated, _engine):
@@ -216,6 +216,10 @@ def test_the_version_row_records_the_step_that_just_ran(migrated, _engine):
     `upgrade head` 会走两步、钩子回调两次: 两个编号都在 `history` 里, 而
     `version_num` 与 `name` 是**最后停在**的那一版. 这正是「一行 = 当前 head,
     history = 一路怎么走过来的」那条设计在老库升级时该有的样子.
+
+    2026-09-25 加上第三条 (ticket 28 的 0003) —— 它给运行行加了一列 (成本明细),
+    并把金额那一列改成可空 (收尾算不出来时留 NULL, 与「花 0 元」分开).
+    三步走完, 那条设计照旧成立: 迁移是**库该长成什么样**的历史, 每一版都算数.
     """
     with _engine.connect() as connection:
         row = connection.execute(
@@ -229,13 +233,36 @@ def test_the_version_row_records_the_step_that_just_ran(migrated, _engine):
             )
         ).one()
 
-    assert row.version_num == "0002_thread_management"
-    assert row.name == "会话管理两列: 置顶时刻与删除时刻", (
+    assert row.version_num == "0003_run_cost_columns"
+    assert row.name == "运行成本两列: 金额改成收尾写死 + 明细列", (
         "标题取的是脚本 docstring 的**首段** (alembic 的 `Script.doc` 就是这么切的)"
     )
-    assert row.versions == 2, "空库到 head 走了两步 (0001 → 0002), history 两条"
-    assert row.from_rev == "0001_core", "当前这一版是从 0001 上来的"
+    assert row.versions == 3, "空库到 head 走了三步 (0001 → 0002 → 0003)"
+    assert row.from_rev == "0002_thread_management", "当前这一版是从 0002 上来的"
     assert row.at and row.by, "时刻与执行者都该是真值 (钩子写在同一步的事务里)"
+
+
+def test_the_cost_column_has_no_default(migrated, _engine):
+    """迁移跑完, `total_cost` **不带默认值** (默认值会改行为, 所以单独钉一条).
+
+    为什么值得单独一条: `DEFAULT 0` 在那里的话, 任何漏写这一列的 INSERT 都会拿到 0
+    —— 而 0 在这一列里的意思是「真的花了 0 元」, 与「还没算」是相反的结论. 这一条
+    与下面那条零差异门分工不同: 那条比的是代码与库的整体, 这一条把那个**具体行为**
+    写死 (即使哪天 `compare_server_default` 又被关掉, 它仍在).
+    """
+    from sqlalchemy import text
+
+    with _engine.connect() as connection:
+        default = connection.execute(
+            text(
+                "select column_default from information_schema.columns"
+                " where table_schema = :s and table_name = 'charagent_runs'"
+                " and column_name = 'total_cost'"
+            ),
+            {"s": ALEMBIC_SCHEMA},
+        ).scalar()
+
+    assert default is None, f"total_cost 不该有默认值, 实际: {default!r}"
 
 
 def test_no_difference_between_code_and_migrated_schema(migrated, _engine):
@@ -247,6 +274,10 @@ def test_no_difference_between_code_and_migrated_schema(migrated, _engine):
     顺带它也是「下次改 schema 该怎么做事」的示范: 改完 schema.py 跑
     `alembic revision --autogenerate`, 生成的脚本应当**只包含你这次真正改的东西**
     —— 若冒出一堆无关的差异, 说明某处已经漂移了.
+
+    比的四样: 列与类型 / 可空 / 主键 / **默认值** (`compare_server_default`, 2026-09-25
+    打开). 默认值那一项是补上的: 它此前只是没开, 于是「迁移少丢了一个 DEFAULT」在这道
+    门下面**看不见**, 而那个默认值会改行为.
     """
     from alembic.autogenerate import compare_metadata
     from alembic.runtime.migration import MigrationContext
@@ -256,6 +287,10 @@ def test_no_difference_between_code_and_migrated_schema(migrated, _engine):
             connection,
             opts={
                 "compare_type": True,
+                # 默认值也一起比 (2026-09-25 打开): 它此前只是**没开**, 于是
+                # 「迁移少丢了一个 DEFAULT」这类漂移在这道门下面看不见 —— 而默认值
+                # 恰恰会改行为 (漏写一列的 INSERT 拿到 0 = 「花了 0 元」)
+                "compare_server_default": True,
                 "include_schemas": False,
                 "version_table_schema": ALEMBIC_SCHEMA,
                 # 版本表是 alembic 自己的, 不在我们的表定义里 —— 不排除掉的话,

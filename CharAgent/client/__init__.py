@@ -16,6 +16,9 @@ agent 带着工具去查去算, 过程实时打在屏幕上, 中途 Ctrl-C 能�
               交互与一次性两条路 (Ctrl-C 打断也在这里, 见 KillSwitch)
 - session.py  ChatSession: 一次会话的三个动作 —— 问一句 / 接着跑 / 看存档
 - render.py   终端渲染: 七类事件各画一行, 外加结果摘要与答复正文
+- trace.py    **只读回看**一次运行 (给 run_id 就打印: 工具调用清单 + 折算金额).
+              与 app.py 分开是因为生命周期不同: 那个是敲一句问一句的 REPL, 这个是
+              「给个编号, 打印, 退出」—— 它不建会话、不跑模型, 只读记录那几张表
 - utils/      支撑子包: types (CliOptions) + commands (交互命令解析)
 
 **别的 CLI 入口也能用这一层** (2026-09-19 从私有改成公开): `KillSwitch` /
@@ -35,6 +38,9 @@ agent 带着工具去查去算, 过程实时打在屏幕上, 中途 Ctrl-C 能�
     python -m CharAgent.client -q "现在几点?"          # 问一句就退出
     python -m CharAgent.client --backend postgres     # 换快照后端
     python -m CharAgent.client --history              # 看本会话的快照历史表
+
+    python -m CharAgent.client.trace <run_id>          # 回看某一次运行 (只读)
+    python -m CharAgent.client.trace <run_id> --view   # 再加每帧的上下文视图
 
 模块内部 import 走具体模块路径 (client.app, client.session), 不绕包门面; 对外公共 API
 统一由本文件 __all__ 导出.

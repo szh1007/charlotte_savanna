@@ -178,12 +178,17 @@ class Run(Base):
             基础: 回答质量掉了要能查出「是换了模型还是换了 prompt」.
             prompt_version 存的是提示词名 (如 "system/v2"), 与快照里那个引用的
             name 同源; 没配身份说明时为 NULL.
-        total_tokens / total_cost: 本 run 累计用量与花费 (#34 成本归因按 task).
+        total_tokens: 本 run 累计用量 (账单原值).
+        total_cost / total_cost_detail: 本次运行的花费与它的来路 —— **收尾那一刻**
+            按当时的价目表算好写入 (`db/cost.py`), 之后不再改写. 金额可空: NULL 表示
+            那一刻没算出来 (原因在明细里: 没配价 / 缺哪一档 / 日历过期), 与 0 (真的
+            花了 0 元) 是相反的结论; 峰谷价按本次运行的**开始时刻**判定 (ticket 28).
         input_tokens / output_tokens / reasoning_tokens / cache_hit_tokens /
         cache_miss_tokens: total_tokens 的**归因拆解** (#34). 五列都可空 —— NULL
             表示上游一次都没上报过这个分量, 与 0 (报过、值就是零) 是两回事. 要算
             钱就按「缓存命中 / 未命中 / 输出」三档单价分别乘, 别拿 total_tokens 乘
-            一个均价 (那会把三类不同价的 token 混成一个数).
+            一个均价 (那会把三类不同价的 token 混成一个数); 推理那列**不参与乘法**
+            (它是输出列的明细, 已含在输出价里, 见 db/cost.py).
         turn_count: 已执行的 Turn 数 (断点续跑时是累计值).
         error: 失败原因 (结构化 JSONB: code + message), 供审计与降级判断.
         last_checkpoint_id: 这一段运行落的**最后一帧**快照 (票 22); 顺它的

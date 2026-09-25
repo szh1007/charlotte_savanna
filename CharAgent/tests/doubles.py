@@ -38,7 +38,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from CharAgent.db.entities import Message, Run, Thread
+from CharAgent.db.entities import Message, Run, Thread, ToolCall
 from CharAgent.db.errors import DataStoreError
 from CharAgent.stream.utils.types import EventType, StreamEvent
 
@@ -298,18 +298,31 @@ class FakeRecordSession:
     读写两半都在这里, 因为记录这条路本来就两头都走 (记录员先写, 接口再读).
     缺的是**过滤与排序** —— 那是 SQL 的事 (`WHERE hidden IS FALSE` / `ORDER BY
     updated_at DESC` 这些), 由 pg_db 用例拿真库守; 这里给出的是「库里有这些行」.
+
+    模拟了两件事 (都不是 SQL 的完整语义, 只为让被测行为成立):
+    - 插入带 `ON CONFLICT DO NOTHING` 时, 主键已经在了就跳过 (记录员从 ticket 27
+      起「产生即落库 + 收尾补齐」写同一批行两遍, 幂等全靠它)
+    - UPDATE 只认「单表 + 等值条件 + 直接给值」, 复合条件等其余语义由 pg_db 守
     """
 
     # 表名 → 实体类: 写入那条路只拿得到表名 (语句里来的), 而仓储插入之后会回读
-    # 一次 (让库补的默认值出现在返回对象里). 消息那张表也一样收进「库」——
-    # 于是「记录员写进去 → 接口读回来」这条端到端用例成立
+    # 一次 (让库补的默认值出现在返回对象里). 消息与工具调用那两张表也一样收进
+    # 「库」—— 于是「记录员写进去 → 接口读回来」这条端到端用例成立
     _TABLES = {
         "charagent_threads": Thread,
         "charagent_runs": Run,
         "charagent_messages": Message,
+        "charagent_tool_calls": ToolCall,
     }
-    # 实体类 → 主键属性名 (按主键找那一行时用)
+    # 实体类 → 主键属性名 (按主键找那一行时用; 工具调用那张是三列主键, 单独处理)
     _KEYS = {Thread: "thread_id", Run: "run_id", Message: "message_id"}
+    # 表名 → 主键列 (判「这一行已经在了吗」用 —— 幂等插入按它跳过)
+    _PK_COLUMNS = {
+        "charagent_threads": ("thread_id",),
+        "charagent_runs": ("run_id",),
+        "charagent_messages": ("message_id",),
+        "charagent_tool_calls": ("run_id", "message_id", "tool_call_id"),
+    }
 
     def __init__(self, database: FakeRecordDatabase) -> None:
         self._db = database
@@ -340,11 +353,25 @@ class FakeRecordSession:
         """按主键取一行 (仓储插入之后会回来读一次).
 
         假「库」是几个列表, 于是这里扫一遍找主键 —— 真库那边是索引查找, 那是它的
-        事 (SQL 由 pg_db 用例守).
+        事 (SQL 由 pg_db 用例守). 工具调用的主键是三列, 于是 `key` 是个元组.
         """
         rows = self._rows_of(entity)
         if rows is None:
             return None
+        if entity is ToolCall:
+            wanted = dict(
+                zip(self._PK_COLUMNS["charagent_tool_calls"], key, strict=True)
+            )
+            return next(
+                (
+                    row
+                    for row in rows
+                    if all(
+                        getattr(row, name) == value for name, value in wanted.items()
+                    )
+                ),
+                None,
+            )
         attribute = self._KEYS[entity]
         return next(
             (row for row in rows if getattr(row, attribute) == key),
@@ -357,6 +384,7 @@ class FakeRecordSession:
             Thread: self._db.threads,
             Run: self._db.runs,
             Message: self._db.messages,
+            ToolCall: self._db.tool_calls,
         }.get(entity)
 
     def expire_all(self) -> None:
@@ -370,7 +398,12 @@ class FakeRecordSession:
         if statement.is_insert:
             # 批量插入走 `params` (消息那批), 单行插入走语句里带的值
             rows = params if isinstance(params, list) else [statement.compile().params]
+            # 带 ON CONFLICT DO NOTHING 的插入是**幂等**的: 主键已经在了就跳过
+            # (仓储判它看方言子句在不在, 与真库那边是同一个特征)
+            idempotent = getattr(statement, "_post_values_clause", None) is not None
             for row in rows:
+                if idempotent and self._exists(table, row):
+                    continue
                 self._remember(table, dict(row))
             return _Affected(1)
         if statement.is_update:
@@ -379,6 +412,17 @@ class FakeRecordSession:
             return _Affected(changed)
         self.updates.append(table)
         return _Affected(1)
+
+    def _exists(self, table: str, row: dict) -> bool:
+        """这张表里已经有同主键的一行了吗 (幂等插入按它跳过)."""
+        columns = self._PK_COLUMNS.get(table)
+        entity = self._TABLES.get(table)
+        if columns is None or entity is None:
+            return False
+        return any(
+            all(getattr(existing, name) == row.get(name) for name in columns)
+            for existing in self._rows_of(entity) or []
+        )
 
     def _apply_update(self, statement: Any) -> int:
         """把一条 UPDATE 落到假库里匹配的那些行上, 返回改到了几行.
@@ -482,10 +526,12 @@ class FakeRecordDatabase:
         messages: Sequence[Any] = (),
         threads: Sequence[Any] = (),
         runs: Sequence[Any] = (),
+        tool_calls: Sequence[Any] = (),
     ) -> None:
         self.messages = list(messages)
         self.threads = list(threads)
         self.runs = list(runs)
+        self.tool_calls = list(tool_calls)
         self.session = FakeRecordSession(self)
 
     @asynccontextmanager
@@ -510,7 +556,12 @@ class FakeRecordDatabase:
         entity = FakeRecordSession._TABLES.get(table)
         if entity is None:
             return [row for name, row in self.session.rows if name == table]
-        attribute = {Thread: "threads", Run: "runs", Message: "messages"}[entity]
+        attribute = {
+            Thread: "threads",
+            Run: "runs",
+            Message: "messages",
+            ToolCall: "tool_calls",
+        }[entity]
         columns = list(entity.__table__.columns.keys())
         return [
             {name: getattr(row, name) for name in columns}

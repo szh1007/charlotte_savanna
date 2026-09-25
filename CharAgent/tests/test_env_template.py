@@ -19,6 +19,7 @@ from pathlib import Path
 
 from CharAgent.checkpoint import config as checkpoint_config
 from CharAgent.db import config as db_config
+from CharAgent.db import cost as db_cost
 
 # 仓库根 (CharAgent/tests/ -> CharAgent/ -> 仓库根)
 TEMPLATE = Path(__file__).resolve().parents[2] / ".env.example"
@@ -36,13 +37,17 @@ CHECKPOINT_VARS = (
     checkpoint_config.ENV_POSTGRES_DSN,
 )
 DB_VARS = (db_config.ENV_DSN, db_config.ENV_ECHO)
+# 成本折算的价目表 (ticket 28): 常量声明在 db/cost.py 里 (读它的也是那个模块)
+COST_VARS = (db_cost.ENV_MODEL_PRICES,)
 
 
 def test_template_lists_every_checkpoint_and_db_variable() -> None:
     """模板里逐个写明了 checkpoint 与 db 读的每个变量名."""
     text = TEMPLATE.read_text(encoding="utf-8")
 
-    missing = [name for name in (*CHECKPOINT_VARS, *DB_VARS) if name not in text]
+    missing = [
+        name for name in (*CHECKPOINT_VARS, *DB_VARS, *COST_VARS) if name not in text
+    ]
 
     assert missing == [], f".env.example 缺少这些变量名: {missing}"
 

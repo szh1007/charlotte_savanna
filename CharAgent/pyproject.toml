@@ -6,9 +6,10 @@
 # 换台机器或换个 cwd, `import CharAgent` 就散架. 声明之后, 这个前提变成
 # `pip install` 能兑现的承诺.
 #
-# 依赖只有八项, 且都是框架真正 import 到的. **没有 LangChain / LangGraph** ——
+# 必装依赖只有八项, 且都是框架真正 import 到的. **没有 LangChain / LangGraph** ——
 # 「零框架依赖」是这个项目立身的那句话, 下面这份清单就是它的证据: 想看是否属实,
-# 把任意一项删掉, 框架立刻有 import 报错.
+# 把任意一项删掉, 框架立刻有 import 报错. 另外两组是**可选**的 (server / pricing):
+# 不装它们照样能用框架的核心, 只是少了对应的那层能力.
 #
 # 与根目录 pyproject.toml 的关系: 那份是**整个仓库**的 ruff 配置, 不含 [project]
 # (仓库里还有 Django 应用和六个子项目, 把它们整体声明成一个包不是事实). 本文件
@@ -65,6 +66,17 @@ dependencies = [
 # 怎么跑是业务/部署的事). 装什么是导入谁 —— 这条口径与上面八项一致.
 server = [
     "fastapi>=0.139",
+]
+# pricing (峰谷计价) 同样**可选**: 只配「全天一个价」的部署用不着中国节假日日历 ——
+# 而用到峰谷价时 (按运行开始时刻判峰谷、工作日看日历), 缺了它会在**启动自检**那一刻
+# 报一句能照着做的错 (`pip install "charagent[pricing]"`), 而不是等收尾才发现钱算不出来.
+#
+#   pip install "charagent[pricing]"
+#
+# 数据每年 ~11 月随这个包发一版 (次年的安排要等国务院公布): 版本过期后金额会集体留空,
+# 启动自检会先拦住. 仓库自己的 requirements.txt 无条件带上它 (本机演示与测试都要用).
+pricing = [
+    "chinesecalendar>=1.11.0",
 ]
 
 [tool.setuptools.packages.find]

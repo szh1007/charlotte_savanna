@@ -80,6 +80,7 @@ from CharAgent.client.utils.commands import (
 )
 from CharAgent.client.utils.types import DEFAULT_THREAD_ID, CliOptions
 from CharAgent.db import PgDatabase
+from CharAgent.db.errors import PricingNotReadyError
 from CharAgent.db.recorder import ConversationRecorder, RunRecorder
 from CharAgent.model import ModelError, chat_model_from_env
 from CharAgent.model.protocol import ChatModel
@@ -93,13 +94,18 @@ _T = TypeVar("_T")
 _ROOT_ENV = Path(__file__).resolve().parents[2] / ".env"
 
 # 启动期可能抛出的配置类错误 (都不是「运行中出问题」, 而是「命令敲错了 / 环境
-# 没配好」—— 报一句人话就退出, 不打印 traceback). 四者没有共同祖先
-# (模型层 / 快照层 / agent 层各一族), 只能列成元组.
+# 没配好」—— 报一句人话就退出, 不打印 traceback). 它们没有共同祖先
+# (模型层 / 快照层 / agent 层 / 计价各一族), 只能列成元组.
+#
+# 计价那一个 (PricingNotReadyError) 是 ticket 28 加的: 记录员构造时要读价目表并
+# 自检 (日历过没过期), 那一步就发生在装配期 —— 报「价目表写错了」比抛一串
+# traceback 有用得多
 _STARTUP_ERRORS: tuple[type[Exception], ...] = (
     ModelError,
     CheckpointError,
     LoopConfigError,
     GuardConfigError,
+    PricingNotReadyError,
 )
 
 # 交互模式的提示符与欢迎语 (PROMPT 单独拎出来: 测试要按它比对)

@@ -44,6 +44,9 @@ from CharAgent.agent.utils.errors import (
 from CharAgent.agent.utils.types import (
     LoopOutcome,
     LoopResult,
+    ToolCallFact,
+    ToolCallOutcome,
+    TraceSink,
     TruncationStrategy,
     TurnRecord,
 )
@@ -61,7 +64,10 @@ __all__ = [
     "LoopResult",
     "RunContext",
     "TokenCounter",
+    "ToolCallFact",
+    "ToolCallOutcome",
     "ToolProvider",
+    "TraceSink",
     "TrimAndSummarize",
     "TruncationStrategy",
     "TurnRecord",

@@ -12,12 +12,32 @@
 只增不减、永不压缩 (PLAN 的 L2.5 一句话: 「用户看到的记录永不压缩」). 两者同源
 (都从 `LoopResult` 来) 而用途不同.
 
-**什么时候写**: 一次运行**两拍** (ticket 22) —— 跑之前 `begin` 把运行行建出来
-(帧在运行中途落盘, 而 `checkpoints.run_id` 是指向它的外键), 跑完 `record` /
-`record_unfinished` 把那一行推进到终态并写下这一轮的消息. **消息只写一次**
-(收尾那一拍, 不是每轮): 一轮 = 用户点一次「发送」到 agent 答完, 这正好是「一句话
-的账」; 每轮写一次会让一次带工具的问答写出十几行半成品, 而半成品正是这个记录最
-不该有的东西.
+**什么时候写** (ticket 27 起是「产生即落库」):
+
+| 时机 | 谁写 | 写什么 |
+|---|---|---|
+| 运行开始 | `begin` | 运行行 (状态 running) —— 帧的 `run_id` 外键指着它 |
+| 运行进行中 | `flush` (可选, 见下) | 提问行 · 每轮新产生的消息 · 每条调用 |
+| | | (执行前 pending、执行后终态) |
+| 运行收尾 | `record` / `record_unfinished` | **补齐**这一轮该有的行 (幂等) |
+| | | · **修订** (截断续写的几段合成一条) |
+| | | · 运行行终态 · 会话活动时刻 |
+
+**为什么从「收尾一次性写」改成「产生即落库」** (2026-09-24, ticket 27):
+`charagent_tool_calls.message_id` 是指向消息行的**外键**, 而那条 assistant 行今天只在
+收尾才写、编号还是插入时随机生成的 —— 于是「工具调用行在执行前落 pending、挂起那条
+在挂起那一刻就落库」(ADR-0014 要的判据) 在类型上就做不到. 改成产生即落库之后, 消息
+行在**产生时**就在库里, 编号由 `(run_id, 下标)` 派生 (`messages.message_id_for`),
+于是运行中写得进去、同一行写两次是幂等的、而同一次运行的第二段 (审批恢复) 能直接
+寻址第一段写下的那一行, 不必反查.
+
+**`flush` 是可选的**: 它由 loop 在两处调用 (工具执行前 / 每轮收尾), 而 loop 只认
+`agent.utils.types.TraceSink` 那份协议 —— 业务自己的记录员不实现它就退回「收尾一次
+性写」, 行为与从前逐字一样 (见 `RunRecorder` 的说明).
+
+**这一改不碰「记录只增不减」**: 收尾的**修订**只改正文与可见性 (截断续写的几段合成
+一条, 早先那几段退成隐藏行), 行本身一条不多一条不少; **补齐**只是把没写上的补上
+(幂等), 已有的行一个字不改.
 
 **写什么** (三层都由 `db/conversation.py` 的规则算好, 本模块不另判一遍):
 
@@ -69,22 +89,46 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from typing import Protocol
+from uuid import uuid4
 
-from CharAgent.agent.utils.types import LoopResult
+from CharAgent.agent.utils.types import (
+    LoopResult,
+    ToolCallFact,
+    ToolCallOutcome,
+)
 from CharAgent.db.conversation import (
     TranscriptLine,
     has_visible_answer,
     recorded_transcript,
+    visible_transcript,
 )
-from CharAgent.db.entities import RunStatus
+from CharAgent.db.cost import (
+    CostGap,
+    PriceTable,
+    RunCost,
+    cost_of,
+    ensure_pricing_ready,
+    load_pricing,
+)
+from CharAgent.db.entities import RunStatus, ToolCallStatus
 from CharAgent.db.errors import DbError
 from CharAgent.db.repositories.base import Database
-from CharAgent.db.repositories.messages import MessagesRepository
+from CharAgent.db.repositories.messages import (
+    MessagesRepository,
+    message_id_for,
+)
 from CharAgent.db.repositories.runs import RunsRepository
 from CharAgent.db.repositories.threads import ThreadsRepository
-from CharAgent.db.state import run_status_for_outcome
+from CharAgent.db.repositories.tool_calls import (
+    ToolCallsRepository,
+    build_tool_call,
+)
+from CharAgent.db.state import run_status_for_outcome, tool_call_status_for_outcome
+from CharAgent.model.utils.types import ModelMessage
 from CharAgent.prompt import ref_name
 
 # 同一棵日志树 (与 checkpoint 那几处同一个做法): 记不上账是**要有人知道**的事,
@@ -185,6 +229,13 @@ class RunRecorder(Protocol):
     三个方法都**不该抛** (`begin` 返回 None、另两个返回 False 表示这次没记上): 调用
     方是会话那条路, 记录写不进去不该把一次问答变成一次失败. 实现方自己负责记日志
     与补救.
+
+    **还可以多实现一个 `TraceSink`** (ticket 27): 那是 agent 侧的协议
+    (`agent.utils.types.TraceSink` 的 `flush`), 实现了就会在运行**进行中**收到
+    「刚产生的这几条消息与这批工具调用」—— 于是记录表在运行中途就跟着事实走.
+    不实现也完全成立: 那三个方法照旧把整轮一次写完, 只是轨迹要等到收尾才看得到.
+    `ConversationRecorder` 两个都实现了, 而会话装配时按 `isinstance(recorder,
+    TraceSink)` 决定要不要把它交给 loop (结构匹配, 不要求继承).
     """
 
     async def begin(self, *, thread_id: str, title: str = "") -> str | None:
@@ -238,6 +289,7 @@ class RunRecorder(Protocol):
         question: str,
         status: RunStatus,
         run_id: str | None = None,
+        since: int = 0,
         model: str | None = None,
     ) -> bool:
         """记下**一次没答完的运行** (取消 / 失败那一轮).
@@ -247,6 +299,9 @@ class RunRecorder(Protocol):
             question: 用户那一句提问 (页面上已经显示了, 记录里不能少).
             status: 这次运行的终态 (cancelled / failed).
             run_id: 同 `record` —— `begin` 建的那一行; None 表示没得推进.
+            since: 那一句提问在本次 run wire 历史里的下标. 提问行**在提问时就已经
+                落过库** (ticket 27 起由 `flush` 写), 这里给下标是为了让它落在同一
+                行上而不是再写一条 (编号是算出来的) —— 给错会多出一条重复的提问行.
             model: 这次用的模型名 (同 `record`); 这一轮没有账目, 但模型是跑之前
                 就定下的配置事实, 照样记得下来.
 
@@ -263,24 +318,63 @@ class ConversationRecorder:
     传租户与用户 (也不可能传错). 会话编号仍然按次传 —— 一个进程里几十段会话在
     同时聊, 而记录员只该有一个.
 
+    **花钱这笔账也算在这里** (ticket 28 起): 运行收尾那一拍, 本类按**当时的价目表**
+    把金额算好、连同算式一起写进运行行 (`db/cost.py` 是那套算法). 价目表在构造时
+    读一次 —— 一次会话里的几十趟运行因此看的是同一版价 (运行到一半价目表被改了,
+    不该让同一段会话前后两趟用两个价).
+
     Args:
         database: 库入口 (`Database` 协议: 能开一次事务就行).
         tenant_id: 这些记录属于哪个租户 (会话行懒创建时写进去).
         user_id: 会话属主 (同上).
+        prices: 价目表; None = 从 `CHARAGENT_MODEL_PRICES` 读一次. 传进来是给
+            测试与「价目表来自别处」的装配用的.
 
     attributes:
         (无公开属性; `missed_threads` 是给排查与用例看的只读视图)
     """
 
-    def __init__(self, *, database: Database, tenant_id: str, user_id: str) -> None:
+    def __init__(
+        self,
+        *,
+        database: Database,
+        tenant_id: str,
+        user_id: str,
+        prices: PriceTable | None = None,
+    ) -> None:
         self._threads = ThreadsRepository(database)
         self._runs = RunsRepository(database)
         self._messages = MessagesRepository(database)
+        self._calls = ToolCallsRepository(database)
         self._tenant_id = tenant_id
         self._user_id = user_id
+        self._prices = self._load_prices(prices)
         # 「这段会话有一轮没记上」的内存标记: 下一次成功写入时先补一条提示行.
         # 活在进程里 —— 进程重启会丢, 这条边界写在模块 docstring 里了
         self._missed: set[str] = set()
+
+    @staticmethod
+    def _load_prices(prices: PriceTable | None) -> PriceTable:
+        """拿到这一版价目表: 读配置 + 自检; 读不成 / 没准备好就当场抛.
+
+        为什么**抛**而不是像写入那样降级: 这两个坑 (配置写错、日历过期) 都是
+        「再跑一百趟也一样算不出钱」, 而且都在**开跑之前**就知道 —— 与其让每一趟
+        的钱都空着、事后人工补, 不如在构造这一刻拦住 (业务侧那条启动自检调的是
+        同一个函数, 见 `db/cost.py` 的 `ensure_pricing_ready`).
+
+        Args:
+            prices: 调用方给的价目表; None = 自己从环境变量读.
+
+        Returns:
+            PriceTable: 这一版价目表 (可能是一张空表 —— 没配价不是错误).
+
+        Raises:
+            PricingNotReadyError: 配置写错, 或配了峰谷价却判不了今天.
+        """
+        if prices is None:
+            return load_pricing()
+        ensure_pricing_ready(prices)
+        return prices
 
     @property
     def missed_threads(self) -> frozenset[str]:
@@ -310,9 +404,15 @@ class ConversationRecorder:
         Returns:
             str | None: 运行编号; None = 这次不记账.
         """
+        # 开始时刻**在这里定下来**, 并且一路用到两处: 写进运行行 (`created_at`)
+        # 与收尾算钱时判峰谷 —— 两处必须是同一个值, 否则「这笔按峰还是谷算」与
+        # 「这一趟什么时候开始的」会对不上
+        moment = datetime.now(UTC)
         try:
             await self._ensure_thread(thread_id, normalize_title(title))
-            run = await self._runs.add(thread_id=thread_id, status=RunStatus.RUNNING)
+            run = await self._runs.add(
+                thread_id=thread_id, status=RunStatus.RUNNING, created_at=moment
+            )
         except DbError as exc:
             self._missed.add(thread_id)
             logger.warning(
@@ -360,12 +460,25 @@ class ConversationRecorder:
                     hidden=False,
                 )
             )
+        facts = RunFacts.of(result, model=model)
         return await self._write(
             thread_id=thread_id,
             lines=lines,
             run_id=run_id,
             status=run_status_for_outcome(result.outcome),
-            facts=RunFacts.of(result, model=model),
+            facts=facts,
+            # 只有真的开了账 (`begin` 建出那一行) 才算钱: 没有那一行就没有开始
+            # 时刻, 也就判不了峰谷 —— `_write` 会按「没账目」整轮不写
+            cost=await self._cost_of(facts, run_id)
+            if run_id is not None
+            else RunCost(gap=CostGap.NO_MOMENT, model=model),
+            # 工具调用的事实全在逐轮记录里 (运行中那两拍用的也是它): 这里一并交给
+            # 写入路径 —— 缺的行补上, 有结论的推进到终态 (见 _write_calls)
+            calls=[fact for turn in result.turns for fact in turn.calls],
+            since=since,
+            # 「产生时那一拍写下的形态」: 与上面那份目标形态比一比, 不同的才需要
+            # 修订 (截断续写时几段合成一条 / 早先那几段退成隐藏行)
+            produced=visible_transcript(result.messages, since=since),
             # 本段落的最后一帧: 有了它, 「这次花了多少」与「当时它看到了什么」就
             # 对到同一件事上 (顺 parent_id 往回走 = 本次运行落的每一帧)
             last_checkpoint_id=result.last_checkpoint_id,
@@ -378,6 +491,7 @@ class ConversationRecorder:
         question: str,
         status: RunStatus,
         run_id: str | None = None,
+        since: int = 0,
         model: str | None = None,
     ) -> bool:
         """记下这一轮没答完 (提问 + 一条可见说明) —— 取消 / 失败那一轮走这里."""
@@ -398,6 +512,111 @@ class ConversationRecorder:
             run_id=run_id,
             status=status,
             facts=RunFacts(model=model),
+            # 没跑完那一轮没有账目 (五列全是 None), 也就没有金额 —— 明细里
+            # 如实写一句原因, 而不是让那一列空着不解释
+            cost=RunCost(gap=CostGap.UNFINISHED, model=model),
+            # 提问那一行**在提问时就已经落过库了** (ticket 27 起): 这里要它落在
+            # 同一行上 —— 给下标就够, 编号是算出来的 (写第二遍是幂等的)
+            since=since,
+            produced=[lines[0]],
+        )
+
+    async def flush(
+        self,
+        *,
+        thread_id: str,
+        run_id: str,
+        start: int,
+        messages: Sequence[ModelMessage],
+        calls: Sequence[ToolCallFact] = (),
+    ) -> None:
+        """运行**进行中**把刚产生的那几条落库 (`TraceSink` 的实现, ticket 27).
+
+        两处会调到它 (都在 loop 里): **工具执行前** (那条 assistant 隐藏行 + 这几条
+        调用的 `pending`) 与**每轮收尾** (这一轮新产生的消息 + 有结论的那几条调用).
+        于是库里在运行中途就跟着事实走 —— 执行中被硬杀 / 被取消时看得出它正要调
+        什么, 挂起那条在挂起那一刻就在库里 (ADR-0014 的判据).
+
+        **写失败只降级、不抛、也不留「欠一条」的标记**: 收尾那一拍 (`record`) 会把
+        这一轮该有的行**补齐** (幂等), 所以此刻没写上不是「记录缺了一行」, 下一次
+        写入时补一条用户可见的提示反而是误报 (行最后并不缺). 只有收尾也失败时,
+        `_missed` 那条老机制才说话.
+
+        Args:
+            thread_id: 哪段会话 (会话行由 `begin` 建好了 —— loop 只在开了账时调它).
+            run_id: 哪次运行.
+            start: `messages` 的第 0 条在本次 run wire 历史里的下标 (算编号用).
+            messages: 这一次新增的 wire 消息.
+            calls: 与它们相关的调用事实.
+        """
+        if not messages and not calls:
+            return
+        try:
+            await self._write_lines(
+                thread_id=thread_id,
+                run_id=run_id,
+                messages=messages,
+                start=start,
+            )
+            await self._write_calls(run_id=run_id, calls=calls)
+        except DbError as exc:
+            logger.warning(
+                "会话 %s 这一段运行中途没能记进记录表 (收尾会补齐): %s",
+                thread_id,
+                exc,
+                exc_info=True,
+            )
+
+    async def _write_lines(
+        self,
+        *,
+        thread_id: str,
+        run_id: str,
+        messages: Sequence[ModelMessage],
+        start: int,
+    ) -> None:
+        """把这一批 wire 消息落库 (按**产生时**的形态, 编号由下标派生).
+
+        为什么按产生时的形态 (而不是收尾那份目标形态): 收尾才知道这一轮答复的最终
+        形态 (截断续写的几段要合成一条), 而运行中只能如实写当下那一条 —— 修订留给
+        收尾 (`_write` 的那一步), 于是「库里什么时候有什么」是按事实走的.
+        """
+        if not messages:
+            return
+        lines = visible_transcript(messages)
+        await self._messages.add_lines(
+            thread_id=thread_id,
+            lines=lines,
+            run_id=run_id,
+            ids=[
+                message_id_for(run_id, start + offset) for offset in range(len(lines))
+            ],
+        )
+
+    async def _cost_of(self, facts: RunFacts, run_id: str) -> RunCost:
+        """这一次运行花了多少钱 (按这一版价目表 + 它的开始时刻算).
+
+        开始时刻**从运行行里读** (`created_at`) —— 不放在内存里: 判峰谷看的是那
+        一刻, 而「哪一行、什么时候开始的」本来就记在库里. 记在内存里会多出一个
+        说不清的依赖: 同一行被**另一个记录员实例**收尾时 (挂起补做 / 对账补齐 /
+        换了个进程), 内存里那份是空的, 峰谷部署下金额就会静默留空.
+
+        Args:
+            facts: 这一次运行的账目 (五列用量 + 模型名).
+            run_id: 哪一行 (开始时刻与它绑在一起).
+
+        Returns:
+            RunCost: 金额与算式, 或者算不出来的原因 (读不到那一行 -> `NO_MOMENT`).
+        """
+        run = await self._runs.get(run_id)
+        return cost_of(
+            model=facts.model,
+            table=self._prices,
+            moment=run.created_at if run is not None else None,
+            input_tokens=facts.input_tokens,
+            cache_miss_tokens=facts.cache_miss_tokens,
+            cache_hit_tokens=facts.cache_hit_tokens,
+            output_tokens=facts.output_tokens,
         )
 
     async def _write(
@@ -408,15 +627,26 @@ class ConversationRecorder:
         run_id: str | None,
         status: RunStatus,
         facts: RunFacts,
+        cost: RunCost,
+        calls: Sequence[ToolCallFact] = (),
+        since: int = 0,
+        produced: Sequence[TranscriptLine] | None = None,
         last_checkpoint_id: str | None = None,
     ) -> bool:
-        """四步写入 (会话行 / 运行行收尾 / 消息行 / 活动时刻), 失败降级不抛.
+        """六步写入 (会话行 / 运行行收尾 / 消息补齐 / 修订 / 调用行 / 活动时刻).
 
-        为什么是四次分开的事务而不是一个大事务: 四件事属于三个仓储 (各管一张表),
+        失败降级不抛 (与另两个入口同一条规矩).
+
+        这一步是**收尾**, 它的角色从 ticket 27 起变了: 不再是「把整轮一次写出来」,
+        而是「把这一轮该有的行**补齐** + 把产生时那一拍写下的形态**修订**成最终形态」.
+        运行中途那两拍 (`flush`) 已经把大部分行写过了, 于是这里的两次写都是幂等的:
+        消息按派生编号写 (已有的跳过, `add_lines`), 调用先补行再推进终态.
+
+        为什么是分开的几次事务而不是一个大事务: 几件事分属四个仓储 (各管一张表),
         凑成一个大事务要么跨仓储开私用接口, 要么把这四张表的写法搬到本模块 ——
-        两条都比「四步顺序写」更难维护. 代价是**中间失败会留下半截记录** (比如运行
-        行写了、消息行没写), 那一轮同样落进 `_missed`, 下一次补提示行 —— 记录表
-        里不会出现「看起来完整其实缺了半轮」的样子 (提示行会说话).
+        两条都比「顺序写」更难维护. 代价是**中间失败会留下半截记录** (比如运行行
+        写了、消息行没写), 那一轮同样落进 `_missed`, 下一次补提示行 —— 记录表里
+        不会出现「看起来完整其实缺了半轮」的样子 (提示行会说话).
 
         运行行那一笔是**推进** `begin` 建的那一行 (ticket 22), 不是新建: 帧在运行
         中途就已经把编号盖上了, 这里另起一行的会让那些帧指到别处去. `run_id` 为
@@ -426,6 +656,17 @@ class ConversationRecorder:
         只兜 `DbError` (数据库那一族的错, 仓储抛的就是它): 别的异常是框架自己的
         bug, 该留 traceback 给人看 —— 悄悄吞掉会让记录从此错下去, 那比一次报错
         难查得多.
+
+        Args:
+            thread_id / lines / run_id / status / facts: 见本模块 docstring.
+            cost: 这一轮花了多少钱 (算好的算式, 或算不出来的原因) —— 由**调用方**
+                交给它: 「跑完了没跑完」只有调用方知道 (空账目既可能是「没跑完」,
+                也可能是「跑完了但一点用量都没有」), 让这里去猜会用错那一边.
+            calls: 这一轮的工具调用事实 (含运行中没写上、要在这儿补的那些).
+            since: `lines` 的第 0 条在本次 run wire 历史里的下标 (算编号用).
+            produced: `lines` 里**来自 wire 历史**那一段「产生时的形态」
+                (`visible_transcript` 的产出) —— 编号与修订都以它为准 (只有这几条有
+                wire 下标); None 表示这一批一条都不是从 wire 历史来的.
         """
         if run_id is None:
             # `begin` 没成 (没配记录层时压根不会走到这里): 本轮不记账. 不在这儿
@@ -434,6 +675,23 @@ class ConversationRecorder:
             # 只留「这段会话欠着一条提示行」这个标记, 由下一次成功写入补上
             self._missed.add(thread_id)
             return False
+        # 提示行可能被补在这批行的**前面** (见 `_pending`): 编号按位置算, 所以先
+        # 知道补了几条.
+        #
+        # 编号只有**来自 wire 历史**的那几条才派生的 (`produced` 给出的就是那一段, 与
+        # `lines` 的前几条一一对应); 补进来的内部件 (提示行 / 摘要 / 「这一轮没答完」
+        # 那句说明) **没有 wire 下标** —— 给随机编号. 混着算会出事: 说明行拿到的
+        # 编号可能与这一轮真产生的某条消息撞上, 于是幂等写把它当「已经写过了」跳过,
+        # 而用户看不到「这里少了一轮」那句话
+        batch = self._pending(thread_id, lines)
+        lead = len(batch) - len(lines)
+        from_wire = len(produced) if produced is not None else 0
+        ids = [uuid4().hex] * lead + [
+            message_id_for(run_id, since + offset)
+            if offset < from_wire
+            else uuid4().hex
+            for offset in range(len(lines))
+        ]
         try:
             await self._ensure_thread(thread_id, title_for(lines))
             await self._runs.finish(
@@ -441,17 +699,29 @@ class ConversationRecorder:
                 status=status,
                 last_checkpoint_id=last_checkpoint_id,
                 **asdict(facts),
+                # 金额只在算得出来时写 (仓储那边也只在这时候动那一列): 算不出来
+                # 就留着 NULL —— 「没算出来」不是「没花钱」, 更不是把已有的金额
+                # 清掉. 明细两种情形都写: 它是「这笔钱怎么来的」或「为什么没有」
+                total_cost=cost.total if cost.known else None,
+                total_cost_detail=cost.to_detail(),
             )
             # 消息行带上 run_id: 它们确实属于这次执行 —— 审计时「这几条是哪一次
             # 问答产生的」靠它 (列注释: NULL 表示不是 agent 跑出来的)
             #
             # 提示行与本轮那几行**同一批**插进去: 要么都成, 要么都不成 ——
-            # 否则会出现「说了缺一轮, 但本轮也没写进去」这种更乱的中间态
+            # 否则会出现「说了缺一轮, 但本轮也没写进去」这种更乱的中间态.
+            # 这一批是**补齐** (运行中各拍已经写过的不再写第二遍), 而编号算得出来
+            # 正是为了这个: 两次写落在同一行上
             await self._messages.add_lines(
                 thread_id=thread_id,
-                lines=self._pending(thread_id, lines),
+                lines=batch,
                 run_id=run_id,
+                ids=ids,
             )
+            await self._revise(
+                run_id=run_id, lines=lines, produced=produced, since=since
+            )
+            await self._write_calls(run_id=run_id, calls=calls)
             await self._threads.touch(thread_id)
         except DbError as exc:
             self._missed.add(thread_id)
@@ -461,6 +731,90 @@ class ConversationRecorder:
             return False
         self._missed.discard(thread_id)
         return True
+
+    async def _revise(
+        self,
+        *,
+        run_id: str,
+        lines: Sequence[TranscriptLine],
+        produced: Sequence[TranscriptLine] | None,
+        since: int,
+    ) -> None:
+        """把「产生时那一拍写下的形态」改成这一轮的**最终形态** (只动不一样的那几条).
+
+        什么时候真的会有差别: 截断续写 (CONTINUE) 把**一次答复**拆成好几段 assistant
+        消息 —— 运行中那几拍如实各写一行 (每一条都是「不带工具调用的 assistant」,
+        于是都可见), 而到了收尾才知道它们合成一条之后的样子: 最后一段拿拼合好的完整
+        正文 (**取 `LoopResult.content`**, 不从消息数组末尾抄), 早先那几段退成隐藏行.
+        不修订的话, 同一段答案在记录里会成两截先后出现 (`db/conversation.py` 的模块
+        docstring 讲的就是这件事).
+
+        比较的基准是 `produced` (按 `visible_transcript` 算出的「产生时形态」): 一样
+        就不发 UPDATE —— 修订是**例外**, 不该每轮都往库里写一遍.
+        """
+        if not produced:
+            return
+        for offset, (target, written) in enumerate(zip(lines, produced, strict=False)):
+            if target == written:
+                continue
+            await self._messages.update_line(
+                message_id_for(run_id, since + offset),
+                content=target.content,
+                reasoning=target.reasoning,
+                hidden=target.hidden,
+            )
+
+    async def _write_calls(self, *, run_id: str, calls: Sequence[ToolCallFact]) -> None:
+        """写 / 推进这一批工具调用行: 先按 `pending` 建行, 再把有结论的推进到终态.
+
+        两笔与 issue 22 在 `runs` 上建立的 begin/finish 同构, 兑现的是 ticket 27 定下
+        的那条时机: **执行前落 pending、执行后回填结果**. 两笔都幂等 (建行跳过已有的、
+        推进把同一个结论再写一遍), 于是「哪一拍没写上」由收尾那一趟补齐, 不必记住
+        差了什么.
+
+        为什么每条都先建 `pending` 行 (而不是一笔写成结论): `needs_approval` (挂起等人)
+        与 `succeeded` 都是**结论**, 而结论不该是这一行的第一个状态 —— 第一个状态是
+        「模型刚发起」(见 `ToolCallStatus` 的注释). 代价是每条多一次 UPDATE; 一个 run
+        的调用只有几条到几十条, 换来的是**挂起那条与普通那条走同一个形状** (两套写法
+        必然漂移).
+
+        归属靠 `fact.message_index` 算 (`message_id_for`), 于是**同一次运行的第二段**
+        (审批恢复) 能直接寻址第一段写下的那一行. 反过来说: 若补做的那条调用, 发起它
+        的 assistant 行不属于**本次** run (CLI `--resume` 开的是新的一次运行, 而快照里
+        那条 assistant 行是上一次运行写的), 这个编号在本次 run 里没有对应的消息行 ——
+        外键会拦下, 降级成一条 warning. **那条路由 issue 33 定**: HITL 恢复沿用挂起
+        那次运行的编号 (本来就是同一次运行), 或者把那条 assistant 行按本次运行补写一行.
+        """
+        if not calls:
+            return
+        await self._calls.add_calls(
+            run_id=run_id,
+            calls=[
+                build_tool_call(
+                    run_id=run_id,
+                    # 发起它的那条 assistant 消息: 编号由 (run_id, 下标) 算出来 ——
+                    # 运行中那一拍写的是同一个编号, 所以这里写的是**同一行**
+                    message_id=message_id_for(run_id, fact.message_index),
+                    tool_call_id=fact.tool_call_id,
+                    tool_name=fact.tool_name,
+                    arguments=fact.arguments,
+                    status=ToolCallStatus.PENDING,
+                )
+                for fact in calls
+            ],
+        )
+        for fact in calls:
+            if fact.outcome is ToolCallOutcome.PENDING:
+                # 还没执行 (执行前那一拍): 这一行停在「模型刚发起」就是事实
+                continue
+            await self._calls.set_status(
+                run_id,
+                message_id_for(run_id, fact.message_index),
+                fact.tool_call_id,
+                tool_call_status_for_outcome(fact.outcome),
+                result=fact.result,
+                duration_ms=fact.duration_ms,
+            )
 
     async def _ensure_thread(self, thread_id: str, title: str) -> None:
         """会话行懒创建: 有就复用 (顺手补个空标题), 没有就用 title 建一个.

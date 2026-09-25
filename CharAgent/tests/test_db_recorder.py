@@ -20,9 +20,21 @@ from typing import Any
 
 import pytest
 from doubles import BrokenRecordDatabase, FakeRecordDatabase, record_thread
+from mock_llm import (
+    MockLLM,
+    make_tool_call,
+    text_response,
+    tool_call_response,
+)
 
-from CharAgent.agent import LoopOutcome
-from CharAgent.agent.utils.types import LoopResult
+from CharAgent.agent import AgentLoop, LoopOutcome
+from CharAgent.agent.utils.types import (
+    LoopResult,
+    ToolCallFact,
+    ToolCallOutcome,
+    TurnRecord,
+)
+from CharAgent.checkpoint import InMemoryCheckpointSaver
 from CharAgent.db.conversation import TranscriptLine
 from CharAgent.db.entities import MessageRole, RunStatus, ThreadStatus
 from CharAgent.db.errors import DataStoreError
@@ -33,7 +45,9 @@ from CharAgent.db.recorder import (
     ConversationRecorder,
     title_for,
 )
+from CharAgent.db.repositories.tool_calls import ToolCallsRepository
 from CharAgent.model import FinishReason
+from CharAgent.tool import ToolActionableError, tool
 
 THREAD_ID = "toy:u-9f3a:chat-1"
 
@@ -42,6 +56,50 @@ TWO_LINES = [
     {"role": "user", "content": "订单到哪了"},
     {"role": "assistant", "content": "答好了"},
 ]
+
+# 「我要去查一下」那一条 assistant 消息 (wire 形状: 带 tool_calls, 正文为空)
+ORDER_CALL = '{"order_no": "SF123"}'
+ASSISTANT_CALL = {
+    "role": "assistant",
+    "content": None,
+    "tool_calls": [
+        {
+            "id": "call_0",
+            "type": "function",
+            "function": {"name": "query_order", "arguments": ORDER_CALL},
+        }
+    ],
+}
+TOOL_FILL = {"role": "tool", "tool_call_id": "call_0", "content": "已发货"}
+
+
+# 端到端用例的两个载体工具 (一个成功、一个自己抛可操作错误)
+@tool
+def query_order(
+    order_no: str,
+) -> str:
+    """查订单状态.
+
+    Args:
+        order_no: 订单号.
+    """
+    return "已发货"
+
+
+@tool
+def request_refund(
+    order_no: str,
+) -> str:
+    """申请退款.
+
+    Args:
+        order_no: 订单号.
+    """
+    raise ToolActionableError(f"订单号 {order_no!r} 格式不对: 应当是 14 位数字")
+
+
+query_order_tool = query_order
+request_refund_tool = request_refund
 
 
 class TwitchyDatabase(FakeRecordDatabase):
@@ -73,6 +131,7 @@ def result(
     content: str | None = "答好了",
     outcome: LoopOutcome = LoopOutcome.FINISHED,
     messages: list | None = None,
+    turns: list[TurnRecord] | None = None,
     turn_count: int = 1,
     total_tokens: int = 42,
     input_tokens: int | None = None,
@@ -92,7 +151,7 @@ def result(
         content=content,
         finish_reason=FinishReason.STOP,
         outcome=outcome,
-        turns=[],
+        turns=[] if turns is None else turns,
         turn_count=turn_count,
         total_tokens=total_tokens,
         input_tokens=input_tokens,
@@ -548,3 +607,348 @@ async def test_without_a_fresh_summary_no_line_is_added() -> None:
     await record_turn(recorder(database), result=result())
 
     assert len(database.rows_of("charagent_messages")) == 2
+
+
+# ---------------------------------------------------------------------------
+# 产生即落库 (ticket 27): 运行中途那两拍 + 收尾补齐 + 修订
+# ---------------------------------------------------------------------------
+#
+# 记录层从这一片起是「产生即落库」: 运行中途那两拍 (工具执行前 / 每轮收尾) 把刚
+# 产生的写进去, 而收尾那一拍 (`record` / `record_unfinished`) 变成**补齐 + 修订**.
+# 于是同一批行会被写两次 —— 编号由 (run_id, 下标) 派生, 两次落在同一行上.
+
+
+def fact(
+    *,
+    index: int = 1,
+    call_id: str = "call_0",
+    name: str = "query_order",
+    arguments: str = ORDER_CALL,
+    outcome: ToolCallOutcome = ToolCallOutcome.PENDING,
+    result: str | None = None,
+    duration_ms: int | None = None,
+) -> ToolCallFact:
+    """造一条工具调用事实 (用例只关心其中一两项时, 其余给合理默认)."""
+    return ToolCallFact(
+        message_index=index,
+        tool_call_id=call_id,
+        tool_name=name,
+        arguments=arguments,
+        outcome=outcome,
+        result=result,
+        duration_ms=duration_ms,
+    )
+
+
+async def test_the_flush_writes_what_was_just_produced() -> None:
+    """运行中途那一拍: 那几条消息**当场**落库, 编号由 (运行, 下标) 算出来.
+
+    编号算得出来是这一片的地基: 工具调用行拿它当外键 (`message_id`), 而运行中途
+    那条 assistant 行正是**发起调用的那一行**.
+    """
+    database = FakeRecordDatabase()
+    rec = recorder(database)
+    run_id = await rec.begin(thread_id=THREAD_ID, title="订单到哪了")
+
+    await rec.flush(
+        thread_id=THREAD_ID,
+        run_id=run_id,
+        start=1,
+        messages=[ASSISTANT_CALL, TOOL_FILL],
+    )
+
+    rows = database.rows_of("charagent_messages")
+    assert [row["message_id"] for row in rows] == [f"{run_id}:1", f"{run_id}:2"]
+    assert [(row["role"], row["hidden"]) for row in rows] == [
+        # 发起工具调用的中间轮与工具回填都是内部件 (前端看不见, 审计查得到)
+        ("assistant", True),
+        ("tool", True),
+    ]
+    assert rows[0]["tool_call_ids"] == ["call_0"], "它发起了哪次调用也一并记下"
+    assert {row["run_id"] for row in rows} == {run_id}
+
+
+async def test_a_call_is_written_pending_first_then_advanced() -> None:
+    """工具调用行两笔: 执行前 `pending`, 执行后回填结论与耗时.
+
+    与 issue 22 在 `runs` 上建立的 begin / finish 同构 —— 挂起那条的中间态因此与
+    普通那条走**同一个形状** (两套写法必然漂移).
+    """
+    database = FakeRecordDatabase()
+    rec = recorder(database)
+    run_id = await rec.begin(thread_id=THREAD_ID, title="订单到哪了")
+
+    await rec.flush(
+        thread_id=THREAD_ID,
+        run_id=run_id,
+        start=1,
+        messages=[ASSISTANT_CALL],
+        calls=[fact()],
+    )
+    [row] = database.rows_of("charagent_tool_calls")
+    assert (row["status"], row["result"], row["duration_ms"]) == (
+        "pending",
+        None,
+        None,
+    ), "还没执行: 没有结论, 也没有耗时 (NULL 与 0 毫秒不是一回事)"
+    assert (row["tool_name"], row["arguments"]) == ("query_order", ORDER_CALL)
+    assert row["message_id"] == f"{run_id}:1", "挂在发起它的那条 assistant 消息上"
+
+    await rec.flush(
+        thread_id=THREAD_ID,
+        run_id=run_id,
+        start=2,
+        messages=[TOOL_FILL],
+        calls=[
+            fact(outcome=ToolCallOutcome.SUCCEEDED, result="已发货", duration_ms=142)
+        ],
+    )
+    [row] = database.rows_of("charagent_tool_calls")
+    assert (row["status"], row["result"], row["duration_ms"]) == (
+        "succeeded",
+        "已发货",
+        142,
+    )
+
+
+async def test_a_suspended_call_is_written_and_waits_for_a_verdict() -> None:
+    """挂起那条写 `needs_approval`, 且 `approved_at` 为空 —— 等人来批.
+
+    产生挂起归 issue 34 (它才认 `Decision` 的第三个值); 本片提供的是**这条写入
+    路径** —— 而 ADR-0014 的判据 (`status = needs_approval AND approved_at IS NULL`)
+    要的就是这一行.
+    """
+    database = FakeRecordDatabase()
+    rec = recorder(database)
+    run_id = await rec.begin(thread_id=THREAD_ID, title="帮我退款")
+
+    await rec.flush(
+        thread_id=THREAD_ID,
+        run_id=run_id,
+        start=1,
+        messages=[ASSISTANT_CALL],
+        calls=[fact(outcome=ToolCallOutcome.NEEDS_APPROVAL)],
+    )
+
+    [row] = database.rows_of("charagent_tool_calls")
+    assert row["status"] == "needs_approval"
+    assert row["approved_at"] is None
+    assert row["approved_by"] is None
+
+
+async def test_writing_the_same_batch_twice_leaves_one_row_each() -> None:
+    """幂等: 同一批消息与同一条调用写两次, 库里一条都没多.
+
+    两次写是常态 (运行中途那一拍 + 收尾补齐那一拍), 编号算得出来正是为了它.
+    """
+    database = FakeRecordDatabase()
+    rec = recorder(database)
+    run_id = await rec.begin(thread_id=THREAD_ID, title="订单到哪了")
+    batch: dict[str, Any] = {
+        "thread_id": THREAD_ID,
+        "run_id": run_id,
+        "start": 1,
+        "messages": [ASSISTANT_CALL, TOOL_FILL],
+        "calls": [
+            fact(outcome=ToolCallOutcome.SUCCEEDED, result="已发货", duration_ms=7)
+        ],
+    }
+
+    await rec.flush(**batch)
+    await rec.flush(**batch)
+
+    assert len(database.rows_of("charagent_messages")) == 2, "两条消息各一行"
+    assert len(database.rows_of("charagent_tool_calls")) == 1, "一次调用一行"
+
+
+async def test_the_finish_pass_fills_in_what_no_turn_wrote() -> None:
+    """收尾补齐: 运行中途一条都没写上 (记录员没实现 `flush`), 收尾那一趟补上.
+
+    这一条钉的是**没配增量落库时行为与从前一样** —— 消息与调用都由收尾写出, 而
+    编号照样是算出来的 (于是它与「中途写过」那种情形落在同一批行上).
+    """
+    database = FakeRecordDatabase()
+    turn = TurnRecord(
+        turn=1,
+        response=tool_call_response(
+            make_tool_call("query_order", ORDER_CALL, call_id="call_0")
+        ),
+        messages=[],
+        tokens=7,
+        elapsed_ms=12.0,
+        calls=[
+            fact(outcome=ToolCallOutcome.SUCCEEDED, result="已发货", duration_ms=142)
+        ],
+    )
+
+    written = await record_turn(
+        recorder(database),
+        result=result(
+            content="已发货",
+            messages=[
+                {"role": "user", "content": "订单到哪了"},
+                ASSISTANT_CALL,
+                TOOL_FILL,
+                {"role": "assistant", "content": "已发货"},
+            ],
+            turns=[turn],
+        ),
+    )
+
+    assert written is True
+    [run] = database.rows_of("charagent_runs")
+    assert [row["message_id"] for row in database.rows_of("charagent_messages")] == [
+        f"{run['run_id']}:0",
+        f"{run['run_id']}:1",
+        f"{run['run_id']}:2",
+        f"{run['run_id']}:3",
+    ]
+    [call] = database.rows_of("charagent_tool_calls")
+    assert (call["status"], call["result"], call["duration_ms"]) == (
+        "succeeded",
+        "已发货",
+        142,
+    )
+    assert call["message_id"] == f"{run['run_id']}:1", (
+        "归属还是那条发起调用的 assistant 消息"
+    )
+
+
+async def test_the_finish_pass_revises_a_truncated_answer_into_one_line() -> None:
+    """修订: 截断续写的几段在运行中如实各写一行, 收尾把这一轮答复修成**一条**.
+
+    不修的话, 前端会把同一段答案看成被截成两截的两句话 —— 而可见的那条必须是
+    `LoopResult.content` (框架拼好的完整正文), 不是消息数组末尾那一段.
+    """
+    database = FakeRecordDatabase()
+    rec = recorder(database)
+    run_id = await rec.begin(thread_id=THREAD_ID, title="讲个故事")
+    wire = [
+        {"role": "user", "content": "讲个故事"},
+        {"role": "assistant", "content": "从前有座山"},
+        {"role": "system", "content": "接着上面继续写"},
+        {"role": "assistant", "content": "山里有座庙"},
+    ]
+
+    # 运行中那一拍: 产生时是什么样就写成什么样 (前一段这时也还是可见的)
+    await rec.flush(thread_id=THREAD_ID, run_id=run_id, start=0, messages=wire)
+    assert [row["hidden"] for row in database.rows_of("charagent_messages")] == [
+        False,
+        False,
+        True,
+        False,
+    ]
+
+    await rec.record(
+        thread_id=THREAD_ID,
+        run_id=run_id,
+        result=result(content="从前有座山山里有座庙", messages=wire),
+    )
+
+    rows = database.rows_of("charagent_messages")
+    assert [row["hidden"] for row in rows] == [False, True, True, False], (
+        "早先那一段退成隐藏行 (原文仍在, 审计查得到)"
+    )
+    assert rows[3]["content"] == "从前有座山山里有座庙", "可见的那条是拼合后的完整正文"
+    assert len(rows) == 4, "修订不改行数: 一条不多一条不少"
+
+
+async def test_a_failed_flush_only_degrades(caplog: pytest.LogCaptureFixture) -> None:
+    """运行中途那一拍写不进去: 只记一笔 warning, **不抛**、也不算「缺了一轮」.
+
+    为什么不算缺: 收尾那一趟会补齐 (幂等), 所以此刻没写上不是「记录缺了一行」——
+    这时补一条用户可见的提示反而是误报 (最后并不缺).
+    """
+    rec = recorder(BrokenRecordDatabase())
+
+    with caplog.at_level(logging.WARNING, logger="charagent.db"):
+        await rec.flush(
+            thread_id=THREAD_ID, run_id="run-1", start=1, messages=[ASSISTANT_CALL]
+        )
+
+    assert "没能记进记录表" in caplog.text
+    assert rec.missed_threads == frozenset(), "中途那一拍失败不算欠一条提示行"
+
+
+async def test_a_real_run_ends_up_listable_by_run() -> None:
+    """端到端: 一次真跑 (loop + 记录员 + 假库) 之后, 那两次调用都**查得出来**.
+
+    验收第 1 条的自动化版本 (真机那一次是同一件事的手工版): 把轨迹的**来源**
+    (loop 交出的事实) 与**落库** (记录员) 接起来, 而 `list_for_run` 正是 issue 28
+    的 `trace` 会走的那条读路径. 中间任何一环断了 (下标算错 / 编号对不上 / 外键
+    挂错消息), 这条都会红.
+
+    两次调用刻意一成一败 (第二个工具自己抛可操作错误): 「工具失败」也是一次调用,
+    同样要留下一行.
+    """
+    database = FakeRecordDatabase()
+    rec = recorder(database)
+    run_id = await rec.begin(thread_id=THREAD_ID, title="订单到哪了")
+    loop = AgentLoop(
+        MockLLM.scripted(
+            [
+                tool_call_response(
+                    make_tool_call("query_order", ORDER_CALL, call_id="call_0")
+                ),
+                tool_call_response(
+                    make_tool_call(
+                        "request_refund", '{"order_no": "短"}', call_id="call_1"
+                    )
+                ),
+                text_response("订单已发货; 退款没申请上"),
+            ]
+        ),
+        tools=[query_order_tool, request_refund_tool],
+        saver=InMemoryCheckpointSaver(),
+        thread_id=THREAD_ID,
+        trace_sink=rec,
+    )
+
+    result = await loop.run([{"role": "user", "content": "订单到哪了"}], run_id=run_id)
+    assert await rec.record(thread_id=THREAD_ID, run_id=run_id, result=result)
+
+    calls = await ToolCallsRepository(database).list_for_run(run_id)
+    assert [(call.tool_name, call.status) for call in calls] == [
+        ("query_order", "succeeded"),
+        ("request_refund", "failed"),
+    ], "两次调用各一行, 状态按事实"
+    first, second = calls
+    assert first.arguments == ORDER_CALL, "参数原样 (不预解析)"
+    assert first.result == "已发货"
+    assert first.duration_ms is not None
+    assert second.result and "格式不对" in second.result, "失败原因就是这一条的结果"
+    assert second.duration_ms is not None, "它真的跑过 (失败也是一次执行)"
+    # 归属: 两次调用挂在发起它们的那条 assistant 消息行上, 而那行确实在库里
+    message_ids = {row["message_id"] for row in database.rows_of("charagent_messages")}
+    assert {first.message_id, second.message_id} <= message_ids
+
+
+async def test_the_unfinished_notice_does_not_take_a_wire_index() -> None:
+    """「这一轮没答完」那句说明**不占**派生编号 —— 它没有 wire 下标.
+
+    踩过的坑 (本用例就是为它写的): 一次跑到第二轮才失败的运行, 库里已经有
+    `run_id:since+1` 那一行 (第一轮真产生的消息). 说明行若也算成那个编号, 幂等写
+    就会把它当成「已经写过了」跳过 —— 用户看不到那句话, 而那一轮看起来**凭空消失**.
+    """
+    database = FakeRecordDatabase()
+    rec = recorder(database)
+    run_id = await rec.begin(thread_id=THREAD_ID, title="订单到哪了")
+    # 第一轮跑完了 (它产生的那条消息落过库), 第二轮才失败
+    await rec.flush(
+        thread_id=THREAD_ID,
+        run_id=run_id,
+        start=1,
+        messages=[{"role": "assistant", "content": "答到一半"}],
+    )
+
+    await rec.record_unfinished(
+        thread_id=THREAD_ID,
+        run_id=run_id,
+        question="订单到哪了",
+        status=RunStatus.FAILED,
+        since=0,
+    )
+
+    contents = [row["content"] for row in database.rows_of("charagent_messages")]
+    assert UNFINISHED_TURN_TEXT in contents, "说明行必须真的落库"
+    assert contents.count("订单到哪了") == 1, "提问行不重复写"

@@ -24,7 +24,7 @@ time-travel 一整套语义). 本包只提供那张表的**定义** (schema.py),
 from __future__ import annotations
 
 from CharAgent.db.repositories.base import Database, PgRepository
-from CharAgent.db.repositories.messages import MessagesRepository
+from CharAgent.db.repositories.messages import MessagesRepository, message_id_for
 from CharAgent.db.repositories.runs import RunsRepository
 from CharAgent.db.repositories.threads import ThreadsRepository
 from CharAgent.db.repositories.tool_calls import (
@@ -40,4 +40,5 @@ __all__ = [
     "ThreadsRepository",
     "ToolCallsRepository",
     "build_tool_call",
+    "message_id_for",
 ]

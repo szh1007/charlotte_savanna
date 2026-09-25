@@ -12,16 +12,18 @@ from __future__ import annotations
 
 import pytest
 
-from CharAgent.agent.utils.types import LoopOutcome
-from CharAgent.db.entities import RunStatus
+from CharAgent.agent.utils.types import LoopOutcome, ToolCallOutcome
+from CharAgent.db.entities import RunStatus, ToolCallStatus
 from CharAgent.db.errors import InvalidTransitionError
 from CharAgent.db.state import (
     ALLOWED_TRANSITIONS,
     RUN_STATUS_FOR_OUTCOME,
     TERMINAL_RUN_STATUSES,
+    TOOL_CALL_STATUS_FOR_OUTCOME,
     can_transition,
     ensure_transition,
     run_status_for_outcome,
+    tool_call_status_for_outcome,
 )
 
 ALL_STATUSES = list(RunStatus)
@@ -153,3 +155,35 @@ def test_unknown_outcome_raises():
 
     with pytest.raises(KeyError):
         run_status_for_outcome(FakeOutcome())  # type: ignore[arg-type]
+
+
+def test_tool_call_outcomes_map_to_the_status_column() -> None:
+    """agent 侧的工具调用状态 → 工具调用行该落的值 (ticket 27).
+
+    四个取值一一对应 (`pending` / `succeeded` / `failed` / `needs_approval`):
+    前三个由 loop 产生, 最后一个是挂起 (issue 34) 那一支, 本片先把写入路径备好.
+    """
+    assert (
+        tool_call_status_for_outcome(ToolCallOutcome.PENDING) is ToolCallStatus.PENDING
+    )
+    assert (
+        tool_call_status_for_outcome(ToolCallOutcome.SUCCEEDED)
+        is ToolCallStatus.SUCCEEDED
+    )
+    assert tool_call_status_for_outcome(ToolCallOutcome.FAILED) is ToolCallStatus.FAILED
+    assert (
+        tool_call_status_for_outcome(ToolCallOutcome.NEEDS_APPROVAL)
+        is ToolCallStatus.NEEDS_APPROVAL
+    )
+
+
+def test_an_unknown_tool_call_outcome_raises() -> None:
+    """没登记的取值抛 KeyError —— 与运行状态同一套规矩: 不猜一个状态写进库."""
+    assert ToolCallStatus.RUNNING not in TOOL_CALL_STATUS_FOR_OUTCOME.values()
+    assert ToolCallStatus.CANCELLED not in TOOL_CALL_STATUS_FOR_OUTCOME.values()
+
+    class FakeOutcome:
+        value = "not_a_real_outcome"
+
+    with pytest.raises(KeyError):
+        tool_call_status_for_outcome(FakeOutcome())  # type: ignore[arg-type]

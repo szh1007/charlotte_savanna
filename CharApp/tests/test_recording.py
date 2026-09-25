@@ -22,6 +22,7 @@ import pytest
 from conftest import AGENT_BASE_URL, BUYER_ID, TOKEN
 
 from CharAgent.checkpoint import InMemoryCheckpointSaver
+from CharAgent.db.errors import PricingNotReadyError
 from CharAgent.tests.doubles import FakeRecordDatabase
 from CharAgent.tests.mock_llm import MockLLM, text_response
 from CharApp.minimall.client import MinimallClient
@@ -128,3 +129,60 @@ def test_the_two_entries_are_two_tenants() -> None:
     assert web.thread_id == f"minimall:{BUYER_ID}:web"
     assert cli.thread_id == f"minimall:{BUYER_ID}:cli"
     assert web.payload["user_id"] == BUYER_ID, "载荷里的身份仍是整数"
+
+
+# ---------------------------------------------------------------------------
+# 计价那条路的启动自检 (ticket 28)
+# ---------------------------------------------------------------------------
+
+
+def test_the_service_refuses_to_start_on_a_broken_price_table(
+    mall_client: MinimallClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """价目表写错 -> **装配那一刻**就抛, 进程起不来.
+
+    框架的记录员构造时也会验一次 (它才是花钱的那个角色); 这里验的是进程启动那一刻:
+    两个入口共用 `MinimallService` 这一处装配, 所以命令行与服务进程都拦得住 ——
+    与其等第一次收尾才发现「钱算不出来」, 不如一开始就不让它接活.
+    """
+    monkeypatch.setenv("CHARAGENT_MODEL_PRICES", '{"models": {"m": {"cache_miss": 1}}}')
+
+    with pytest.raises(PricingNotReadyError) as info:
+        service_for(
+            mall_client,
+            MockLLM([]),
+            InMemoryCheckpointSaver(),
+            database=FakeRecordDatabase(),
+        )
+
+    assert "output" in str(info.value), "报错要点名缺的是哪一档"
+
+
+def test_the_service_starts_without_any_pricing_config(
+    mall_client: MinimallClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """没配价目表 -> 照常起 (不配价不是错误, 只是没有金额).
+
+    这一条是「缺了也要能用」的验收: 演示环境不配价, 助手照样能问答.
+    """
+    monkeypatch.delenv("CHARAGENT_MODEL_PRICES", raising=False)
+
+    service = service_for(
+        mall_client,
+        MockLLM([]),
+        InMemoryCheckpointSaver(),
+        database=FakeRecordDatabase(),
+    )
+
+    assert service is not None
+
+
+def test_a_service_without_a_database_is_not_gated(
+    mall_client: MinimallClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """不记账的进程 (没有库) 不该被日历/配置拦住 —— 那笔钱它根本不记."""
+    monkeypatch.setenv("CHARAGENT_MODEL_PRICES", "不是 JSON")
+
+    service = service_for(mall_client, MockLLM([]), InMemoryCheckpointSaver())
+
+    assert service is not None

@@ -360,3 +360,29 @@ def test_recorded_only_looks_at_what_this_run_added():
     lines = recorded_transcript(wire, "第二答", since=2)
 
     assert [line.content for line in lines] == ["第二问", "第二答"]
+
+
+def test_the_two_transcript_exits_stay_line_for_line():
+    """两条出口**逐条对位** (同样条数、同样顺序), 差别只在可见性与正文.
+
+    为什么值得钉住 (ticket 27): 记录层按**位置**算消息编号 (`message_id_for(run_id,
+    since + 第几条)`) —— 运行中那一拍写的是 `visible_transcript` 的产出, 收尾那一拍
+    拿 `recorded_transcript` 的产出与它逐条比. 两条出口哪天差的不是「内容」而是
+    「条数」(比如谁多吐了一条), 编号就会整体串位, 而那种错**不报错**: 工具调用行
+    会安静地挂到别人的消息上.
+    """
+    wire = [
+        _user("讲个故事"),
+        _assistant("从前有座山"),
+        {"role": "system", "content": "接着上面继续写"},
+        _assistant("山里有座庙"),
+    ]
+
+    produced = visible_transcript(wire)
+    recorded = recorded_transcript(wire, "从前有座山山里有座庙")
+
+    assert len(recorded) == len(produced), "两条出口的条数必须一样 (编号按位置算)"
+    assert [line.role for line in recorded] == [line.role for line in produced]
+    assert [line.tool_call_ids for line in recorded] == [
+        line.tool_call_ids for line in produced
+    ]

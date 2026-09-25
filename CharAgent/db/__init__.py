@@ -20,6 +20,7 @@
 | `conversation.py` | 会话消息分层 (哪几条给前端看; 答复取 `LoopResult.content`) |
 | `database.py` | 连库与事务 (`PgDatabase`: 同步引擎 + `asyncio.to_thread`) |
 | `config.py` | 连接配置 (环境变量 → 连接串) |
+| `cost.py` | 成本折算: 收尾那一刻按当时价目表算好金额 (写进 runs, 事后不重算) |
 | `errors.py` | 三类错误 (配置错 / 状态迁移非法 / 库出错) |
 | `repositories/` | 四个取数口 (会话 / 运行 / 消息 / 工具调用) |
 | `recorder.py` | 会话记录: 一次运行收尾把这一轮写进上面几张表 |
@@ -75,6 +76,18 @@ from CharAgent.db.conversation import (
     recorded_transcript,
     visible_transcript,
 )
+from CharAgent.db.cost import (
+    CostGap,
+    CostLine,
+    PeakRule,
+    PriceTable,
+    RunCost,
+    TierPrices,
+    TierVerdict,
+    cost_of,
+    ensure_pricing_ready,
+    load_pricing,
+)
 from CharAgent.db.database import PgDatabase
 from CharAgent.db.entities import (
     CheckpointRow,
@@ -92,6 +105,7 @@ from CharAgent.db.errors import (
     DataStoreError,
     DbError,
     InvalidTransitionError,
+    PricingNotReadyError,
 )
 from CharAgent.db.recorder import ConversationRecorder, RunRecorder, title_for
 from CharAgent.db.repositories import (
@@ -102,6 +116,7 @@ from CharAgent.db.repositories import (
     ThreadsRepository,
     ToolCallsRepository,
     build_tool_call,
+    message_id_for,
 )
 from CharAgent.db.repositories.utils.mapping import model_to_dict
 from CharAgent.db.schema import (
@@ -131,6 +146,8 @@ __all__ = [
     "TERMINAL_RUN_STATUSES",
     "CheckpointRow",
     "ConversationRecorder",
+    "CostGap",
+    "CostLine",
     "DataConfigError",
     "DataStoreError",
     "Database",
@@ -139,15 +156,21 @@ __all__ = [
     "Message",
     "MessageRole",
     "MessagesRepository",
+    "PeakRule",
     "PgDatabase",
     "PgRepository",
+    "PriceTable",
+    "PricingNotReadyError",
     "Run",
+    "RunCost",
     "RunRecorder",
     "RunStatus",
     "RunsRepository",
     "Thread",
     "ThreadStatus",
     "ThreadsRepository",
+    "TierPrices",
+    "TierVerdict",
     "ToolCall",
     "ToolCallStatus",
     "ToolCallsRepository",
@@ -158,10 +181,14 @@ __all__ = [
     "can_transition",
     "checkpoints",
     "conversation_turns",
+    "cost_of",
     "count_visible",
     "echo_enabled",
+    "ensure_pricing_ready",
     "ensure_transition",
     "has_visible_answer",
+    "load_pricing",
+    "message_id_for",
     "messages",
     "metadata",
     "model_to_dict",

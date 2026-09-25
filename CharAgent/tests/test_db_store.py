@@ -18,6 +18,7 @@ public 一个字节都不动.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -40,6 +41,7 @@ from CharAgent.db import (
     ToolCallStatus,
     build_tool_call,
     conversation_turns,
+    message_id_for,
     visible_transcript,
 )
 from CharAgent.db.schema import TABLE_NAMES, checkpoints
@@ -1282,3 +1284,108 @@ async def test_search_treats_wildcards_as_plain_text(db: PgDatabase):
     assert await found("50%") == {literal.thread_id}
     assert await found("_") == set(), "一个下划线不该把所有会话都搜出来"
     assert await found("别_标题") == set(), "下划线不该当「任意一个字符」用"
+
+
+# ---------------------------------------------------------------------------
+# 幂等写入 (ticket 27): 编号算得出来 → 同一批行写两次落在同一行上
+# ---------------------------------------------------------------------------
+
+
+async def test_add_lines_with_derived_ids_skips_what_is_already_there(
+    db: PgDatabase,
+):
+    """编号是算出来的那一批行: 写两次还是一条, 而**已有的行不被覆盖**.
+
+    记录层「产生即落库 + 收尾补齐」会把同一批行交给这里两次, 两次必须落在同一行
+    上 —— 第二次既不能多出一行, 也不能把内容改掉 (要改走 `update_line`, 那是
+    修订那一笔的事).
+    """
+    messages = MessagesRepository(db)
+    thread_id = await _make_thread(db)
+    run = await RunsRepository(db).add(thread_id=thread_id)
+    lines = visible_transcript(
+        [
+            {"role": "user", "content": "订单到哪了"},
+            {"role": "assistant", "content": "已发货"},
+        ]
+    )
+    ids = [message_id_for(run.run_id, index) for index in range(len(lines))]
+
+    await messages.add_lines(
+        thread_id=thread_id, lines=lines, run_id=run.run_id, ids=ids
+    )
+    # 第二次: 同一批编号, 但第一条的内容改过了 —— 幂等写不该动它
+    await messages.add_lines(
+        thread_id=thread_id,
+        lines=[replace(lines[0], content="改过了"), lines[1]],
+        run_id=run.run_id,
+        ids=ids,
+    )
+
+    rows = await messages.list_transcript(thread_id)
+    assert [row.message_id for row in rows] == ids
+    assert [row.content for row in rows] == ["订单到哪了", "已发货"], (
+        "已有的行不被第二次写覆盖"
+    )
+
+    # 要改它得走修订 (收尾那一笔): 正文与可见性一起给出目标形态
+    assert await messages.update_line(
+        ids[0], content="订单到哪了", reasoning=None, hidden=True
+    )
+    rows = await messages.list_transcript(thread_id)
+    assert [row.hidden for row in rows] == [True, False]
+
+
+async def test_update_line_reports_a_missing_row(db: PgDatabase):
+    """修订一条不在库里的行 (运行中那一拍写失败过) 返回 False, 不报错."""
+    messages = MessagesRepository(db)
+
+    changed = await messages.update_line(
+        "run-x:9", content="没有这一行", reasoning=None, hidden=True
+    )
+
+    assert changed is False
+
+
+async def test_add_calls_skips_existing_rows_without_overwriting_conclusions(
+    db: PgDatabase,
+):
+    """一次调用一行: 同一批调用写两次只有一行, 且**已有的结论不被覆盖**.
+
+    收尾补齐那一趟用的就是它 —— 它只负责「缺的补上」, 推进结论是 `set_status` 的
+    事. 两者混在一起的话, 补齐会拿建行时的 `pending` 盖掉运行中推进出来的结论.
+    """
+    calls = ToolCallsRepository(db)
+    messages = MessagesRepository(db)
+    thread_id = await _make_thread(db)
+    run = await RunsRepository(db).add(thread_id=thread_id)
+    message_id, _ = await _two_assistant_messages(messages, thread_id, run)
+
+    def row():
+        """同一批调用的「建行那一笔」(状态是 pending)."""
+        return build_tool_call(
+            run_id=run.run_id,
+            message_id=message_id,
+            tool_call_id="call_0",
+            tool_name="query_order",
+            arguments='{"order_no": "SF123"}',
+        )
+
+    await calls.add_calls(run_id=run.run_id, calls=[row()])
+    assert await calls.set_status(
+        run.run_id,
+        message_id,
+        "call_0",
+        ToolCallStatus.SUCCEEDED,
+        result="已发货",
+        duration_ms=142,
+    )
+    # 收尾补齐那一趟: 同一批再交一次
+    await calls.add_calls(run_id=run.run_id, calls=[row()])
+
+    [stored] = await calls.list_for_run(run.run_id)
+    assert (stored.status, stored.result, stored.duration_ms) == (
+        ToolCallStatus.SUCCEEDED.value,
+        "已发货",
+        142,
+    )

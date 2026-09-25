@@ -151,6 +151,9 @@ from CharAgent.agent.utils.types import (
     LoopOutcome,
     LoopResult,
     LoopState,
+    ToolCallFact,
+    ToolCallOutcome,
+    TraceSink,
     TruncationStrategy,
     TurnRecord,
 )
@@ -207,6 +210,58 @@ def _checked_prompt_ref(
     return prompt_ref
 
 
+def _facts_of(
+    calls: Sequence[ModelToolCall],
+    *,
+    index: int,
+    executions: Sequence[ToolExecution] | None = None,
+) -> list[ToolCallFact]:
+    """工具调用 (加它们的执行结果) → 事实列表 (记录层按它写 `charagent_tool_calls`).
+
+    两拍共用它: `executions` 为 None 是**执行前**那一拍 (状态是 PENDING, 还没有结果
+    与耗时), 给了就是**执行后**那一拍 (结论与耗时都在手上了). 合成一个函数而不是
+    写两遍: 两拍的字段必须逐一对应 (少一个字段, 库里那一行就少一列事实).
+
+    Args:
+        calls: 模型这一轮要求的调用 (顺序即模型给的顺序).
+        index: 发起它们的 assistant 消息在本次 run 历史里的下标.
+        executions: 与 calls 一一对应的执行结果; None 表示还没执行.
+
+    Returns:
+        list[ToolCallFact]: 与 calls 同序.
+    """
+    if executions is None:
+        return [
+            ToolCallFact(
+                message_index=index,
+                tool_call_id=call.id,
+                tool_name=call.name,
+                arguments=call.arguments,
+            )
+            for call in calls
+        ]
+    facts: list[ToolCallFact] = []
+    for call, execution in zip(calls, executions, strict=True):
+        facts.append(
+            ToolCallFact(
+                message_index=index,
+                tool_call_id=call.id,
+                tool_name=call.name,
+                arguments=call.arguments,
+                # 被护栏拒绝的那条也走这里 (它是 ok=False 的一次「执行」): 它同样
+                # 是一次调用, 同样要留下一行 —— 「模型想做什么」的证据不能漏
+                outcome=(
+                    ToolCallOutcome.SUCCEEDED
+                    if execution.ok
+                    else ToolCallOutcome.FAILED
+                ),
+                result=execution.content if execution.ok else execution.error,
+                duration_ms=round(execution.duration_ms),
+            )
+        )
+    return facts
+
+
 class AgentLoop:
     """手写 agent loop: 模型决策 → 并行工具 → 回填 → 循环 (difficulties 核心).
 
@@ -255,6 +310,11 @@ class AgentLoop:
             必须与 thread_id 一起给 —— 只给一半属于配置写错, 构造期就报错.
         thread_id: 这段对话的标识 (快照按它分区). 同一会话的多次 run 给同一个
             thread_id, 快照才串成一条链、resume 才取得到 (见 resume).
+        trace_sink: 落库协作者 (`TraceSink`, ticket 27): 每轮把**刚产生的**那几条
+            消息与工具调用的事实交给它, 于是记录表在运行**进行中**就跟着事实走
+            (工具调用行能在执行前落 pending、执行后回填结果). None (默认) 表示
+            不交 —— 记录由收尾那一拍一次写完, 行为与从前逐字一样. 它只在
+            run_id 非 None (会话开了账) 且 thread_id 非 None 时才被调到.
     """
 
     def __init__(
@@ -277,6 +337,7 @@ class AgentLoop:
         hooks: HookRegistry | None = None,
         saver: CheckpointSaver | None = None,
         thread_id: str | None = None,
+        trace_sink: TraceSink | None = None,
     ) -> None:
         if guard is None:
             guard = LoopGuard()
@@ -311,6 +372,7 @@ class AgentLoop:
         self._event_sink = event_sink
         self._saver = saver
         self._thread_id = thread_id
+        self._trace_sink = trace_sink
 
         self._compactor = compactor
         # 估算器是压缩的零件: 没配策略就不建 (也不会有谁来问它) —— 于是「不配
@@ -571,6 +633,9 @@ class AgentLoop:
             history=list(messages),
             loop_id=loop_id or uuid4().hex,
             run_id=run_id,
+            # 起点之前的那些消息不归本次 run (续跑时它们是上一段的): 交给落库
+            # 协作者的第一批从起点长度之后开始 (见 _flush)
+            flushed=len(messages),
             # 压缩进度也是「接着跑要用的」: 新 run 由调用方递进来 (跨 run 续接),
             # 从快照续跑则由 _seed_from_checkpoint 覆盖掉
             summary=summary,
@@ -601,10 +666,12 @@ class AgentLoop:
             # 调用补做完再继续 —— 那一轮模型早就决策过了, 不必再问它一次
             pending = pending_tool_calls(state.history)
             if pending:
+                response, calls = await self._complete_pending_turn(state, bus, pending)
                 await self._record_turn(
                     state,
-                    await self._complete_pending_turn(state, bus, pending),
+                    response,
                     source=CheckpointSource.SUSPENSION,
+                    calls=calls,
                 )
                 source = CheckpointSource.LOOP
 
@@ -624,8 +691,9 @@ class AgentLoop:
             response = await self._decide(state, bus, tool_specs)
 
             # 2. 按 finish_reason 分派: 工具 / 截断 / 上游中断 / 自然终止
+            calls: list[ToolCallFact] = []
             if response.has_tool_calls:
-                await self._handle_tool_turn(state, bus, response)
+                calls = await self._handle_tool_turn(state, bus, response)
             elif response.finish_reason is FinishReason.LENGTH:
                 self._handle_truncation(state, response)
             elif response.finish_reason in SERVER_INTERRUPTED:
@@ -634,8 +702,9 @@ class AgentLoop:
                 self._handle_completion(state, response)
 
             # 3. 每 Turn 结束: 历史快照 (供 checkpoint 落盘) + after_turn hook
-            await self._record_turn(state, response, source=source)
-            # 第一帧之后一律按普通轮记 (FORK 只标「从快照长出来的那一帧」)
+            #    工具调用事实随这一轮的记录一起交给落库协作者 (见 _record_turn)
+            await self._record_turn(state, response, source=source, calls=calls)
+            # 第一帧之后一律按普通轮记 (FORK 只指「从快照长出来的那一帧」)
             source = CheckpointSource.LOOP
 
         result = LoopResult(
@@ -835,7 +904,7 @@ class AgentLoop:
 
     async def _handle_tool_turn(
         self, state: LoopState, bus: EventBus, response: ModelResponse
-    ) -> None:
+    ) -> list[ToolCallFact]:
         """工具轮处理: 叙述归 thinking → assistant 入历史 → 并行执行 → 回填 + 事件.
 
         两条保真约定:
@@ -843,6 +912,10 @@ class AgentLoop:
           assistant」的配对结构 (#10); 随后整体批量回填, 保持并行语义 (#1)
         - 工具轮打断拼合链 (content_parts.clear): 它之前的正文属过程叙述,
           不是最终答复的一部分 —— 弃之, 否则会混进最终答案
+
+        Returns:
+            list[ToolCallFact]: 本轮那几条调用的事实 (含结果与耗时) —— 交给调用方
+            随这一轮的记录一起落库 (见 `_record_turn`).
         """
         if response.content:
             # 文本边界: 工具轮的正文属过程叙述 (下面的
@@ -856,12 +929,29 @@ class AgentLoop:
 
         state.content_parts.clear()
         state.history.append(assistant_wire(response))
+        # 发起这一批调用的那条 assistant 消息在历史里的下标: 工具回填消息还没入
+        # (它们在下面才 append), 所以此刻的末位就是它. 事实带上它, 记录层才算得出
+        # `message_id` (同一次运行的调度身份, 见 db/repositories/messages.py)
+        index = len(state.history) - 1
 
         for call in response.tool_calls:
             # 工具调用事件先全发 (同一轮多条 = 并行语义, #1), 再执行
             await bus.emit(
                 EventType.TOOL_CALL, **tool_call_data(call, turn=state.turn_count)
             )
+
+        # 执行前那一拍 (ticket 27): assistant 隐藏行与「它要调这几条」先落库 ——
+        # 于是执行中被硬杀 / 被取消时, 库里看得出它正要调什么; 挂起 (#25) 那条
+        # 也是在这一拍由裁决改写成 needs_approval
+        await self._flush(
+            state,
+            start=index,
+            messages=state.history[index:],
+            calls=_facts_of(response.tool_calls, index=index),
+        )
+        # 这一步已经交出去的那条算交过了 (下面 _record_turn 只补交工具回填那几条):
+        # 「交过哪些」只有一个口径 (state.flushed), 两拍各数各的迟早会对不上
+        state.flushed = index + 1
 
         executions = await self._execute_parallel(
             response.tool_calls, turn=state.turn_count
@@ -880,6 +970,7 @@ class AgentLoop:
                 call=call,
                 execution=execution,
             )
+        return _facts_of(response.tool_calls, index=index, executions=executions)
 
     def _handle_truncation(self, state: LoopState, response: ModelResponse) -> None:
         """length 截断处理 (#10): 重试超限放弃 / CONDENSE 精简重答 / CONTINUE 续写.
@@ -945,16 +1036,27 @@ class AgentLoop:
         response: ModelResponse,
         *,
         source: CheckpointSource = CheckpointSource.LOOP,
+        calls: Sequence[ToolCallFact] = (),
     ) -> None:
-        """每 Turn 收尾: 记录本轮快照 + 落 checkpoint + after_turn hook.
+        """每 Turn 收尾: 记录本轮快照 + 交给落库协作者 + 落 checkpoint + hook.
 
         每 Turn 结束记录完整消息历史快照; 浅拷贝安全: 后续轮只 append 新消息,
         不改动已有消息 dict. tokens 与 token 预算同一口径 (count_tokens 纯函数,
         无 usage 的响应计 0).
 
-        顺序说明 (为什么先落盘、后触发 hook): 存档是可靠性基线 —— 插件晚一步收到
-        通知没关系, 快照晚一步存就可能永远丢了; 落盘失败向上抛 (不吞), 而 hook
-        里的插件异常由注册表隔离留痕 (两条通道的可靠性要求本来就不同).
+        Args:
+            state: 本次 run 的工作数据.
+            response: 本轮模型响应.
+            source: 这一帧怎么来的 (帧的观察值).
+            calls: 本轮那几条调用的事实 (工具轮的返回值); 空列表 = 这一轮没调工具.
+
+        顺序说明 (为什么先交给记录层、再落盘、最后触发 hook):
+
+        - **记录层那一拍在前**: 它是**降级**的那条路 (写不进去只记日志, 收尾还会
+          补齐), 而快照失败要上抛 —— 先做降级的那件, 上抛的那件就不必再等
+        - 存档是可靠性基线: 插件晚一步收到通知没关系, 快照晚一步存就可能永远丢了;
+          落盘失败向上抛 (不吞), 而 hook 里的插件异常由注册表隔离留痕 (两条通道的
+          可靠性要求本来就不同)
         """
         cumulative_ms = self._guard.elapsed_ms
         # 本轮耗时 = 这次累计 - 上次累计: TurnRecord 存累计值 (供整体观察),
@@ -969,8 +1071,17 @@ class AgentLoop:
                 messages=list(state.history),
                 tokens=tokens,
                 elapsed_ms=cumulative_ms,
+                calls=list(calls),
             )
         )
+
+        await self._flush(
+            state,
+            start=state.flushed,
+            messages=state.history[state.flushed :],
+            calls=calls,
+        )
+        state.flushed = len(state.history)
 
         if self._saver is not None and self._thread_id is not None:
             await self._save_checkpoint(
@@ -988,6 +1099,42 @@ class AgentLoop:
             messages=state.history,
             tokens=tokens,
             elapsed_ms=cumulative_ms,
+        )
+
+    async def _flush(
+        self,
+        state: LoopState,
+        *,
+        start: int,
+        messages: Sequence[ModelMessage],
+        calls: Sequence[ToolCallFact] = (),
+    ) -> None:
+        """把刚产生的那几条消息与调用事实交给落库协作者 (没配 / 没开账 = 一步不走).
+
+        为什么把 loop 的两拍收在同一个方法里: 「给谁、什么时候跳过」这两件事只该
+        有一处判 —— 两拍各判一遍, 迟早有一处漏了 `run_id` 判空 (那样写出来的行没有
+        归属). (会话层那边产生的那几条 —— 目前只有提问 —— 走它自己的同名入口: 那是
+        另一条路, 它没有 `LoopState` 可判.)
+
+        **不吞异常**: `TraceSink` 的契约是「实现方自己不抛」(写不进去自己降级),
+        所以这里让它上抛 —— 一个会抛的落库协作者是本框架的 bug, 该留 traceback 给
+        人看 (与记录层只兜 `DbError` 同一条取舍).
+
+        Args:
+            state: 本次 run 的工作数据 (要它的 run_id).
+            start: `messages` 的第 0 条在本次 run 历史里的下标 (`flushed` 或那条
+                assistant 消息的下标).
+            messages: 这一次新增的 wire 消息.
+            calls: 与它们相关的调用事实.
+        """
+        if self._trace_sink is None or state.run_id is None or self._thread_id is None:
+            return
+        await self._trace_sink.flush(
+            thread_id=self._thread_id,
+            run_id=state.run_id,
+            start=start,
+            messages=list(messages),
+            calls=list(calls),
         )
 
     @staticmethod
@@ -1058,8 +1205,8 @@ class AgentLoop:
 
     async def _complete_pending_turn(
         self, state: LoopState, bus: EventBus, pending: list[ModelToolCall]
-    ) -> ModelResponse:
-        """补做完挂起时欠下的工具调用 (恢复专用), 返回还原出的那轮响应.
+    ) -> tuple[ModelResponse, list[ToolCallFact]]:
+        """补做完挂起时欠下的工具调用 (恢复专用), 返回还原出的那轮响应与事实.
 
         场景: 快照停在「模型已经要调这几个工具、但结果还没回填」—— 人工审批的
         挂起点 (#25) 正是这种形状. 恢复时不必再问模型一次 (它那一轮早就决定过
@@ -1072,8 +1219,21 @@ class AgentLoop:
 
         补做**不受 guard 影响**: 那是上一轮已经决定、只差一份结果的工作 (预算判定
         排在它之后) —— 欠的活先干完, 该不该继续问模型才轮到刹车说话.
+
+        **这一轮没有「执行前那一拍」**: 那条 assistant 行与这几条调用的行在**上一段**
+        就写过库了 (挂起那一刻落的就是它们, 状态 `needs_approval`), 此刻再交一遍
+        只会被幂等写全部跳过 —— 于是这里只把补做的结果随这一轮的收尾那一拍交出去,
+        记录层按 `message_index` 直接推进原来那一行.
+
+        Returns:
+            tuple[ModelResponse, list[ToolCallFact]]: 还原出的那轮响应, 以及这几条
+            调用的事实. 事实里的 `message_index` 指向**已经在历史里**的那条
+            assistant 消息 —— 它上一段就写过库了, 记录层因此能直接寻址那一行
+            (把 `needs_approval` 推进成终态), 不必反查.
         """
         turn = state.turn_count + 1
+        # 欠着结果的那条 assistant 消息是历史末条 (回填消息在下面才 append)
+        index = len(state.history) - 1
         for call in pending:
             # 事件与工具轮同序: 先全部声明「要调什么」, 再执行 (并行语义 #1)
             await bus.emit(EventType.TOOL_CALL, **tool_call_data(call, turn=turn))
@@ -1093,7 +1253,10 @@ class AgentLoop:
             )
 
         state.turn_count = turn
-        return self._response_for_pending(state, pending)
+        return (
+            self._response_for_pending(state, pending),
+            _facts_of(pending, index=index, executions=executions),
+        )
 
     @staticmethod
     def _response_for_pending(

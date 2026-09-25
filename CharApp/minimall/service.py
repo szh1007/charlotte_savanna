@@ -43,7 +43,8 @@ from CharAgent.agent import (
 )
 from CharAgent.checkpoint import CheckpointError, CheckpointSaver
 from CharAgent.client import ChatSession, CliOptions, build_model
-from CharAgent.db import ConversationRecorder, PgDatabase
+from CharAgent.db import ConversationRecorder, PgDatabase, load_pricing
+from CharAgent.db.errors import PricingNotReadyError
 from CharAgent.hooks import HookRegistry
 from CharAgent.model import ModelError
 from CharAgent.model.protocol import ChatModel
@@ -119,6 +120,8 @@ MANIFEST_DEFAULT_KEY = "default"
 # 是同一批错误, 该说的也是同一句人话.
 STARTUP_ERRORS: tuple[type[Exception], ...] = (
     MinimallConfigError,
+    # 计价那条路的启动自检 (ticket 28): 价目表写错 / 日历过期
+    PricingNotReadyError,
     ModelError,
     CheckpointError,
     LoopConfigError,
@@ -304,6 +307,26 @@ class MinimallService:
     # 两者并存时「self.context」与「context」指的是两样东西 (CLI 那边已经被迫改过
     # 一次局部变量名) —— 而「压缩」正是框架对这个能力的叫法 (agent/compaction.py).
     compaction: ContextConfig | None = None
+
+    def __post_init__(self) -> None:
+        """装配那一刻就把计价那条路**验通** (ticket 28 业务侧要的启动自检).
+
+        验什么: 价目表读得成吗; 若它按峰谷计价, **今天这一刻判得了峰谷吗** (中国
+        日历的数据每年 11 月前后随依赖更新, 过期了就判不了).
+
+        为什么在业务侧再验一遍 (框架的记录员构造时也会验): 记录员要等第一句问话
+        才建出来, 而这里验的是**进程启动**那一刻 —— 起不来比起得来再报错更早、
+        更省事. 两个入口 (CLI / server) 共用这一处装配, 所以两边的进程都拦得住.
+
+        只记账的进程才验 (`database is None` = 不记账 = 没有金额这回事): 那种部署
+        不该被一个它用不上的日历拦住.
+
+        Raises:
+            PricingNotReadyError: 价目表写错, 或配了峰谷价却判不了今天.
+        """
+        if self.database is None:
+            return
+        load_pricing()
 
     async def session_for(
         self, context: RunContext, *, event_sink: EventSink, redact: bool

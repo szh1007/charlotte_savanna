@@ -18,6 +18,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -131,6 +132,11 @@ class ToolCallsRepository(PgRepository):
         `add_calls` 面向「模型一口气要调三个工具」的批量场景 —— 也省掉了每条
         一次事务的开销. 行由 `build_tool_call` 造 (两个方法共用同一套默认值).
 
+        **这个入口是幂等的** (ticket 27 起): 三列主键已经在了就跳过
+        (`ON CONFLICT DO NOTHING`). 记录层要「执行前落 pending + 执行后回填终态」,
+        而收尾那一趟是**补齐**(哪一次没写上就补上) —— 于是同一批调用会被交给它两次,
+        第二次必须什么都不做, 且**不改已存在那一行的结论** (推进终态走 `set_status`).
+
         Raises:
             DataConfigError: 这批调用跨了多次运行 (主键里有 run_id, 混着写几乎
                 总是调用方把两次运行的数据串了).
@@ -151,7 +157,9 @@ class ToolCallsRepository(PgRepository):
             call.created_at = base + timedelta(microseconds=offset)
         async with self._session() as session:
             session.execute(
-                tool_calls.insert(),
+                # ON CONFLICT DO NOTHING 是 Postgres 的方言写法 (与
+                # checkpoint/postgres.py 同一个 import): 本层的库就是它
+                pg_insert(tool_calls).on_conflict_do_nothing(),
                 [self._params(call) for call in calls],
             )
 

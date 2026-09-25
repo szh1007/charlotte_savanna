@@ -12,7 +12,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import UTC, datetime
+from decimal import Decimal
+from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import select, update
@@ -79,7 +82,10 @@ class RunsRepository(PgRepository):
             reasoning_tokens=None,
             cache_hit_tokens=None,
             cache_miss_tokens=None,
-            total_cost=0,
+            # 金额与明细同样写 None: 钱在**收尾那一刻**才算得出来 (要等用量齐了,
+            # 还要按当时那版价目表算) —— 建行时写 0 会把「还没算」说成「没花钱」
+            total_cost=None,
+            total_cost_detail=None,
             turn_count=0,
             error=None,
             last_checkpoint_id=last_checkpoint_id,
@@ -116,6 +122,8 @@ class RunsRepository(PgRepository):
         cache_miss_tokens: int | None = None,
         prompt_version: str | None = None,
         last_checkpoint_id: str | None = None,
+        total_cost: Decimal | None = None,
+        total_cost_detail: Mapping[str, Any] | None = None,
         moment: datetime | None = None,
     ) -> bool:
         """把一次跑完的运行**落定**: 推进 `add` 建的那一行到终态, 账目一起写上.
@@ -144,6 +152,14 @@ class RunsRepository(PgRepository):
                 没给身份说明 (框架不知道它是什么).
             last_checkpoint_id: 这一段运行落的最后一帧快照; None = 这一列不动
                 (没配快照存储 / 一帧都没落成).
+            total_cost / total_cost_detail: 本次运行的花费与它的来路 (由记录员在
+                收尾那一刻算好). 两条规矩 (ticket 28):
+                ① **给 None = 这一次没算出来** —— 金额那一列一个字节都不动: 既不写
+                0, 也不把已有的金额清掉 (明细也只在金额还空着时才写原因, 于是两列
+                永远自洽);
+                ② 给了值就按**当前列重算并覆盖** —— 用量那五列是累计值, 重算出来
+                的就是那一刻的总额 (比如挂起补做之后接着跑, 金额跟着新用量涨).
+                「重算」不是「累加」: 累加会把前面那段算两次.
             moment: 显式时刻 (测试用); None 则取当下 (UTC) —— 更新与结束两个时刻
                 取同一个值: 这是一次落定, 不是两个真实时刻.
 
@@ -166,8 +182,7 @@ class RunsRepository(PgRepository):
         values: dict[str, object] = {
             "status": status.value,
             # 模型名与提示词版本都是**版本归因** (#40): 回答质量掉了要能查出「是换了
-            # 模型还是换了 prompt」—— 两样都由调用方递进来; 花费那一列仍留给 L3 的
-            # 成本记账
+            # 模型还是换了 prompt」—— 两样都由调用方递进来
             "model": model,
             "prompt_version": prompt_version,
             "total_tokens": total_tokens,
@@ -182,9 +197,25 @@ class RunsRepository(PgRepository):
         }
         if last_checkpoint_id is not None:
             values["last_checkpoint_id"] = last_checkpoint_id
+        if total_cost is not None:
+            # 算得出来: 金额与明细**一起**写 (明细说的是这笔钱怎么来的)
+            values["total_cost"] = total_cost
+            values["total_cost_detail"] = total_cost_detail
         statement = update(runs).where(runs.c.run_id == run_id).values(**values)
         async with self._session() as session:
-            return bool(session.execute(statement).rowcount)
+            rowcount = session.execute(statement).rowcount
+            if total_cost is None and total_cost_detail is not None:
+                # 没算出来: 补一句「为什么没有」, 但**只在金额还空着的时候** ——
+                # 已经有金额的行不该被改成「没有」(金额与账单绑定, 只写一次).
+                # 这一条与上面那条合起来保证: 两列永远自洽 (有金额就有算式,
+                # 没金额就有原因), 不会被任何一次重复收尾弄成半真半假
+                session.execute(
+                    update(runs)
+                    .where(runs.c.run_id == run_id)
+                    .where(runs.c.total_cost.is_(None))
+                    .values(total_cost_detail=total_cost_detail, updated_at=stamp)
+                )
+            return bool(rowcount)
 
     async def get(self, run_id: str) -> Run | None:
         """按编号取一次运行 (没有则 None)."""
@@ -299,6 +330,7 @@ class RunsRepository(PgRepository):
             "cache_hit_tokens": run.cache_hit_tokens,
             "cache_miss_tokens": run.cache_miss_tokens,
             "total_cost": run.total_cost,
+            "total_cost_detail": run.total_cost_detail,
             "turn_count": run.turn_count,
             "error": run.error,
             "last_checkpoint_id": run.last_checkpoint_id,

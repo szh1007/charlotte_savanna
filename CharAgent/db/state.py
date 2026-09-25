@@ -23,8 +23,8 @@
 
 from __future__ import annotations
 
-from CharAgent.agent.utils.types import LoopOutcome
-from CharAgent.db.entities import RunStatus
+from CharAgent.agent.utils.types import LoopOutcome, ToolCallOutcome
+from CharAgent.db.entities import RunStatus, ToolCallStatus
 from CharAgent.db.errors import InvalidTransitionError
 
 # --- 合法迁移表 ---------------------------------------------------------------
@@ -109,6 +109,23 @@ RUN_STATUS_FOR_OUTCOME: dict[LoopOutcome, RunStatus] = {
     LoopOutcome.SERVER_INTERRUPTED: RunStatus.FAILED,
 }
 
+# --- agent 侧的工具调用状态 → 工具调用行的状态 ---------------------------------
+#
+# 与上面那张表同一个做法 (这一版是 ticket 27 补的): loop 说的是「这一条调用现在
+# 算什么」(ToolCallOutcome), 数据层决定它落成哪一列的值 (ToolCallStatus). 两边
+# 取值刻意同名同义 —— 映射表存在的意义不是翻译, 而是**两层的耦合只在这一个地方**:
+# `agent/` 不 import `db/` (而本模块反向 import 它), 于是这条线不会成环.
+#
+# 四个取值对着框架自己会产生的那四个状态. 表里没有 `run` (执行中) / `cancelled`:
+# 前者在「一条消息里几个调用并行跑完一起回填」这个形状下没有可观测的持续时间
+# (写了也是自欺), 后者留给真有取消动作的那条路 (#18).
+TOOL_CALL_STATUS_FOR_OUTCOME: dict[ToolCallOutcome, ToolCallStatus] = {
+    ToolCallOutcome.PENDING: ToolCallStatus.PENDING,
+    ToolCallOutcome.SUCCEEDED: ToolCallStatus.SUCCEEDED,
+    ToolCallOutcome.FAILED: ToolCallStatus.FAILED,
+    ToolCallOutcome.NEEDS_APPROVAL: ToolCallStatus.NEEDS_APPROVAL,
+}
+
 
 # --- 规则查询 -----------------------------------------------------------------
 
@@ -162,3 +179,19 @@ def run_status_for_outcome(outcome: LoopOutcome) -> RunStatus:
             补. 宁可当场报错 (开发期立刻发现), 也不要猜一个状态写进库.
     """
     return RUN_STATUS_FOR_OUTCOME[outcome]
+
+
+def tool_call_status_for_outcome(outcome: ToolCallOutcome) -> ToolCallStatus:
+    """把 agent 侧的工具调用状态翻成工具调用行该落的值 (记录层写那一行时用).
+
+    Args:
+        outcome: `ToolCallFact.outcome`.
+
+    Returns:
+        ToolCallStatus: 该写成什么状态.
+
+    Raises:
+        KeyError: outcome 没在映射表里 —— 与上面同一个规矩: 宁可当场报错, 也不要
+            猜一个状态写进库.
+    """
+    return TOOL_CALL_STATUS_FOR_OUTCOME[outcome]

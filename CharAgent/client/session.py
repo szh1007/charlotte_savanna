@@ -71,6 +71,7 @@ from CharAgent.agent import (
     TokenCounter,
 )
 from CharAgent.agent.utils.messages import tool_wire
+from CharAgent.agent.utils.types import TraceSink
 from CharAgent.checkpoint import (
     Checkpoint,
     CheckpointCapabilities,
@@ -164,6 +165,9 @@ class ChatSession:
             `begin` / `record` / `record_unfinished`);
             None (默认) 表示不记账, 行为与从前逐字一样. 记录**是旁挂的**: 它的
             失败不影响 ask 返回结果 (见 `_run` 的说明).
+            **多实现一个 `TraceSink` (`flush`) 的话**, 会话会把它也交给 loop ——
+            于是记录表在运行**进行中**就跟着事实走 (提问行当场落库、工具调用行在
+            执行前落 pending); 没实现就只有收尾那一拍, 行为与从前一样.
 
     没跑完的那一轮怎么办 (本类最要紧的一条规矩): loop 干活时用的是自己那份**副本**
     历史, 副本随被取消的任务一起没了 —— 但每一轮结束时落过盘的快照还在. 于是失败
@@ -223,6 +227,12 @@ class ChatSession:
         # 两个开关原样收下 (会话不解释它们: 一个管「读不读历史」, 一个管「记不记账」)
         self._hydrate = hydrate
         self._recorder = recorder
+        # 落库协作者 (ticket 27): 记录员**顺带**实现了 `TraceSink` 才交给 loop ——
+        # 那一份是运行中途的增量落库, 而 record / record_unfinished 那三个方法是
+        # 人人都得有的. 按结构匹配 (不要求继承), 没实现就只有收尾那一拍
+        self._trace_sink: TraceSink | None = (
+            recorder if isinstance(recorder, TraceSink) else None
+        )
         self._loop = AgentLoop(
             model,
             tools,
@@ -239,6 +249,9 @@ class ChatSession:
             # 插件注册表原样转交: 会话不解释它挂的是什么, 也不替业务挑点
             # (六个触发点见 HookRegistry; 空注册零开销).
             hooks=hooks,
+            # 记录的**中途**出口: 与 event_sink 并列的第二个出口 (那个推给前端,
+            # 这个落进记录表). loop 只认 agent 侧那份协议, 不认识 db
+            trace_sink=self._trace_sink,
         )
         # 上下文压缩的进度 (摘要 + 它压到第几条): 与 history 一样是**会话状态** ——
         # 每段 run 结束时从结果里收下, 下一段连同历史一起递回去. 不收的话, 每次
@@ -359,6 +372,9 @@ class ChatSession:
         # 而它的 `run_id` 是指向那一行的外键 —— 行不在, 帧就盖不上编号. 编号定下来
         # 之后一路带着: 交给 loop (盖到每帧) 与收尾的 `_record`
         run_id = await self._begin_run(question)
+        # 提问这一行**当场落库** (ticket 27): 用户已经在页面上看到自己那句话了,
+        # 记录里不该等到跑完才出现 —— 运行中途刷新、被取消、或者进程被硬杀, 它都在
+        await self._flush(run_id=run_id, start=since, messages=self._history[since:])
         try:
             result = await self._run(
                 self._loop.run(
@@ -376,7 +392,7 @@ class ChatSession:
         except BaseException as exc:
             # 取消与失败那一轮也要记: 用户确实说过那句话, 页面上也显示了它 ——
             # 记录里不该凭空少一轮 (取消与失败在记录里长得一样, 区别在运行行)
-            await self._record_unfinished(question, exc, run_id=run_id)
+            await self._record_unfinished(question, exc, run_id=run_id, since=since)
             raise
         await self._record(
             result,
@@ -575,13 +591,21 @@ class ChatSession:
         )
 
     async def _record_unfinished(
-        self, question: str, error: BaseException, *, run_id: str | None
+        self,
+        question: str,
+        error: BaseException,
+        *,
+        run_id: str | None,
+        since: int,
     ) -> None:
         """把「这一轮没答完」交给记录员 (取消与失败都算).
 
         取消与失败在记录里**写成同一种样子** (提问 + 一句「这一轮没答完」), 区别
         落在运行行的状态上 (cancelled / failed): 对看记录的人来说它们是同一件事,
         而「是谁停的」的用处是排查 —— 那是状态列该回答的.
+
+        `since` 是那句提问在本次 run 历史里的下标 —— 提问行在提问那一刻就落过库了
+        (ticket 27), 记录员按它把那一行**认出来**而不是再写一条.
         """
         if self._recorder is None:
             return
@@ -595,7 +619,27 @@ class ChatSession:
             question=question,
             status=status,
             run_id=run_id,
+            since=since,
             model=self._model_name,
+        )
+
+    async def _flush(
+        self, *, run_id: str | None, start: int, messages: Sequence[ModelMessage]
+    ) -> None:
+        """把会话刚产生的那几条交给落库协作者 (没配记录员 / 没开账 = 一步都不走).
+
+        loop 那条路自己会交 (它拿着同一个协作者), 这一处管的是**会话**产生的那几条
+        —— 目前只有用户那句提问: 它比 loop 里的任何一条都早, 于是「提问行在提问那
+        一刻就在库里」这条成立. 判空与 `AgentLoop._flush` 同款: 没开账就没有可归属
+        的行 (工具调用行的 `run_id` 还是主键的一部分).
+        """
+        if self._trace_sink is None or run_id is None:
+            return
+        await self._trace_sink.flush(
+            thread_id=self._thread_id,
+            run_id=run_id,
+            start=start,
+            messages=list(messages),
         )
 
     async def _reclaim_progress(self) -> None:

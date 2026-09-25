@@ -5,6 +5,9 @@
 
 - LoopOutcome: Loop 结束原因全集 (guard 触发点 + loop 分支放弃点)
 - TruncationStrategy: length 截断的两种处理路径 (#10)
+- ToolCallOutcome / ToolCallFact: 一次工具调用的事实 (落库协作者据此写
+  `charagent_tool_calls`, DESIGN #41 的 tool_call 那一层)
+- TraceSink: 运行**进行中**把刚产生的东西交给记录层的出口 (可选零件, ticket 27)
 - TurnRecord: 每轮结束时的消息历史完整快照 (供 checkpoint 落盘)
 - LoopState: AgentLoop 一次 run 的内存工作数据 (run 与其分支方法之间传递,
   内部零件; 注意与 RunState = 运行状态机不同, 见类 docstring)
@@ -18,9 +21,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from CharAgent.model.utils.types import (
     FinishReason,
@@ -64,6 +68,97 @@ class TruncationStrategy(StrEnum):
 
     CONTINUE = "continue"  # 保留截断前缀, 提示模型接着中断处续写
     CONDENSE = "condense"  # 丢弃截断内容, 提示模型精简重答
+
+
+class ToolCallOutcome(StrEnum):
+    """一次工具调用的状态 (agent 侧词汇, 记录层翻成 `db` 的状态值).
+
+    四个取值对着 `db.entities.ToolCallStatus` 里框架自己会产生的那四个. 为什么不
+    直接用那边的枚举: `agent/` 不 import `db/` (而 `db/state.py` 反向依赖本模块,
+    双向会成环), 于是映射表放在 db 侧 (`db/state.py` 的 `TOOL_CALL_STATUS_FOR_OUTCOME`),
+    与 `LoopOutcome → RunStatus` 同一套做法.
+    """
+
+    PENDING = "pending"  # 模型刚发起, 还没开始执行
+    SUCCEEDED = "succeeded"  # 执行成功 (result 是回填文本)
+    FAILED = "failed"  # 执行失败 / 被裁决拒绝 (result 是可操作原因)
+    NEEDS_APPROVAL = "needs_approval"  # 挂起等人工批准 (#25); 产生挂起归 issue 34
+
+
+@dataclass(slots=True, frozen=True)
+class ToolCallFact:
+    """一次工具调用留下的事实 (loop 记, 落库协作者据此写 `charagent_tool_calls`).
+
+    为什么由 loop 交出来而不是让记录层自己去 wire 历史里挖: 工具名与参数在历史里
+    找得到, 但**结果与耗时**只有执行处知道 (`tool/executor.py` 的 `ToolExecution`),
+    而它随那一轮结束就没了. 于是 loop 每轮把这几样打成一条事实交出去 —— 运行中那
+    两拍与收尾的「补齐」读的是同一批事实 (单一来源, 两个消费方).
+
+    attributes:
+        message_index: 发起它的那条 assistant 消息在**本次 run** wire 历史里的下标.
+            记录层按它算 `message_id` (`db/repositories/messages.message_id_for`) ——
+            同一次运行的第二段能直接寻址第一段那一行, 靠的就是这个下标.
+        tool_call_id: 模型给的调用编号 (上游每轮从 `call_0` 重新编号, 所以真正唯一的
+            身份是「哪条消息发起的这一次调用」).
+        tool_name: 工具名.
+        arguments: 模型填的**原样 JSON 字符串** (不预解析: 畸形 JSON 正是自纠错路径
+            的信号).
+        outcome: 这一条现在的状态 (执行前那一拍是 PENDING).
+        result: 回填给模型的文本 (成功) 或可操作原因 (失败); 还没结论时为 None.
+        duration_ms: 执行耗时 (毫秒); None = 还没跑到计时那一步 (与 0 毫秒是两回事).
+    """
+
+    message_index: int
+    tool_call_id: str
+    tool_name: str
+    arguments: str
+    outcome: ToolCallOutcome = ToolCallOutcome.PENDING
+    result: str | None = None
+    duration_ms: int | None = None
+
+
+@runtime_checkable
+class TraceSink(Protocol):
+    """落库协作者: 运行**进行中**把刚产生的东西交出去 (可选零件, ticket 27).
+
+    `runtime_checkable` 是**装配期要用**的: 会话拿到的记录员是业务给的任意对象
+    (协议只按形状认), 于是装配时要问一句「它实现了这个可选能力没有」——
+    `isinstance(recorder, TraceSink)` 只查方法在不在, 与结构匹配那套一致.
+
+    与 `event_sink` (展示出口) 并列的第二个出口: 那个推给前端看, 这个落进记录表.
+    为什么要它: 记录层从「收尾一次性写」改成「产生即落库」—— 提问那一行在提问时
+    写, 每轮产生的消息与工具调用随轮写. 于是**工具调用行能在执行前落 pending、
+    执行后回填结果**, 而挂起的那一行在挂起那一刻就在库里 (ADR-0014 要的那条判据).
+
+    **它是可选的**: 没给、或业务自己的记录员没实现这个方法, 就退回「收尾一次性写」,
+    行为与从前逐字一样. 与 `RunRecorder` (db 侧协议) 的关系: 同一个对象
+    (`db/recorder.py` 的 `ConversationRecorder`) 两侧都实现, 而 loop 只认本协议
+    (agent 不 import db).
+
+    **实现方不该抛**: 记录写不进去从来不该让一次问答变成一次失败 (与
+    `RunRecorder` 同一条规矩) —— 自己记日志并降级.
+    """
+
+    async def flush(
+        self,
+        *,
+        thread_id: str,
+        run_id: str,
+        start: int,
+        messages: Sequence[ModelMessage],
+        calls: Sequence[ToolCallFact] = (),
+    ) -> None:
+        """把「刚从第 start 条起产生的这些消息」与「这几条调用的事实」落库.
+
+        Args:
+            thread_id: 哪段会话.
+            run_id: 哪次运行 (会话在建行时定下, 一路传到 loop; 为 None 时 loop
+                压根不调本方法 —— 没开账就没有可归属的行).
+            start: `messages` 的第 0 条在本次 run wire 历史里的下标 (算编号用).
+            messages: 这一次新增的 wire 消息 (提问 / assistant 隐藏行 / tool 回填行).
+            calls: 与它们相关的调用事实 (执行前那一拍是 PENDING, 执行后是终态).
+        """
+        ...
 
 
 @dataclass(slots=True)
@@ -124,6 +219,10 @@ class LoopState:
             total_tokens 同口径 (含摘要那几次调用). **None = 上游一次都没上报过
             这个分量**, 与 0 (报过、值就是零) 是两回事 —— 累加规则见
             `messages.accumulate_usage`.
+        flushed: 已经交给落库协作者 (`TraceSink`) 的消息条数 —— 历史前 flushed 条
+            都不必再交 (ticket 27 的「产生即落库」按它切出每轮新增的那一段).
+            初值是**本次 run 起点的历史长度**: 续跑时起点之前那些消息属于上一段
+            (或上一次运行), 不该按本次 run 记一遍.
     """
 
     history: list[ModelMessage]
@@ -138,6 +237,7 @@ class LoopState:
     done: bool = False
     loop_id: str | None = None
     run_id: str | None = None
+    flushed: int = 0
     last_checkpoint_id: str | None = None
     view: dict[str, Any] | None = None
     summary: str | None = None
@@ -157,6 +257,12 @@ class TurnRecord:
     response 保留本轮模型响应全文 —— 包括 reasoning (#11) 与被 CONDENSE
     策略丢弃的截断内容; messages 是 wire 视角的浅拷贝快照 (消息 dict
     追加后不再变更, 浅拷贝即安全).
+
+    attributes:
+        turn / response / messages / tokens / elapsed_ms: 见 `LoopResult.turns`.
+        calls: 本轮调用的那几个工具留下的事实 (含结果与耗时, ticket 27). 空列表 =
+            这一轮没调工具 (纯答复 / 截断 / 上游中断). 它是 `ToolCallFact` 的唯一
+            来源: 运行中那两拍把它交给落库协作者, 收尾的「补齐」读的也是它.
     """
 
     turn: int  # 轮次, 从 1 起
@@ -164,6 +270,7 @@ class TurnRecord:
     messages: list[ModelMessage]
     tokens: int  # 本轮 usage 增量
     elapsed_ms: float  # 本轮结束时距 run 开始的累计耗时
+    calls: list[ToolCallFact] = field(default_factory=list)
 
 
 @dataclass(slots=True)

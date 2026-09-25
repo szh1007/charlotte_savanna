@@ -232,12 +232,30 @@ runs = Table(
         nullable=True,
         comment="本 run 累计未命中缓存的输入 token",
     ),
+    # 金额在**收尾那一刻**算好写死 (2026-09-25 改判, 理由见 db/cost.py 模块 docstring):
+    # 同一批 token 换一版价目表就是另一个数, 而账单是按**当时那一版**开的 —— 查询侧
+    # 现算会让历史运行的金额跟着今天的价变, 与账单永远对不上. 峰谷价更逼着把「算的
+    # 那一刻」固定下来 (判据是本次运行的开始时刻, 只有 run 行知道).
+    #
+    # **可空**: NULL = 那一刻没算出来 (没配价 / 缺分量 / 日历过期), 0 = 真的花了 0 元
+    # —— 与五列分量同一条规矩, 「没算出来」与「就是零」是相反的结论. 只有算得出来时
+    # 才写, 写进去之后任何一次写都不再改它 (金额与账单绑定).
     Column(
         "total_cost",
         Numeric(14, 6),
-        nullable=False,
-        server_default="0",
-        comment="本 run 累计花费 (金额用 NUMERIC 不用浮点: 浮点算钱会丢分)",
+        nullable=True,
+        comment="本次运行的花费 —— 收尾那一刻按当时的价目表算好写入 "
+        "(NULL = 没算出来, 原因见 total_cost_detail; 0 = 真的花了 0 元); "
+        "写进去之后不再改写; 金额用 NUMERIC 不用浮点: 浮点算钱会丢分",
+    ),
+    Column(
+        "total_cost_detail",
+        JSONB,
+        nullable=True,
+        comment="这笔钱的来路 (与 total_cost 同生共死): 算得出来时记哪一套价 "
+        "(peak / valley) + 三个单价 + 三档用量; 算不出来时记原因 (没配价 / 缺哪个"
+        "分量 / 日历过期). 只留一个数字的话事后没人能验算, 连「这是峰价还是谷价"
+        "算的」都看不出来 (ticket 28)",
     ),
     Column(
         "turn_count",

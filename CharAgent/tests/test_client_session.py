@@ -20,6 +20,7 @@ FakeRedisClient), 零网络零外部服务.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -748,6 +749,7 @@ async def test_the_session_hands_every_run_to_the_recorder() -> None:
             question: str,
             status: Any,
             run_id: str | None = None,
+            since: int = 0,
             model: str | None = None,
         ) -> bool:
             calls.append((thread_id, -1, question))
@@ -804,6 +806,7 @@ async def test_the_session_tells_the_recorder_which_model_ran() -> None:
             question: str,
             status: Any,
             run_id: str | None = None,
+            since: int = 0,
             model: str | None = None,
         ) -> bool:
             seen.append(model)
@@ -855,6 +858,7 @@ async def test_an_interrupted_run_is_recorded_as_unfinished() -> None:
             question: str,
             status: Any,
             run_id: str | None = None,
+            since: int = 0,
             model: str | None = None,
         ) -> bool:
             calls.append((question, status))
@@ -918,6 +922,7 @@ async def test_only_a_fresh_summary_is_handed_to_the_recorder() -> None:
             question: str,
             status: Any,
             run_id: str | None = None,
+            since: int = 0,
             model: str | None = None,
         ) -> bool:
             return True
@@ -1038,6 +1043,98 @@ async def test_resume_restores_the_identity_before_handing_it_to_the_loop(
 
     assert result is not None
     assert requests(model)[0][0] == {"role": "system", "content": "你是客服 A."}
+
+
+async def test_the_question_is_handed_over_the_moment_it_is_asked() -> None:
+    """提问那一行**当场**交给记录员 (ticket 27 的「产生即落库」).
+
+    断的是「交了什么、从第几条开始」: 内容是那句提问, 下标是它在本次 run 历史里的
+    位置 (身份说明占第 0 条) —— 记录层按那个下标算编号, 收尾那一拍据此认出**同一
+    行**, 而不是再写一条 (那样会变成「用户说过两遍」的假象).
+    """
+    flushes: list[tuple[int, list[Any]]] = []
+
+    class Recorder:
+        """实现了 `flush` 的记录员 (那是**中途**出口, 与收尾那三个方法并列)."""
+
+        async def begin(self, *, thread_id: str, title: str = "") -> str | None:
+            return "run-1"
+
+        async def flush(
+            self,
+            *,
+            thread_id: str,
+            run_id: str,
+            start: int,
+            messages: Sequence[Any],
+            calls: Any = (),
+        ) -> None:
+            flushes.append((start, list(messages)))
+
+        async def record(self, **kwargs: Any) -> bool:
+            return True
+
+        async def record_unfinished(self, **kwargs: Any) -> bool:
+            return True
+
+    session = make_session(
+        MockLLM.fixed(text_response("答好了")),
+        thread_id="rec-early",
+        recorder=Recorder(),
+    )
+
+    await session.ask("第一问")
+
+    assert flushes[0] == (1, [{"role": "user", "content": "第一问"}]), (
+        "提问行第一个交出去 (在 loop 之前), 下标 1 = 身份说明之后那一条"
+    )
+
+
+async def test_an_interrupted_run_knows_where_its_question_was_written() -> None:
+    """取消 / 失败那一轮: 提问行在提问时就写过了, 收尾那一拍认的是**同一行**.
+
+    断的是 `since` 传下去了: 它错的话记录里会多出一条重复的提问行 —— 而看记录的人
+    会以为用户把同一句话说了一遍.
+    """
+    unfinished: list[tuple[str, int]] = []
+
+    class Recorder:
+        """只关心「没答完」那一条路的记录员."""
+
+        async def begin(self, *, thread_id: str, title: str = "") -> str | None:
+            return "run-1"
+
+        async def record(self, **kwargs: Any) -> bool:
+            return True
+
+        async def record_unfinished(
+            self,
+            *,
+            thread_id: str,
+            question: str,
+            status: Any,
+            run_id: str | None = None,
+            since: int = 0,
+            model: str | None = None,
+        ) -> bool:
+            unfinished.append((question, since))
+            return True
+
+    class Exploding:
+        """一调用就炸的模型 (模拟上游挂了)."""
+
+        async def generate(self, *args: Any, **kwargs: Any) -> Any:
+            raise RuntimeError("上游挂了")
+
+        async def aclose(self) -> None:
+            """协议要求 (假模型没有资源)."""
+
+    session = make_session(Exploding(), thread_id="rec-2", recorder=Recorder())
+
+    with pytest.raises(RuntimeError):
+        await session.ask("这一句会失败")
+
+    assert unfinished == [("这一句会失败", 1)], "下标就是提问那一行 (身份说明之后)"
 
 
 async def test_a_missing_prompt_version_stops_the_restart_loudly(

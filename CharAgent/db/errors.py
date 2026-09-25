@@ -37,6 +37,20 @@ class DataConfigError(DbError):
     """配置或参数非法 (缺连接信息 / 标识符不合法 / 时间戳顺序不对), 构造期抛出."""
 
 
+class PricingNotReadyError(DataConfigError):
+    """计价还没准备好: 价目表没读成, 或者它要的日历判不了今天 (ticket 28).
+
+    为什么单独一类 (而不是复用 `DataConfigError`): 它的处置动作**不一样** ——
+    `DataConfigError` 是「改一个参数」, 这一个的修法通常是**升级依赖**
+    (`pip install -U chinesecalendar`) 或补上峰谷规则. 而这个类继承它, 于是
+    「配置类错误」原有的处理路径 (启动时报一句人话就退出) 照旧接得住.
+
+    谁来抛: 业务侧在**进程启动**时调 `db/cost.py` 的 `ensure_pricing_ready`
+    (所以叫「没准备好」而不是「配错了」), 以及记录员构造时的那道自动兜底.
+    先拦住的好处: 日历过期这种事, 若等到第一次收尾才发现, 那一趟的钱就只能空着.
+    """
+
+
 class InvalidTransitionError(DbError):
     """状态机不允许这次迁移 (见 state.py 的合法迁移表)."""
 
