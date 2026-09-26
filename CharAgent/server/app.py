@@ -472,9 +472,16 @@ def create_app(
             if not pending:
                 raise RunNotFoundError(_not_pending_message(run_id))
             # 一次性载荷并进本次运行的上下文 (与 X-User-Id 同一条路: 框架不解释它,
-            # 原样交给业务的装配). 只并 approve 的 —— 拒绝那一路没有东西要给工具
+            # 原样交给业务的装配). 只并 approve 的 —— 拒绝那一路没有东西要给工具.
+            #
+            # **只增不覆盖**: `data` 在后写会顶掉上下文里同名的键, 而那份上下文里装着
+            # 业务自己的事实 —— "谁在说话"就在里面 (业务侧取身份正是从载荷里读的).
+            # 而这一袋 `data` 来自**恢复请求的正文**, 也就是客户端: 谁能覆盖那个键,
+            # 谁就能把这一趟换成别人的身份去查数据, 而答复还流回他自己页面上.
+            # 一次性的东西只该**补上缺的那些**, 已有的键 (谁 / 哪一段会话) 一律以本次
+            # 运行为准.
             if approval.approved and data:
-                context = replace(context, payload={**context.payload, **data})
+                context = replace(context, payload={**data, **context.payload})
             # 认领在前, 占会话在后: 「这一次审批有人在办」该由**那一把键**回答
             # (它是跨进程的判据), 而不是由「会话忙不忙」顺带答一句. 代价是认领之后
             # 还有可能失败 (会话忙 / 装配出错) —— 那一笔必须**放回去**, 否则这把键

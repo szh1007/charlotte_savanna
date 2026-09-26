@@ -66,6 +66,8 @@ FLAT_PRICES = PriceTable.from_json(
 
 # 工具真的跑了几次、看到了什么 (挂起与恢复的关键证据)
 CALLS: list[str] = []
+# 那一次装配看到的**整份载荷** (一次性的键有没有进去、已有的键有没有被顶掉, 看它)
+PAYLOADS: list[dict] = []
 
 
 def make_tools(context: RunContext) -> Sequence[Tool]:
@@ -84,6 +86,7 @@ def make_tools(context: RunContext) -> Sequence[Tool]:
         """
         secret = context.payload.get("payment_password", "(没有)")
         CALLS.append(f"pay:{order_no}:{secret}")
+        PAYLOADS.append(dict(context.payload))
         return f"订单 {order_no} 支付成功"
 
     @tool
@@ -109,7 +112,10 @@ class ToyContexts:
             thread_id=request.headers.get("X-Thread-Id", THREAD),
             tenant_id="toy",
             user_id=request.headers.get("X-Toy-User", "alice"),
-            payload={},
+            # 载荷里放**身份** (与真实业务的装配同形: `build_context` 就是这么干的,
+            # 而 `buyer_id` 从载荷里取买家) —— 「一次性的东西不许顶掉已有的键」那条
+            # 要有一个"已有的键"才验得出来
+            payload={"user_id": request.headers.get("X-Toy-User", "alice")},
         )
 
 
@@ -404,6 +410,36 @@ async def test_approving_runs_the_call_and_clears_the_card() -> None:
     assert call["approved_by"] == "alice"
     [run] = server.database.rows_of("charagent_runs")
     assert run["status"] == RunStatus.FINISHED.value, "同一次运行的第二段收了尾"
+
+
+async def test_the_one_shot_payload_can_only_add_never_override() -> None:
+    """恢复带上来的一次性载荷**只增不覆盖**: 运行上下文里原本那份说了算.
+
+    为什么这条是硬的: 载荷里装着业务自己的事实 (这个玩具里是 `user_id`, 真实业务
+    `CharApp/minimall/provider.py` 的 `buyer_id` 就靠它取买家), 而恢复请求是**客户端**
+    发的 —— 谁能覆盖那个键, 谁就能把这一趟换成别人的身份查数据, 而答复还流回他自己
+    页面上. "只增不覆盖"把这条从根上关掉; 业务侧那道按 `needs` 的白名单是另一道
+    (issue 36), 两道各自都够, 而两道都很便宜.
+    """
+    CALLS.clear()
+    PAYLOADS.clear()
+    server = serve(suspended_model())
+    run_id = await suspend_once(server)
+
+    response = await resume(
+        server,
+        run_id,
+        {
+            "decision": "approve",
+            "data": {"payment_password": "pw-123", "user_id": "mallory"},
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert CALLS == ["pay:A1:pw-123"], "载荷里**新**的那个键照常进去"
+    assert PAYLOADS == [{"user_id": "alice", "payment_password": "pw-123"}], (
+        "已有的那个键不能被顶掉"
+    )
 
 
 async def test_rejecting_feeds_the_reason_back_and_the_model_continues() -> None:

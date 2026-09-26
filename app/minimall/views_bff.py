@@ -30,6 +30,9 @@
 渲染刷新即丢 —— 所以页面每次加载都先问一次「这段对话聊到哪儿了」. 它不碰商城,
 也不产生任何运行.
 
+这一层**只在这一条路上读一眼**上游的正文 (`pending_approval`: 有没有等着人拍板的
+事) —— 读它的是第五条路 (`pending_approval()`), 而交给浏览器的字节仍然一个不改.
+
 左栏的会话列表走第四条路 (同样不跑模型, 同样没有流)::
 
     POST /minimall/agent/conversations/
@@ -46,6 +49,20 @@
 cookie 又是跨站可触发的 (`<img src>` 一行就够). 换成 POST + CSRF 之后, 四条路形状
 一致 (都 POST + CSRF, 都从 session 取身份), 页面那边一套写法. 下游那一跳 (读历史与
 列会话) 仍是 GET: 同机同信任域, 地址里不带参数, 要令牌才进得来.
+
+卡片按下去之后走第五条路 (issue 36, 有流也有副作用)::
+
+    POST /minimall/agent/resume/  {"conversation_id": ..., "decision": ..., "data": ...}
+      ├─ 1. 认证与取身份: 同上 (同一个 session, 同一个 CSRF)
+      ├─ 2. 问一句「这段对话现在等你批的是哪一次」: 读 CharApp /history 的
+      │     `pending_approval` (顺带把它声明缺的那几个键拿回来当白名单)
+      ├─ 3. 转发: POST CharApp /runs/{run_id}/resume —— 运行编号来自上一步,
+      │     一次性载荷**按白名单筛过** (见 `one_shot_payload`), 其余原样
+      └─ 4. 透传: 恢复那一段的 SSE 帧逐条写回浏览器 (与第 2 步同样的规律)
+
+它是这一层唯一一条**两条腿**的路 (先读后写: 先问"等你批的是哪一次", 再让那次跑),
+也是唯一一条要**筛**浏览器给的正文的路 —— 那一袋 `data` 会被框架并进运行上下文,
+而上下文里装着这趟的身份 (见 `one_shot_payload`).
 
 `run_id` 从哪来: 上一条 Chat 响应的 `X-Run-Id` 头 (框架给的, 本层原样带给浏览器).
 它是页面上按「停止」时唯一能指名道姓的东西 —— 而它**能且只能**取消自己那段会话里
@@ -87,9 +104,11 @@ cookie 又是跨站可触发的 (`<img src>` 一行就够). 换成 POST + CSRF �
 `ERROR_COPY`); 给开发者的那份理由 (哪个字段不合法 / 上游正文说了什么) 一律进日志.
 上一版能偷懒是因为 4xx 只有 curl 看得见, 现在页面上会显示, 就不能再混着了.
 
-**不 import CharApp**: 两个进程之间只有 HTTP 契约 (三个头名 + 一个请求体字段),
-本文件因此把那几个名字自己声明一遍. Django 侧不该依赖助手服务的 Python 包 ——
-依赖方向只有一条 (业务 → 框架), 而 Django 与服务之间是 HTTP, 不是 import.
+**不 import CharApp**: 两个进程之间只有 HTTP 契约 (几个头名 + 一串请求体与响应体的
+字段名), 本文件因此把那几个名字自己声明一遍 —— 那几处是**运行期唯一**的重复, 所以
+用例里专门有一条拿框架的常量对一遍 (`test_the_pending_fields_match_the_framework`).
+Django 侧不该依赖助手服务的 Python 包 —— 依赖方向只有一条 (业务 → 框架), 而 Django
+与服务之间是 HTTP, 不是 import.
 """
 
 from __future__ import annotations
@@ -121,6 +140,9 @@ HEADER_CONVERSATION_ID = "X-Conversation-Id"
 # 助手服务占的端点与它认的请求体字段 (框架 `CharAgent/server/` 的 HTTP 契约)
 RUNS_PATH = "/runs"
 CANCEL_PATH = "/runs/{run_id}/cancel"
+# 恢复端点 (框架 issue 34 那条路由). 路径里那个编号是**记录层那一行** —— 它不由
+# 浏览器提供, 本层自己从 `/history` 的未决挂起里读 (见 `pending_approval`).
+RESUME_PATH = "/runs/{run_id}/resume"
 HISTORY_PATH = "/history"
 CONVERSATIONS_PATH = "/conversations"
 # 三个管理动作 (#20): 都挂在列表端点下面, 会话编号一律走 `X-Conversation-Id` 头
@@ -133,6 +155,24 @@ MESSAGE_FIELD = "message"
 # 「不 import CharApp」那一段), 这一层的工作之一就是把它们对上.
 UPSTREAM_QUERY_FIELD = "q"
 QUERY_FIELD = "query"
+
+# 恢复端点认的两个字段 (框架 `server/app.py` 的 `read_approval`): 人的结论 + 一次性
+# 载荷. `data` 这一层**不解释** (里面有哪些键由业务与框架定, 见 ADR-0015) —— 原样转.
+DECISION_FIELD = "decision"
+DATA_FIELD = "data"
+APPROVE_DECISION = "approve"
+REJECT_DECISION = "reject"
+
+# 未决挂起在 `/history` 响应里的那一块 (框架 `CharAgent/server/history.py` 定的
+# 字段名). 本层要读它才能知道「要恢复哪一次运行」—— 两个名字都是**跨进程契约**,
+# 与那三个头同一类; 用例 `test_the_pending_fields_match_the_framework` 盯着它们别漂.
+PENDING_APPROVAL_FIELD = "pending_approval"
+PENDING_RUN_ID_FIELD = "run_id"
+# 挂起声明"还缺什么"的那个键 (框架原样搬运业务的话, 本层拿它当转发白名单)
+PENDING_NEEDS_FIELD = "needs"
+# 是哪一条调用 (框架 `/history` 那一块与浏览器请求体里**同一个名字**: 两处要对得上,
+# 而它们中间隔着一次往返 —— 名字写两遍的地方, 只有这一处的两遍是同一个常量)
+TOOL_CALL_ID_FIELD = "tool_call_id"
 
 # 运行编号: 响应头上带出去 (`X-Run-Id`), 取消时从请求体里收回来. 形状是框架
 # `new_run_id()` 发的那个 (uuid4 的 hex), 这里按**传输契约**再声明一遍 —— 它要进
@@ -233,8 +273,13 @@ _LIMITS = httpx.Limits(max_connections=10, max_keepalive_connections=10)
 _CLIENT = httpx.Client(limits=_LIMITS)
 atexit.register(_CLIENT.close)
 
-# 终局事件 (框架的契约: 一条流里恰好一个, 之后流才收线)
-TERMINAL_EVENTS = frozenset({"final", "error"})
+# 终局事件 (框架的契约: 一条流里恰好一个, 之后流才收线).
+#
+# `approval_required` 是第三个 (issue 34 加的第八类事件): 这一次运行**停在半路等人**
+# —— 那也是一次结束 (这次 HTTP 请求到此为止). 漏登记的表现很难看: 上游正常收线, 而
+# 本层以为它断在半路, 于是往流尾补一帧「回答中途断开了」, 正好补在一张等着用户确认
+# 的卡片底下.
+TERMINAL_EVENTS = frozenset({"final", "error", "approval_required"})
 
 # 本层自己补的两个错误码 (框架不会发这两个)
 UNAVAILABLE_CODE = "agent_unavailable"
@@ -264,10 +309,16 @@ ERROR_COPY: dict[str, str] = {
     "run_failed": "客服这边出了点问题, 请稍后再试.",
     "cancelled": "这次回答已取消.",
     # 上游拒绝转发时给的码 (框架 `server/utils/errors.py` 定的那一套):
-    # 只有 thread_busy 是用户自己能处理的一种 —— 别的 (unauthorized /
+    # 只有会话状态的这几个是用户自己能处理的一种 —— 别的 (unauthorized /
     # not_configured / invalid_request) 都说明**我们这边**没配对, 用户无从下手,
     # 所以走兜底话术, 码保留给日志与 devtools 看.
     "thread_busy": "上一句我还在答呢, 等这条答完再问下一句吧.",
+    # 未决挂起那三个码 (issue 34 定的, issue 36 接上前端): 第一个说的是"你还有一件事
+    # 没处理", 后两个说的是"正在办 / 已经办过了" —— 三件事用户要做的事都不一样,
+    # 塌成同一句他就只能猜.
+    "thread_suspended": "上一步还等你确认呢, 先把那张卡片处理掉再问下一句吧.",
+    "approval_in_progress": "这一次确认还在处理中, 稍等一下下, 别重复点.",
+    "approval_already_applied": "这一次确认已经处理过了, 刷新页面看看最新状态.",
     RUN_NOT_FOUND_CODE: "这次回答已经结束了.",  # 按停止时它正好答完 —— 不是故障
     UNAVAILABLE_CODE: "客服暂时联系不上, 请稍后再试.",
     INTERRUPTED_CODE: "回答中途断开了, 请重新问一次.",
@@ -275,6 +326,11 @@ ERROR_COPY: dict[str, str] = {
     # 但用户看到的仍得是一句能照着做的话 —— 不是什么「参数非法」.
     "invalid_request": "这条消息没能发出去, 重说一遍试试.",
     "invalid_message": "这句话是空的, 说点什么再发吧.",
+    # 确认卡那一路的三条: 结论只认两个值 / 载荷要是个对象 / 卡片身份必填 —— 三条对
+    # 用户都是同一件事"这次确认没提交成"(与上游 `read_approval` 同源, 各卡各的那一半).
+    "invalid_decision": "这次确认没能提交, 刷新页面再试一次.",
+    "invalid_data": "这次确认没能提交, 刷新页面再试一次.",
+    "invalid_tool_call_id": "这次确认没能提交, 刷新页面再试一次.",
     "message_too_long": "这句话太长了, 我一次读不完 —— 拆短一点再问吧.",
     "invalid_conversation_id": "这次对话的连接坏了, 刷新页面再问一次.",
     "invalid_run_id": "这次没能停下来, 刷新页面再看看.",
@@ -647,6 +703,101 @@ def cancellation_from_request(request, user_id: int) -> Cancellation:
 
 
 @dataclass(frozen=True, slots=True)
+class Resume:
+    """浏览器对一次挂起给的**结论** (BFF 从请求体里只认这四样).
+
+    `tool_call_id` 是**这张卡是哪一张**: 页面从卡片那一块里原样带回来, 本层拿它与
+    这一刻真正等着批的那一条对一下 (见 `pending_approval`). 没有它就只能"恢复这段
+    对话现在等着批的那一次" —— 而"现在等着批的"完全可能是**另一件事**(用户刚在
+    另一个地方处理完、这一段又挂起了别的), 那样点下去就是把 A 卡片的确认用在 B 上.
+
+    `data` 是一次性载荷 (今天只有支付密码, ADR-0015). 它在这里**只是一个 dict**:
+    本层不认识里面的键, 不解释, 也不记日志 —— 转发时按挂起声明的清单筛过
+    (见 `one_shot_payload`), 由业务与框架决定哪些键有用.
+    """
+
+    conversation_id: str
+    decision: str
+    tool_call_id: str
+    data: dict
+
+
+def resume_from_request(request, user_id: int) -> Resume:
+    """请求体 → 一次确认; 哪里不合契约就抛 `RefusedError` (400).
+
+    `decision` **只认** `approve` / `reject` (两端各卡一次的其中一端; 另一端是框架的
+    `read_approval`): 拼错的字符串被悄悄当成拒绝, 是一次**替人做的决定** —— 而用户
+    以为自己批准了. 严格认类型还有一层作用: `True` / `1` 这类值不会因为"看着像"
+    就被当成通过.
+
+    `data` 给了就必须是 JSON 对象 (不是对象一律拒): 它会被转给上游, 而那边按一个
+    对象来读.
+
+    `tool_call_id` 必填 (页面每次都带): 少了它就认不出"这张卡是哪一张", 而认不出的
+    那一条路是**替另一件事拍板** —— 宁可当场拒, 也不猜.
+
+    Raises:
+        RefusedError: 正文不是 JSON 对象 / `decision` 不是那两个值 / `data` 不是对象
+            / 缺 `tool_call_id` / 会话编号不合法.
+    """
+    payload = _payload_from_request(request, user_id, "确认")
+    decision = payload.get(DECISION_FIELD)
+    if decision not in (APPROVE_DECISION, REJECT_DECISION):
+        # **值不进日志**: 它可能是任何东西 (用户手一抖把密码敲进这个字段都可能),
+        # 而记下类型就够定位 (前端把布尔/数字发上来了, 一看便知)
+        logger.warning(
+            "买家 %s: 确认的请求体里 %s 不是 %r / %r (收到 %s)",
+            user_id,
+            DECISION_FIELD,
+            APPROVE_DECISION,
+            REJECT_DECISION,
+            type(decision).__name__,
+        )
+        raise RefusedError(400, "invalid_decision")
+    data = payload.get(DATA_FIELD)
+    if data is not None and not isinstance(data, dict):
+        logger.warning(
+            "买家 %s: 确认的请求体里 %s 应是 JSON 对象, 收到 %s",
+            user_id,
+            DATA_FIELD,
+            type(data).__name__,
+        )
+        raise RefusedError(400, "invalid_data")
+    tool_call_id = payload.get(TOOL_CALL_ID_FIELD)
+    if not isinstance(tool_call_id, str) or not tool_call_id.strip():
+        logger.warning(
+            "买家 %s: 确认的请求体里缺 %s (或它不是非空字符串)",
+            user_id,
+            TOOL_CALL_ID_FIELD,
+        )
+        raise RefusedError(400, "invalid_tool_call_id")
+    conversation_id = conversation_id_from(payload.get(CONVERSATION_FIELD), user_id)
+    return Resume(
+        conversation_id=conversation_id,
+        decision=decision,
+        tool_call_id=tool_call_id.strip(),
+        data=data or {},
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class Pending:
+    """这段对话现在等着人拍板的那一次 (从 `/history` 读回来, 见 `pending_approval`).
+
+    `tool_call_id` 是**它是哪一条**: 拿它与浏览器带回来的那个对一下 —— 对不上就说明
+    这张卡已经过期 (这一条早就批完/被撤了, 而这一段又挂起了别的), 于是当场按"卡过期"
+    打发掉, 不拿旧卡去替新事拍板.
+
+    `needs` 是**转发白名单**: 挂起时声明缺哪些键, 这一趟就只准带哪些键过去
+    (见 `one_shot_payload`) —— 那一袋里能装的东西由业务说, 不由浏览器说.
+    """
+
+    run_id: str
+    tool_call_id: str
+    needs: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class Rename:
     """浏览器要给哪段对话改成什么名字 (BFF 从请求体里只认这两样)."""
 
@@ -864,7 +1015,63 @@ class Upstream:
 
 
 def open_upstream(user_id: int, question: Question) -> Upstream:
-    """打上游并按契约检查它; 任何问题都抛 `RefusedError` (状态码给浏览器用).
+    """打上游的问句端点, 把这次问答的事件流开好 (机制见 `_open_stream`).
+
+    这里只回答一个问题: 这一次请求**带什么上去**——问句走请求体, 三个头走
+    `_service_headers`, 耐心是 `UPSTREAM_TIMEOUT` (模型思考时半天没事件是正常的).
+    """
+    return _open_stream(
+        path=RUNS_PATH,
+        payload={MESSAGE_FIELD: question.message},
+        user_id=user_id,
+        conversation_id=question.conversation_id,
+        timeout=UPSTREAM_TIMEOUT,
+        action="转发",
+    )
+
+
+def open_resume(user_id: int, resume: Resume, pending: Pending) -> Upstream:
+    """打上游的恢复端点, 把这次恢复的事件流开好 (与 `open_upstream` 同构).
+
+    三处与问句那条不同: 路径里要指名道姓说**哪一次运行** (`pending.run_id`, 由本层
+    自己问来, 理由见 `pending_approval`); 请求体里多一份人的**结论** (`decision`);
+    以及那一袋一次性载荷 —— 它**要过筛** (`one_shot_payload`), 只带挂起声明缺的
+    那几个键. 筛这一步是这一层的责任: 那一袋里装着支付密码, 而运行上下文里还装着
+    这趟的**身份**, 原样转发等于把身份也交给浏览器改.
+
+    正文**一个字都不进日志** (issue 29 那条线; 本模块只记状态码与错误码).
+
+    Note:
+        耐心与问句那条同档 (`UPSTREAM_TIMEOUT`): 一次恢复跑的是与提问同样的东西
+        (模型接着往下答几轮), 只是开头补做了那条欠着的调用.
+    """
+    return _open_stream(
+        path=RESUME_PATH.format(run_id=pending.run_id),
+        payload={
+            DECISION_FIELD: resume.decision,
+            DATA_FIELD: one_shot_payload(resume, pending.needs),
+        },
+        user_id=user_id,
+        conversation_id=resume.conversation_id,
+        timeout=UPSTREAM_TIMEOUT,
+        action="恢复",
+    )
+
+
+def _open_stream(
+    *,
+    path: str,
+    payload: dict,
+    user_id: int,
+    conversation_id: str,
+    timeout: httpx.Timeout,
+    action: str,
+) -> Upstream:
+    """打上游的一条流式端点并按契约检查它 (**提问与恢复共用**); 失败抛 `RefusedError`.
+
+    两条路的机制逐字相同 (开连接 / 认状态码 / 认 content-type / 出事关连接), 差别只有
+    `path` / `payload` / `action` 那三样 —— 分头写两份的代价很具体: 少认一种失败的那
+    一条, 表现是「只有那个功能报错的方式不一样」, 排查时最难想到的就是这一层.
 
     为什么要在这里**同步地**把连接开好 (上一版是在生成器里懒打开): 「服务没起来」
     这类失败现在要回一个真状态码 (502/503), 而状态码必须在响应头出门之前定下来
@@ -881,26 +1088,27 @@ def open_upstream(user_id: int, question: Question) -> Upstream:
     | 上游回 200 但不是 SSE (打错地址?) | 502 | `agent_unavailable` |
 
     Note:
-        连接来自**进程级共享**的那个客户端 (`_CLIENT`), 这次问答的耐心 (顶上的
-        `UPSTREAM_TIMEOUT`) 逐次传进去 —— 上一版是每次请求新建一个客户端.
+        连接来自**进程级共享**的那个客户端 (`_CLIENT`), 每次的耐心逐次传进去 ——
+        上一版是每次请求新建一个客户端.
 
         共享依赖的前提是**单进程**部署, 出处见 `CharAgent/server/sessions.py` 的
         「单进程」一节; 那个选择的代价与收益一并写在 `_CLIENT` 那一段.
+
+        `action` 只说这次要做什么 (转发 / 恢复), 只进日志 —— 而**请求正文不进日志**:
+        恢复那一条的正文里可能有密码.
     """
-    who = _who_for(user_id, question.conversation_id)
-    headers = _service_headers(
-        _internal_token(who, "转发"), user_id, question.conversation_id
-    )
+    who = _who_for(user_id, conversation_id)
+    headers = _service_headers(_internal_token(who, action), user_id, conversation_id)
     stack = contextlib.ExitStack()
     try:
         try:
             response = stack.enter_context(
                 _CLIENT.stream(
                     "POST",
-                    _url(RUNS_PATH),
-                    json={MESSAGE_FIELD: question.message},
+                    _url(path),
+                    json=payload,
                     headers=headers,
-                    timeout=UPSTREAM_TIMEOUT,
+                    timeout=timeout,
                 )
             )
         except httpx.HTTPError as exc:
@@ -909,7 +1117,7 @@ def open_upstream(user_id: int, question: Question) -> Upstream:
             raise RefusedError(502, UNAVAILABLE_CODE) from exc
 
         if response.status_code != 200:
-            code = _log_refusal(who, "转发", response, level=logging.ERROR)
+            code = _log_refusal(who, action, response, level=logging.ERROR)
             raise RefusedError(502, code)
         if not _is_event_stream(response):
             logger.error(
@@ -1073,6 +1281,121 @@ def forward_history(user_id: int, conversation_id: str) -> bytes:
     )
 
 
+def pending_approval(user_id: int, conversation_id: str) -> Pending:
+    """这段对话现在**等着人拍板**的那一次; 没有就抛 `RefusedError` (404).
+
+    为什么由本层去问、而不是让浏览器把编号带上来 —— 这一条想明白过一次, 记在这里:
+    框架里有两个"运行编号", 而且**不是一回事** (`CharAgent/server/runs.py`):
+
+    | 编号 | 谁发的 | 从哪拿 |
+    |------|--------|--------|
+    | 事件流那个 | 这次 HTTP 请求 (`new_run_id`) | `X-Run-Id` 头 / 每个事件的载荷 |
+    | **记录层那个** | 记录器建运行行时 | `/history` 的 `pending_approval.run_id` |
+
+    恢复端点要的是**后者**. 而前端在直播那一路 (挂起事件顺着流回来) 手上只有前者
+    —— 它要是拿那个去恢复, 得到的是一个 404: 一次付款就此卡住, 用户还不知道该怎么
+    办. 与其让每一处都记住"哪个编号是哪个", 不如让**唯一知道答案的那一方**回答:
+    挂起态的家本来就在记录表那一行 (ADR-0014), 而这里问的判据与框架那道闸门逐字
+    相同 (未决 + 属于本会话).
+
+    代价是一次多余的上游读 (用户点一下确认, 本层问一句"现在等你批的是哪一次") ——
+    比让前端猜一个编号便宜得多.
+
+    顺带把 `needs` 一起带回来: 那是**下一次要交给助手服务的键的清单**
+    (见 `one_shot_payload`), 同一份响应里就有, 不必问第二遍.
+
+    Args:
+        user_id: 这次请求的买家 (只可能来自 `request.user.pk`).
+        conversation_id: 哪一段对话 (卡片的宿主).
+
+    Returns:
+        Pending: 那一次运行的记录层编号 + 它声明缺的那些键.
+
+    Raises:
+        RefusedError: 读不到 (令牌没配 503 / 连不上或上游拒绝 502) / 这段对话没有
+            未决挂起 (**404 `run_not_found`** —— 与框架对同一种情形给的是同一个码:
+            从用户的角度看, "这张卡过期了"与"那次运行早没了"是同一件事).
+    """
+    who = _who_for(user_id, conversation_id)
+    raw = forward_history(user_id, conversation_id)
+    try:
+        body = json.loads(raw)
+    except ValueError as exc:
+        # 上游回了一段不是 JSON 的东西 (打错地址 / 中间层塞了张 HTML): 接线故障
+        logger.error("%s: 读历史回来的不是 JSON: %s", who, exc)
+        raise RefusedError(502, UNAVAILABLE_CODE) from exc
+
+    block = body.get(PENDING_APPROVAL_FIELD) if isinstance(body, dict) else None
+    run_id = block.get(PENDING_RUN_ID_FIELD) if isinstance(block, dict) else None
+    if run_id is None:
+        # 恒在的那个字段是 None = 这段对话没有未决挂起 (用户看到的"这张卡过期了")
+        logger.info("%s: 这段对话没有等着确认的东西", who)
+        raise RefusedError(404, RUN_NOT_FOUND_CODE)
+    if not isinstance(run_id, str) or not valid_run_id(run_id):
+        # 有挂起、但编号不成形状: 这不是"卡过期了", 是**两边的版本不齐** (对面换了
+        # 编号的形态) —— 对用户答同一句话 (他也做不了别的), 但日志里要留证据
+        logger.error("%s: 上游给的运行编号不成形状: %r", who, run_id)
+        raise RefusedError(404, RUN_NOT_FOUND_CODE)
+    return Pending(
+        run_id=run_id,
+        tool_call_id=declared_tool_call_id(block),
+        needs=declared_needs(block),
+    )
+
+
+def declared_tool_call_id(block: dict) -> str:
+    """挂起那一块里"是哪一条调用" (`tool_call_id`); 认不出来时给空串.
+
+    空串的语义是"这一条答不上来", 与浏览器带回来的那个必然对不上 (那一边要求非空)
+    —— 于是它自然落进"这张卡过期了"那一支, 不必再造一个分支.
+    """
+    value = block.get(TOOL_CALL_ID_FIELD)
+    return value if isinstance(value, str) else ""
+
+
+def declared_needs(block: dict) -> tuple[str, ...]:
+    """挂起那一块里声明的"还缺什么" (`needs`), 只留字符串.
+
+    上游可以给 `null` / 空列表 (纯是/非的确认) / 一列字符串; 别的东西 (数字、嵌套
+    对象) 一律不算数 —— 这一份清单要拿去当**转发白名单**用 (见 `one_shot_payload`),
+    放进来一个不是字符串的东西等于把筛子捅个洞.
+    """
+    needs = block.get(PENDING_NEEDS_FIELD)
+    if not isinstance(needs, list | tuple):
+        return ()
+    return tuple(item for item in needs if isinstance(item, str))
+
+
+def one_shot_payload(resume: Resume, needs: tuple[str, ...]) -> dict:
+    """浏览器给的那一袋 `data` → **这一次挂起真的缺的那几个键** (其余一律丢掉).
+
+    为什么必须筛: 框架把 `data` **并进**运行上下文, 而且是 `{**payload, **data}`
+    —— `data` 在后, 覆盖得掉已有的键 (`CharAgent/server/app.py` 的恢复端点). 而这份
+    载荷里装着这一趟运行的**身份**: 业务侧取买家 ID 正是从载荷里读的
+    (`CharApp/minimall/provider.py` 的 `buyer_id` → `payload["user_id"]`), 18 个工具
+    全按它绑数据. 于是"原样转发"等于把身份交给浏览器改: 一个买家在自己那次挂起上
+    带一个 `data={"user_id": 别人的}`, 恢复那一段就以别人的身份查订单与余额, 而答复
+    流回他自己页面上.
+
+    这一层是**最后一道门** (浏览器够不着助手服务, 只有本层拿着内部令牌), 所以门在
+    这里关: 只放行挂起自己**声明缺的那些键** (`needs`, 业务给的) —— 白名单, 不是黑
+    名单, 对面以后多一个字段也默认进不来, 要放行得回来改这里.
+
+    "只在 approve 时出现"由上游判 (拒绝那一路的 `data` 只用来带一个给模型看的
+    `reason`); 本层管的是**哪些键能过去**, 一件事各管一头.
+
+    Args:
+        resume: 浏览器那一次确认 (带着它给的原始 `data`).
+        needs: `pending_approval` 里声明缺的那些键.
+
+    Returns:
+        dict: 要转给助手服务的一次性载荷; 拒绝那一路一律空 (没有东西要给工具).
+    """
+    if resume.decision != APPROVE_DECISION:
+        return {}
+    return {key: resume.data[key] for key in needs if key in resume.data}
+
+
 def forward_conversations(user_id: int, *, query: str | None = None) -> bytes:
     """列「这个买家聊过哪几段」(上路); 给了 `query` 就只回命中的那些.
 
@@ -1205,6 +1528,28 @@ class AgentPageView(LoginRequiredMixin, TemplateView):
     template_name = "minimall/agent.html"
 
 
+def _sse_response(upstream: Upstream) -> StreamingHttpResponse:
+    """一条已经开好的上游流 → 交给浏览器的响应 (chat 与恢复两条路共用).
+
+    两件事都写在这一处:
+
+    - **别让中间层缓存它**: 缓存 SSE 的中间层会把它变成「跑完才到」(`x-accel-buffering`
+      是 nginx 的对应开关), 用户看到的就是"问了半天没反应、一分钟后一次性蹦出来".
+    - **把运行编号带给浏览器**: 它是页面上按「停止」时唯一能指名道姓的东西. 上游
+      **总是**带这个头 (框架 `create_app`), 所以"没有"只可能是中间层把它吞了 ——
+      那时不给这个头 (页面上就不显示停止按钮), 而不是塞个空值骗前端.
+    """
+    headers = {
+        "cache-control": "no-cache",
+        "x-accel-buffering": "no",
+    }
+    if run_id := upstream.response.headers.get(RUN_ID_HEADER):
+        headers[RUN_ID_HEADER] = run_id
+    return StreamingHttpResponse(
+        upstream, content_type="text/event-stream", headers=headers
+    )
+
+
 class AgentChatView(LoginRequiredMixin, View):
     """BFF 端点: 一次问答 → 一条 SSE 流 (POST).
 
@@ -1226,20 +1571,7 @@ class AgentChatView(LoginRequiredMixin, View):
             # 回真状态码 + 用户话术, 浏览器读得到
             return _refusal(refused.status, refused.code)
 
-        headers = {
-            # 缓存 SSE 的中间层会把它变成「跑完才到」; 后者是 nginx 的对应开关
-            "cache-control": "no-cache",
-            "x-accel-buffering": "no",
-        }
-        # 本次运行的编号带给浏览器: 它是页面上按「停止」时唯一能指名道姓的东西.
-        # 上游**总是**带这个头 (框架 `create_app`), 所以"没有"只可能是中间层把它吞了
-        # —— 那时不给这个头 (页面上就不显示停止按钮), 而不是塞个空值骗前端.
-        if run_id := upstream.response.headers.get(RUN_ID_HEADER):
-            headers[RUN_ID_HEADER] = run_id
-
-        return StreamingHttpResponse(
-            upstream, content_type="text/event-stream", headers=headers
-        )
+        return _sse_response(upstream)
 
     def http_method_not_allowed(self, request, *args, **kwargs) -> HttpResponse:
         """GET 之类一律拒掉, 并说清为什么 (而不是默认那句干巴巴的 405).
@@ -1248,6 +1580,55 @@ class AgentChatView(LoginRequiredMixin, View):
         一个链接/一张图片就能触发的 GET), 值得写明白, 免得以后有人"顺手"补一个
         `def get` 上去.
         """
+        logger.warning("BFF 端点收到 %s (只认 POST): %s", request.method, request.path)
+        return _refusal(405, "method_not_allowed")
+
+
+class AgentResumeView(LoginRequiredMixin, View):
+    """BFF 端点: 给一次挂起一个结论, 让那次运行接着跑 (POST → SSE).
+
+    「挂起」是框架那侧的一件事 (issue 34): 一次需要人拍板的调用让整个运行停在半路
+    —— 事件流上是一条 `approval_required` (它也是**终局事件**: 这次 HTTP 请求到此
+    为止), 库里那一行是 `needs_approval`. 页面上那张确认卡按下去之后走的就是这里.
+
+    三件事与 chat 那条逐字相同 (同一道门 / 身份只从 session / 认 POST + CSRF), 多出来
+    的一件是**哪一次运行**: 它由本层现问 (`pending_approval`), 不由浏览器带上来 ——
+    页面上那张卡甚至没有一个运行编号可带 (理由在那边的 docstring 里).
+
+    Note:
+        `data` 里的东西是**一次性的凭据** (今天只有支付密码, ADR-0015): 它必须走到上游
+        (不然工具拿不到), 但它**不进日志、不回显、不在这一层留任何痕迹** —— 所以这个
+        端点里一处 `logger` 都不提正文 (issue 29 那条线的延续).
+    """
+
+    def post(self, request):
+        # 身份只从 session 取 (与 chat / cancel 同一行代码同一个理由): 请求体里塞
+        # 别人的 user_id 改不了这次转发带的是谁 —— 而"能不能给这段对话的挂起拍板"
+        # 正是在助手服务那侧按这个身份判的
+        buyer_id = request.user.pk
+        try:
+            resume = resume_from_request(request, buyer_id)
+            pending = pending_approval(buyer_id, resume.conversation_id)
+            if pending.tool_call_id != resume.tool_call_id:
+                # **这张卡过期了**: 这一条早就不在等着批了 (批过 / 被撤 / 这一段又挂起了
+                # 别的) —— 浏览器手上那张卡与事实对不上. 按"卡过期"回答, 不拿旧卡去替
+                # 现在这一件事拍板 (那正是页面带 `tool_call_id` 回来的意义).
+                logger.info(
+                    "买家 %s: 确认的卡片已过期 (卡上 %s, 现在等着的是 %s)",
+                    buyer_id,
+                    resume.tool_call_id,
+                    pending.tool_call_id or "(认不出来)",
+                )
+                raise RefusedError(404, RUN_NOT_FOUND_CODE)
+            upstream = open_resume(buyer_id, resume, pending)
+        except RefusedError as refused:
+            # 走到这儿的是"还没开始流"的失败 (入参不合法 / 这张卡过期了 / 连不上上游)
+            return _refusal(refused.status, refused.code)
+
+        return _sse_response(upstream)
+
+    def http_method_not_allowed(self, request, *args, **kwargs) -> HttpResponse:
+        """同 `AgentChatView`: 这是一次决定 (它决定一笔钱付不付), 不做成 GET."""
         logger.warning("BFF 端点收到 %s (只认 POST): %s", request.method, request.path)
         return _refusal(405, "method_not_allowed")
 

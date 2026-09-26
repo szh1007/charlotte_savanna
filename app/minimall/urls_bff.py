@@ -12,7 +12,7 @@ issue 02 建的, 吃 X-Internal-Token 的内部端点). 两套认证是两回事
 一起, 以后加中间件, 加限流, 看日志时都得逐个分辨它们到底信谁.
 
 Note:
-    页面与四个转发端点同在本文件 (没有像 `urls_html.py` / `urls_api.py` 那样按
+    页面与五个转发端点同在本文件 (没有像 `urls_html.py` / `urls_api.py` 那样按
     「页面 / 接口」再拆一刀): 这几条路由**同属一个接入面** —— 同一个前缀, 同一套
     session 认证, 一起改一起测. 平台那两个文件的切法是按**认证模型**分的 (买家
     DRF 接口 / 页面), 这里几条路由的认证模型是同一个, 再拆只会让人来回跳.
@@ -29,6 +29,7 @@ from .views_bff import (
     AgentConversationTitleView,
     AgentHistoryView,
     AgentPageView,
+    AgentResumeView,
 )
 
 app_name = "minimall_bff"
@@ -37,6 +38,9 @@ urlpatterns = [
     path("", AgentPageView.as_view(), name="page"),
     path("chat/", AgentChatView.as_view(), name="chat"),
     path("cancel/", AgentCancelView.as_view(), name="cancel"),
+    # 确认卡那一路 (#36): 一次挂起 → 买家本人给结论 → 转发给助手服务的恢复端点.
+    # 它与 chat 同族 (POST + SSE + CSRF), 只是"再跑一次"之前多了一步人的结论.
+    path("resume/", AgentResumeView.as_view(), name="resume"),
     path("history/", AgentHistoryView.as_view(), name="history"),
     # 会话列表与它下面的三个管理动作 (#20): 同一段前缀, 同一个接入面 —— 四条形状
     # 一致 (POST + CSRF + 身份只从 session 取), 页面那边一套写法.

@@ -53,6 +53,7 @@ RUNS_URL = f"{AGENT_URL}/runs"
 CHAT_URL = "/minimall/agent/chat/"
 PAGE_URL = "/minimall/agent/"
 CANCEL_URL = "/minimall/agent/cancel/"
+RESUME_URL = "/minimall/agent/resume/"
 HISTORY_URL = "/minimall/agent/history/"
 CONVERSATIONS_URL = "/minimall/agent/conversations/"
 # 三个会话管理动作 (issue 20): 都挂在列表那条下面, 会话编号走请求体
@@ -74,6 +75,10 @@ TAB_TWO = "2b7d9a10-aaaa-4bbb-8ccc-111222333444"
 RUN_ID = "9f3a1c2b4d5e6f7081a2b3c4d5e6f708"
 CANCEL_UPSTREAM = f"{AGENT_URL}/runs/{RUN_ID}/cancel"
 
+# 助手服务的恢复端点 (框架 `CharAgent/server/app.py` 那条路由): 路径里那个编号是
+# **记录层那一行** —— 本层从 /history 的 `pending_approval` 里读出来, 不是浏览器给的
+RESUME_UPSTREAM = f"{AGENT_URL}/runs/{RUN_ID}/resume"
+
 # 助手服务的历史端点 (框架 `CharAgent/server/history.py` 那条路由)
 HISTORY_UPSTREAM = f"{AGENT_URL}/history"
 
@@ -86,6 +91,23 @@ HISTORY_BODY = {
     ],
 }
 
+# 一次**有未决挂起**的历史响应 (issue 34 起那块恒在, 没有时是 None): 确认卡要的
+# 五样都在, 其中 `run_id` 是恢复那一步要指名道姓的那一次运行, `tool_call_id` 是
+# "这张卡是哪一张" (提交时浏览器把它带回来, 服务端拿它对一下)
+TOOL_CALL_ID = "call_pay_1"
+PENDING_HISTORY_BODY = {
+    **HISTORY_BODY,
+    "pending_approval": {
+        "run_id": RUN_ID,
+        "tool_call_id": TOOL_CALL_ID,
+        "tool_name": "pay_my_order",
+        "prompt": "这一单要付款了, 需要你输一次支付密码",
+        "needs": ["payment_password"],
+    },
+}
+
+# 用例里的假密码 (与真人的那个毫无关系): 它只在这一条链路里走来走去
+PASSWORD = "246810"
 # 助手服务的会话列表端点 (框架 `CharAgent/server/conversations.py` 那条路由)
 CONVERSATIONS_UPSTREAM = f"{AGENT_URL}/conversations"
 
@@ -212,6 +234,29 @@ class BffTestBase(TestCase):
     def mock_history(self, response: httpx.Response) -> respx.Route:
         """把助手服务的历史端点拦下来, 让它回指定的响应."""
         return respx.get(HISTORY_UPSTREAM).mock(return_value=response)
+
+    def mock_resume(self, *frames: str, status: int = 200) -> respx.Route:
+        """把助手服务的恢复端点拦下来, 让它答一段固定的流 (与 `mock_agent` 同形)."""
+        return respx.post(RESUME_UPSTREAM).mock(
+            return_value=_sse(*frames, status=status)
+        )
+
+    def post_resume(self, payload: dict | None = None, **kwargs):
+        """按页面的样子打一次确认端点 (POST + JSON: 结论 / 卡片身份 / 载荷都在体里).
+
+        默认是「输对了密码、点了确认」那一下; 用例要别的形态就覆盖那几个键
+        (取消是 `{"decision": "reject", "data": {}}`).
+        """
+        body = {
+            "conversation_id": TAB_ONE,
+            "decision": "approve",
+            "tool_call_id": TOOL_CALL_ID,
+            "data": {"payment_password": PASSWORD},
+        }
+        body.update(payload or {})
+        return self.client.post(
+            RESUME_URL, data=json.dumps(body), content_type="application/json", **kwargs
+        )
 
     def read_history(self, conversation_id: str = TAB_ONE, **body):
         """按页面的样子读一次历史 (POST + JSON: 会话编号待在请求体里)."""
@@ -657,6 +702,52 @@ class BffFailureTest(BffTestBase):
             _events(body), ["thinking", "error"], "前面的事件照发, 末尾补上终局"
         )
         self.assertEqual(_payload(body, "error")["error"]["code"], "stream_interrupted")
+
+    def test_a_suspended_run_is_a_terminal_event_not_an_interruption(self):
+        """挂起 (`approval_required`) 与 final / error 一样是**终局事件** (issue 34/36).
+
+        漏登记的表现很难看: 上游正常收线, 而本层以为它断在半路, 往流尾补一帧
+        「回答中途断开了」—— 用户刚看到一张等他确认的卡片, 底下同时说这次回答断了,
+        他当然以为要重问一遍. 而真正该做的事 (在那张卡上确认) 就在眼前.
+        """
+        with respx.mock:
+            self.mock_agent(
+                _frame(
+                    1,
+                    "approval_required",
+                    prompt="这一单要付款了, 需要你输一次支付密码",
+                    needs=["payment_password"],
+                )
+            )
+            body = self.ask()
+
+        self.assertEqual(_events(body), ["approval_required"])
+
+    def test_a_pending_approval_refuses_the_next_question_in_words(self):
+        """未决挂起期间再提问: 上游 409 (`thread_suspended`) → 说清是"先处理那张卡".
+
+        与"会话忙"那条同一个坑: 塌成「客服暂时联系不上」是错的归因 —— 服务好好的,
+        用户要做的事也很具体 (把上面那张卡片处理掉). 前端把输入区禁用了, 但**禁用
+        只是体验**: 绕过页面的请求到这里必须被拦下, 而且拦得让人看得懂.
+        """
+        with respx.mock:
+            respx.post(RUNS_URL).mock(
+                return_value=httpx.Response(
+                    409,
+                    json={
+                        "error": {
+                            "code": "thread_suspended",
+                            "message": "该会话有未决的挂起, 先给那一次审批一个结论",
+                        }
+                    },
+                )
+            )
+            r = self.post_question()
+
+        body = json.loads(r.content)
+        self.assertEqual(body["error"]["code"], "thread_suspended")
+        self.assertIn("确认", body["error"]["message"], "要说清该做什么")
+        self.assertNotIn("联系不上", body["error"]["message"])
 
     def test_a_mid_stream_break_is_reported_not_hidden(self):
         """上游读到一半炸了 (连接被掐) → 也要收口, 不能静默断在半路."""
@@ -1145,6 +1236,357 @@ class BffHistoryTest(BffTestBase):
                     json.loads(r.content)["error"]["code"], "method_not_allowed"
                 )
                 self.assertFalse(route.called)
+
+
+# ---------------------------------------------------------------------------
+# 确认卡那一路: 一次挂起 → 买家给结论 → 转发 (issue 36)
+# ---------------------------------------------------------------------------
+
+
+class BffResumeTest(BffTestBase):
+    """恢复端点 —— 页面上那张确认卡按下去之后走的那条路.
+
+    与取消同族 (都作用在**某一次运行**上), 多出来的是三件事:
+
+    - 请求体里可能带**一次性的东西** (支付密码, ADR-0015) —— 所以多一条"它不进日志",
+      也多一条"它只按挂起声明缺的那些键转发";
+    - 「哪一次运行」由本层**现问** (`/history` 的 `pending_approval`), 不由浏览器
+      带上来的 —— 事件流里那个编号与恢复要的那个不是一回事, 理由见
+      `views_bff.pending_approval`;
+    - 那一袋载荷要**筛**过才转发 —— 框架会把它并进运行上下文, 而身份也在里面.
+
+    于是这一页守三类: 转发契约 (含"编号从哪来"与"哪些键能过去") / 入参校验 (结论只
+    认那两个值) / 一次性的东西不外泄.
+    """
+
+    def test_the_decision_is_forwarded_to_the_pending_run(self):
+        """结论与载荷转给助手服务, 路径上是**库里那一行**的运行编号.
+
+        `data` 是这条链路上唯一一个**必须**带着密码的地方 (ADR-0015 的通路:
+        浏览器 → BFF → `/runs/{id}/resume`), 所以这条同时钉住"它真的到了上游".
+        """
+        with respx.mock:
+            self.mock_history(httpx.Response(200, json=PENDING_HISTORY_BODY))
+            route = self.mock_resume(_frame(1, "final", content="付好了."))
+            body = _body(self.post_resume())
+
+        request = route.calls[0].request
+        self.assertEqual(request.url.path, f"/runs/{RUN_ID}/resume")
+        self.assertEqual(
+            json.loads(request.content),
+            {"decision": "approve", "data": {"payment_password": PASSWORD}},
+        )
+        self.assertEqual(request.headers["X-Internal-Token"], TOKEN)
+        self.assertEqual(request.headers["X-User-Id"], str(self.buyer.pk))
+        self.assertEqual(request.headers["X-Conversation-Id"], TAB_ONE)
+        self.assertEqual(_events(body), ["final"], "回来那一段流照旧逐帧透传")
+
+    def test_the_run_to_resume_comes_from_the_pending_row(self):
+        """**守卫测试**: 要恢复哪一次运行, 由库里的未决挂起说了算.
+
+        浏览器跟着一起送一个 `run_id` 也改不了这件事 —— 它手上那个编号(如果它真有
+        一个)来自事件流, 而事件流里那个是**进程内的这一次 HTTP 请求**, 与恢复要的
+        记录层编号不是一回事 (框架 `server/runs.py` 说得明白). 拿错了的表现是
+        404: 一次付款就此卡住, 用户还不知道该怎么办 —— 所以这个编号只能由知道答案
+        的那一方 (`/history`) 回答.
+        """
+        elsewhere = "0123456789abcdef0123456789abcdef"
+        with respx.mock:
+            self.mock_history(httpx.Response(200, json=PENDING_HISTORY_BODY))
+            route = self.mock_resume(_frame(1, "final", content="付好了."))
+            self.post_resume({"run_id": elsewhere})
+
+        self.assertEqual(route.calls[0].request.url.path, f"/runs/{RUN_ID}/resume")
+
+    def test_a_reject_carries_no_data(self):
+        """取消那一路没有东西要给工具 —— 只送一个结论 (框架那侧也照这个形状读).
+
+        这里在请求体里塞了一份"拒绝原因"探路: 本层不该把它当成可转发的东西带走 ——
+        今天没有任何调用方给它, 要加的时候在 `one_shot_payload` 上开口子.
+        """
+        with respx.mock:
+            self.mock_history(httpx.Response(200, json=PENDING_HISTORY_BODY))
+            route = self.mock_resume(_frame(1, "final", content="好, 那就不付了."))
+            self.post_resume(
+                {"decision": "reject", "data": {"reason": "先不付", "user_id": 11}}
+            )
+
+        self.assertEqual(
+            json.loads(route.calls[0].request.content),
+            {"decision": "reject", "data": {}},
+        )
+
+    def test_a_data_that_is_not_an_object_is_refused(self):
+        """`data` 给了就必须是对象 (字符串 / 数组 / 数字一律 400, 且不打上游)."""
+        for bad in ("payment_password=1", [1, 2], 7):
+            with self.subTest(data=bad), respx.mock:
+                history = self.mock_history(
+                    httpx.Response(200, json=PENDING_HISTORY_BODY)
+                )
+                resume = self.mock_resume(_frame(1, "final", content="不该发生"))
+                r = self.post_resume({"data": bad})
+
+                self.assertEqual(r.status_code, 400)
+                self.assertEqual(json.loads(r.content)["error"]["code"], "invalid_data")
+                self.assertFalse(history.called)
+                self.assertFalse(resume.called)
+
+    def test_the_identity_comes_from_the_session_not_from_the_body(self):
+        """身份只从 session 取 (与 chat / cancel 同一行代码同一个理由).
+
+        请求体里塞**别人的** user_id 也改不了这次转发带的是谁 —— 而"能不能给这段
+        对话的挂起拍板"正是在助手服务那侧按这个身份判的.
+        """
+        with respx.mock:
+            self.mock_history(httpx.Response(200, json=PENDING_HISTORY_BODY))
+            route = self.mock_resume(_frame(1, "final", content="付好了."))
+            self.post_resume({"user_id": self.other.pk})
+
+        self.assertEqual(
+            route.calls[0].request.headers["X-User-Id"], str(self.buyer.pk)
+        )
+
+    def test_the_payload_is_trimmed_to_what_the_approval_declares(self):
+        """**守卫测试**: 浏览器给的那袋 `data` 按 `needs` 筛过才转发.
+
+        为什么这一步不能省: 框架把 `data` **并进**运行上下文, 而且 `data` 在后
+        (`{**payload, **data}`), 覆盖得掉已有的键 —— 而这份载荷里装着这一趟运行的
+        **身份** (业务侧取买家 ID 正是从载荷里读的, `CharApp/minimall/provider.py`
+        的 `buyer_id`). 原样转发的话, 一个买家在自己那次挂起上带一个
+        `data={"user_id": 别人的}`, 恢复那一段就以别人的身份查订单与余额, 答复还流回
+        他自己页面上 —— 本层是挡住这条路**唯一**的一道门 (浏览器够不着助手服务).
+        """
+        intruder = {"user_id": self.other.pk, "tenant_id": "someone-else"}
+        with respx.mock:
+            self.mock_history(httpx.Response(200, json=PENDING_HISTORY_BODY))
+            route = self.mock_resume(_frame(1, "final", content="付好了."))
+            # 这一笔挂起只声明缺支付密码
+            self.post_resume({"data": {**intruder, "payment_password": PASSWORD}})
+
+        self.assertEqual(
+            json.loads(route.calls[0].request.content),
+            {"decision": "approve", "data": {"payment_password": PASSWORD}},
+            "只该带挂起声明缺的那个键",
+        )
+
+    def test_a_yes_or_no_approval_carries_nothing_at_all(self):
+        """纯是/非的确认 (挂起声明 `needs` 为空) 什么都不带上去.
+
+        就算浏览器硬塞一袋东西, 也不该有一个键过去 —— 那一步不需要任何数据, 而这一
+        袋里能装的东西由业务说, 不由浏览器说.
+        """
+        yes_no_body = {
+            **PENDING_HISTORY_BODY,
+            "pending_approval": {
+                **PENDING_HISTORY_BODY["pending_approval"],
+                "needs": [],
+            },
+        }
+        with respx.mock:
+            self.mock_history(httpx.Response(200, json=yes_no_body))
+            route = self.mock_resume(_frame(1, "final", content="下好了."))
+            self.post_resume({"data": {"user_id": self.other.pk}})
+
+        self.assertEqual(
+            json.loads(route.calls[0].request.content),
+            {"decision": "approve", "data": {}},
+        )
+
+    def test_an_unknown_decision_never_reaches_the_service(self):
+        """**守卫测试**: `decision` 只认 `approve` / `reject`, 别的一律 400.
+
+        「严格认类型」的代价写在框架那边 (`read_approval`): 拼错的字符串被悄悄
+        当成拒绝, 是一次**替人做的决定** —— 而用户以为自己批准了. 本层是这条路
+        上的第一道, 卡住之后连上游都不必惊动.
+        """
+        for bad in (None, "", "yes", "APPROVE", True, 1):
+            with self.subTest(decision=bad), respx.mock:
+                history = self.mock_history(
+                    httpx.Response(200, json=PENDING_HISTORY_BODY)
+                )
+                resume = self.mock_resume(_frame(1, "final", content="不该发生"))
+                r = self.post_resume({"decision": bad})
+
+                self.assertEqual(r.status_code, 400)
+                self.assertEqual(
+                    json.loads(r.content)["error"]["code"], "invalid_decision"
+                )
+                self.assertFalse(history.called, "入参坏了就不该去读历史")
+                self.assertFalse(resume.called)
+
+    def test_a_conversation_id_that_cannot_be_forwarded_is_refused(self):
+        """会话编号不合法 → 400, 也不去读历史 (与三条读路同一套校验)."""
+        with respx.mock:
+            history = self.mock_history(httpx.Response(200, json=PENDING_HISTORY_BODY))
+            r = self.post_resume({"conversation_id": "has space"})
+
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(
+            json.loads(r.content)["error"]["code"], "invalid_conversation_id"
+        )
+        self.assertFalse(history.called)
+
+    def test_nothing_pending_is_a_gone_card_not_a_wiring_failure(self):
+        """这段对话没有未决挂起 → 404 (与框架对同一种情形给的是同一个码).
+
+        这条路走到的情形都是"这张卡过期了": 两个标签页里都点过确认 / 上一次提交
+        其实已经成了. 那不是故障, 用户要做的是刷新看最新状态 —— 所以它值得原样转给
+        浏览器 (与取消那条路的 404 同一条纪律), 而不是塌成一句"客服出问题了".
+        """
+        with respx.mock:
+            self.mock_history(httpx.Response(200, json=HISTORY_BODY))
+            resume = self.mock_resume(_frame(1, "final", content="不该发生"))
+            r = self.post_resume()
+
+        self.assertEqual(r.status_code, 404)
+        self.assertEqual(json.loads(r.content)["error"]["code"], "run_not_found")
+        self.assertFalse(resume.called, "没有可恢复的运行就别去打上游")
+
+    def test_a_card_that_is_not_the_pending_one_is_a_gone_card(self):
+        """**守卫测试**: 卡片身份对不上 = 这张卡过期了, 绝不拿它替现在这一件事拍板.
+
+        为什么必须有这一道: BFF 是**现问**"这段对话现在等着批的是哪一次"的
+        (`pending_approval`) —— 问到的完全可能是**另一件事**: 用户手里那张卡对应的
+        挂起早批完了 (或撤了), 而这一段又挂起了别的. 少了这一道, 点旧卡就是把 A 的
+        确认用在 B 上; 而且 B 若是一笔付款, 用户看到的字与真正发生的事就对不上了.
+        """
+        with respx.mock:
+            self.mock_history(httpx.Response(200, json=PENDING_HISTORY_BODY))
+            resume = self.mock_resume(_frame(1, "final", content="不该发生"))
+            r = self.post_resume({"tool_call_id": "call_another_one"})
+
+        self.assertEqual(r.status_code, 404)
+        self.assertEqual(json.loads(r.content)["error"]["code"], "run_not_found")
+        self.assertFalse(resume.called, "对不上就别去打恢复端点")
+
+    def test_a_request_without_a_card_identity_is_refused(self):
+        """缺 `tool_call_id` 当场 400: 认不出"这张卡是哪一张"的那条路是替另一件事拍板。
+
+        页面每次都带 (卡片里就有); 少了它只可能是手搓的请求或者旧版页面 —— 两种都
+        宁可拒, 也不猜。
+        """
+        for bad in (None, "", "   ", 7):
+            with self.subTest(tool_call_id=bad), respx.mock:
+                # `None` = **这个字段压根没发** (不能用 `post_resume` 的缺省体: 那份
+                # 里带着一个合法的编号, 一 update 就把它盖回来了 —— 第一版就是这么
+                # 写的, 于是这一支验的是"正常提交")
+                body = {
+                    "conversation_id": TAB_ONE,
+                    "decision": "approve",
+                    "data": {"payment_password": PASSWORD},
+                }
+                if bad is not None:
+                    body["tool_call_id"] = bad
+                history = self.mock_history(
+                    httpx.Response(200, json=PENDING_HISTORY_BODY)
+                )
+                resume = self.mock_resume(_frame(1, "final", content="不该发生"))
+                r = self.client.post(
+                    RESUME_URL, data=json.dumps(body), content_type="application/json"
+                )
+
+                self.assertEqual(r.status_code, 400)
+                self.assertEqual(
+                    json.loads(r.content)["error"]["code"], "invalid_tool_call_id"
+                )
+                self.assertFalse(history.called, "入参坏了就不该去读历史")
+                self.assertFalse(resume.called)
+
+    def test_a_pending_lookup_that_fails_hides_the_upstream_body(self):
+        """读未决挂起那一步失败 (上游 403) → 502 + 一句人话, 正文不外泄 (issue 29)."""
+        secret = "令牌不对, 内部细节 13800000003"
+        with respx.mock:
+            self.mock_history(
+                httpx.Response(
+                    403, json={"error": {"code": "unauthorized", "message": secret}}
+                )
+            )
+            resume = self.mock_resume(_frame(1, "final", content="不该发生"))
+            r = self.post_resume()
+
+        body = json.loads(r.content)
+        self.assertEqual(r.status_code, 502)
+        self.assertEqual(body["error"]["code"], "unauthorized")
+        self.assertNotIn(secret, body["error"]["message"])
+        self.assertFalse(resume.called)
+
+    def test_a_history_body_that_is_not_json_is_a_wiring_failure(self):
+        """上游 200 但正文不是 JSON (打错地址 / 中间层塞了张 HTML) → 502, 不是 500."""
+        with respx.mock:
+            self.mock_history(httpx.Response(200, text="<html>hello</html>"))
+            r = self.post_resume()
+
+        self.assertEqual(r.status_code, 502)
+        self.assertEqual(json.loads(r.content)["error"]["code"], "agent_unavailable")
+
+    def test_the_browser_gets_the_run_id_and_a_stream(self):
+        """响应头带 `X-Run-Id` (恢复那一段的运行编号), 体是 SSE (与 chat 同形).
+
+        编号要在: 恢复期间用户同样能按「停止」(那一次运行是真的在跑) —— 而按下去
+        要有一个能指名道姓的编号.
+        """
+        with respx.mock:
+            self.mock_history(httpx.Response(200, json=PENDING_HISTORY_BODY))
+            self.mock_resume(_frame(1, "final", content="付好了."))
+            r = self.post_resume()
+
+        self.assertEqual(r["X-Run-Id"], RUN_ID)
+        self.assertTrue(r["content-type"].startswith("text/event-stream"))
+
+    def test_the_password_never_reaches_the_log(self):
+        """**两侧日志里搜不到密码原文** (与 issue 29 同一条线, 本片也要有验收项).
+
+        正面证据一并断言 (错误码在日志里), 否则"搜不到"可能只是这次压根没记日志 ——
+        那种绿的用例什么都证明不了.
+        """
+        with respx.mock:
+            self.mock_history(httpx.Response(200, json=PENDING_HISTORY_BODY))
+            respx.post(RESUME_UPSTREAM).mock(
+                return_value=httpx.Response(
+                    403, json={"error": {"code": "unauthorized", "message": "令牌不对"}}
+                )
+            )
+            with self.assertLogs(BFF_LOGGER, level="WARNING") as captured:
+                self.post_resume()
+
+        logged = _logged_text(captured)
+        self.assertIn("HTTP 403", logged, "日志真的记了这一笔")
+        self.assertNotIn(PASSWORD, logged, "密码原文进日志了")
+
+    def test_a_get_cannot_decide(self):
+        """**守卫测试**: GET 一律 405 —— 这是一次有副作用的决定 (它决定一笔钱付不付)."""
+        for method in ("get", "put", "patch", "delete"):
+            with self.subTest(method=method), respx.mock:
+                history = self.mock_history(
+                    httpx.Response(200, json=PENDING_HISTORY_BODY)
+                )
+                r = getattr(self.client, method)(RESUME_URL)
+
+                self.assertEqual(r.status_code, 405)
+                self.assertEqual(
+                    json.loads(r.content)["error"]["code"], "method_not_allowed"
+                )
+                self.assertFalse(history.called)
+
+    def test_the_pending_fields_match_the_framework(self):
+        """`pending_approval` 那两个字段名与框架**同一个出处** (抓得住的重命名).
+
+        本层要读框架 `/history` 响应里那一块, 而中间隔着 HTTP —— 两边各写一份字面
+        量, 谁改另一边都是静默失效: 表现是"这段对话没有未决挂起", 于是用户永远点不了
+        那个确认 (而卡还在页面上摆着).
+
+        `import` 只出现在**用例**里: 运行期的 Django 只认 HTTP, 不依赖框架的模块
+        (同一个文件里 `check_identifier` 那条也是这么借的).
+        """
+        from CharAgent.server import history as framework_history
+
+        self.assertEqual(
+            views_bff.PENDING_APPROVAL_FIELD,
+            framework_history.PENDING_APPROVAL_FIELD,
+        )
+        self.assertEqual(
+            views_bff.PENDING_RUN_ID_FIELD, framework_history.APPROVAL_RUN_ID_FIELD
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1720,7 +2162,7 @@ class BffConversationActionsTest(BffTestBase):
 
 
 class AgentPageTest(BffTestBase):
-    """客服页面: 登录可见, 入口全站可达, **七类事件**都接了, 左栏是会话列表."""
+    """客服页面: 登录可见, 入口全站可达, **八类事件**都接了, 左栏是会话列表."""
 
     def test_the_page_and_the_stream_are_for_logged_in_buyers_only(self):
         """未登录访问 → 跳登录页 (不是 500, 也不是空流)."""
@@ -1749,15 +2191,19 @@ class AgentPageTest(BffTestBase):
         self.assertNotIn("new EventSource(", body)
 
     def test_every_event_type_has_a_handler(self):
-        """七类事件一个不少 —— 漏一个的表现是「那种事件静默消失」.
+        """八类事件一个不少 —— 漏一个的表现是「那种事件静默消失」.
 
         这是前端能被 Django 测试够到的一半 (另一半是浏览器里真跑一遍): 事件名与
-        框架的 `EventType` 全集对齐. 断言前先把空白压平 —— 守的是「这七个名字在」,
+        框架的 `EventType` 全集对齐. 断言前先把空白压平 —— 守的是「这八个名字在」,
         不是「它们缩进几格」 (改个格式不该红).
 
         `context_compacted` 是第七类 (框架 issue 16 加的, 本片才接上): 它以前进
         这个表就会红, 正是这条用例存在的意义 —— 框架新增一类事件时, 页面这边
         必须有人做一次决定 (接上, 还是有意忽略).
+
+        `approval_required` 是第八类 (框架 issue 34 加, 本片接上): 它**同样是终局
+        事件**, 于是页面这边有两处要认它 —— 渲染表 (这一条) 与终局判定 (见
+        `AgentApprovalCardTest.test_the_card_is_built_from_the_event_and_from_history`).
         """
         compact = self.page_source()
 
@@ -1767,6 +2213,7 @@ class AgentPageTest(BffTestBase):
             "tool_result",
             "reasoning",
             "context_compacted",
+            "approval_required",
             "final",
             "error",
         ):
@@ -1844,7 +2291,7 @@ class AgentPageTest(BffTestBase):
         cookie 跨站可触发」(见 `AgentHistoryView`). 断言落在**页面发的那个请求**上:
         方法是 POST、编号在请求体里、且带着 CSRF 令牌 —— 三样缺一, 这条纪律就漏了.
 
-        列会话那条路 (本片接上的第四条) 同样吃这条纪律, 所以计数是 4.
+        列会话那条路同样吃这条纪律 (它的搜索词也不进地址栏).
         """
         compact = self.page_source()
 
@@ -1853,9 +2300,113 @@ class AgentPageTest(BffTestBase):
             "body: JSON.stringify({ conversation_id: conversationId })", compact
         )
         self.assertNotIn("/history/?conversation_id=", compact)
-        # 提问 / 取消 / 读历史 / 列会话 / 三个管理动作 (它们共用一个发送函数):
-        # 五处发送点, 一套写法 (都 POST + 都带 CSRF)
+        # 五处发送点, 一套写法 (都 POST + 都带 CSRF):
+        #   提问与确认共用 `postStream` (一条会回流的 POST, 两处调它),
+        #   取消 / 读历史 / 列会话各一处, 三个管理动作共用 `sendAction`.
+        # 计数不是目的 —— 它守的是「没有谁自己另起一个 fetch 忘了带令牌」.
         self.assertEqual(compact.count("'X-CSRFToken': csrfToken()"), 5)
+
+    # ------------------------------------------------------------------
+    # 确认卡 (issue 36)
+    # ------------------------------------------------------------------
+
+    def test_the_card_is_built_from_the_event_and_from_history(self):
+        """同一张卡两个来源: 直播那条事件, 与刷新之后 `/history` 的那一块.
+
+        两条路少一条都是**功能缺失**, 不是体验问题: 少了事件那一条, 用户根本看不到
+        卡片; 少了 `/history` 那一条, 刷一下页面卡片就没了 —— 而那次代付也就永远
+        完不成 (没有地方点确认). 所以两条一起钉.
+
+        另外两处细节也在这儿: `approval_required` 也算**终局**(不然用户会在一张等
+        他确认的卡底下看到「回答中途断开了」), 以及卡片那句话是服务端给的 (页面不
+        替业务编话术).
+        """
+        compact = self.page_source()
+
+        self.assertIn("approval_required: function (data) {", compact)
+        self.assertIn("showApprovalCard(data, true)", compact)
+        self.assertIn("showApprovalCard(payload.pending_approval, false)", compact)
+        self.assertIn(
+            "name === 'final' || name === 'error' || name === 'approval_required'",
+            compact,
+        )
+        self.assertIn("fields.prompt", compact, "卡片那句话由服务端给")
+        # 形态由 `needs` 决定: 含支付密码才多一个框, 空就只给两个按钮
+        self.assertIn("needs.indexOf(PASSWORD_FIELD) >= 0", compact)
+
+    def test_the_password_box_is_disposable_by_design(self):
+        """密码框照商城付款弹窗那套配方, 而且**提交那一刻就出页面** (ADR-0015).
+
+        配方那三样 (不可见 / 数字键盘 / 最多六位) 与 `order_detail.html` 逐字同源;
+        满六位才点得动「确认」也是那边的做法 —— 少一位提交换来的是一次"密码不对",
+        而密码是一次性的, 那一次要用户重输.
+
+        `autocomplete=off` 是本片加的: 一次性的东西不该被浏览器记住并替用户填上
+        (「不做任何便捷口子」). 提交那一条守的是本片最要紧的一句 —— 值先取出来,
+        输入框立刻清空, 之后无论成功失败都不回填.
+        """
+        compact = self.page_source()
+
+        self.assertIn("box.type = 'password'", compact)
+        self.assertIn("box.inputMode = 'numeric'", compact)
+        self.assertIn("box.maxLength = PASSWORD_LENGTH", compact)
+        self.assertIn("box.autocomplete = 'off'", compact)
+        # 「确认」什么时候能点只有一处判: 有框看位数, 没有框的纯是非形态随时可点 ——
+        # 少了后一支, 一张纯是非的卡失败一次就再也点不动了 (真机上抓到过)
+        self.assertIn(
+            "ok.disabled = Boolean(box) && box.value.length !== PASSWORD_LENGTH",
+            compact,
+        )
+        self.assertIn("if (ui.box) ui.box.value = '';", compact)
+
+    def test_the_run_id_comes_from_the_server_not_from_the_page(self):
+        """页面**不送运行编号** —— 哪一次运行由 BFF 现问 `/history`.
+
+        页面上那个 `runId` 是事件流里的进程内编号 (`X-Run-Id`), 与恢复端点要的记录层
+        编号**不是一回事** (框架 `server/runs.py`: 一个是这次 HTTP 请求的流, 一个是
+        记录表里那一行). 带上一个"看着像"的编号过去, 换来的是一次 404 —— 用户点他
+        自己的确认, 得到"已经处理过了", 而他什么都没做过.
+        """
+        compact = self.page_source()
+        call = compact.split("await postStream('/minimall/agent/resume/', {")[1].split(
+            "});"
+        )[0]
+
+        self.assertIn("conversation_id: conversationId", call)
+        self.assertIn("decision: decision", call)
+        self.assertIn("data: data", call)
+        self.assertIn("tool_call_id: ui.toolCallId", call, "卡片身份要带回去")
+        self.assertNotIn("run_id", call, "运行编号不由页面提供")
+
+    def test_a_gone_card_is_voided_and_frees_the_composer(self):
+        """卡过期了 (服务端 404) → **当场作废** + 放开输入区 (用户定的语义).
+
+        为什么不"留着卡 + 锁着输入区": 那张卡已经按不动了 (再按还是这句话), 而用户
+        手上的活全干不了 —— 页面不该把人堵在一颗死按钮前面. 作废之后只在会话流里留
+        一句说明 (摘卡与解锁是同一拍的, 见 `ui.void`).
+        """
+        compact = self.page_source()
+
+        self.assertIn("ui.void(", compact)
+        self.assertIn("if (outcome.status === 404) {", compact)
+        void_body = compact.split("void: function (message) {")[1].split("},")[0]
+        self.assertIn("card.remove()", void_body)
+        self.assertIn("pendingApproval = null", void_body)
+        self.assertIn("syncComposer()", void_body)
+
+    def test_a_pending_approval_locks_the_composer(self):
+        """未决期间输入区锁着 —— 但**闸门在服务端** (这一条只守体验那一半).
+
+        锁的是同一个出口 (`syncComposer`), 所以示例按钮与发送键一起锁上: 卡片没处理
+        完就再问一句, 服务端会回 409 (`thread_suspended`), 而那时用户手上正有件事
+        要办. 绕过页面直接打 `chat/` 也必须被拒 —— 那一条是
+        `BffFailureTest.test_a_pending_approval_refuses_the_next_question_in_words`.
+        """
+        compact = self.page_source()
+
+        self.assertIn("pendingApproval !== null", compact)
+        # 卡片被处理掉 / 换到别段对话时要放开 (不然输入区就永远锁着了)
+        self.assertIn("pendingApproval = null;", compact)
 
     def test_the_conversation_id_survives_a_reload_but_not_a_new_tab(self):
         """会话编号存 `sessionStorage`: 刷新还在, 新标签页是新的一段.

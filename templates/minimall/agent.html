@@ -37,7 +37,7 @@
 
   帧解析**不手写**: 交给 `eventsource-parser` 的 `EventSourceParserStream` —— 那是
   一段有细节的活 (按空行切帧、跨 chunk 的半个帧、**一个汉字被 TCP 切成两半**时的
-  增量解码), 别人已经写对并维护着了. 页面这边只剩胶水: 发什么样的请求, 把七类事件
+  增量解码), 别人已经写对并维护着了. 页面这边只剩胶水: 发什么样的请求, 把八类事件
   画成什么样子. 这个项目的重点在后端流式 (框架的 SSE 层 + BFF 的透传), 前端不值得
   自己造一遍解析器.
 
@@ -139,6 +139,26 @@
      但说的是另一件事: 工具行讲"做了什么", 这一行讲"上下文治理". 所以不给它工具行
      那套「标签 + 正文」的版式, 改成一个不显眼的小灰条 */
   .agent-compact { display: block; width: fit-content; margin: 4px 0; padding: 3px 10px; border-radius: 6px; background: #f1f3f5; color: #adb5bd; font-size: 12px; }
+  /* 确认卡 (issue 36): 一次挂起拦在会话流里的样子. 它不是聊天消息 —— 是 UI 对
+     **一次运行状态**的渲染 (挂起态的家在服务端的工具调用表里, 见 ADR-0014), 所以
+     版式上是一块"要你动手"的框, 而不是一句话.
+     两种形态共用它: 带密码框的确认 (代付) 与只有两个按钮的确认 (下单前问一句). */
+  .agent-approval { margin: 10px 0; padding: 12px 14px; background: #fff; border: 1.5px solid #ffd8d8; border-radius: 10px; max-width: 520px; }
+  .agent-approval-title { font-size: 13px; font-weight: 600; color: #e03131; line-height: 1.7; }
+  .agent-approval-field { display: flex; align-items: center; gap: 10px; margin-top: 10px; font-size: 13px; color: #868e96; }
+  .agent-approval-password { width: 150px; padding: 7px 10px; border: 1.5px solid #d0d5dd; border-radius: 8px; font-size: 14px; letter-spacing: 3px; outline: none; font-family: inherit; }
+  .agent-approval-password:focus { border-color: #ff6b6b; box-shadow: 0 0 0 3px rgba(255,107,107,.1); }
+  .agent-approval-actions { display: flex; gap: 10px; margin-top: 10px; }
+  .agent-approval-actions button { padding: 7px 18px; background: #fff; color: #555; border: 1.5px solid #d0d5dd; border-radius: 8px; font-size: 13px; cursor: pointer; transition: all .2s; font-family: inherit; }
+  .agent-approval-actions button:hover { border-color: #ff6b6b; color: #ff6b6b; }
+  .agent-approval-actions button:disabled { color: #ced4da; border-color: #e9ecef; cursor: not-allowed; }
+  /* 确认那颗按钮要**看着就是主操作** (另一颗是取消): 主色 + 白字, 禁用时退回灰 */
+  .agent-approval-actions .agent-approval-ok { background: #ff6b6b; border-color: #ff6b6b; color: #fff; }
+  .agent-approval-actions .agent-approval-ok:hover { background: #ee5a5a; border-color: #ee5a5a; color: #fff; }
+  .agent-approval-actions .agent-approval-ok:disabled { background: #f1f3f5; border-color: #e9ecef; color: #adb5bd; }
+  .agent-approval-note { font-size: 12px; color: #868e96; line-height: 1.7; }
+  .agent-approval-note:not(:empty) { margin-top: 8px; }
+  .agent-approval-note.agent-error { color: #e03131; }
   .agent-reasoning { margin: 8px 0; font-size: 13px; color: #868e96; }
   .agent-reasoning summary { cursor: pointer; color: #adb5bd; outline: none; }
   .agent-reasoning-text { white-space: pre-wrap; padding: 8px 0 0 4px; line-height: 1.7; }
@@ -273,13 +293,19 @@ let stopping = false;     // 已经按过停止, 正在等那条流收尾
 // 屏幕上就成了两段东西混着排. 等它画完再放行, 就没有这个中间态.
 let historyLoading = false;
 
-// 输入区能不能用: 没有正在跑的问答, 也没有正在等的历史.
+// 未决挂起那一块 (issue 36): 有它就说明这段会话**停在一个等人拍板的地方** ——
+// 输入区锁着, 会话流里摆着一张确认卡. 两块来源: 直播时由 `approval_required` 事件
+// 给, 刷新之后由 `/history` 的 `pending_approval` 重建 —— **同一个形状**, 两条路
+// 都走 `showApprovalCard` (卡片的字段与 `/history` 那一块本来就是一回事).
+let pendingApproval = null;
+
+// 输入区能不能用: 没有正在跑的问答, 没有正在等的历史, 也没有未决的挂起.
 // **只留这一个出口** (而不是在 `ask` / `end` / `loadHistory` / `setChatPlaceholder`
 // 里各写一遍 `input.disabled = ...`): 这几件事各自会变, 各写一遍就是"谁后写谁赢",
 // 迟早对不上. 摆在文件靠上的位置也有一层原因 —— 底下那些函数全都可能调到它, 而
 // `historyLoading` 是 `let` (声明之前访问会抛, 不是给个 undefined 就算了).
 function syncComposer() {
-  const locked = !finished || historyLoading;
+  const locked = !finished || historyLoading || pendingApproval !== null;
   input.disabled = locked;
   send.disabled = locked;
   // 示例按钮也是"提问"的一个入口 (它替用户填好问题再 dispatch 一个 submit) —— 一起
@@ -401,8 +427,13 @@ function startTurn(question) {
   // 那一圈会永远转下去 (或那行"没加载出来"永远挂在一段已经有内容的对话上).
   setChatPlaceholder(null);
   const root = el('div', 'agent-turn');
-  const q = el('div', 'agent-q');
-  q.appendChild(el('span', null, question));
+  // 问句那一行: **空问句就不摆** —— 恢复那一段 (确认之后接着跑的那半程) 没有新的
+  // 问句, 它接着的是上一次问答. 摆一个空的气泡比不摆更糟 (用户会以为问题丢了).
+  if (question) {
+    const q = el('div', 'agent-q');
+    q.appendChild(el('span', null, question));
+    root.appendChild(q);
+  }
   const answer = el('div', 'agent-a');
   const steps = el('div', 'agent-steps');
   const body = el('div', 'agent-body');
@@ -410,7 +441,6 @@ function startTurn(question) {
   body.appendChild(waiting);
   answer.appendChild(steps);
   answer.appendChild(body);
-  root.appendChild(q);
   root.appendChild(answer);
   chat.appendChild(root);
   toBottom();
@@ -444,6 +474,8 @@ function startTurn(question) {
     addStep: addStep,
     addNote: addNote,
     body: body,
+    // 过程区那一块 (确认卡要插在里面: 它拦下的那次调用就在上面几行, 见 mountApprovalCard)
+    steps: steps,
     // 思考过程按轮次收: 同一轮再来一条就覆盖 (事件里带的是那一轮的全文, 不是增量)
     reasoning: new Map(),
     calls: new Map(),
@@ -531,9 +563,14 @@ async function stopAsking() {
   stop.textContent = '停止';
 }
 
-// 七类事件各怎么渲染. 左边那些名字是**跨进程契约** (框架 `EventType` 全集),
+// 八类事件各怎么渲染. 左边那些名字是**跨进程契约** (框架 `EventType` 全集),
 // 少写一个的表现是「那种事件静默消失」; 服务端以后新增类型也不会把这里搞崩
 // (认不出来的类型直接忽略).
+//
+// 其中三类是**终局事件** (`final` / `error` / `approval_required`): 一条流恰好一个,
+// 到了就该收线. 那份名单在三个地方各写一份 (框架的终局集 / BFF 的 `TERMINAL_EVENTS`
+// / 下面 `handle` 里那一行) —— 三处必须一致, 而它们中间隔着两个进程, 只能靠这份
+// 注释互相指认 (改一处时记得看另两处).
 const RENDERERS = {
   thinking: function (data) {
     turn.addStep('思路', data.message);
@@ -566,6 +603,14 @@ const RENDERERS = {
     // 快照里的账本一条不少, 所以这行灰字是"账本与视图分开"那件事的现场证据.
     turn.addNote(compactionNote(data));
   },
+  approval_required: function (data) {
+    // 第八类事件 (框架 issue 34): 这一次运行**停在半路等人**. 它同样是终局事件
+    // (流到此收线), 但输入区**不放开** (见 syncComposer 的第三个条件): 这张卡没
+    // 处理完, 这一段会话就不该再问下一句 —— 服务端也拦 (409 thread_suspended),
+    // 页面这一处只是体验.
+    turn.waiting.remove();
+    showApprovalCard(data, true);
+  },
   final: function (data) {
     turn.waiting.remove();
     finish(data && data.content);
@@ -587,8 +632,12 @@ function handle(name, raw) {
   }
   // 这一行要在**解析成功之后**: 终局帧解析不了的话, 这一轮其实没被收尾 (下面那个
   // 的「正在查…」还挂着), 那时就不该记成"见过终局" —— 让 ask() 尾部那句兜底去说
-  // 「回答中途断开了」, 比让页面永远转下去强
-  if (name === 'final' || name === 'error') sawTerminal = true;
+  // 「回答中途断开了」, 比让页面永远转下去强.
+  // `approval_required` 也算终局 (框架的契约: 一条流恰好一个终局事件) —— 少了它,
+  // 用户会在一张等着他确认的卡片底下看到「回答中途断开了, 请重新问一次」.
+  if (name === 'final' || name === 'error' || name === 'approval_required') {
+    sawTerminal = true;
+  }
   render(data);
 }
 
@@ -623,47 +672,81 @@ async function errorMessage(response) {
 async function ask(question) {
   // 停止按钮那三个状态不用在这里复位: 每轮结束都走 end() (它在 finally 里),
   // 而能走到这里就说明上一轮已经结束了
+  beginRun();
+  turn = startTurn(question);
+
+  try {
+    const outcome = await postStream('/minimall/agent/chat/', {
+      message: question,
+      conversation_id: conversationId,
+    });
+    if (outcome.problem) {
+      failAnswer(outcome.problem);
+      return;
+    }
+    await consumeRun(outcome.response);
+  } finally {
+    end();   // 三条出口 (正常答完 / 说清失败 / 抛异常) 都要把输入框放开
+  }
+}
+
+// 起一轮运行 (**提问与恢复共用**): 复位那三个状态 + 锁住换会话.
+// 与 `end()` 是一对: 谁起这一轮谁在 `finally` 里收尾.
+function beginRun() {
   finished = false;
   sawTerminal = false;
   syncComposer();
   // 正在答的时候切不动会话: 这一轮的事件还在往 `turn` 那块 DOM 里落, 半路换一段
   // 就会把半截过程画到另一段对话上 (结束时会由 end() 放开)
   lockSwitching(true);
-  turn = startTurn(question);
+}
 
+// 一条会回流的 POST (**提问与确认共用**): 解析到「可以读流了」就把响应交回去, 否则
+// 交一句给用户的话 (+ 状态码, 调用方要按它说不同的话时用得上).
+//
+// 三种失败的判据两条路逐字相同 (连不上 / 不是 2xx / 不是事件流), 而**说法**不同 ——
+// 所以这里只判, 话由调用方说 (它知道用户刚才在做什么).
+async function postStream(url, body) {
+  let response;
   try {
-    const response = await fetch('/minimall/agent/chat/', {
+    response = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         // 这个头是「跨站页面伪造不出来」的那一半 (另一半在服务端的 CSRF 中间件)
         'X-CSRFToken': csrfToken(),
       },
-      body: JSON.stringify({ message: question, conversation_id: conversationId }),
+      body: JSON.stringify(body),
     });
+  } catch (err) {
+    return { problem: '没能连上客服, 检查网络后再试一次.' };
+  }
+  if (!response.ok) {
+    return { problem: await errorMessage(response), status: response.status };
+  }
+  // 不是事件流 = 没接到客服那条流: 最常见的是登录过期被重定向到登录页
+  // (fetch 会自己跟着 302 走, 于是这里看到的是一个 200 的 HTML 页面)
+  const contentType = response.headers.get('content-type') || '';
+  if (!contentType.includes('text/event-stream')) {
+    return { problem: '登录可能已过期, 刷新页面再试一次.', status: response.status };
+  }
+  return { response: response };
+}
 
-    if (!response.ok) {
-      failAnswer(await errorMessage(response));
-      return;
-    }
-    // 不是事件流 = 没接到客服那条流: 最常见的是登录过期被重定向到登录页
-    // (fetch 会自己跟着 302 走, 于是这里看到的是一个 200 的 HTML 页面)
-    const contentType = response.headers.get('content-type') || '';
-    if (!contentType.includes('text/event-stream')) {
-      failAnswer('登录可能已过期, 刷新页面后再问一次.');
-      return;
-    }
-    // 运行编号随响应头一起到 (它比第一个事件还早, 所以"模型还在想"的时候也停得掉).
-    // 拿不到就不显示停止按钮 —— 没有编号的停止请求按不了, 摆着只会骗人.
-    runId = response.headers.get('X-Run-Id');
-    stop.hidden = !runId;
-
+// 一条运行流的收尾段 (**提问与恢复共用**): 响应头里的编号 → 停止按钮 → 逐帧渲染.
+// 这两条路读的是同一个东西 (框架推回来的事件流), 差别只在"谁先铺好这一轮的 DOM"
+// 与"流从哪个端点来" —— 收尾那一句 (`end()`) 也留在调用方: 恢复那条路在起之前还要
+// 现铺一块 DOM, 那是它自己的事.
+async function consumeRun(response) {
+  // 运行编号随响应头一起到 (它比第一个事件还早, 所以"模型还在想"的时候也停得掉).
+  // 拿不到就不显示停止按钮 —— 没有编号的停止请求按不了, 摆着只会骗人.
+  runId = response.headers.get('X-Run-Id');
+  stop.hidden = !runId;
+  try {
     await readEvents(response.body);
     if (!sawTerminal) failAnswer('回答中途断开了, 请重新问一次.');
   } catch (err) {
     if (!sawTerminal) failAnswer('没能连上客服, 检查网络后再试一次.');
-  } finally {
-    end();   // 三条出口 (正常答完 / 说清失败 / 抛异常) 都要把输入框放开
   }
 }
 
@@ -784,6 +867,205 @@ async function loadHistoryBody(ticket, mayHaveHistory) {
   // 无条件把它放回去, 于是它会在**加载中**就上场, 抢在历史前面.
   setChatPlaceholder(messages.length ? null : hint);
   if (messages.length) renderHistory(messages);
+  // 未决挂起: 这一段现在停在**等人拍板**的地方 —— 把那张卡重建出来. 直播那一路
+  // (approval_required 事件) 与这一路走的是同一张卡; 少了这一句, 刷一下页面卡就没了.
+  showApprovalCard(payload.pending_approval, false);
+}
+
+// ---------------------------------------------------------------------------
+// 确认卡 (issue 36): 一次挂起 → 买家本人给结论 → 接着读那次运行的流
+// ---------------------------------------------------------------------------
+//
+// **卡片的内容全部来自服务端那一块** (`prompt` 是业务给的话术, `needs` 是机器可读
+// 的缺失项), 页面只负责画: `needs` 里有支付密码就多渲染一个密码框, 空就只给两个
+// 按钮 (纯是/非的确认) —— 同一套机制, 两种形态.
+//
+// 它**不是聊天消息**: 它是 UI 对**一次运行状态**的渲染 (挂起态的家在服务端的工具
+// 调用表里, 见 ADR-0014), 所以不塞进 history 的消息流, 刷新之后由 /history 的
+// `pending_approval` 重建 —— 少了那一块, 刷一下页面这张卡就没了, 而用户**永远没法
+// 完成那次代付** (没有地方点确认).
+//
+// **页面上这一块没有运行编号**: "哪一次运行"由服务端现问 /history 拿 (事件流里那个
+// 编号是这一次 HTTP 请求的进程内编号, 与恢复要的记录层编号不是一回事, 拿它去恢复
+// 只会 404).
+
+// 一次性凭据在 `needs` 里的那个名字 (与业务声明的同一个, 见 ADR-0015). 页面对它的
+// 全部知识就这两样: 出现这个名字 → 多一个密码框; 提交时按这个名字送出去.
+const PASSWORD_FIELD = 'payment_password';
+const PASSWORD_LENGTH = 6;
+
+// 那一块挂起 → 一张卡 (直播与重建两条路都走这里). `live` 只影响它插在哪儿.
+function showApprovalCard(fields, live) {
+  // 同一时刻**只留一张**: 卡片是运行状态的渲染, 不是聊天记录 —— 上一条批准完之后
+  // 它变成静态的"已提交", 再有事时把它换掉 (框架那边一段对话也只会有一个未决挂起).
+  const stale = chat.querySelector('.agent-approval');
+  if (stale) stale.remove();
+  pendingApproval = fields || null;
+  if (pendingApproval) mountApprovalCard(buildApprovalCard(pendingApproval), live);
+  syncComposer();
+}
+
+function mountApprovalCard(card, live) {
+  // 卡片归处 (两种时刻):
+  //  - 直播那一路进**当前这一轮**的过程区 —— 它拦下的那条调用就在上面几行, 恢复
+  //    之后的事件也接着往同一轮里落, 于是顺序就是发生顺序;
+  //  - 刷新重建那一路没有"当前这一轮" (页面刚加载), 挂在会话流末尾: 记录里最后一轮
+  //    的过程区; 一段记录都没有时只好挂进聊天区.
+  if (live && turn && turn.steps.isConnected) {
+    turn.steps.appendChild(card);
+    return;
+  }
+  const last = chat.querySelector('.agent-turn:last-child');
+  const host = (last && last.querySelector('.agent-steps')) || chat;
+  host.appendChild(card);
+}
+
+function buildApprovalCard(fields) {
+  const card = el('div', 'agent-approval');
+  // `prompt` 是业务给的那句话 (框架只搬运), 原样显示 —— 页面不替业务编话术
+  card.appendChild(
+    el('div', 'agent-approval-title', '⚠ ' + (fields.prompt || '这一步需要你确认'))
+  );
+
+  const needs = Array.isArray(fields.needs) ? fields.needs : [];
+  let row = null;
+  let box = null;
+  if (needs.indexOf(PASSWORD_FIELD) >= 0) {
+    row = el('label', 'agent-approval-field');
+    row.appendChild(el('span', null, '支付密码'));
+    box = el('input', 'agent-approval-password');
+    // 配方借商城付款弹窗那一份 (order_detail.html): 输入时不可见 + 手机上给数字
+    // 键盘 + 最多六位. `autocomplete=off` 是本片加的: 一次性的东西不该被浏览器记住
+    // 并替用户填上 (ADR-0015 的"不做任何便捷口子").
+    box.type = 'password';
+    box.inputMode = 'numeric';
+    box.maxLength = PASSWORD_LENGTH;
+    box.autocomplete = 'off';
+    row.appendChild(box);
+    card.appendChild(row);
+  }
+
+  const actions = el('div', 'agent-approval-actions');
+  const ok = el('button', 'agent-approval-ok', '确认');
+  const no = el('button', 'agent-approval-no', '取消');
+  // 两颗都是 `type=button`: 页面里那个 form 是提问用的, 别让它们顺手提交一次空问句
+  ok.type = 'button';
+  no.type = 'button';
+  actions.appendChild(ok);
+  actions.appendChild(no);
+  card.appendChild(actions);
+
+  const note = el('div', 'agent-approval-note');
+  card.appendChild(note);
+
+  // 「确认」什么时候能点: 有密码框时要满六位 (少一位就提交, 换来的是一次"密码不对",
+  // 而密码是一次性的 —— 那一次要用户重输, 照 order_detail.html 的做法); 没有框的纯
+  // 是非形态本来就随时可点.
+  //
+  // **这一条只有这一个出口**: 失败之后把按钮放回去也走它 —— 少了"没有框"那一支,
+  // 一张纯是非的卡失败一次之后就再也点不动了 (真机上抓到过, 见 `reset`).
+  function refresh() {
+    ok.disabled = Boolean(box) && box.value.length !== PASSWORD_LENGTH;
+  }
+
+  const ui = {
+    ok: ok,
+    no: no,
+    box: box,
+    // 这张卡是**哪一张**: 提交时原样带回去, 服务端拿它与"现在真正等着批的那一条"对
+    // 一下 —— 对不上就说明这张卡过期了, 那一趟按"卡过期"打发 (见 decide)
+    toolCallId: fields.tool_call_id,
+    // 没成: 卡留着, 把话说在卡上, 按钮放回去. 密码**不会**被填回来 (提交那一刻就清
+    // 了), 所以「确认」要等用户重输满六位 —— 一次性的东西不给便捷口子.
+    reset: function (message) {
+      note.textContent = message;
+      note.classList.add('agent-error');
+      no.disabled = false;
+      refresh();
+      if (box) box.focus();
+    },
+    // 成了: 卡片换成静态态 (值已经出页面了, 连框都不剩). 拒绝那一路连卡一起收 ——
+    // 事情已经翻篇, 模型的答复接着往下说.
+    settle: function (decision) {
+      if (decision === 'reject') {
+        card.remove();
+        return;
+      }
+      if (row) row.remove();
+      actions.remove();
+      note.textContent = '已提交, 正在继续…';
+    },
+    // 卡**过期了** (服务端说这一条早就不在等着批了): 直接作废 —— 摘掉卡, 放开输入区,
+    // 只在会话流里留一句说明. 为什么不"留着卡 + 锁着输入区": 那张卡已经按不动了 (再
+    // 按还是这句话), 而用户手上的活全干不了 —— 页面不该把人堵在一颗死按钮前面.
+    void: function (message) {
+      card.remove();
+      pendingApproval = null;
+      syncComposer();
+      const host = turn && turn.steps.isConnected ? turn.steps : chat;
+      host.appendChild(el('div', 'agent-step', message));
+    },
+  };
+
+  if (box) box.addEventListener('input', refresh);
+  refresh();
+  ok.addEventListener('click', function () {
+    // 密码**先取出来再交给提交流程**: 它进门第一件事就是把输入框清空
+    decide(ui, 'approve', box ? { [PASSWORD_FIELD]: box.value } : {});
+  });
+  no.addEventListener('click', function () {
+    decide(ui, 'reject', {});
+  });
+  return card;
+}
+
+async function decide(ui, decision, data) {
+  // 两道防重复: 按钮当场禁用 (体验) + 服务端那把幂等键 (事实). 少了后面那道,
+  // 双击的第二下重放的可是「给这一单付款」.
+  ui.ok.disabled = true;
+  ui.no.disabled = true;
+  // **密码立刻离开页面** (ADR-0015: 一次性凭据): 值已经进了这一次请求, 页面这份不再
+  // 需要 —— 之后无论成功还是失败, 要再提交一次都得重新输.
+  if (ui.box) ui.box.value = '';
+
+  // 请求体里**没有运行编号**: 哪一次运行由服务端现问 (/history 的未决挂起). 会话
+  // 编号照旧走请求体, 不进 URL (与另几条同一条纪律). `tool_call_id` 是这张卡的
+  // 身份 —— 服务端拿它对一下"现在等着批的是不是同一条", 对不上就按卡过期打发.
+  const outcome = await postStream('/minimall/agent/resume/', {
+    conversation_id: conversationId,
+    decision: decision,
+    tool_call_id: ui.toolCallId,
+    data: data,
+  });
+  if (outcome.problem) {
+    // 404 = 这张卡过期了 (另一个标签页里点过 / 上一次其实已经成了 / 这一段又挂起了
+    // 别的): 与按「停止」撞上"它刚好答完"同一条处理 —— 那不是故障. **当场作废**
+    // (摘卡 + 放开输入区), 只留一句说明; "现在到底是什么情况"要刷新页面才看得准.
+    if (outcome.status === 404) {
+      ui.void('这一次确认已经过期了, 这张卡片作废 (刷新页面能看到最新状态).');
+      return;
+    }
+    ui.reset(outcome.problem);
+    return;
+  }
+  ui.settle(decision);
+  // 卡片处理完了, 但闸门交给这一次运行: 它没跑完之前输入区照样锁着 (end() 才放开)
+  pendingApproval = null;
+  syncComposer();
+  await readDecidedRun(outcome.response);
+}
+
+async function readDecidedRun(response) {
+  // 恢复那一段的事件往**当前这一轮**里落 —— 卡片就插在这一轮的过程区里, 顺序自然.
+  // 刷新之后直接点卡时页面上没有"当前这一轮", 现起一块空轮 (没有问句行: 这一步不是
+  // 新问的问题, 是接着上一次问答往下跑).
+  beginRun();
+  if (!turn || !turn.steps.isConnected) turn = startTurn('');
+  try {
+    await consumeRun(response);
+  } finally {
+    end();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1245,6 +1527,11 @@ function clearChat() {
   // 上一版在这里无条件把横幅放回去, 那正是「点进去先蹦横幅」的根因.
   chat.replaceChildren();
   chatPlaceholder = null;
+  // 那份未决挂起是**上一段**对话的 (卡片连着 DOM 一起清掉了): 不放掉的话输入区会
+  // 一直锁着, 而页面上已经没有能处理的东西了 —— 新那一段有没有挂起, 由它自己的
+  // 历史来决定 (loadHistory 末尾会按 /history 的回答重建).
+  pendingApproval = null;
+  syncComposer();
 }
 
 async function switchConversation(id, mayHaveHistory) {
