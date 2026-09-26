@@ -1,4 +1,4 @@
-"""护栏插件: 写操作预算 8 次 + 单笔金额上限 5000 元 + 代付挂起.
+"""护栏插件: 写操作预算 8 次 + 单笔金额上限 5000 元 + 代付挂起 + 下单挂起.
 
 这一条插件是 L2 的验收核心 —— 那时 17 个工具里有 7 个能改数据, 而框架级的人工确认
 (L3) 还没来, 所以「模型连环下单」这件事全靠它拦. 测的就两件事:
@@ -6,9 +6,10 @@
 1. **拦得住**: 越界的那一次不执行 (商城那边一次请求都收不到), 理由回填给模型;
 2. **不误伤**: 只读操作一律不管; 预算内, 金额内的写操作照常放行; 新一轮运行归零.
 
-L3b 起多了第三种表态 (issue 35): 代付那一条不说"不行", 说"等一下" —— 工具不执行,
-整次运行停在那里等人给结论. 它对预算的用法与前两条一样 (**拒绝优先于挂起**: 该拒
-的当场拒, 别让人白输一次密码).
+L3b 起多了第三种表态 (issue 35 / 37): 代付与下单那两条不说"不行", 说"等一下" ——
+工具不执行, 整次运行停在那里等人给结论. 两者是**同一套机制的两个形态**: 代付要本人
+补一份数据 (支付密码), 下单只要一个是 / 否. 它们对预算与金额的用法与前两条一样
+(**拒绝优先于挂起**: 该拒的当场拒, 别让人白输一次密码 / 白点一次确认).
 
 守卫的另一半 (身份与密码不进 schema) 在 `test_provider.py`; 端到端那一次在
 `test_cli.py` 与 `test_server.py` —— 这里测的是规则本身.
@@ -28,6 +29,7 @@ from CharAgent.tool import Tool
 from CharApp.minimall.client import MinimallError
 from CharApp.minimall.guardrail import (
     MAX_ORDER_AMOUNT,
+    ORDER_APPROVAL_PROMPT,
     PAY_APPROVAL_PROMPT,
     PAY_ORDER_TOOL,
     PLACE_ORDER_TOOL,
@@ -249,13 +251,23 @@ async def test_an_order_over_the_limit_is_refused() -> None:
 
 
 @pytest.mark.parametrize("total", ["0.00", "4000.00", "4999.99", str(MAX_ORDER_AMOUNT)])
-async def test_an_order_within_the_limit_goes_through(total: str) -> None:
-    """上限是**含等于**的: 差一分钱都不能误伤 (边界钉死, 免得以后改出个「小于」)."""
+async def test_an_order_within_the_limit_asks_instead_of_ordering(total: str) -> None:
+    """上限是**含等于**的: 差一分钱都不能误伤 (边界钉死, 免得以后改出个「小于」).
+
+    上限之内不再等于"直接下成" —— issue 37 起, 下单这一步一律要买家在卡上点一下
+    确认. 判金额仍是排在它前面的一关: 弹卡的前提是这一单**下得成**.
+    """
     mall = FakeCart(total=total)
     guardrail = make_guardrail(mall)
 
-    assert await verdict(guardrail, mall, PLACE_ORDER_TOOL) is None
-    assert guardrail.used == 1
+    decision = await verdict(guardrail, mall, PLACE_ORDER_TOOL)
+
+    assert decision is not None and decision.verdict is Verdict.REQUIRES_APPROVAL
+    assert mall.calls == 1, "判过金额才知道这一单是该弹卡而不是该拒"
+    assert guardrail.used == 1, (
+        "放行到卡上就记一笔 (L2 同一条口径): 恢复那一段会再进这个方法一次, 两段"
+        "各记一笔才对得上「一次写操作一笔账」"
+    )
 
 
 async def test_the_amount_rule_only_looks_at_the_order() -> None:
@@ -275,7 +287,7 @@ async def test_the_amount_rule_only_looks_at_the_order() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 代付: 不执行, 等人给结论 (L3b 的挂起)
+# 挂起: 不执行, 等人给结论 (L3b 的两种形态)
 # ---------------------------------------------------------------------------
 
 
@@ -304,10 +316,13 @@ async def test_pay_is_suspended_instead_of_refused() -> None:
 
 
 async def test_a_suspended_call_does_not_spend_the_budget() -> None:
-    """挂起那一次**没有执行**, 所以不占额度 (与拒绝同一条口径).
+    """代付挂起那一次**没有执行**, 所以不占额度 (与拒绝同一条口径).
 
     它确实会占掉恢复那一段的额度 —— 但那是另一次运行的另一本账 (恢复时会话要
     重新装配, 账本从零开始), 不在这里.
+
+    下单那条**不同** (记一笔): 代付换掉的是"当场拒绝", 下单换掉的只是"什么时候
+    执行" —— 两条挂起各自替换掉的东西不一样, 记账也就不一样, 见 `_order_decision`.
     """
     mall = FakeCart()
     guardrail = make_guardrail(mall)
@@ -318,22 +333,70 @@ async def test_a_suspended_call_does_not_spend_the_budget() -> None:
     assert mall.calls == 0, "挂起连购物车都不该去问 (它不判金额)"
 
 
-async def test_the_budget_beats_the_suspension() -> None:
+async def test_place_order_is_suspended_for_a_yes_no_confirmation() -> None:
+    """下单那一条的裁决是**挂起** —— 而且与代付是同一套机制的**另一种形态**.
+
+    判据全落在 `Decision` 上: `verdict` 是第三态, 话术是给买家看的, 而 `needs`
+    是**空的** —— 前端据此渲染成「只有两个按钮、没有输入框」(issue 36 定的两态).
+    这一空一满正是 issue 37 要证明的东西: 同一套挂起-恢复, 一个要人补数据
+    (代付), 一个不用 (下单).
+    """
+    mall = FakeCart()
+    guardrail = make_guardrail(mall)
+
+    decision = await verdict(guardrail, mall, PLACE_ORDER_TOOL)
+
+    assert decision is not None
+    assert decision.verdict is Verdict.REQUIRES_APPROVAL
+    assert decision.allowed is False
+    assert decision.needs == (), "纯是 / 否: 买家不需要补任何数据"
+    assert decision.prompt == ORDER_APPROVAL_PROMPT
+    assert "确认" in decision.prompt, "这句话是给买家看的"
+    assert decision.reason is None, "挂起不是拒绝: 它没有回填给模型的失败文本"
+    assert guardrail.used == 1, "放行到卡上记一笔 (见上一条用例里的口径说明)"
+    assert mall.calls == 1, "弹卡之前先判过金额 (那是护栏自己的规矩)"
+
+
+async def test_the_amount_rule_beats_the_order_confirmation() -> None:
+    """超限的那一单**当场拒绝**, 不弹确认卡 —— 两条规则之间的「拒绝优先于挂起」.
+
+    反过来的后果不是"白点一次"那么轻: 买家在卡上点一下确认, 那一步就真的执行了,
+    而**金额上限是护栏自己的规矩** (商城那边没有这道闸) —— 弹了卡就等于他点一下
+    把 5000 元的上限绕过去了. 所以判金额必须排在挂起之前.
+
+    (跨插件的同一个方向由框架守着: `HookRegistry.decide` 不看注册顺序,
+    拒绝优先于挂起, 见 `CharAgent/tests/test_hooks.py`.)
+    """
+    mall = FakeCart(total="9900.00")
+    guardrail = make_guardrail(mall)
+
+    decision = await verdict(guardrail, mall, PLACE_ORDER_TOOL)
+
+    assert decision is not None and decision.verdict is Verdict.REJECT
+    assert "9900.00" in decision.reason
+    assert mall.calls == 1
+    assert guardrail.used == 0, "没下成的单不该占额度"
+
+
+@pytest.mark.parametrize("name", [PLACE_ORDER_TOOL, PAY_ORDER_TOOL])
+async def test_the_budget_beats_the_suspension(name: str) -> None:
     """预算用完时**当场拒绝**, 不弹确认卡 —— 顺序上拒绝优先于挂起.
 
-    反过来的后果是白折腾: 买家输一次密码、点一次确认, 然后才被告知「今天的额度
-    用完了」. 那一次密码本来就不该被要.
+    两条挂起规则各验一遍 (要输密码的那张卡与只有两个按钮的那张): 反过来的后果
+    是白折腾 —— 买家输一次密码 / 点一次确认, 然后才被告知「今天的额度用完了」.
+    那一次密码本来就不该被要.
     """
     mall = FakeCart()
     guardrail = make_guardrail(mall)
     for _ in range(WRITE_BUDGET):
         await verdict(guardrail, mall, "add_to_cart")
 
-    decision = await verdict(guardrail, mall, PAY_ORDER_TOOL)
+    decision = await verdict(guardrail, mall, name)
 
     assert decision is not None
     assert decision.verdict is Verdict.REJECT
     assert str(WRITE_BUDGET) in decision.reason
+    assert mall.calls == 0, "预算那关排在判金额之前: 该拒就拒, 连商城都不问"
 
 
 # ---------------------------------------------------------------------------

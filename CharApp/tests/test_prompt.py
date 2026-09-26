@@ -74,11 +74,20 @@ def test_the_retired_version_is_still_the_retired_one() -> None:
 
     这条守的是「评估结论能归因到具体一版」这件事的地基: 若某一版被人就地改过,
     那它当初的跑分就再也不对应任何东西, 而盘上看不出任何异常.
+
+    v2 同样不删也不改 (issue 37 只加 v3): 它是「prompt 层确认 / 框架级确认」对照的
+    素材, L4 要拿它跑 A/B —— 所以那句已经被事实推翻的「不能替买家付款」也**照旧
+    留在 v2 里**, 改了它, 那次对照就没有基线了.
     """
     body = system_prompt("v1")
 
     assert "当前只有查询能力" in body, "v1 是 L1a 的只读版, 不该被改写"
     assert "加购" not in body
+
+    retired = system_prompt("v2")
+
+    assert "不能替买家付款" in retired, "v2 是 L4 的对照素材, 不该被就地改写"
+    assert "不能替买家付款" not in system_prompt()
 
 
 def test_the_manifest_can_be_committed() -> None:
@@ -244,21 +253,52 @@ def test_the_prompt_is_read_from_the_business_directory() -> None:
 
 
 def test_the_prompt_forbids_the_things_it_must_forbid() -> None:
-    """禁则一条都不能少 (代付 / 查别人 / 编造 / 许诺).
+    """禁则一条都不能少 (本人点头 / 查别人 / 编造 / 许诺).
 
-    与 v1 的差别只有一条: **「不能下单 / 取消 / 退款」那条退场了** —— L2 起助手
-    真的能改数据, 再留着它, 模型会一律拒绝. 接替它的是「不能替买家付款」:
-    付款要买家本人在页面上输支付密码 (L3 的挂起才做).
+    与 v1 的差别: **「不能下单 / 取消 / 退款」那条退场了** —— L2 起助手真的能改
+    数据, 再留着它, 模型会一律拒绝.
+
+    与 v2 的差别有两条 (issue 37):
+    - v2 第 1 条写的是「**不能替买家付款** …… 你没有、也不该有他的支付密码」.
+      代付 (issue 35) 把前半句变成了**假话** —— 模型读到它就会拒绝付款, 那条链路
+      在 v3 里仍然走不通. 所以改成「下单与付款都由买家本人点头」, 并把「不要在
+      对话里再问一句」写成明文 (不写的话模型会先问一句"要不要", 买家说好之后
+      才调工具 → 卡又弹一次, 一个人被问两遍).
+    - 那句被推翻的话**必须不在**声明的那一版里: 留着它等于把代付关掉.
     """
     body = system_prompt()
 
     for must_say in (
-        "不能替买家付款",
+        "都由买家本人点头",
+        "不要在对话里再问一句",
+        "不要向他索要支付密码",
         "不能查别人的",
         "不编造",
         "不许诺",
     ):
         assert must_say in body, f"提示词里少了这条禁则: {must_say}"
+
+    assert "不能替买家付款" not in body, (
+        "代付已经做出来了, 这句话与事实相反 —— 模型读到它会拒绝付款"
+    )
+
+
+def test_the_prompt_hands_the_confirmation_over_to_the_card() -> None:
+    """下单与付款都不该在对话里再问一句: 那句"要不要"由确认卡替模型问 (issue 37).
+
+    守的是**用户被问两次**那种失效 —— 模型先问一句"要下单吗", 买家说"好", 模型
+    才去调工具, 于是卡又弹一次.
+
+    说清这条用例钉的是什么: **v2 里并没有"下单前问一句确认吗"那样的要求** (那句
+    话只活在 PRD §4.7 的第一阶段计划里), 所以本片落成的是一条**正向指令**, 而不是
+    "删掉一句". 判据取那三个字面量 (卡替他问过了 / 不要在对话里再问一句 / 示例里
+    弹出的那张卡) —— 示例是行为最强的锚, 流程改了而示例照旧, 模型会照旧答.
+    """
+    body = system_prompt()
+
+    assert "卡替他问过了" in body
+    assert "不要在对话里再问一句" in body
+    assert "我弹了一张确认卡" in body, "示例也要按新流程写, 否则模型照着旧示例答"
 
 
 def test_the_prompt_tells_the_model_to_obey_the_guardrail() -> None:
