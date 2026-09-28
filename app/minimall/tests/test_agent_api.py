@@ -1,9 +1,9 @@
-"""Agent 内部端点测试 (CharApp issue 02 的 9 个只读端点).
+"""Agent 内部端点测试 (CharApp issue 02 的那批只读端点).
 
 接缝: Django 测试客户端直接打 /api/minimall/agent/, 断言三件事 ——
 认证 fail closed / 买家数据隔离 / 商品数据不走 Redis 缓存.
 
-认证那张表 (AGENT_URLS) 后来把 issue 11 的 8 个写端点一并收了进来: 三种失败方式
+认证那张表 (AGENT_URLS) 后来把 issue 11 的那批写端点一并收了进来: 三种失败方式
 (无令牌 / 错令牌 / 未配置令牌) 对写端点同样是一个字都不许放行, 证据是同一套 ——
 按方法与路径各打一次, 而不是照抄一份新的表.
 """
@@ -34,7 +34,7 @@ User = get_user_model()
 
 TOKEN = "test-internal-token"
 
-# 18 个端点: (url name, 路径参数, 方法). 认证测试遍历用, 路径参数与请求体都取假值
+# 全部端点: (url name, 路径参数, 方法). 认证测试遍历用, 路径参数与请求体都取假值
 # —— 权限校验先于数据查询 (也先于请求体校验), 因此假 slug / 假订单号 / 空请求体
 # 也能验证"被拒"这件事.
 # 后面 9 行是写端点: issue 11 的 8 个 (POST / PATCH / DELETE 各要单独验一遍 ——
@@ -78,7 +78,7 @@ def _clear_minimall_cache():
 
 @override_settings(CHARAPP_INTERNAL_TOKEN=TOKEN)
 class AgentAuthTest(TestCase):
-    """内部令牌认证 — 全部 18 个端点, 三种失败方式."""
+    """内部令牌认证 — 全部端点, 三种失败方式."""
 
     def setUp(self):
         self.client = APIClient()

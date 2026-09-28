@@ -21,7 +21,7 @@ from conftest import BUYER_ID, TOKEN, agent_url
 
 from CharApp.minimall.client import MinimallClient, MinimallError, MinimallNotFoundError
 
-# 9 个方法 → (端点路径, 调用参数) —— 遍历用, 加方法时这里也要加一行
+# 每个方法 → (端点路径, 调用参数) —— 遍历用, 加方法时这里也要加一行
 CALLS: list[tuple[str, str, dict[str, Any]]] = [
     ("search_products", "products/", {"keyword": "手机"}),
     ("get_product_detail", "products/redmi-note-13/", {"slug": "redmi-note-13"}),
@@ -67,7 +67,7 @@ def not_found() -> httpx.Response:
 async def test_every_call_reaches_its_own_endpoint(
     client: MinimallClient, mall, method: str, path: str, kwargs: dict[str, Any]
 ) -> None:
-    """9 个方法各打各的端点 (路径写错一个就是一个查不到东西的假象)."""
+    """每个方法各打各的端点 (路径写错一个就是一个查不到东西的假象)."""
     route = mall.get(agent_url(path)).mock(return_value=ok())
 
     await getattr(client, method)(user_id=BUYER_ID, **kwargs)

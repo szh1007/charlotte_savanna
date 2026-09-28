@@ -240,7 +240,7 @@ def _duplicates(names: list[str]) -> list[str]:
 
 @lru_cache(maxsize=1)
 def _real_tool_names() -> frozenset[str]:
-    """业务真有的那 18 个工具名 —— 从**唯一来源**取 (装配工具的那个工厂).
+    """业务真有的那些工具名 —— 从**唯一来源**取 (装配工具的那个工厂).
 
     不连网: `build_tools` 只是把身份裹进闭包, 构造期一次请求都不发 (连接池是懒建
     的), 那个客户端因此是张空壳、用完即弃. 换成手抄一份名字清单会好写得多, 但抄件

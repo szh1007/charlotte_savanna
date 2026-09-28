@@ -1,4 +1,4 @@
-"""电商客服的 18 个工具: 模型能对这个商城做的全部事情 (9 只读 + 8 写 + 代付).
+"""电商客服的那套工具: 模型能对这个商城做的全部事情 (只读的 + 打 `writes` 注解的).
 
 一句话理解: 每个工具 = 一次「业务动作」, 背后是 `client.py` 的一个方法。工具
 本身**不含逻辑**, 只做三件事: 声明参数 (写进 schema 给模型看)、带上身份调商城、
@@ -6,7 +6,7 @@
 
 五条贯穿全篇的约定:
 
-1. **身份不进参数表** (PRD §4.2, 本项目的核心安全设计). 18 个工具的入参全是业务
+1. **身份不进参数表** (PRD §4.2, 本项目的核心安全设计). 这套工具的入参全是业务
    字段 —— 没有一个叫 `user_id` 的参数。身份由 `build_tools(client, user_id)`
    在装配时裹进闭包, 模型既看不见也无从伪造。「查一下别人的订单」这条攻击路径
    因此**根本不存在**, 而不是「被挡住了」。
@@ -19,13 +19,13 @@
 3. **全部是 `async def`** (PRD §4.4). 框架把同步工具函数扔进线程池
    (`tool/executor.py` 的 `_invoke`), 同步工具会互相排队; 写成协程才真的并发.
    有一条测试专门遍历这些函数断言这一点.
-4. **会改数据的工具打 `annotations`** (PRD §4.6): L2 新加的 8 个里, 7 个会改数据
-   (`add_to_cart` / `update_cart_item` / `remove_cart_item` / `clear_cart` /
-   `place_order` / `cancel_my_order` / `request_refund`) 带上
-   `{WRITE_ANNOTATION_KEY: True}`, 给业务侧的护栏插件认人用. 第 8 个 `list_my_refunds`
-   **只是读**退款列表, 所以不打 —— 它不该占买家的写预算. 框架**只透传不解释**
-   这个标记 (与 `RunContext.payload` 同一条纪律), 所以它也不进模型的 schema.
-   (L3b 的代付同样打它 —— 它确实会改钱数.)
+4. **会改数据的工具打 `annotations`** (PRD §4.6): 这个标记 (`{WRITE_ANNOTATION_KEY:
+   True}`) 就是「它算一次写操作」的**唯一判据** —— 带着它的有 `add_to_cart` /
+   `update_cart_item` / `remove_cart_item` / `clear_cart` / `place_order` /
+   `cancel_my_order` / `request_refund` (L2) 与 `pay_my_order` (L3b, 它确实会改钱数).
+   `list_my_refunds` **只是读**退款列表, 所以不打 —— 它不该占买家的写预算.
+   框架**只透传不解释**这个标记 (与 `RunContext.payload` 同一条纪律), 所以它也不进
+   模型的 schema.
 5. **一次性凭据也不进参数表** (ADR-0015, 与第 1 条同一条路). 代付要买家的支付
    密码, 而它**只在恢复那一刻**由用户自己输进来 —— 走 `RunContext.payload` 进
    闭包 (`build_tools(..., one_shot=)`), 与 `user_id` 一模一样。为什么非这样不可:
@@ -141,7 +141,7 @@ class RefusedActionError(ToolActionableError):
 async def _act(call: Callable[..., Awaitable[Any]], **kwargs: Any) -> str:
     """调一次接口并把结果翻成回填给模型的文本 —— 与 `_fetch` 相对的**动作侧**.
 
-    叫它「写」那一档并不准: 用它的一共 8 个工具, 7 个写 + `list_my_refunds` 这个
+    叫它「写」那一档并不准: 用它的是那批会改数据的工具, 外加 `list_my_refunds` 这个
     **只读**的. 那个只读工具走这条路, 是因为它要的失败语义与写工具一样 —— 商城按规则
     拒了就如实报 failed, 而不是像 `_fetch` 那样翻成一句答案. 被拒的读也显示 failed,
     这是对的.
@@ -449,7 +449,7 @@ def _list_my_addresses(client: MinimallClient, user_id: int) -> Tool:
 
 
 # ---------------------------------------------------------------------------
-# 写操作 (L2): 7 个会改数据的工具 + 1 个读退款的, 会改数据的都打 WRITE_ANNOTATION_KEY
+# 写操作 (L2): 会改数据的那些 + 一个读退款的; 会改数据的都打 WRITE_ANNOTATION_KEY
 # ---------------------------------------------------------------------------
 # 这一节与上面两节的差别只有一条: 它们**改**数据 (最后一个除外). 其余照旧 —— 身份
 # 照样只在闭包里, 参数表里照样没有买家; 失败照样翻成模型看得懂的话 (只是写操作的
@@ -758,7 +758,7 @@ def build_tools(
     *,
     one_shot: Mapping[str, str] | None = None,
 ) -> tuple[Tool, ...]:
-    """把 18 个工具装到「这个客户端 + 这个买家 + 这一次的凭据」上.
+    """把整套工具装到「这个客户端 + 这个买家 + 这一次的凭据」上.
 
     身份 (`user_id`) 与一次性凭据 (`one_shot`) 都在这里被写进闭包 —— 这是它们
     **唯一**进入工具的地方, 也因此永远不会出现在任何一个工具的 schema 里
@@ -776,7 +776,7 @@ def build_tools(
             没有 —— 普通提问走的就是这一支 (挂起恢复那一次才带得动它).
 
     Returns:
-        tuple[Tool, ...]: 正好 18 个工具 (9 只读 + 8 写 + 代付).
+        tuple[Tool, ...]: 整套工具 (只读的 + 打 `writes` 注解的).
     """
     tools = [builder(client, user_id) for builder in _BUILDERS]
     # 代付**接在最后** (与上面那条"加工具是往后接而不是插队"同一条)

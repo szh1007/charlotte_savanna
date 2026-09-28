@@ -161,7 +161,7 @@ def test_the_declared_prompt_lets_the_model_change_data() -> None:
     """声明的那一版必须是**能改数据**的那一版.
 
     这条钉的是「版本号交给清单」之后的那个新风险: 把 `default` 改回只读版是一个
-    字符的改动, 而后果是 8 个写工具当场全废 (模型会照提示词一律拒绝) —— 别的
+    字符的改动, 而后果是那些会改数据的工具当场全废 (模型会照提示词一律拒绝) —— 别的
     用例一条都不会红, 因为它们读的就是"声明的那一版".
 
     判据取正文里有没有那几个动作, **不是**写死 `== "v2"`: 版本号该由清单说了算,
@@ -429,17 +429,24 @@ async def test_the_assembly_can_be_pinned_to_a_version(
 # ---------------------------------------------------------------------------
 
 
-def test_v4_waits_for_the_data_before_it_becomes_the_default() -> None:
-    """v4 在盘上, 而**清单还没指过去** —— 写一版不等于切一版.
+def test_the_declared_version_is_the_one_the_prompt_ab_chose() -> None:
+    """声明的是 **v4** —— 切那一版是件留了痕的事, 这条用例就是那道痕的一半.
 
-    切 `default` 是「生产换成它」那一步 (开放决策 1: 看数据, 且单独做、留记录);
-    这条用例只钉住「现在还没切」, 免得谁顺手把实验组变成了生产.
+    v4 是 issue 45 那次 prompt A/B 的实验组, 2026-09-29 (issue 46 收口) 才切过来:
+    依据是两趟数据 —— 「不该复述的原文」泄漏从 13~15% 的跑次压到 0, 而**同一版里
+    另一处改动 (示例去强调) 没有效果**. 另一半痕在清单自己的注释里 (为什么要切、
+    代价是什么).
 
-    **真要切的时候, 这条用例要跟着改**, 而不是删掉: 那次改动得在那个 ticket 里
-    留下记录 (改哪一行、为什么、A/B 的数据是哪一份) —— 这正是它拦着的东西.
+    它此前叫 `..._waits_for_the_data_before_it_becomes_the_default`, 断的是
+    `CURRENT_VERSION != "v4"` —— 那次切换就是照着它做的一步 (改这一行 + 留记录).
+    **再切一版 (比如 v5) 时同样要连它一起改**, 而不是删掉.
+
+    与同页那条「判据取正文, 不写死 `== "v2"`」看似矛盾, 其实是两件事: 那条说的是
+    **内容检查**不该认版本名 (认了, 换版就要改两处); 这一条钉的是**这一版是选出来的
+    那个决定** —— 换版必须是一次有人负责的动作.
     """
     assert (PROMPT_DIR / PROMPT_NAME / "v4.prompt").is_file()
-    assert CURRENT_VERSION != "v4", "切 v4 要单独做一步、留记录 (见 docstring)"
+    assert CURRENT_VERSION == "v4"
 
 
 def test_the_examples_lose_their_emphasis_in_v4() -> None:

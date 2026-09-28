@@ -1,4 +1,4 @@
-"""18 个工具: 名字 / 参数契约 / 结果与两种失败的翻译.
+"""那套工具: 名字 / 参数契约 / 结果与两种失败的翻译.
 
 工具是模型能对这个商城做的**全部**事情, 所以这里测的是它对外的那份契约:
 
@@ -60,19 +60,23 @@ async def call(
 # ---------------------------------------------------------------------------
 
 
-async def test_there_are_exactly_eighteen_tools(client) -> None:
-    """正好 18 个, 名字与顺序都钉住 (多一个少一个都是契约变更)."""
+async def test_the_built_tools_are_exactly_the_expected_names(client) -> None:
+    """工具集与期望名单**逐个对上** (名字与顺序; 多一个少一个都是契约变更).
+
+    判据是 `conftest.TOOL_NAMES` 那份清单, 不是这里再写一个数 —— 数量变了,
+    该改的只有那份清单.
+    """
     names = tuple(item.name for item in build_tools(client, BUYER_ID))
 
     assert names == TOOL_NAMES
 
 
 async def test_every_tool_is_async(client) -> None:
-    """18 个工具全是异步函数.
+    """这套工具全是异步函数.
 
     这不是风格要求: 框架把**同步**工具函数扔进 `asyncio.to_thread` 执行
     (`tool/executor.py` 的 `_invoke`), 同步工具会互相排队占满线程池 ——
-    「多个查询同时进行」当场失效 (PRD §4.4). 8 个写工具同样跑在一次问答里,
+    「多个查询同时进行」当场失效 (PRD §4.4). 会改数据的那些同样跑在一次问答里,
     它们要是同步的, 一次「加购 + 下单」就能把线程池占住.
     """
     not_async = [
@@ -87,7 +91,7 @@ async def test_every_tool_is_async(client) -> None:
 async def test_every_description_says_when_to_use_it(client) -> None:
     """每个工具的说明都写清了「什么时候该用」—— 模型选工具只看这一句.
 
-    判据取「使用」二字: 18 个工具的说明都写成「……时使用」的句式 (见 tools.py).
+    判据取「使用」二字: 这套工具的说明都写成「……时使用」的句式 (见 tools.py).
     这条不检查措辞好不好, 只拦住「忘了写说明」—— 漏写时模型只能靠名字猜.
     写工具格外要紧: `cancel_my_order` 与 `request_refund` 长得像, 模型分不清就
     会拿其中一个去试另一个该做的事.
@@ -334,7 +338,7 @@ async def test_the_same_client_serves_two_buyers(client, mall) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 8 个写工具: 打对了端点 / 结果照转 / 被拒时说人话
+# 会改数据的那些: 打对了端点 / 结果照转 / 被拒时说人话
 # ---------------------------------------------------------------------------
 
 # 一条订单号 (24 位) 与一个商品 slug: 下面那张表里要重复用好几遍, 提出来免得

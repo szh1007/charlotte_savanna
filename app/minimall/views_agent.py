@@ -223,7 +223,7 @@ class AgentEndpointView(APIView):
     按买家过滤, 不做对象级放行.
 
     业务异常与端点的拒绝都在 `handle_exception` 里翻成统一错误体, 所以处理器
-    只管写正常那一路, 不用逐个 try/except. 9 个只读端点不抛业务异常, 这条对
+    只管写正常那一路, 不用逐个 try/except. 只读端点不抛业务异常, 这条对
     它们是惰性的 (它们一行没动).
     """
 
@@ -233,7 +233,7 @@ class AgentEndpointView(APIView):
     def handle_exception(self, exc):
         """业务异常 / 端点的拒绝 → 错误体; 其余交给 DRF (404 仍是 404).
 
-        错误码只在这一处翻译: 8 个写端点各自 try/except 一遍的话, 同一个异常在
+        错误码只在这一处翻译: 写端点各自 try/except 一遍的话, 同一个异常在
         不同端点会被讲成不同的话, 而工具层是按码写文案的.
         """
         if isinstance(exc, AgentRefusalError):

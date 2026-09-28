@@ -1,13 +1,13 @@
-"""工具提供者契约: 给定买家, 交出正好 18 个工具, 而且身份与密码都进不了参数表.
+"""工具提供者契约: 给定买家, 交出整套工具, 而且身份与密码都进不了参数表.
 
 本文件的重点只有一个 —— **那个安全守卫** (PRD §4.2). 它是那条核心设计的可执行
 证据: 模型的视角就是工具的 JSON schema (名字 + 说明 + 参数表), 里面没有的东西
 它看不见, 也就无从填别人的值。这条不能靠「我记得」, 得靠遍历断言 ——
-所以下面不止断言「没有 user_id」, 而是把 18 个工具的参数表**逐个钉死**.
+所以下面不止断言「没有 user_id」, 而是把每个工具的参数表**逐个钉死**.
 
-L2 加了 8 个**写**工具之后这条守卫更值钱了: 写工具能改数据, 身份漏进它们的参数表
-就不只是「看得到别人的数据」, 而是「改得动别人的数据」—— 所以 EXPECTED_PARAMS 里
-那 8 行是逐个键写死的, 多一个 `user_id` 就红.
+L2 加了会改数据的那些工具之后这条守卫更值钱了: 它们能改数据, 身份漏进参数表就
+不只是「看得到别人的数据」, 而是「改得动别人的数据」—— 所以 EXPECTED_PARAMS 里
+那几行是逐个键写死的, 多一个 `user_id` 就红.
 
 **L3 的守卫有第二个维度** (issue 35, ADR-0015): 代付的支付密码走的是同一条路
 (`RunContext.payload` → 闭包), 而它要防的是另一件事 —— 密码一旦成了参数, 模型就
@@ -56,7 +56,7 @@ EXPECTED_PARAMS: dict[str, set[str]] = {
     "get_my_order": {"order_no"},
     "get_my_profile": set(),
     "list_my_addresses": set(),
-    # --- 8 个写工具 (L2) ---
+    # --- 会改数据的那些 (L2) ---
     "add_to_cart": {"slug", "quantity"},
     "update_cart_item": {"slug", "quantity"},
     "remove_cart_item": {"slug"},
@@ -104,10 +104,10 @@ def context_for(
     )
 
 
-async def test_a_provider_returns_exactly_eighteen_tools(
+async def test_a_provider_returns_the_expected_names_in_order(
     client: MinimallClient,
 ) -> None:
-    """给定买家, 交出正好 18 个工具, 名字与顺序都对."""
+    """给定买家, 交出的就是那份期望名单 (名字与顺序都对)."""
     tools = await MinimallToolProvider(client).provide(context_for())
 
     assert tuple(item.name for item in tools) == TOOL_NAMES
@@ -162,7 +162,7 @@ async def _assert_nothing_leaks(
 async def test_identity_never_appears_in_any_tool_schema(
     client: MinimallClient,
 ) -> None:
-    """**本文件的核心**: 18 个工具的参数表里没有身份, 一个都没有.
+    """**本文件的核心**: 这套工具的参数表里没有身份, 一个都没有.
 
     做法是两层: 先逐个钉死每个工具**应该**有哪些参数 (多一个都不行), 再把整份
     schema 序列化成文本搜一遍买家 ID —— 后者兜住「参数名不叫 user_id 但值漏了」

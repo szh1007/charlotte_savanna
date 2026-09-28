@@ -1,6 +1,6 @@
 """跑分用的样本与假商城: 从测试上下文里搬出来的一份 (issue 41).
 
-一句话理解: 商城那 18 个内部端点的**样本返回**、把它们拦下来的那台 respx 假商城,
+一句话理解: 商城那套内部端点的**样本返回**、把它们拦下来的那台 respx 假商城,
 以及「回答里不该出现哪些真值」那张清单 —— 谁要用谁拿, 不必先成为一条 pytest 用例.
 
 **为什么它不在 `tests/conftest.py` 里** (它本来就在那儿): 离线跑分器不是 pytest
@@ -179,7 +179,7 @@ ADDRESSES: list[dict[str, Any]] = [
     }
 ]
 
-# 8 个写端点的样本 (方法 + 路径 → 返回体).
+# 写端点那一批的样本 (方法 + 路径 → 返回体; 其中一条是 GET 的退款列表).
 #
 # 形状与只读那批同源 (写购物车的四个端点回的**也是整车**), 只有两处是写端点独有
 # 的: 取消的回执多两个副作用字段 (`balance_returned` / `restocked_count`), 退款
@@ -239,7 +239,7 @@ WRITE_ENDPOINTS: dict[tuple[str, str], Any] = {
 }
 
 
-# 9 个只读端点的完整样本表 (路径 → 返回体); 端到端用例与跑分器拿它一次性铺满假商城
+# 只读端点那一批的完整样本表 (路径 → 返回体); 端到端用例与跑分器拿它一次性铺满假商城
 ENDPOINTS: dict[str, Any] = {
     "products/": {
         "count": 1,
@@ -279,7 +279,7 @@ def build_mall() -> respx.MockRouter:
       **挂上兜底放行之后这条只在商城那几条真路由上成立**: 拼错的商城路径会落到
       兜底那条上, 变成一次真请求 (报的是域名解析失败, 而不是 respx 那句「not
       mocked」). 那个代价换的是「模型要能出网」—— 见 `pass_through_the_rest`.
-    - `assert_all_called` 关掉 —— `mock_all` 会把 18 个端点一次铺满 (端到端用例
+    - `assert_all_called` 关掉 —— `mock_all` 会把那套端点一次铺满 (端到端用例
       与跑分需要「模型想调哪个都有得调」), 而每一次问答只用到其中一两个.
     - `using="httpx"` **不能省**: respx 默认拦在 httpcore 那一层, 而那一层也被
       真模型的请求走着 —— 它连**代理转发**一起接管, 于是本机走系统代理出网时
@@ -322,7 +322,7 @@ def pass_through_the_rest(mall: respx.MockRouter) -> respx.Route:
 
 
 def mock_all(mall: respx.MockRouter) -> dict[str, respx.Route]:
-    """把 18 个端点全部挂上 (端到端用例与跑分器用: 模型想调哪个都有得调).
+    """把全部端点挂上 (端到端用例与跑分器用: 模型想调哪个都有得调).
 
     返回的字典键**一律是 `"方法 路径"`** (`"GET cart/"` / `"POST cart/items/"`), 用例
     按它去翻哪条被调过. 方法必须进键里: 同一个 `orders/` 上 GET 与 POST 是两条

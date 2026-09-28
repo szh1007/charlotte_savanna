@@ -113,8 +113,8 @@ async def test_the_marking_is_exactly_the_data_changing_tools() -> None:
     少打一个 = 那道闸少一格; 多打一个 = 买家白占一次额度 (他会发现"我就问了几句
     退款, 怎么就不能下单了").
 
-    唯一值得单独点出来的边界是 `list_my_refunds`: 它与那 7 个是同一批加进来的
-    (issue 11 说的"8 个写端点"包含了它那条 GET), 但它**只是读**退款列表 ——
+    唯一值得单独点出来的边界是 `list_my_refunds`: 它与那批会改数据的是同一批加进来
+    的 (issue 11 说的"写端点"那批里包含了它那条 GET), 但它**只是读**退款列表 ——
     护栏不该管它.
     """
     mall = FakeCart()

@@ -1372,7 +1372,7 @@ def one_shot_payload(resume: Resume, needs: tuple[str, ...]) -> dict:
     为什么必须筛: 框架把 `data` **并进**运行上下文, 而且是 `{**payload, **data}`
     —— `data` 在后, 覆盖得掉已有的键 (`CharAgent/server/app.py` 的恢复端点). 而这份
     载荷里装着这一趟运行的**身份**: 业务侧取买家 ID 正是从载荷里读的
-    (`CharApp/minimall/provider.py` 的 `buyer_id` → `payload["user_id"]`), 18 个工具
+    (`CharApp/minimall/provider.py` 的 `buyer_id` → `payload["user_id"]`), 那套工具
     全按它绑数据. 于是"原样转发"等于把身份交给浏览器改: 一个买家在自己那次挂起上
     带一个 `data={"user_id": 别人的}`, 恢复那一段就以别人的身份查订单与余额, 而答复
     流回他自己页面上.

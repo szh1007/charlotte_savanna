@@ -49,8 +49,9 @@ from CharApp.eval.fixtures import (
 )
 from CharApp.minimall.client import MinimallClient
 
-# 18 个工具的名字 (顺序即注册顺序: 9 个只读在前, 8 个写接在后面, 代付收尾) ——
-# 工具与提供者两组用例共用同一份期望
+# 全部工具的名字 (顺序即注册顺序: 只读的在前, 会改数据的与那个读退款的接在后面,
+# 代付收尾) —— **这是这份名单的唯一权威**: 工具的契约用例与提供者用例都比对它,
+# 数量变了改这里.
 TOOL_NAMES = (
     "search_products",
     "get_product_detail",

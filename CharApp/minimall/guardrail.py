@@ -151,7 +151,7 @@ class WriteGuardrail:
             tool: 命中的 Tool 对象; 写操作靠它的 `annotations` 认出来.
         """
         if not tool.annotations.get(WRITE_ANNOTATION_KEY):
-            return None  # 只读操作不管 —— 判断只看注解, 不去比对 18 个工具名字
+            return None  # 只读操作不管 —— 判断只看注解, 不去比对工具名字
         if self._used >= WRITE_BUDGET:
             return Decision.reject(_BUDGET_REASON)
         if tool.name == PAY_ORDER_TOOL:
