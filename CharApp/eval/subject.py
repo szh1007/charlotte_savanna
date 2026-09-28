@@ -11,6 +11,10 @@
 调代付的题) 都白跑 —— 报告上缺掉的恰好是 L3b 最该讲的那一块 (人工确认那条链到底
 跑不跑得通). 这与商城真假无关: 护栏是业务侧的, 换假商城照样挂.
 
+**这一页还管着 A/B 的那个开关** (issue 44): `prune_tools` 一开, 每道题按题面裁出
+几组工具交给模型 (`scoping.ToolScope`), 挂起-恢复那两段用的是**同一个**范围对象.
+它就是那次实验的自变量 —— 于是「两组只差这一个开关」这件事在代码里看得见.
+
 **形状照抄 HTTP 那条路** (`CharAgent/server/app.py` 的 `resume_run`, 第 5 / 6 / 7 步),
 三处语义一处不改:
 
@@ -75,6 +79,7 @@ from CharAgent.model.protocol import ChatModel
 from CharApp.eval.fixtures import BUYER_ID
 from CharApp.eval.harness import EvalHarness, open_harness
 from CharApp.minimall.config import ENV_EVAL_PAYMENT_PASSWORD, eval_payment_password
+from CharApp.minimall.scoping import SCOPE_FULL, SCOPE_PRUNED, ToolScope
 from CharApp.minimall.tools import PAYMENT_PASSWORD_FIELD
 
 
@@ -106,6 +111,10 @@ class HarnessSubject:
             这件事藏起来).
         payment_password: 代付那一调要注入的密码; None = 没配 (要密码而没配时
             这一跑记 `BROKEN`, 见模块 docstring).
+        prune_tools: 这一跑要不要**按题面裁工具** (issue 44 的那次 A/B). 默认不裁
+            (全部工具都交给模型 = 对照组); 开了就按 `case.question` 选几组
+            (`scoping.ToolScope`), 于是模型**只看见、也只调得到**那几组.
+            两段 (挂起前 / 恢复) 用的是同一个范围对象 —— 它是无状态的.
 
     attributes:
         (无公开属性; `harness` 是只读取数口, 给用例看记录层用)
@@ -118,12 +127,15 @@ class HarnessSubject:
         conversation: str,
         simulate_approval: bool = True,
         payment_password: str | None = None,
+        prune_tools: bool = False,
     ) -> None:
         self._model = model
         self._conversation = conversation
         self._simulate_approval = simulate_approval
         self._password = payment_password
+        self._prune_tools = prune_tools
         self._harness: EvalHarness | None = None
+        self._scope: ToolScope | None = None
 
     async def run_once(self, case: EvalCase) -> RunFacts:
         """把 `case` 问出去, 交回这一跑的全部事实.
@@ -141,7 +153,10 @@ class HarnessSubject:
         async with open_harness(self._model) as harness:
             self._harness = harness
             context = self._context_of(case, harness)
-            session = await harness.session(context)
+            # 范围**一次定死在这一跑上**: 两段会话 (挂起前 / 恢复) 装的是同一个对象,
+            # 于是恢复段不会忽然多出几个工具来 (见 `_resumed`)
+            self._scope = self._scope_of(case)
+            session = await harness.session(context, scope=self._scope)
             asked = await session.ask(case.question)
             run_id = session.last_run_id
             resumed, failure = await self._settle(context, harness, asked, run_id)
@@ -182,6 +197,14 @@ class HarnessSubject:
             self._conversation,
             user_id=BUYER_ID if buyer is None else int(buyer),
         )
+
+    def _scope_of(self, case: EvalCase) -> ToolScope | None:
+        """这一跑给模型开哪几组工具; None = 不裁 (对照组).
+
+        裁的依据只有**题面那一句** (开放决策 2): 不带宽窄随轮次变化的口子, 否则
+        两组之间的差异里会混进「什么时候裁的」这件与实验无关的事.
+        """
+        return ToolScope(question=case.question) if self._prune_tools else None
 
     async def _settle(
         self,
@@ -253,7 +276,8 @@ class HarnessSubject:
 
         **重新装配是刻意的** (不是往旧会话里塞东西): 一次性凭据在**构造工具那一刻**
         就裹进了闭包 (`provider.MinimallToolProvider.provide`), 旧会话的工具是空手
-        装的 —— 换会话才有那份密码.
+        装的 —— 换会话才有那份密码. 带的 scope 是**第一段那个**: 挂起与恢复是同一次
+        运行的两截, 中途换一套可见集就说不清这一跑到底给模型开的是什么了.
 
         能走到这里说明该有的凭据都有了: 缺的那种上一拍就拦下了 (`_settle` 先问
         `_missing_credential`), 于是下面那句赋值不会把 None 塞进载荷.
@@ -261,7 +285,9 @@ class HarnessSubject:
         payload: dict[str, Any] = dict(context.payload)
         if _wants_password(pending):
             payload[PAYMENT_PASSWORD_FIELD] = self._password
-        session = await harness.session(dataclasses.replace(context, payload=payload))
+        session = await harness.session(
+            dataclasses.replace(context, payload=payload), scope=self._scope
+        )
         return await session.resume(run_id=run_id, approval=Approval.approve())
 
     def _facts_of(
@@ -333,11 +359,17 @@ class HarnessSubject:
         报告不写就是让读者以为模型自己走完了全流程). 另外三格是**本片顺带补齐的**:
         报告头部那块配置快照没有它们就是个空块, 而填得出来的只有装配会话这一方
         (见 `RunFacts.config`: 放跑批器那一侧迟早与真装配漂开).
+
+        **「工具范围」是 issue 44 那次 A/B 的自变量** (报告头部要一眼看出两组差在
+        哪): 它是**按组恒定**的 (`全挂` / `按题裁剪`), 而每题开出来几组只记在跑分
+        入口那一段分类表里 —— 逐题变化的键会让同一组里冒出几十份不同的配置快照
+        (报告会如实点名, 而那份点名列里没有新信息).
         """
         return {
             "模型": session.model_name,
             "提示词": (session.prompt_ref or {}).get("name", ""),
             "工具数": len(session.tool_names),
+            "工具范围": SCOPE_PRUNED if self._scope is not None else SCOPE_FULL,
             "模拟确认": self._approval_mode(),
         }
 
@@ -353,17 +385,22 @@ def subject_factory(
     *,
     simulate_approval: bool = True,
     payment_password: str | None = None,
+    prune_tools: bool = False,
 ) -> SubjectFactory:
     """造一个「给这道题建一个对象」的工厂 (跑批器每一跑调它一次).
 
     Args:
         model_for: 这道题的模型 —— **每一跑现调一次**: 模型的所有权随装配交出去
-            (那一跑收尾时关掉), 共享一个的话第一跑结束就把它关了. 真模型传
-            `functools.partial(build_model_for, options, writer)`, 用例里传按题号
-            写好的假大脑.
+            (那一跑收尾时关掉), 共享一个的话第一跑结束就把它关了. 用例里传按题号
+            写好的假大脑; 真模型传一个「收下题面、按配置造一个」的小函数 (如
+            `lambda _case: build_model_for(options, writer)`) —— **签名里必须收下
+            题面**, 工厂是按 `(case) -> 模型` 调的 (见 `protocols.py`); 题面用不上
+            时忽略它即可 (两组同源时就是这样).
         simulate_approval: 挂起题要不要替买家点确认 (默认要, 见模块 docstring).
         payment_password: 代付要注入的密码; None = 读
             `CHARAPP_EVAL_PAYMENT_PASSWORD` (`config.eval_payment_password`).
+        prune_tools: 每道题按题面裁工具 (issue 44 的实验组); 默认不裁 —— 两组之间
+            **只该差这一个开关**, 别的旋钮都要一样.
 
     Returns:
         SubjectFactory: 造对象用的协程 —— 会话编号带题号与序号 (`order-03-1`), 于是
@@ -383,6 +420,7 @@ def subject_factory(
             conversation=f"{case.id}-{attempts[case.id]}",
             simulate_approval=simulate_approval,
             payment_password=resolved,
+            prune_tools=prune_tools,
         )
 
     return build

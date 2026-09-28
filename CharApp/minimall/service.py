@@ -60,6 +60,7 @@ from CharApp.minimall.provider import (
     buyer_id,
 )
 from CharApp.minimall.redaction import redacting_sink
+from CharApp.minimall.scoping import ToolScope
 
 # 会话编号的第一段 (PRD §4.11: `业务:买家ID:对话ID`) —— 快照按它分区, 于是
 # 多用户隔离是免费得到的: 换一个买家就是换一个分区, 谁也读不到谁的档.
@@ -329,7 +330,12 @@ class MinimallService:
         load_pricing()
 
     async def session_for(
-        self, context: RunContext, *, event_sink: EventSink, redact: bool
+        self,
+        context: RunContext,
+        *,
+        event_sink: EventSink,
+        redact: bool,
+        scope: ToolScope | None = None,
     ) -> ChatSession:
         """把零件装成一台能问答的机器: 上下文 → 工具 + 护栏 + 记录员 → 会话.
 
@@ -353,6 +359,10 @@ class MinimallService:
                 「忘了选」变成一次静默的泄漏 —— 第三个入口接上来时, 漏了它就
                 是工具参数原文直出浏览器 (ADR-0003 那条保证的正是这一跳).
                 Web 入口给 True, CLI 入口给 False (出口是开发者自己的终端).
+            scope: 这一次运行给模型开哪几组工具 (issue 44 的 A/B 装置); None = 不裁
+                —— 全部工具都交给模型, **生产那两个入口给的就是 None**. 裁剪只在
+                跑分那条线上装 (数据出来之前它不是产品功能, 见 `scoping.py`).
+                给了它就挂在同一处装配上: 与护栏同一个理由 —— 裁一半的会话不该存在.
 
         Returns:
             ChatSession: 装好的会话 (工具 / 提示词 / 模型 / 快照 / 快照分区).
@@ -365,6 +375,12 @@ class MinimallService:
         # 「网页版忘了挂」这种半边生效 (05 立过的旗). 注册表一次会话一份, 里面
         # 那条插件的账本按**运行**归零 (挂哪个点由它自己决定, 见 guardrail.install).
         hooks = HookRegistry()
+        if scope is not None:
+            # 裁剪挂在护栏**之前**: 顺序不改变裁决 (框架那边拒绝优先、不看顺序),
+            # 只决定两条**都是拒绝**时先到的那句理由 —— 一个被裁掉的超预算
+            # `place_order` 该听到的是「这工具不在范围里」(它压根没给模型), 而不是
+            # 「这一单超了 5000」. 见 scoping.py 的那张组合表.
+            scope.install(hooks)
         WriteGuardrail(client=self.client, user_id=buyer_id(context)).install(hooks)
         # 压缩**每会话一份估算器**, 所以在这里造 (理由见 build_compaction_for):
         # 没配就是不压缩 —— 这条会话每一轮把全量历史原样发出去

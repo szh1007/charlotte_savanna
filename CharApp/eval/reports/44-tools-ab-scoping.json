@@ -1,0 +1,388 @@
+{
+  "cases": [
+    {
+      "case_id": "account-01",
+      "groups": [
+        "account"
+      ],
+      "visible_tools": [
+        "get_my_profile",
+        "list_my_addresses"
+      ],
+      "expect_tools": [
+        "get_my_profile"
+      ],
+      "missing": [],
+      "verdict": "✅"
+    },
+    {
+      "case_id": "account-02",
+      "groups": [
+        "account"
+      ],
+      "visible_tools": [
+        "get_my_profile",
+        "list_my_addresses"
+      ],
+      "expect_tools": [
+        "list_my_addresses"
+      ],
+      "missing": [],
+      "verdict": "✅"
+    },
+    {
+      "case_id": "account-03",
+      "groups": [
+        "account"
+      ],
+      "visible_tools": [
+        "get_my_profile",
+        "list_my_addresses"
+      ],
+      "expect_tools": [
+        "list_my_addresses"
+      ],
+      "missing": [],
+      "verdict": "✅"
+    },
+    {
+      "case_id": "cart-01",
+      "groups": [
+        "cart"
+      ],
+      "visible_tools": [
+        "add_to_cart",
+        "clear_cart",
+        "get_my_cart",
+        "remove_cart_item",
+        "update_cart_item"
+      ],
+      "expect_tools": [
+        "get_my_cart"
+      ],
+      "missing": [],
+      "verdict": "✅"
+    },
+    {
+      "case_id": "cart-02",
+      "groups": [
+        "product",
+        "cart"
+      ],
+      "visible_tools": [
+        "add_to_cart",
+        "clear_cart",
+        "get_my_cart",
+        "get_product_detail",
+        "list_categories",
+        "list_featured_products",
+        "remove_cart_item",
+        "search_products",
+        "update_cart_item"
+      ],
+      "expect_tools": [
+        "search_products",
+        "add_to_cart"
+      ],
+      "missing": [],
+      "verdict": "✅"
+    },
+    {
+      "case_id": "cart-03",
+      "groups": [
+        "cart"
+      ],
+      "visible_tools": [
+        "add_to_cart",
+        "clear_cart",
+        "get_my_cart",
+        "remove_cart_item",
+        "update_cart_item"
+      ],
+      "expect_tools": [
+        "clear_cart"
+      ],
+      "missing": [],
+      "verdict": "✅"
+    },
+    {
+      "case_id": "order-01",
+      "groups": [
+        "order"
+      ],
+      "visible_tools": [
+        "cancel_my_order",
+        "get_my_order",
+        "list_my_orders",
+        "pay_my_order",
+        "place_order"
+      ],
+      "expect_tools": [
+        "list_my_orders"
+      ],
+      "missing": [],
+      "verdict": "✅"
+    },
+    {
+      "case_id": "order-02",
+      "groups": [
+        "order"
+      ],
+      "visible_tools": [
+        "cancel_my_order",
+        "get_my_order",
+        "list_my_orders",
+        "pay_my_order",
+        "place_order"
+      ],
+      "expect_tools": [
+        "get_my_order"
+      ],
+      "missing": [],
+      "verdict": "✅"
+    },
+    {
+      "case_id": "order-03",
+      "groups": [
+        "cart",
+        "order"
+      ],
+      "visible_tools": [
+        "add_to_cart",
+        "cancel_my_order",
+        "clear_cart",
+        "get_my_cart",
+        "get_my_order",
+        "list_my_orders",
+        "pay_my_order",
+        "place_order",
+        "remove_cart_item",
+        "update_cart_item"
+      ],
+      "expect_tools": [
+        "place_order"
+      ],
+      "missing": [],
+      "verdict": "✅"
+    },
+    {
+      "case_id": "order-04",
+      "groups": [
+        "cart",
+        "order"
+      ],
+      "visible_tools": [
+        "add_to_cart",
+        "cancel_my_order",
+        "clear_cart",
+        "get_my_cart",
+        "get_my_order",
+        "list_my_orders",
+        "pay_my_order",
+        "place_order",
+        "remove_cart_item",
+        "update_cart_item"
+      ],
+      "expect_tools": [
+        "place_order"
+      ],
+      "missing": [],
+      "verdict": "✅"
+    },
+    {
+      "case_id": "policy-01",
+      "groups": [
+        "product",
+        "account"
+      ],
+      "visible_tools": [
+        "get_my_profile",
+        "get_product_detail",
+        "list_categories",
+        "list_featured_products",
+        "list_my_addresses",
+        "search_products"
+      ],
+      "expect_tools": [],
+      "missing": [],
+      "verdict": "✅"
+    },
+    {
+      "case_id": "policy-02",
+      "groups": [
+        "refund"
+      ],
+      "visible_tools": [
+        "list_my_refunds",
+        "request_refund"
+      ],
+      "expect_tools": [],
+      "missing": [],
+      "verdict": "✅"
+    },
+    {
+      "case_id": "policy-03",
+      "groups": [
+        "product",
+        "account"
+      ],
+      "visible_tools": [
+        "get_my_profile",
+        "get_product_detail",
+        "list_categories",
+        "list_featured_products",
+        "list_my_addresses",
+        "search_products"
+      ],
+      "expect_tools": [],
+      "missing": [],
+      "verdict": "✅"
+    },
+    {
+      "case_id": "policy-04",
+      "groups": [
+        "order"
+      ],
+      "visible_tools": [
+        "cancel_my_order",
+        "get_my_order",
+        "list_my_orders",
+        "pay_my_order",
+        "place_order"
+      ],
+      "expect_tools": [],
+      "missing": [],
+      "verdict": "✅"
+    },
+    {
+      "case_id": "product-01",
+      "groups": [
+        "product"
+      ],
+      "visible_tools": [
+        "get_product_detail",
+        "list_categories",
+        "list_featured_products",
+        "search_products"
+      ],
+      "expect_tools": [
+        "search_products"
+      ],
+      "missing": [],
+      "verdict": "✅"
+    },
+    {
+      "case_id": "product-02",
+      "groups": [
+        "product"
+      ],
+      "visible_tools": [
+        "get_product_detail",
+        "list_categories",
+        "list_featured_products",
+        "search_products"
+      ],
+      "expect_tools": [
+        "search_products",
+        "get_product_detail"
+      ],
+      "missing": [],
+      "verdict": "✅"
+    },
+    {
+      "case_id": "product-03",
+      "groups": [
+        "product"
+      ],
+      "visible_tools": [
+        "get_product_detail",
+        "list_categories",
+        "list_featured_products",
+        "search_products"
+      ],
+      "expect_tools": [
+        "list_categories"
+      ],
+      "missing": [],
+      "verdict": "✅"
+    },
+    {
+      "case_id": "refund-01",
+      "groups": [
+        "order",
+        "refund"
+      ],
+      "visible_tools": [
+        "cancel_my_order",
+        "get_my_order",
+        "list_my_orders",
+        "list_my_refunds",
+        "pay_my_order",
+        "place_order",
+        "request_refund"
+      ],
+      "expect_tools": [
+        "request_refund"
+      ],
+      "missing": [],
+      "verdict": "✅"
+    },
+    {
+      "case_id": "refund-02",
+      "groups": [
+        "refund"
+      ],
+      "visible_tools": [
+        "list_my_refunds",
+        "request_refund"
+      ],
+      "expect_tools": [
+        "list_my_refunds"
+      ],
+      "missing": [],
+      "verdict": "✅"
+    },
+    {
+      "case_id": "refund-03",
+      "groups": [
+        "order",
+        "refund"
+      ],
+      "visible_tools": [
+        "cancel_my_order",
+        "get_my_order",
+        "list_my_orders",
+        "list_my_refunds",
+        "pay_my_order",
+        "place_order",
+        "request_refund"
+      ],
+      "expect_tools": [
+        "request_refund"
+      ],
+      "missing": [],
+      "verdict": "✅"
+    }
+  ],
+  "correct": 20,
+  "wrong": 0,
+  "doomed_attempts": 0,
+  "scores": {
+    "全挂": {
+      "召回率": 0.9814814814814815,
+      "准确率": 0.7910447761194029,
+      "overall": {
+        "召回率": 0.9814814814814815,
+        "准确率": 0.7910447761194029
+      }
+    },
+    "按题裁剪": {
+      "召回率": 0.9629629629629629,
+      "准确率": 0.8,
+      "overall": {
+        "召回率": 0.9629629629629629,
+        "准确率": 0.8
+      }
+    }
+  }
+}

@@ -5,9 +5,14 @@
 再按运行编号把那一跑的轨迹读回来.
 
 为什么是这一套 (而不是真商城 / 真 Postgres): 跑分要跑几十上百次问答, 而它要量的
-是**模型**那部分 —— 商城走 respx 假端点 (一个包都不出网)、记录落在内存里的假库、
-快照在内存里, 于是跑分既不依赖 Django 也不依赖真库, 几十次问答是秒级. 打真模型的
-那一半照旧 (L4 规划期定的: 真模型 + 假商城 + 只规则判).
+是**模型**那部分 —— 商城走 respx 假端点、记录落在内存里的假库、快照在内存里, 于是
+跑分既不依赖 Django 也不依赖真库. 打真模型的那一半照旧 (L4 规划期定的: 真模型 +
+假商城 + 只规则判).
+
+**「不出网」只管商城那一半**: 模型是真的, 它的请求当然要出网 —— 而它走的也是 httpx,
+正是假商城拦的那条通道. 于是 `open_harness` 在铺完商城那几条路由之后挂一条**兜底
+放行** (见 `fixtures.pass_through_the_rest`). 少了它, 每一跑都会以「POST
+api.deepseek.com ... not mocked!」记成 `BROKEN` (issue 44 冒烟时真撞上过).
 
 **三个已知的坑, 用之前先知道**:
 
@@ -46,9 +51,11 @@ from CharApp.eval.fixtures import (
     TOKEN,
     build_mall,
     mock_all,
+    pass_through_the_rest,
 )
 from CharApp.minimall.client import MinimallClient
 from CharApp.minimall.config import context_config_from_env, thinking_from_env
+from CharApp.minimall.scoping import ToolScope
 from CharApp.minimall.service import TENANT_WEB, MinimallService, build_context
 
 
@@ -88,7 +95,9 @@ class EvalHarness:
         """
         return build_context(user_id, conversation, tenant_id=TENANT_WEB)
 
-    async def session(self, context: RunContext) -> ChatSession:
+    async def session(
+        self, context: RunContext, *, scope: ToolScope | None = None
+    ) -> ChatSession:
         """按生产那条线装一台会话 (走 `MinimallService.session_for`).
 
         事件出口是个丢弃器 (`redact=False`): 跑分不展示事件, 报告要的都在
@@ -97,12 +106,15 @@ class EvalHarness:
 
         Args:
             context: 这次运行的上下文 (见 `context`).
+            scope: 这一次运行给模型开哪几组工具 (issue 44 的裁剪组); None = 不裁
+                (对照组). 挂起恢复那一段要用**同一个** scope —— 两段是同一次运行的
+                两截, 中途换一套可见集会让轨迹说不清 (见 `subject.py`).
 
         Returns:
             ChatSession: 装着工具 + 护栏 + 记录员的会话 (可以连续问很多句).
         """
         return await self.service.session_for(
-            context, event_sink=lambda event: None, redact=False
+            context, event_sink=lambda event: None, redact=False, scope=scope
         )
 
     def calls_of(self, run_id: str | None) -> list[ToolCall]:
@@ -208,6 +220,12 @@ async def open_harness(model: ChatModel) -> AsyncIterator[EvalHarness]:
         EvalHarness: 装好的零件 (服务 / 假记录库 / 假商城路由表).
     """
     with build_mall() as router:
+        # 兜底放行:**模型那条路要出网** (跑分打的是真模型, 而它的请求也走 httpx ——
+        # 那正是假商城拦的通道). 铺完商城那些路由之后再挂它, 于是模型照常连上游,
+        # 而商城那几条照旧是假端点. 冒烟时真撞上过: 少了它, 每一跑都是 `BROKEN`,
+        # 报的是「POST https://api.deepseek.com/chat/completions ... not mocked!」
+        routes = mock_all(router)
+        pass_through_the_rest(router)
         client = MinimallClient(base_url=AGENT_BASE_URL, token=TOKEN)
         records = FakeRecordDatabase()
         service = MinimallService(
@@ -219,7 +237,7 @@ async def open_harness(model: ChatModel) -> AsyncIterator[EvalHarness]:
             compaction=context_config_from_env(),
         )
         try:
-            yield EvalHarness(service=service, records=records, routes=mock_all(router))
+            yield EvalHarness(service=service, records=records, routes=routes)
         finally:
             await service.aclose()
 

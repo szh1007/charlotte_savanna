@@ -101,6 +101,28 @@ v3 组 vs v4 组，**同一批 20 题 × 3 次**（与 issue 44 共用题集，�
 > 该说什么」也想量，得先加题（加题会动 issue 42 的三条守着题数的用例）。
 > 详见 issue 43 的「给 issue 44 / 45 / 46 的话」。
 
+> **2026-09-28 补注（issue 44 已落地）**：本片要的那台「两组一起跑 + 报告落盘」的机器
+> 已经造好了，在 `CharApp/eval/run.py`（`python -m CharApp.eval.run`）—— **本片照它跑、
+> 别另抄一份**。四条与本片直接相关的：
+>
+> ① **切 prompt 版本的接缝与「切工具范围」同一处**：`MinimallService.session_for` 现在
+> 多一个 keyword（`scope=`，默认 None = 不裁），本片照这个形状加一个 `prompt_version=None`
+> 即可（`None` 时仍走 manifest，见 `service.py` 里 `prompt_name=f"{PROMPT_NAME}/…"` 那一行）。
+> 两组只该差那一个开关 —— 有一条用例盯着「除了自变量，配置快照里别的键都一样」
+> （`tests/test_eval_run.py`），本片可以照抄那条的形状。
+>
+> ② **跑真模型这条路 issue 41 原本走不通，是 issue 44 修的两处**（都在
+> `eval/fixtures.py`）：假商城默认拦在 httpcore 那一层，模型的请求会撞「not mocked!」；
+> 改成 `using="httpx"` 之后还要挂一条兜底放行（`pass_through_the_rest`），否则本机走
+> 系统代理出网时地址会被拼坏。**本片不用管这两条，但别把它们改回去**。
+>
+> ③ **进度输出**：`run.py` 的 `with_progress` 会跳过开跑前那次自检（跑批器为每组先造一个
+> 对象，它也算工厂的一次调用），照抄它就别把那个 `-1` 去掉。
+>
+> ④ **报告第八块是 44 的分类错误块**，本片的主指标（回答合规率）在框架那七块里就有
+> （`回答合规` 那两列，判据是 `SENSITIVE_VALUES`）—— 不需要再补一块，别把 44 那块
+> 复制过去当模板。
+
 ## 要定死的开放决策
 
 | # | 决策 | 倾向 |

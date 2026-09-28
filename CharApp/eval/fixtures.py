@@ -272,14 +272,53 @@ ENDPOINTS: dict[str, Any] = {
 def build_mall() -> respx.MockRouter:
     """假商城: 一个不触网的 respx 路由器 (**还没进去**, 调用方自己 `with`).
 
-    两条开关的取舍:
+    三条开关的取舍:
     - `assert_all_mocked` 保持默认的 True —— 没注册的请求直接报错, 于是「路径
       拼错了」当场就红, 而不是悄悄连出去. 跑分要的正是这一条: 漏铺的端点要当场
       炸, 不是静默返回空.
+      **挂上兜底放行之后这条只在商城那几条真路由上成立**: 拼错的商城路径会落到
+      兜底那条上, 变成一次真请求 (报的是域名解析失败, 而不是 respx 那句「not
+      mocked」). 那个代价换的是「模型要能出网」—— 见 `pass_through_the_rest`.
     - `assert_all_called` 关掉 —— `mock_all` 会把 18 个端点一次铺满 (端到端用例
       与跑分需要「模型想调哪个都有得调」), 而每一次问答只用到其中一两个.
+    - `using="httpx"` **不能省**: respx 默认拦在 httpcore 那一层, 而那一层也被
+      真模型的请求走着 —— 它连**代理转发**一起接管, 于是本机走系统代理出网时
+      拼出一个畸形的地址 (`Invalid port: '7890api.deepseek.com:443'`, issue 44
+      冒烟时真撞上过). 改成在 httpx 那一层拦之后: 商城照旧被假端点拦下, 而没匹配
+      上的请求走的是**没被动过的真传输** (该走代理就走代理).
     """
-    return respx.mock(assert_all_called=False)
+    return respx.mock(assert_all_called=False, using="httpx")
+
+
+def pass_through_the_rest(mall: respx.MockRouter) -> respx.Route:
+    """兜底: 假商城不认识的请求**原样放出去** (模型那条路要出网).
+
+    为什么跑分非放它不可: 打的是**真模型**, 而它的请求也要走 httpx —— 那正是本假商城
+    拦的通道. 只铺商城那 18 条路由的话, 模型的第一句请求会撞上「not mocked!」, 于是
+    每一跑都记成 `BROKEN` (issue 44 冒烟时真撞上过).
+
+    为什么不干脆 `assert_all_mocked=False`: 那个开关对没匹配上的请求是**自动合成一个
+    空的 200**, 不是放行 (见 respx 的 router.resolver) —— 模型会拿到一个空响应体,
+    报出来的错与真因无关. 放行要显式: 这条路由把请求原样返回, 而 respx 见到「响应
+    就是请求」才走 pass-through 那条路 (transports.TryTransport 会接着走真实传输).
+
+    注册在**最后**: respx 按注册顺序匹配, 兜底那条只有前面都没命中时才轮到. 顺序
+    就是语义, 所以它在这里**当场校验**而不只是写在文档里 —— 先挂它的话商城那几条
+    路由全被吞掉 (每一次工具调用都真出网, 报的是解析不了 `minimall.test`), 那个
+    症状离真因很远.
+
+    Returns:
+        respx.Route: 那条兜底路由 (测试可以断言它被用过).
+
+    Raises:
+        ValueError: 之前一条路由都没挂 (顺序反了).
+    """
+    if not mall.routes:
+        raise ValueError(
+            "兜底那条要在商城路由**之后**挂 (respx 按注册顺序匹配, 先挂它就把商城"
+            "那几条全吞了: 每一次工具调用都会真出网)"
+        )
+    return mall.route(url__regex=r".*").mock(side_effect=lambda request: request)
 
 
 def mock_all(mall: respx.MockRouter) -> dict[str, respx.Route]:
@@ -372,4 +411,5 @@ __all__ = [
     "agent_url",
     "build_mall",
     "mock_all",
+    "pass_through_the_rest",
 ]

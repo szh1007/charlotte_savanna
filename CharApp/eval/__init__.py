@@ -11,11 +11,16 @@
 | `subject.py` | 被测对象: 问一句, 停在确认点上就**替买家点一下**, 交回一份事实 |
 | `golden.py` | 题集: `cases/*.yaml` 的加载与校验 |
 | `judges.py` | 判据: 三个工具指标 + 答复 + 回答合规 + 护栏 |
+| `run.py` | 跑分入口: 两组一起跑 + 报告落盘 + 第八块 (分类错误) |
 | `cases/` | 题本身 (六个 YAML, 一页一个场景) |
+| `reports/` | 跑出来的报告 (框架的 JSON + Markdown, 外加第八块那份 JSON, 随仓库留着) |
 
 **它不是 pytest 用例集**: 跑分要落报告、要比两份文件、要传参数, 那是**独立入口**
-的活 (入口与题集在 issue 42 之后那几片); `pytest` 里只留框架侧的自证用例
-(issue 40) 与不触网的判据用例 (issue 42 起).
+的活 (`run.py`, issue 44); `pytest` 里只留框架侧的自证用例 (issue 40) 与不触网的
+判据 / 裁剪 / 报告用例 (issue 42 起).
+
+    python -m CharApp.eval.run            # 工具数量 A/B: 全挂 vs 按题裁剪
+    python -m CharAgent.eval compare a.json b.json   # 两份报告对着看
 
 **打的是真模型、跑的是假商城** (L4 规划期定的): 前者是非确定性要跑多次的那个
 变量, 后者让「跑分」不依赖 Django 也不依赖真库. 判据**只走规则**, 不引 LLM-judge.
