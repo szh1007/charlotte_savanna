@@ -49,6 +49,8 @@ await session.ask("...")
 
 今天业务要用它，只能 `from CharAgent.tests.doubles import FakeRecordDatabase` —— 依赖方向仍是单向的（`CharApp → CharAgent`），但**绑到了框架的内部测试结构**上，而 issue 40 的框架侧自证用例也要用同一份。
 
+> **2026-09-28 更正（issue 40 已落地）**：那句「issue 40 的自证也要用同一份」**没有兑现** —— 40 的自证走的是 `LoopResult.turns`（内存那条路），没有碰记录层。于是「同一份事实两条路建得出来」这句话**只有本片能证**（本片交付物 #5 的「按 run_id 筛」正是那条路）。提升 `FakeRecordDatabase` 的理由仍成立（它已被 `test_db_recorder.py` / `test_server_approval.py` 多处复用），但别再拿 40 当第二条理由。
+
 **倾向：框架把它提升为公共 API**（如 `CharAgent/db/testing.py`，`tests/doubles.py` 改为从那里转发）。理由：它已经被多处复用（`test_db_recorder.py:878-928`、`test_server_approval.py` 六处），"框架提供测试替身"是常规做法；提升之后框架内部与业务用**同一份**，不会漂。
 
 **但不进根门面**（与 `client` / `server` 同：它是给测试与离线跑分用的，不是业务主力 API）。

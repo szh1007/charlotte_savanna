@@ -549,6 +549,7 @@ def test_the_business_scan_covers_the_framework_packages() -> None:
         "checkpoint",
         "client",
         "db",
+        "eval",
         "hooks",
         "model",
         "prompt",
