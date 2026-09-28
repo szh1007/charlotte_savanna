@@ -72,6 +72,7 @@ from CharApp.minimall.config import (
     ENV_CONTEXT_SUMMARY,
     ENV_CONTEXT_TOOL_LIMIT,
     ENV_CONTEXT_WATERMARK,
+    ENV_EVAL_PAYMENT_PASSWORD,
     ENV_SERVER_HOST,
     ENV_SERVER_PORT,
     ENV_THINKING,
@@ -80,6 +81,7 @@ from CharApp.minimall.config import (
     MinimallConfigError,
     ServerConfig,
     context_config_from_env,
+    eval_payment_password,
     server_config_from_env,
     thinking_from_env,
 )
@@ -1126,6 +1128,25 @@ def test_the_server_config_falls_back_and_rejects_a_bad_port(monkeypatch) -> Non
         server_config_from_env()
 
 
+def test_the_eval_password_is_optional(monkeypatch) -> None:
+    """跑分那个密码: 没配 / 只写了空白都给 None, 配了就照原样读出来.
+
+    「没配」不报错是刻意的 (与 `CHARAPP_INTERNAL_TOKEN` 那条相反): 只有要密码的那
+    一类题用得上它, 没配就拒绝整批等于让一道题拖住其余全部. 而空白要给 None 而不是
+    空串 —— 空串在载荷那一侧会被 `provider.one_shot_payload` 当成「没拿到」(它按
+    真值挑), 两个值长得很像却分属两层, 在这一处收敛成一种说法.
+    """
+    monkeypatch.delenv(ENV_EVAL_PAYMENT_PASSWORD, raising=False)
+    assert eval_payment_password() is None
+
+    for blank in ("", "   "):
+        monkeypatch.setenv(ENV_EVAL_PAYMENT_PASSWORD, blank)
+        assert eval_payment_password() is None, f"{blank!r} 该读成「没配」"
+
+    monkeypatch.setenv(ENV_EVAL_PAYMENT_PASSWORD, "  989898 ")
+    assert eval_payment_password() == "989898", "两边的空白要削掉 (手抄的值常带空格)"
+
+
 def test_the_template_lists_every_variable_the_business_reads() -> None:
     """模板里写明了业务读的每个变量名 (使用者唯一能照抄的清单).
 
@@ -1145,6 +1166,9 @@ def test_the_template_lists_every_variable_the_business_reads() -> None:
         ENV_CONTEXT_TOOL_LIMIT,
         ENV_CONTEXT_SUMMARY,
         ENV_CONTEXT_WATERMARK,
+        # 跑分那一个也读 env (issue 43) —— 只被离线跑分器读, 但名字同样只有模板
+        # 这一个可照抄的出处
+        ENV_EVAL_PAYMENT_PASSWORD,
     ):
         assert name in text, f".env.example 缺少 {name}"
 

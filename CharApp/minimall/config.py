@@ -51,6 +51,15 @@ ENV_CONTEXT_TOOL_LIMIT = "CHARAPP_CONTEXT_TOOL_LIMIT"
 ENV_CONTEXT_SUMMARY = "CHARAPP_CONTEXT_SUMMARY"
 ENV_CONTEXT_WATERMARK = "CHARAPP_CONTEXT_WATERMARK"
 
+# 跑分模拟买家输的那一次支付密码 (issue 43). **只有离线跑分器读它** —— 生产那两个
+# 入口一个字都不看: 真正的买家在恢复请求的正文里输密码 (`server/app.py` 第 5 步),
+# 那个值不经过 env.
+#
+# 它为什么也在这一页 (而不是让 eval 包自己读): 「业务读 env 只该有一处翻译」是本
+# 模块立的规矩, 而它读的**就是**这笔业务的支付密码 —— 与 `tools.PAYMENT_PASSWORD_FIELD`
+# 是同一个概念, 名字跟着它取. 归属是跑分, 值是商城的凭据, 两句话都写在这一行注释里.
+ENV_EVAL_PAYMENT_PASSWORD = "CHARAPP_EVAL_PAYMENT_PASSWORD"
+
 # 布尔配置认得的写法 (跟着 .env 的习惯走: 1/true/yes/on —— 与 db/config.py 同一套)
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
 _FALSY = frozenset({"0", "false", "no", "off"})
@@ -312,6 +321,24 @@ def server_config_from_env(env: Mapping[str, str] | None = None) -> ServerConfig
     )
 
 
+def eval_payment_password(env: Mapping[str, str] | None = None) -> str | None:
+    """读跑分模拟买家确认时要注入的那次支付密码 (issue 43); 没配给 None.
+
+    为什么**不报错** (与 `token_from_env` 那条相反): 这个值只有代付那一类题用得上,
+    而题集里绝大多数题连挂起都不会 —— 没配就拒绝整批跑分, 等于让一道题的决定拖住
+    其余全部. 缺了它的后果是**看得见的**: 那一跑的终局是「模拟确认失败」(见
+    `eval.subject`), 报告上单列一条, 而不是变成一个没人察觉的假成功.
+
+    Args:
+        env: 环境变量映射 (默认读 `os.environ`; 测试用它钉死配置).
+
+    Returns:
+        str | None: 密码原文; 没配 / 只写了空白 → None.
+    """
+    values = os.environ if env is None else env
+    return (values.get(ENV_EVAL_PAYMENT_PASSWORD) or "").strip() or None
+
+
 __all__ = [
     "DEFAULT_CONTEXT_KEEP_TURNS",
     "DEFAULT_CONTEXT_MAX_TOKENS",
@@ -326,6 +353,7 @@ __all__ = [
     "ENV_CONTEXT_SUMMARY",
     "ENV_CONTEXT_TOOL_LIMIT",
     "ENV_CONTEXT_WATERMARK",
+    "ENV_EVAL_PAYMENT_PASSWORD",
     "ENV_SERVER_HOST",
     "ENV_SERVER_PORT",
     "ENV_THINKING",
@@ -335,6 +363,7 @@ __all__ = [
     "ServerConfig",
     "client_from_env",
     "context_config_from_env",
+    "eval_payment_password",
     "server_config_from_env",
     "thinking_from_env",
     "token_from_env",

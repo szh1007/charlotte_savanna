@@ -36,7 +36,8 @@ import respx
 from CharAgent.agent import RunContext
 from CharAgent.checkpoint import InMemoryCheckpointSaver
 from CharAgent.client import ChatSession
-from CharAgent.db.entities import ToolCall
+from CharAgent.db import ToolCallsRepository
+from CharAgent.db.entities import ToolCall, ToolCallStatus
 from CharAgent.db.testing import FakeRecordDatabase
 from CharAgent.model.protocol import ChatModel
 from CharApp.eval.fixtures import (
@@ -128,6 +129,58 @@ class EvalHarness:
             (call for call in self.records.tool_calls if call.run_id == run_id),
             key=lambda call: (call.created_at, call.message_id, call.tool_call_id),
         )
+
+    def cost_of(self, run_id: str | None) -> float | None:
+        """这一跑折算的金额 (元); None = 没算 (记录层没写 / 这一跑没走记录层).
+
+        从运行行读而不是自己乘一遍价目表: 那一行是**收尾那一刻**按当时的价目表算好
+        的 (`db/cost.py`, 峰谷价还按那次运行的开始时刻判), 跑分再算一遍迟早与它分家
+        —— 而分家的那天没有任何地方会报错.
+
+        与 `calls_of` 同一个位置的理由也一样: 「这一次运行的记录」是记录层的事, 假库
+        那点脾气 (不过滤 `WHERE`) 归这一层解释, 跑分器只管拿数.
+
+        Args:
+            run_id: 运行编号 (`ChatSession.last_run_id`); None = 这一跑没走记录层 ——
+                交 None (与「没配价目表」同一个落点, 都不是 0).
+
+        Returns:
+            float | None: 金额; 找不到那一行或那一行没算出来都是 None.
+        """
+        if run_id is None:
+            return None
+        row = next((run for run in self.records.runs if run.run_id == run_id), None)
+        return None if row is None or row.total_cost is None else float(row.total_cost)
+
+    async def pending_approvals(self, thread_id: str) -> list[ToolCall]:
+        """这一段会话里**还挂着等人批**的那几条调用 (早的在前).
+
+        读的是记录层那条判据 (ADR-0014: 挂起态的家是那几行调用), 走的也是服务端
+        同一个方法 (`ToolCallsRepository.list_pending_approvals`) —— 跑分器不自己
+        另立一套「什么算挂起」. 跑分那一侧要它来: 判这一跑停没停在确认点上, 以及
+        看那一条**点名要什么** (代付要点名密码, 见 `subject.py` 的模拟确认那一段).
+
+        **假库上的三处补偿**: 那个方法靠三处筛选给出答案 (属于本会话 / 状态是
+        `needs_approval` / 还没批过), 而假库既不过滤 `WHERE` 也不做 join (见模块
+        docstring 的坑 1) —— 于是这三条在这里补上, 得到的集合与真库上**逐个相同**.
+        会话那一层靠 `run_id` 回查运行行: `charagent_tool_calls` 只有 `run_id`,
+        会话是运行行的属性, 真库那份 join 走的正是同一条路.
+
+        Args:
+            thread_id: 哪段会话 (跑分里 `harness.context(...)` 给的那个).
+
+        Returns:
+            list[ToolCall]: 未决的挂起调用 (按发起时刻正序); 没有就是空列表.
+        """
+        rows = await ToolCallsRepository(self.records).list_pending_approvals(thread_id)
+        ours = {run.run_id for run in self.records.runs if run.thread_id == thread_id}
+        return [
+            row
+            for row in rows
+            if row.run_id in ours
+            and row.status == ToolCallStatus.NEEDS_APPROVAL.value
+            and row.approved_at is None
+        ]
 
 
 @asynccontextmanager

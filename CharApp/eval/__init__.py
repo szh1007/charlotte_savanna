@@ -8,6 +8,7 @@
 |------|--------|
 | `fixtures.py` | 跑分用的样本与假商城 (`tests/conftest.py` 搬来的那份) + 敏感值清单 |
 | `harness.py` | 跑分环境: 假商城 + 内存快照 + 假记录库 + 装好的服务 (问答一套零件) |
+| `subject.py` | 被测对象: 问一句, 停在确认点上就**替买家点一下**, 交回一份事实 |
 | `golden.py` | 题集: `cases/*.yaml` 的加载与校验 |
 | `judges.py` | 判据: 三个工具指标 + 答复 + 回答合规 + 护栏 |
 | `cases/` | 题本身 (六个 YAML, 一页一个场景) |
@@ -45,6 +46,7 @@ from CharApp.eval.judges import (
     GuardrailJudge,
     ToolChoiceJudge,
 )
+from CharApp.eval.subject import HarnessSubject, subject_factory
 
 __all__ = [
     "AGENT_BASE_URL",
@@ -62,10 +64,12 @@ __all__ = [
     "ComplianceJudge",
     "EvalHarness",
     "GuardrailJudge",
+    "HarnessSubject",
     "ToolChoiceJudge",
     "agent_url",
     "build_mall",
     "load_cases",
     "mock_all",
     "open_harness",
+    "subject_factory",
 ]

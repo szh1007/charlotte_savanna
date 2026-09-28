@@ -92,6 +92,15 @@ v3 组 vs v4 组，**同一批 20 题 × 3 次**（与 issue 44 共用题集，�
 > 那只贵车买家，不换人的话那一题会挂起（2598 < 5000）而挂起不进汇总。加题之后 `test_eval_golden.py`
 > 里的 `CASE_COUNT` 也要跟着改。详见 issue 42 的「给 issue 43 / 44 / 45 的话」。
 
+> **2026-09-28 补注（issue 43 已落地）**：造组的入口是
+> `CharApp/eval/subject.py` 的 `subject_factory(model_for, *, simulate_approval=True, payment_password=None)`
+> （门面里也叫 `subject_factory`）。**本片两组照旧用它、什么都不用传** —— 被挂起的题由它替买家
+> 点确认（不处理的话那几跑 `SUSPENDED`、不进分母，而 v4 的合规率正好要看回答文本）。
+> 与本片直接相关的两条：① 合规判据的搜索词仍是 `fixtures.SENSITIVE_VALUES`（余额与订单号刻意
+> 不在里面），本片没动它；② **题集里没有一条会调 `pay_my_order`** —— 若 v4 那条「二次确认后
+> 该说什么」也想量，得先加题（加题会动 issue 42 的三条守着题数的用例）。
+> 详见 issue 43 的「给 issue 44 / 45 / 46 的话」。
+
 ## 要定死的开放决策
 
 | # | 决策 | 倾向 |

@@ -185,6 +185,49 @@ async def test_a_run_without_calls_reads_back_empty() -> None:
         assert calls == []
 
 
+async def test_the_pending_call_of_that_thread_comes_back_alone() -> None:
+    """挂着的那几条读得回来, 而**只有本会话那一条挂着** (别的会话 / 别的状态都不算).
+
+    这条钉的是假库上那三处补偿 (见 `pending_approvals` 的 docstring): 仓储靠
+    「属于本会话 / 状态是待人批 / 还没批过」三处筛选给出答案, 而假库既不过滤
+    `WHERE` 也不做 join —— 少补一条, 交回来的就是全库那几行, 而跑分器据此会以为
+    「这一跑停在确认点上」, 于是对着一段早就跑完的会话去恢复.
+
+    场景把两种干扰都摆进去: 甲会话先跑完一次**调了工具**的问答 (那一行是
+    `succeeded`, 不属于挂起), 再挂起一次; 乙会话也挂起一次. 于是「只有甲这一条」
+    这句话同时排掉了「别人的」与「状态不对的」.
+    """
+    model = MockLLM.scripted(
+        [
+            # 甲: 先问一句正常的 (调只读工具, 跑完), 再挂起一次
+            tool_call_response(make_tool_call("get_my_profile")),
+            text_response("余额 9500.00"),
+            tool_call_response(make_tool_call("place_order")),
+            # 乙: 挂起一次
+            tool_call_response(make_tool_call("place_order")),
+        ]
+    )
+
+    async with open_harness(model) as harness:
+        first = await harness.session(harness.context("case-01"))
+        await first.ask("我还有多少钱")
+        await first.ask("把购物车里的东西下单吧")
+        second = await harness.session(harness.context("case-02"))
+        await second.ask("把购物车里的东西下单吧")
+
+        first_thread = harness.records.runs[0].thread_id
+        second_thread = harness.records.runs[-1].thread_id
+        mine = await harness.pending_approvals(first_thread)
+        theirs = await harness.pending_approvals(second_thread)
+
+    assert first_thread != second_thread, "两段会话该是两段 (不然下面分不开)"
+    assert [row.run_id for row in mine] == [first.last_run_id], (
+        "甲的挂起行该只有它自己那一条 (排掉成功的与乙的)"
+    )
+    assert [row.run_id for row in theirs] == [second.last_run_id]
+    assert mine[0].approval_prompt, "挂起那一行带着要问买家什么 (确认卡靠它渲染)"
+
+
 async def test_the_harness_closes_everything_it_built() -> None:
     """退出 `with` 时把模型 / 快照 / 客户端 / 假库一起关掉, 且不炸.
 

@@ -119,6 +119,17 @@
 > 那只贵车买家，不换人的话那一题会挂起（2598 < 5000）而挂起不进汇总。加题之后 `test_eval_golden.py`
 > 里的 `CASE_COUNT` 也要跟着改。详见 issue 42 的「给 issue 43 / 44 / 45 的话」。
 
+> **2026-09-28 补注（issue 43 已落地）**：造组的入口是
+> `CharApp/eval/subject.py` 的 `subject_factory(model_for, *, simulate_approval=True, payment_password=None)`
+> （门面里也叫 `subject_factory`）—— 被挂起的题默认由它替买家点确认，于是那些题的终局是
+> `COMPLETED` 而不是 `SUSPENDED`（不处理的话它们不进分母，等于白跑）。**本片的裁剪组照旧用它，
+> 什么都不用传**；要量「不确认会怎样」才传 `simulate_approval=False`。
+> 两条与本片直接相关的事实：① **题集里没有一条会调 `pay_my_order`**（`list_my_orders` / `get_my_order`
+> 有，代付没有）—— 于是「代付那一栏工具在这个 A/B 里永远 0 次调用」，报告上会看得出来，别当成
+> 「模型不敢调」；要量它得先加题（加题会动 issue 42 的三条守着题数的用例）。② `RunFacts.cost`
+> 现在是活的（配了 `CHARAGENT_MODEL_PRICES` 就有数），报告第 2 块的「成本规模」不再恒为空。
+> 详见 issue 43 的「给 issue 44 / 45 / 46 的话」。
+
 ## 要定死的开放决策
 
 | # | 决策 | 倾向 |
