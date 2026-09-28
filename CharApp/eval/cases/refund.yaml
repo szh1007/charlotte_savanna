@@ -1,0 +1,24 @@
+# refund 场景: 退款 —— 申请 / 查进度 / 说退款别换取消, 三条.
+#
+# 第三条踩的是 v3 里那段术语区分 (工具的说明里也写着「不要因为"更快"就替他换一个
+# 动作」): 买家说的是「退」, 该做的是**申请退款**; 取消是另一个动作, 结果也不一样.
+# 模型要是调了 `cancel_my_order`, 召回率与准确率当场掉下来.
+
+- id: refund-01
+  scene: refund
+  question: 订单 202609191230450000031234 我要退款
+  expect_tools: [request_refund]
+  expect_params:
+    request_refund: {order_no: "202609191230450000031234"}
+
+- id: refund-02
+  scene: refund
+  question: 我的退款到哪一步了
+  expect_tools: [list_my_refunds]
+
+- id: refund-03
+  scene: refund
+  question: 订单 202609191230450000031234 我不要了, 把钱退给我
+  expect_tools: [request_refund]
+  expect_params:
+    request_refund: {order_no: "202609191230450000031234"}

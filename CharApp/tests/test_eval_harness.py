@@ -25,7 +25,9 @@ from CharAgent.tests.mock_llm import (
     text_response,
     tool_call_response,
 )
+from CharApp.eval.fixtures import BIG_CART_BUYER
 from CharApp.eval.harness import open_harness
+from CharApp.minimall.client import HEADER_USER_ID
 
 
 class SpyModel(MockLLM):
@@ -133,6 +135,37 @@ async def test_the_record_layer_and_the_memory_agree_on_this_run() -> None:
 
     assert [name for name, _ in from_records] == ["search_products", "get_my_profile"]
     assert from_records == from_memory, "两条路记下来的不是同一份事实"
+
+
+async def test_the_big_cart_buyer_really_trips_the_guardrail() -> None:
+    """换一个买家就换一只车: 贵车那一单被护栏按 5000 上限当场拒掉.
+
+    这条测的是**跑分环境造得出那道题** (issue 42 决策 2 要的那条「超限的下单」):
+    默认样本那只车是 2598.00, 撞不到护栏的上限, 换 `BIG_CART_BUYER` 那只 (8000.00)
+    才撞得到. 假商城本身仍是无状态的 —— 分车靠 `X-User-Id` 头, 不是靠攒数据.
+    """
+    model = MockLLM.scripted(
+        [
+            tool_call_response(make_tool_call("place_order")),
+            text_response("这单超过 5000 元了, 请你自己在商城的结算页完成"),
+        ]
+    )
+
+    async with open_harness(model) as harness:
+        session = await harness.session(
+            harness.context("case-04", user_id=BIG_CART_BUYER)
+        )
+        await session.ask("把我购物车里的东西都下单")
+        [call] = harness.calls_of(session.last_run_id)
+        cart_route = harness.routes["GET cart/"]
+
+    assert call.tool_name == "place_order"
+    assert call.status == ToolCallStatus.FAILED.value, (
+        "护栏该当场拒掉那一单 (拒 = 这条调用没成功), 不是放行也不是挂起"
+    )
+    assert cart_route.calls[-1].request.headers[HEADER_USER_ID] == str(
+        BIG_CART_BUYER
+    ), "护栏判金额时问的是这只车 —— 问错了就拒不了"
 
 
 async def test_a_run_without_calls_reads_back_empty() -> None:

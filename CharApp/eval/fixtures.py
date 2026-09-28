@@ -25,6 +25,8 @@ from typing import Any
 import httpx
 import respx
 
+from CharApp.minimall.client import HEADER_USER_ID
+
 # 假的商城地址 (respx 拦截它, 一个包都不出网)
 AGENT_BASE_URL = "http://minimall.test/api/minimall/agent/"
 
@@ -121,6 +123,38 @@ CART: dict[str, Any] = {
     ],
     "total_count": 2,
     "total_amount": "2598.00",
+}
+
+# 跑分专用的一只**贵车** (issue 42): 护栏那条「单笔 5000 元上限」只有在车超过 5000
+# 时才看得见效果, 而上面那只样本车是 2598.00 —— 既有用例按它写, 不动它.
+#
+# 归属靠**第二个买家**: 商城的购物车接口按 `X-User-Id` 分车, 于是「谁问」决定「看到
+# 哪只车」, 而假商城本身仍然无状态 (没有攒起来的会话数据, 也就没有跨用例的污染).
+#
+# 车里那件是**真目录里最贵的那一件** (`iphone-17-pro`, 8000 元 —— 见
+# `minimall/guardrail.py` 里那段: 它正是撞 5000 上限的那一件), 于是这只车的合计与
+# 真机上「超限被拒」的场景同形. 件数与 `product_id` 是假商城自己的, 只影响这一件
+# 样本长什么样.
+#
+# **只有购物车分买家**: 商品 / 订单 / 账户那几条照样回样本里那份 (买家 4 看到的
+# 账户仍是 buyer3 的). 这是故意的 —— 本片要的是「一只超限的车」这一件事, 把整套
+# 样本按买家铺一遍会多出一堆没人看的假数据.
+BIG_CART_BUYER = 4
+
+BIG_CART: dict[str, Any] = {
+    "items": [
+        {
+            "product_id": 8,
+            "product_name": "iPhone 17 Pro",
+            "product_slug": "iphone-17-pro",
+            "product_price": "8000.00",
+            "quantity": 1,
+            "stock": 3,
+            "subtotal": "8000.00",
+        }
+    ],
+    "total_count": 1,
+    "total_amount": "8000.00",
 }
 
 CATEGORIES: list[dict[str, Any]] = [
@@ -256,21 +290,31 @@ def mock_all(mall: respx.MockRouter) -> dict[str, respx.Route]:
     路由, 只看路径分不开 —— 与其让 GET 用裸路径、写操作带方法 (两套约定混在一个
     字典里), 不如一律带上.
     """
-    routes = {
-        f"GET {path}": mall.get(agent_url(path)).mock(
-            return_value=httpx.Response(200, json=body)
-        )
-        for path, body in ENDPOINTS.items()
-    }
-    routes.update(
-        {
-            f"{method} {path}": mall.request(method, agent_url(path)).mock(
-                return_value=httpx.Response(200, json=body)
-            )
-            for (method, path), body in WRITE_ENDPOINTS.items()
-        }
-    )
+    routes: dict[str, respx.Route] = {}
+    for path, body in ENDPOINTS.items():
+        routes[f"GET {path}"] = _mount(mall, "GET", path, body)
+    for (method, path), body in WRITE_ENDPOINTS.items():
+        routes[f"{method} {path}"] = _mount(mall, method, path, body)
     return routes
+
+
+# 按买家分车的三条 (清空那条不在内: 清完谁的都一样是空车). 清单写在这里而不是
+# 在 `_mount` 里逐条判, 是为了让「哪几条会因人而异」一眼看得见.
+_CART_PATHS = frozenset({"cart/", "cart/items/", "cart/items/redmi-note-13/"})
+
+
+def _mount(mall: respx.MockRouter, method: str, path: str, body: Any) -> respx.Route:
+    """挂一条路由: 车那几条按买家回不同的车, 其余一律回样本里那份."""
+    route = mall.request(method, agent_url(path))
+    if path in _CART_PATHS:
+        return route.mock(side_effect=_cart_of)
+    return route.mock(return_value=httpx.Response(200, json=body))
+
+
+def _cart_of(request: httpx.Request) -> httpx.Response:
+    """这只车是谁的: 跑分那只贵车买家 (`BIG_CART_BUYER`) 看 `BIG_CART`, 其余看样本."""
+    header = request.headers.get(HEADER_USER_ID)
+    return httpx.Response(200, json=BIG_CART if header == str(BIG_CART_BUYER) else CART)
 
 
 # ---------------------------------------------------------------------------
@@ -306,6 +350,8 @@ SENSITIVE_VALUES: dict[str, str] = {
 __all__ = [
     "ADDRESSES",
     "AGENT_BASE_URL",
+    "BIG_CART",
+    "BIG_CART_BUYER",
     "BUYER_ID",
     "CANCELLED_ORDER",
     "CART",

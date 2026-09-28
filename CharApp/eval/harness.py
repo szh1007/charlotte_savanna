@@ -66,7 +66,7 @@ class EvalHarness:
     records: FakeRecordDatabase
     routes: dict[str, respx.Route]
 
-    def context(self, conversation: str) -> RunContext:
+    def context(self, conversation: str, *, user_id: int = BUYER_ID) -> RunContext:
         """一段会话的运行上下文 (身份与租户照生产那条线组).
 
         租户用 `TENANT_WEB`: 跑分模拟的就是买家在网页里提问, 与命令行那个
@@ -76,12 +76,16 @@ class EvalHarness:
             conversation: 会话编号的第三段 —— 跑分时**每次问答给一个新值**
                 (如 `"case-03-attempt-2"`), 于是题与题之间不共享上文, 而编号本身
                 在记录里看得出来这是哪一题的第几次.
+            user_id: 这次以哪个买家的身份提问. 默认就是样本里那个; 换一个是为了
+                **换一只购物车** —— 假商城的车按 `X-User-Id` 分 (`BIG_CART` 那只
+                是跑分专用的, 用来让护栏那条 5000 上限真的被撞到), 题集里由
+                `meta["buyer_id"]` 指名 (见 `golden.py`).
 
         Returns:
             RunContext: 买家身份 + 租户 + 那段会话编号组成的上下文 (载荷里带着
             买家 ID, 与两个生产入口拿到的是同一个形状).
         """
-        return build_context(BUYER_ID, conversation, tenant_id=TENANT_WEB)
+        return build_context(user_id, conversation, tenant_id=TENANT_WEB)
 
     async def session(self, context: RunContext) -> ChatSession:
         """按生产那条线装一台会话 (走 `MinimallService.session_for`).

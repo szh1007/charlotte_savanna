@@ -1,0 +1,49 @@
+# order 场景: 订单 —— 列表 / 详情 / 下单 / 超限的下单, 四条.
+#
+# **一处与票据 §一 那张表的出入**: 表里 order 那四格写的是「列表 / 详情 / 下单 /
+# 取消」, 而这里第四格是**超限的下单**. 换掉取消是因为决策 2 明写「20 条里要放 1 条
+# 注定失败的题 (如超 5000 元的下单)」, 而护栏会拒的只有金额这一条路 —— 那条题只能
+# 落在 order 里, 四格就少一个. 取消这轮因此没有正面案例: 它在 `refund-03` 里以
+# 「**不该调**」的形式出现 (说的是退款别换成取消), 那一条守的正是同一个工具.
+# 谁替谁是个取舍: 决策 2 是票里点名的要求, 那张表写的是「条数 (倾向)」.
+#
+# 两条「下单」是同一件事的两面:
+#
+# - `order-03` 是**正常**那一单: 车合计 2598.00, 没超护栏那条 5000 上限, 于是它会
+#   撞上**挂起** (等买家点一下确认卡). 终局是挂起而不是跑完, 恢复那一段由 issue 43
+#   管 —— `expect_suspend` 这个字段就是给那个流程看的.
+# - `order-04` 是**超限**那一单: 用的是另一只车 (8000.00, 见 fixtures 的 `BIG_CART`),
+#   护栏当场拒. 默认样本那只车撞不到那条线, 所以这题必须换买家 —— `buyer_id` 就是
+#   跑分器换车的凭据.
+#
+# 加一条题 = 在本页加一段.
+
+- id: order-01
+  scene: order
+  question: 我最近有哪些订单
+  expect_tools: [list_my_orders]
+
+- id: order-02
+  scene: order
+  question: 订单 202609191230450000031234 现在什么状态
+  expect_tools: [get_my_order]
+  expect_params:
+    get_my_order: {order_no: "202609191230450000031234"}
+
+- id: order-03
+  scene: order
+  question: 把购物车里的东西下单吧
+  expect_tools: [place_order]
+  # 挂起是这一题的**结局**而不是一条判据: 买家点确认之后这一跑会跑完, 那时它不是
+  # 挂起 (issue 43). 这里说清的是「这一题会走到那个点上」.
+  expect_suspend: true
+
+- id: order-04
+  scene: order
+  question: 我车里攒了不少, 帮我一起下单
+  expect_tools: [place_order]
+  meta:
+    # 换成那只有 8000 元货的车 (fixtures.BIG_CART_BUYER)
+    buyer_id: 4
+    # 期望被护栏按「单笔 5000 上限」当场拒掉: 判据看的是这条调用**没成功**
+    expect_refusal: place_order

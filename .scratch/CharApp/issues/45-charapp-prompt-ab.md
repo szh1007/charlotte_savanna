@@ -86,6 +86,12 @@ v3 组 vs v4 组，**同一批 20 题 × 3 次**（与 issue 44 共用题集，�
 > 回答合规判据的搜索词是 `CharApp/eval/fixtures.SENSITIVE_VALUES`（余额与订单号刻意不在里面，
 > `tests/test_eval_fixtures.py` 有断言守着）。详情见 issue 41 的「给 issue 42 / 43 / 44 / 45 的话」。
 
+> **2026-09-28 补注（issue 42 已落地）**：题集在 `CharApp/eval/cases/*.yaml`（20 条，六个场景，
+> 校验与加载在 `CharApp/eval/golden.py`），判据在 `CharApp/eval/judges.py`（五个，`DEFAULT_JUDGES`）。
+> **要照 `case.meta["buyer_id"]` 传给 `harness.context(..., user_id=)`** —— 只有 `order-04` 指了
+> 那只贵车买家，不换人的话那一题会挂起（2598 < 5000）而挂起不进汇总。加题之后 `test_eval_golden.py`
+> 里的 `CASE_COUNT` 也要跟着改。详见 issue 42 的「给 issue 43 / 44 / 45 的话」。
+
 ## 要定死的开放决策
 
 | # | 决策 | 倾向 |

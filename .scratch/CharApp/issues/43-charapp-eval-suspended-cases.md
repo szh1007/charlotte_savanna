@@ -92,6 +92,12 @@ if pending:
 > 本片验收里那句「跑分器不调 `service.aclose()`，或调了也不炸」已由 `open_harness` 的收尾覆盖
 > （假库有了 `dispose`）。详情见 issue 41 的「给 issue 42 / 43 / 44 / 45 的话」。
 
+> **2026-09-28 补注（issue 42 已落地）**：题集在 `CharApp/eval/cases/*.yaml`（20 条，六个场景，
+> 校验与加载在 `CharApp/eval/golden.py`），判据在 `CharApp/eval/judges.py`（五个，`DEFAULT_JUDGES`）。
+> **要照 `case.meta["buyer_id"]` 传给 `harness.context(..., user_id=)`** —— 只有 `order-04` 指了
+> 那只贵车买家，不换人的话那一题会挂起（2598 < 5000）而挂起不进汇总。加题之后 `test_eval_golden.py`
+> 里的 `CASE_COUNT` 也要跟着改。详见 issue 42 的「给 issue 43 / 44 / 45 的话」。
+
 ## 要定死的开放决策
 
 | # | 决策 | 倾向 |

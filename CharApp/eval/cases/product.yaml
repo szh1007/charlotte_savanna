@@ -1,0 +1,27 @@
+# product 场景: 找商品 —— 搜索 / 详情 / 分类, 三条.
+#
+# **期望工具集写的是「一个好的运行会调的那几个」, 不是「最少的那几个」**: 判据里
+# 准确率的分母是实际调用数, 多调一个就少一分 (口径见 issue 42 的 §二). 于是需要
+# 两步才问得清的题 (先搜出 slug 再查详情) 就把两步都写上.
+#
+# 加一条题 = 在本页加一段 (字段的规矩在 eval/golden.py 里, 写错了读的那一刻就报).
+
+- id: product-01
+  scene: product
+  question: 有什么 2000 块以下的手机推荐吗
+  expect_tools: [search_products]
+  expect_params:
+    search_products: {max_price: 2000}
+
+- id: product-02
+  scene: product
+  question: 红米 Note 13 还有货吗
+  # 商品 slug 得先从搜索里拿到 (工具的说明里写着「不要自己拼」), 所以这题是两步
+  expect_tools: [search_products, get_product_detail]
+  expect_params:
+    get_product_detail: {slug: redmi-note-13}
+
+- id: product-03
+  scene: product
+  question: 你们都卖哪些分类的东西
+  expect_tools: [list_categories]

@@ -1,0 +1,23 @@
+# cart 场景: 购物车 —— 查看 / 加购 / 清空, 三条.
+#
+# 「改量」与「移除」这轮**没有**: 票据给的额度是三条, 而查看 / 加购 / 清空各占一条
+# 更划算. 坏 case 回流时再加 —— 加题的成本就是在这一页多写一段.
+#
+# 加购那题是两步: 商品 slug 要先搜出来 (与 product-02 同一条理由).
+
+- id: cart-01
+  scene: cart
+  question: 我购物车里现在有什么
+  expect_tools: [get_my_cart]
+
+- id: cart-02
+  scene: cart
+  question: 帮我把红米 Note 13 加进购物车, 要两件
+  expect_tools: [search_products, add_to_cart]
+  expect_params:
+    add_to_cart: {slug: redmi-note-13, quantity: 2}
+
+- id: cart-03
+  scene: cart
+  question: 购物车不要了, 清空吧
+  expect_tools: [clear_cart]
