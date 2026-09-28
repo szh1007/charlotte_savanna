@@ -131,25 +131,36 @@ STARTUP_ERRORS: tuple[type[Exception], ...] = (
 )
 
 
-def resolve_prompt_version(manifest: Path | None = None) -> str:
-    """读清单, 定下这次用哪一版提示词 (**版本号的唯一出处**).
+def resolve_prompt_version(
+    manifest: Path | None = None, *, version: str | None = None
+) -> str:
+    """定下这次用哪一版提示词 (**版本号的唯一出处**).
 
-    为什么要有清单文件而不是一个常量: 版本号是评估的前置条件 —— 运行记录里不写
-    「用了哪一版」, 跑分再高也不知道是谁的功劳 (PRD §4.8). 而版本写进文件之后,
-    「当前用哪一版」这件事就不再需要改代码.
+    两个来路, 一条规矩:
+
+    - **清单说了算** (`prompt/manifest.yaml` 的 `default`) —— 生产两个入口走这条.
+      版本写在文件里而不是常量里, 于是「当前用哪一版」不需要改代码, 而在盘上有一个
+      **可读的**答案 (PRD §4.8).
+    - **调用方指名** (issue 45 的 prompt A/B): 跑分要跑指定的两版, 而清单那一行的
+      语义是「生产用哪一版」—— 实验不能反过来受它牵动. 指名的那一路**不读清单**
+      (清单读不到也照样能跑, 用例断的正是这一条): 读了的话, 谁把默认换成 v4 的那
+      一刻, 对照组就跟着变成了 v4, 而报告上只是一次「v3 vs v4」.
 
     Args:
         manifest: 清单文件; None 表示本业务目录下那一份 (测试用来指向临时文件).
+        version: 指名的版本 (如 `"v4"`); None = 读清单.
 
     Returns:
-        str: 版本号 (如 `"v2"`), 交给 `ChatSession` 拼成 `{名字}/{版本}`.
+        str: 版本号 (如 `"v3"`), 交给 `ChatSession` 拼成 `{名字}/{版本}`.
 
     Raises:
         MinimallConfigError: 清单不在 / 不是合法 YAML / 没有可用的 `default` /
-            声明的版本在盘上没有对应的 `.prompt`. **读不到就报错, 不静默退回上一
-            版** —— 与 `PromptNotFoundError` 同一条纪律: 静默退回会让一次「v2 的
-            跑分」其实是 v1 的成绩, 而且没有任何地方会报警.
+            那一版 (指名的或声明的) 在盘上没有对应的 `.prompt`. **读不到就报错, 不
+            静默退回上一版** —— 与 `PromptNotFoundError` 同一条纪律: 静默退回会让
+            一次「v2 的跑分」其实是 v1 的成绩, 而且没有任何地方会报警.
     """
+    if version is not None:
+        return _checked_version(version.strip())
     path = PROMPT_MANIFEST if manifest is None else manifest
     try:
         text = path.read_text(encoding="utf-8")
@@ -165,18 +176,30 @@ def resolve_prompt_version(manifest: Path | None = None) -> str:
             f"提示词清单 {path} 里没有可用的 {MANIFEST_DEFAULT_KEY}: "
             f"写一行 `{MANIFEST_DEFAULT_KEY}: v1` 指明当前用哪一版"
         )
-    # 「声明了哪一版」与「那一版在不在盘上」是同一件事的两半, 所以一起判:
-    # 只读清单的话服务进程会照常起来, 错误推到每个买家的第一次提问 (框架那边
-    # `load_prompt` 才发现文件不在) —— 那就不叫启动期错误了.
-    resolved = version.strip()
-    prompt_file = PROMPT_DIR / PROMPT_NAME / f"{resolved}.prompt"
-    if not prompt_file.is_file():
-        raise MinimallConfigError(
-            f"提示词清单声明的版本 {resolved!r} 在盘上没有对应的文件: 找的是 "
-            f"{prompt_file}. 补上它, 或者把清单的 {MANIFEST_DEFAULT_KEY} 改成"
-            f"已有的一版"
-        )
-    return resolved
+    return _checked_version(version.strip())
+
+
+def _checked_version(version: str) -> str:
+    """这一版真在盘上吗 —— 上面两个来路共用的一道闸.
+
+    「说了哪一版」与「那一版在不在盘上」是同一件事的两半, 所以一起判: 只读清单的话
+    服务进程会照常起来, 错误推到每个买家的第一次提问 (框架那边 `load_prompt` 才发现
+    文件不在) —— 那就不叫启动期错误了.
+
+    报错时**把盘上真有的版本列出来**: 两个来路的人看到的是同一句, 而两种写法错误
+    (清单写错 / 参数写错) 都能照它当场改对.
+    """
+    prompt_file = PROMPT_DIR / PROMPT_NAME / f"{version}.prompt"
+    if prompt_file.is_file():
+        return version
+    available = sorted(
+        path.stem for path in (PROMPT_DIR / PROMPT_NAME).glob("*.prompt")
+    )
+    raise MinimallConfigError(
+        f"提示词版本 {version!r} 在盘上没有对应的文件: 找的是 {prompt_file}. "
+        f"盘上真有的是 {available} —— 补一个文件, 或者改指名的那一处"
+        f" (清单的 {MANIFEST_DEFAULT_KEY} / 调用方传的 version)"
+    )
 
 
 def thread_id_for(user_id: int, conversation_id: str) -> str:
@@ -289,6 +312,9 @@ class MinimallService:
             —— 会话照常问答, 只是每一轮都把全量历史重发一遍 (与从前逐字一样).
             生产两个入口都从 `CHARAPP_CONTEXT_*` 读出来给它, 于是默认那套值也是
             显式的配置, 而不是"没人配就没有".
+        prompt_version: 这一次装配用哪一版提示词; None = 读清单 (生产那条). 跑分要
+            指定版本时由跑分环境传 (issue 45 的 prompt A/B), 传了就不读清单 ——
+            实验组与对照组都**不该**随清单里那一行改动而变.
 
     三个零件都是**进程级**的, 所以谁建谁关: 建它的人在进程退出时调 `aclose()`
     (server 那侧); CLI 只有一次会话, 它沿用既有收尾 (`ChatSession.aclose()` 关的
@@ -308,6 +334,15 @@ class MinimallService:
     # 两者并存时「self.context」与「context」指的是两样东西 (CLI 那边已经被迫改过
     # 一次局部变量名) —— 而「压缩」正是框架对这个能力的叫法 (agent/compaction.py).
     compaction: ContextConfig | None = None
+    # 这一次装配用哪一版提示词 (issue 45 的 prompt A/B); None = 读清单, **两个生产
+    # 入口都不传**. 跑分要跑指定的两版时由跑分环境传进来.
+    #
+    # 为什么是构造参数而不是 `session_for` 的一个 keyword (与 `scope` 那样): 版本是
+    # **一次实验**的属性 (整批固定两版), 而它有两个装配点 (初始那一段 + 挂起恢复那
+    # 一段) —— 放在实例上, 第二段就不可能忘带 (忘带的后果是一半跑次换了提示词, 而
+    # 报告上只是一次「两版成绩差不多」). `scope` 落在 keyword 上是因为它**逐题**
+    # 不同, 只能由题面算, 没有"实例级"可言.
+    prompt_version: str | None = None
 
     def __post_init__(self) -> None:
         """装配那一刻就把计价那条路**验通** (ticket 28 业务侧要的启动自检).
@@ -407,10 +442,13 @@ class MinimallService:
             ),
             thinking=self.thinking,
             # 业务提示词在业务自己的目录里, 框架目录里不留业务的东西 (PRD §4.8).
-            # 名字里带版本, 而版本由清单文件说了算: 读不到清单 (这里) 或读不到那份
-            # 文件 (框架) 都是启动期错误, 不会悄悄退回上一版 —— 评估结论要能归因到
-            # 具体一版, 静默降级会让跑分张冠李戴.
-            prompt_name=f"{PROMPT_NAME}/{resolve_prompt_version()}",
+            # 名字里带版本, 而版本**默认**由清单文件说了算 (跑分钉了一版时走上面那个
+            # `prompt_version`, 那条路不读清单 —— 见 `resolve_prompt_version`).
+            # 读不到清单 (这里) 或读不到那份文件 (框架) 都是启动期错误, 不会悄悄退回
+            # 上一版 —— 评估结论要能归因到具体一版, 静默降级会让跑分张冠李戴.
+            prompt_name=(
+                f"{PROMPT_NAME}/{resolve_prompt_version(version=self.prompt_version)}"
+            ),
             prompt_dir=PROMPT_DIR,
             hooks=hooks,
             # 上下文压缩 (ticket 18): 账本一字不改, 变的只是**这一次请求发出去的那份

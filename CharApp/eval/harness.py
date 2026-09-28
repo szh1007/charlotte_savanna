@@ -196,7 +196,9 @@ class EvalHarness:
 
 
 @asynccontextmanager
-async def open_harness(model: ChatModel) -> AsyncIterator[EvalHarness]:
+async def open_harness(
+    model: ChatModel, *, prompt_version: str | None = None
+) -> AsyncIterator[EvalHarness]:
     """装一套跑分环境; 退出时把它建的全关掉 (模型也在内).
 
     零件与两个生产入口 (server / CLI) 的装配同源, 差别只在三样替换与一处不读:
@@ -215,6 +217,11 @@ async def open_harness(model: ChatModel) -> AsyncIterator[EvalHarness]:
     Args:
         model: 这次跑分用的模型 —— **所有权随装配一起交出去**, 退出时经
             `service.aclose()` 关掉 (为每一跑造一份, 别共享).
+        prompt_version: 这一跑用哪一版提示词 (issue 45 的 prompt A/B); None = 读清单
+            那一版. 两处与别处不同: ①它落在**服务**上而不是逐次 `session` —— 挂起
+            恢复那一段因此自动同版 (两段是同一次运行的两截, 中途换提示词会让轨迹
+            说不清); ②**传了就不读清单** —— 两组跑的是指名的两版, 与
+            `manifest.yaml` 的 `default` 无关 (见 `resolve_prompt_version`).
 
     Yields:
         EvalHarness: 装好的零件 (服务 / 假记录库 / 假商城路由表).
@@ -235,6 +242,8 @@ async def open_harness(model: ChatModel) -> AsyncIterator[EvalHarness]:
             thinking=thinking_from_env(),
             database=records,
             compaction=context_config_from_env(),
+            # 钉一版提示词 (issue 45 的 A/B); None = 照清单那一版走 (其余几片)
+            prompt_version=prompt_version,
         )
         try:
             yield EvalHarness(service=service, records=records, routes=routes)

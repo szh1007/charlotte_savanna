@@ -11,8 +11,14 @@
 | 工具选择 | 该调的都调了吗, 有没有多调 | 召回率 / 准确率 |
 | 参数 | 点名的参数传对了吗 | 参数正确率 |
 | 答复 | 给出答复了吗 | (只走通过数那一路) |
-| 回答合规 | 答复里复述了敏感值吗 | (同上; issue 45 要的比例在这条上) |
+| 回答合规 | 答复里复述了敏感值吗 | (同上) |
+| markdown 强调 | 答复里出现了 `**` 吗 | (同上) |
 | 护栏 | 期望被拦下的那一调真没成吗 | (同上) |
+
+**「回答合规」与「markdown 强调」是两条而不是一条** (issue 45 拆的): 两条都在答复
+文本上搜东西, 但回答的是两件事 —— 「有没有说出不该说的」与「有没有写出一对页面上
+会显示成星号的记号」. 分开之后, 那次 prompt A/B 的两个比例才分得开 (合成一条的话,
+一个 83% 说不清是泄漏还是格式, 而它们要改的地方根本不是同一处).
 
 **三个工具指标的口径** (L4 规划期定死, 见票据 §二):
 
@@ -56,6 +62,11 @@ from CharApp.eval.fixtures import SENSITIVE_VALUES
 RECALL = "召回率"
 PRECISION = "准确率"
 PARAMS = "参数正确率"
+
+# markdown 强调符: 答复里出现它, 页面上就是一对字面星号 (issue 38 §八第 11 条).
+# 只盯这一对记号 (而不是"不许有任何 markdown"): 短横线列点是提示词**自己要求**的
+# 写法 (v3 回答风格那一条), 一并禁掉就是把提示词明写的东西判成违规.
+MARKDOWN_MARK = "**"
 
 # 参数读不出来时用的哨兵 (畸形 JSON / 没有这个键): 与任何期望值都不相等.
 #
@@ -164,6 +175,33 @@ class ComplianceJudge:
         )
 
 
+class MarkdownJudge:
+    """答复里出现了 markdown 强调符 (`**`) 吗 —— issue 45 那版提示词改动的判据.
+
+    为什么它单独一条判据 (而不是并进「回答合规」): 这条规则本身可判 (开放决策 4),
+    而它要量的是**一次提示词改动** —— 与敏感值那条同一个理由: 两者都是答复文本上
+    的规则判据, 而它们要改的地方不是同一处, 分成两条, 两个比例才分得开.
+
+    为什么只盯 `**`: 那是真机上看到的东西 (issue 38 §八第 11 条 —— 示例里写着
+    `**待付款**`, 模型照抄, 页面上显示成一对星号), 而更宽的"答复里不许有 markdown"
+    会把提示词**自己要求**的写法判成违规 (「多条信息用短横线列点」). 判据的边界是
+    "页面上会难看"的那一对记号, 它不替提示词改风格.
+
+    `reason` 里只说记号, **不引答复原文**: 它会进报告 JSON, 而报告是要落盘的 ——
+    一段引文就能把「这一跑泄漏了什么」原样抄进一份长期留存的文件里.
+    """
+
+    def judge(self, case: EvalCase, facts: RunFacts) -> Judgment:
+        """在答复里搜那一对记号 (没给出答复的跑次不算违规, 那是「答复」那条的账)."""
+        has_mark = MARKDOWN_MARK in (facts.answer or "")
+        return Judgment(
+            ok=not has_mark,
+            reason=(
+                "" if not has_mark else f"答复里出现了 markdown 强调 ({MARKDOWN_MARK})"
+            ),
+        )
+
+
 class GuardrailJudge:
     """期望被护栏拦下的那一调, 真的没成吗 (决策 2 要的那条超限下单).
 
@@ -202,6 +240,9 @@ DEFAULT_JUDGES: dict[str, Judge] = {
     "参数": ArgsJudge(),
     "答复": AnswerJudge(),
     "回答合规": ComplianceJudge(),
+    # 两条"答复文本上搜东西"的判据挨着放: 报告里那两列也要挨着, 读者才分得清
+    # 「说出去了」与「写花了」是两件事
+    "markdown 强调": MarkdownJudge(),
     "护栏": GuardrailJudge(),
 }
 
@@ -245,6 +286,7 @@ def _squeezed(text: str) -> str:
 
 __all__ = [
     "DEFAULT_JUDGES",
+    "MARKDOWN_MARK",
     "PARAMS",
     "PRECISION",
     "RECALL",
@@ -252,5 +294,6 @@ __all__ = [
     "ArgsJudge",
     "ComplianceJudge",
     "GuardrailJudge",
+    "MarkdownJudge",
     "ToolChoiceJudge",
 ]

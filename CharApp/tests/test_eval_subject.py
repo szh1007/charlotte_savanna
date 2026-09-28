@@ -60,6 +60,7 @@ from CharApp.eval.judges import DEFAULT_JUDGES
 from CharApp.eval.subject import HarnessSubject, subject_factory
 from CharApp.minimall.client import HEADER_USER_ID
 from CharApp.minimall.config import ENV_EVAL_PAYMENT_PASSWORD
+from CharApp.minimall.service import PROMPT_NAME
 
 # 跑分那一次模拟买家输的密码. **与样本里那个不是一个值** (`fixtures.PAYMENT_PASSWORD`)
 # 是刻意的: 这一条要证的是「它来自环境变量」, 而拿样本里那个值的话, 万一它从别处
@@ -526,3 +527,29 @@ async def test_the_subject_asks_as_the_buyer_the_case_names() -> None:
     assert [run.thread_id for run in harness.records.runs] == [
         f"minimall:{BIG_CART_BUYER}:order-04-1"
     ], "会话编号也要按那个买家分区 (不然两段会话共用一个快照分区)"
+
+
+# ---------------------------------------------------------------------------
+# 另一个开关 (issue 45): 钉住的那一版提示词真进了这一跑
+# ---------------------------------------------------------------------------
+
+
+async def test_the_pinned_prompt_version_reaches_the_run() -> None:
+    """钉在 v4 → 这一跑的会话装的是 v4 (配置快照里那一格为证).
+
+    这一路要穿四层 (`subject_factory` → `HarnessSubject` → `open_harness` → 服务的
+    构造参数), 而哪一层断了的表现都一样: **两组跑出来差不多** —— 那是这次实验最贵
+    的失败 (几十上百次真模型问答换一个假结论), 所以断在这一跑的产物上.
+
+    钉的那一版**不是**清单声明的那一版是刻意的: 拿声明的那版来验, 开关没接通时两边
+    相等, 这条用例照样绿 (口径类改动要挑分叉的输入).
+    """
+    case = EvalCase(id="product-01", question="有什么 2000 块以下的手机推荐吗")
+    subject = await subject_factory(
+        lambda _case: MockLLM.scripted([text_response("好的")]),
+        prompt_version="v4",
+    )(case)
+
+    facts = await subject.run_once(case)
+
+    assert facts.config["提示词"] == f"{PROMPT_NAME}/v4"

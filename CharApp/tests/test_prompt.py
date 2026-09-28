@@ -1,13 +1,17 @@
 """客服提示词: 它在业务目录里, 按版本落盘, 由清单声明默认版本.
 
 提示词是这个助手的立身之本 —— 工具决定它**能**做什么, 提示词决定它**不会**做
-什么. 后半句没法用单元测试断言 (那要靠评估集, L4 的事), 但下面三件事可以:
+什么. 后半句没法用单元测试断言 (那要靠评估集, L4 的事), 但下面五件事可以:
 
 1. **落库方式**: 按 `{名字}/{版本}.prompt` 分目录存 (PLAN §3.3) —— 换一版是加一个
    文件, 不是覆盖旧文件.
 2. **版本号从哪来**: 清单文件 (`prompt/manifest.yaml` 的 `default`), 而不是代码里
    的常量. 读不到清单是**启动期错误**, 不静默退回上一版.
 3. **该写的写没写**: 禁则, 项目术语, 示例.
+4. **能钉一版** (issue 45): 跑分要指定版本时走 `resolve_prompt_version(version=)`,
+   那条路**不读清单** —— 实验组与对照组都不该随 `default` 改动而变.
+5. **每一版都没被就地改过**: v1 / v2 / v3 是退下来的版本, v3 还是那次 prompt A/B 的
+   对照组 —— 改了旧版, 当初的跑分就再也对应不上盘上这一份.
 
 为什么钉的是「必须有哪几件事」而不是逐字比对全文: 话术会改, 改话术不该红;
 但「不能替买家付款」这类禁则被删掉, 必须红.
@@ -15,6 +19,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -41,11 +46,27 @@ from CharApp.minimall.service import (
 CURRENT_VERSION = resolve_prompt_version()
 CURRENT_PROMPT = PROMPT_DIR / PROMPT_NAME / f"{CURRENT_VERSION}.prompt"
 
+# 抹平序号之后禁则那几行长这样 (v4 插了一条, 后面三条跟着挪号; 挪号不算改动)
+_NUMBERED = "N. "
+
 
 def system_prompt(version: str | None = None) -> str:
     """按生产那条路读一遍提示词 (读法与装配一致: `{名字}/{版本}`)."""
     name = f"{PROMPT_NAME}/{version or CURRENT_VERSION}"
     return load_prompt(name, prompt_dir=PROMPT_DIR)
+
+
+def examples_of(body: str) -> tuple[str, str]:
+    """提示词 → (示例段**之前**的一半, 示例段).
+
+    issue 45 那两处改动只有一处的判据落在这里 (§一 只改了「示例段里的 markdown
+    强调」, 上半篇那些指令行的强调照旧) —— 于是这一刀必须切得准: 切宽了等于把
+    「指令行能不能用强调」也偷偷改了, 切窄了则漏掉折行的那几行.
+    """
+    marker = "# 示例"
+    assert body.count(marker) == 1, "示例段该只有一处, 否则这一刀切到哪儿说不清"
+    start = body.index(marker)
+    return body[:start], body[start:]
 
 
 # ---------------------------------------------------------------------------
@@ -88,6 +109,15 @@ def test_the_retired_version_is_still_the_retired_one() -> None:
 
     assert "不能替买家付款" in retired, "v2 是 L4 的对照素材, 不该被就地改写"
     assert "不能替买家付款" not in system_prompt()
+
+    # v3 从 v4 写出来那一刻起也是**基线**了 (issue 45 那次 A/B 的对照组): 就地把它
+    # 那两处毛病改掉, 那次跑分就再也对应不上盘上这一份 —— 而盘上看不出任何异常.
+    # 判据取的是 v4 **改掉的那两处** (示例里的强调 + 那条禁则), 于是「改 v3 而不加
+    # 新版本」与「照规矩加 v4」在这里分得开.
+    baseline = system_prompt("v3")
+
+    assert "这一单还是**待付款**" in baseline, "v3 是那次 A/B 的对照组, 不该被改写"
+    assert "不把账号资料" not in baseline
 
 
 def test_the_manifest_can_be_committed() -> None:
@@ -340,3 +370,135 @@ def test_the_prompt_carries_examples() -> None:
     body = system_prompt()
 
     assert "买家:" in body and "回答:" in body, "示例要写进模板, 且看得出是示例"
+
+
+# ---------------------------------------------------------------------------
+# 钉一版 (issue 45 的 A/B): 不经过清单, 也能让装配取到指定的那一版
+# ---------------------------------------------------------------------------
+
+
+def test_an_explicit_version_does_not_read_the_manifest(tmp_path: Path) -> None:
+    """钉了版本就照它办 —— **清单读不读得到都不影响**.
+
+    「不要动清单的 default」是那次 prompt A/B 的一条纪律 (那一行的语义是"生产用
+    哪一版"), 而光靠人记不住: 这条路上只要顺手读了一下清单, 实验组就会随 `default`
+    的改动悄悄换成另一版 —— 而报告上只是一次「v4 的跑分」. 所以断在**清单指向一个
+    不存在的文件**这个极端上: 真去读了它, 这里当场炸.
+    """
+    missing = tmp_path / "没有这份清单.yaml"
+
+    assert resolve_prompt_version(missing, version="v3") == "v3"
+
+
+def test_an_explicit_version_must_be_on_disk() -> None:
+    """钉的那一版盘上没有 → 启动期错误 (不是跑到第一题才报)."""
+    with pytest.raises(MinimallConfigError) as excinfo:
+        resolve_prompt_version(version="v9")
+
+    assert "v9" in str(excinfo.value)
+
+
+async def test_the_assembly_can_be_pinned_to_a_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, client
+) -> None:
+    """服务钉在某一版 → 会话装的就是那一版 (清单那一路整个被让开).
+
+    断在**装配的产物**上 (会话历史的第一条就是那份正文), 与「换一版清单」那条
+    同一个理由: 版本号传对了却没进会话, 是那种「开关解析了、存下了, 但没生效」的
+    静默失效 —— 而它骗过的是评估, 不是买家. 清单在这里同样被指到一个不存在的
+    文件上, 于是「钉的这一版赢了」与「顺手读了清单」也分得开.
+    """
+    monkeypatch.setattr(service, "PROMPT_MANIFEST", tmp_path / "没有这份清单.yaml")
+
+    session = await MinimallService(
+        client=client,
+        model=MockLLM.fixed(text_response("好的")),
+        saver=InMemoryCheckpointSaver(),
+        prompt_version="v4",
+    ).session_for(
+        build_context(BUYER_ID, "prompt-pinned", tenant_id=TENANT_WEB),
+        event_sink=lambda event: None,
+        redact=False,
+    )
+
+    assert session.history[0]["content"] == system_prompt("v4")
+
+
+# ---------------------------------------------------------------------------
+# v4: 那两处改动写进去了, 而它不该动的那些一字未动
+# ---------------------------------------------------------------------------
+
+
+def test_v4_waits_for_the_data_before_it_becomes_the_default() -> None:
+    """v4 在盘上, 而**清单还没指过去** —— 写一版不等于切一版.
+
+    切 `default` 是「生产换成它」那一步 (开放决策 1: 看数据, 且单独做、留记录);
+    这条用例只钉住「现在还没切」, 免得谁顺手把实验组变成了生产.
+
+    **真要切的时候, 这条用例要跟着改**, 而不是删掉: 那次改动得在那个 ticket 里
+    留下记录 (改哪一行、为什么、A/B 的数据是哪一份) —— 这正是它拦着的东西.
+    """
+    assert (PROMPT_DIR / PROMPT_NAME / "v4.prompt").is_file()
+    assert CURRENT_VERSION != "v4", "切 v4 要单独做一步、留记录 (见 docstring)"
+
+
+def test_the_examples_lose_their_emphasis_in_v4() -> None:
+    """改动一: 示例段里的 markdown 强调全去掉 —— 而 v3 那一段**有**.
+
+    两边都断是故意的: 只断「v4 里没有 `**`」的话, 把示例整段删掉照样绿 —— 而那时
+    模型连样板都没了 (它照抄的正是这一段).
+    """
+    assert "**" in examples_of(system_prompt("v3"))[1], "v3 那一段该有强调"
+    assert "**" not in examples_of(system_prompt("v4"))[1]
+
+
+def test_v4_adds_the_privacy_prohibition_and_keeps_the_sayable_ones() -> None:
+    """改动二: 多一条禁则, 且它**划清了自己不管什么** (订单号 / 金额 / 余额照读).
+
+    后半句是这条禁则自己的护栏: 少了它模型会走向另一个极端 —— 什么都不敢说, 而
+    余额正是助手被设计来报的那件事 (四条既有用例要求它复述).
+    """
+    body = system_prompt("v4")
+
+    assert "不把账号资料与收货地址的原文复读出去" in body
+    for field_name in ("手机号", "邮箱", "收件人姓名", "门牌号"):
+        assert field_name in body, f"禁则里该点名 {field_name}"
+    assert "订单号" in body and "照读" in body, "要写清哪些照样能说"
+    assert "查我的账户信息" in body, "上半篇那一格没动: 问余额仍然是该答的事"
+
+
+def test_v4_only_touches_the_two_places_it_says_it_does() -> None:
+    """两处改动之外**一个字没动** —— 那次 A/B 的自变量才只有那两组.
+
+    判据对着 v3 断两半:
+
+    - **示例那一半**: v4 逐字等于「v3 去掉所有 `**`」—— 一个字符都不许多改;
+    - **上半篇**: 只多出那 7 行 (禁则第 4 条 4 行 + 风格说明 3 行), 而**一行都没少**
+      —— 后面三条禁则的重新编号不算改动 (序号先抹平再比).
+
+    比人肉 diff 可靠的地方在于它会跟着以后每一次修改跑 (而 diff 只在盯着屏幕那一
+    秒有效).
+    """
+    old_head, old_examples = examples_of(system_prompt("v3"))
+    new_head, new_examples = examples_of(system_prompt("v4"))
+
+    assert new_examples == old_examples.replace("**", "")
+
+    old_lines = _unnumbered(old_head).splitlines()
+    new_lines = _unnumbered(new_head).splitlines()
+    added = [line for line in new_lines if line not in old_lines]
+    removed = [line for line in old_lines if line not in new_lines]
+    assert len(added) == 7, f"上半篇多出来的该只有那 7 行, 实际: {added}"
+    assert removed == [], f"一行都不该少 (删掉一句旧规矩也是改): {removed}"
+    # 前 4 行是新禁则 (序号被抹平了, 这里比的是正文), 第 5 行起是那句风格说明
+    assert (
+        added[0]
+        .removeprefix(_NUMBERED)
+        .startswith("**不把账号资料与收货地址的原文复读出去.**")
+    )
+    assert added[4].startswith("- 买家问收货地址或账号资料时")
+
+
+def _unnumbered(body: str) -> str:
+    """把禁则的序号抹成同一个记号 —— 于是「挪号」与「改字」分得开."""
+    return re.sub(r"^\d+\. ", _NUMBERED, body, flags=re.MULTILINE)

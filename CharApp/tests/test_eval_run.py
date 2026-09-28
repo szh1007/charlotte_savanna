@@ -1,23 +1,27 @@
-"""跑分入口 (issue 44): 挑题 · 两组的自变量 · 第八块 (分类错误) · 落盘.
+"""跑分入口 (issue 44 的工具 A/B + issue 45 的 prompt A/B): 挑题 · 自变量 · 落盘.
 
-这一页断的是交付物 6 里**不花钱的那一半** —— 报告真的落下来了, 而第八块真的把
-「装置坏了的那几跑」单列出来了. 真模型那一趟 (几十到上百次问答) 不在 pytest 里:
-这里给的是模型的注入缝 (`model_for`), 塞个 MockLLM 进去整条路就离线跑得通
-(与全仓其他测试同一套做法).
+这一页断的是两次实验交付物里**不花钱的那一半** —— 报告真的落下来了, 第八块真的把
+「装置坏了的那几跑」单列出来了, 而两次实验各自只拨一个开关. 真模型那一趟 (几十到
+上百次问答) 不在 pytest 里: 这里给的是模型的注入缝 (`model_for`), 塞个 MockLLM
+进去整条路就离线跑得通 (与全仓其他测试同一套做法).
 
-三件事各自有一处容易静默出错的地方, 于是各有用例:
+四件事各自有一处容易静默出错的地方, 于是各有用例:
 
 - **挑题**: 题号写错时静默少跑几道 —— 报告看起来照样完整 (那条 ValueError 是拦它的);
-- **两组的自变量**: 两组若不止差一个开关, A/B 的结论就归因不了 —— 断言配置快照
-  里那一行 (全挂 / 按题裁剪), 别的旋钮一模一样;
+- **自变量**: 两组若不止差一个开关, A/B 的结论就归因不了 —— 表那一层 (每个实验
+  只拨一个字段) 与跑出来那一层 (配置快照只差那一行) 各断一次;
 - **第八块**: 分类错误的那几跑若混进分数里, 报告看上去是「模型答错了」—— 断言它
-  单列, 且「只数分类正确的题」那份分数与整体分得开.
+  单列, 且「只数分类正确的题」那份分数与整体分得开. 而 prompt 那次**没有**它
+  (那两组没裁工具, 写上去就是说一件没发生过的事);
+- **落盘**: 两次实验各落几份文件不同 (工具三份 / prompt 两份), 而框架那份 JSON
+  两次都是同一套规范形状 (业务键一个都不进去).
 """
 
 from __future__ import annotations
 
+import dataclasses
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -38,14 +42,21 @@ from CharAgent.tests.mock_llm import (
 )
 from CharApp.eval.golden import load_cases
 from CharApp.eval.run import (
+    EXPERIMENTS,
+    PROMPT_ARMS,
+    PROMPT_BASELINE,
+    PROMPT_VARIANT,
+    Arm,
     ScopingRow,
     pick_cases,
     run_ab,
     scoping_data,
     scoping_section,
-    write_report,
+    write_tools_report,
 )
+from CharApp.minimall.config import MinimallConfigError
 from CharApp.minimall.scoping import SCOPE_FULL, SCOPE_PRUNED
+from CharApp.minimall.service import PROMPT_NAME
 
 # 两道题就够: 一道分类器给得出正确工具 (product-01), 一道**故意分错** —— 题面只提
 # 商品而期望的是 `place_order` (题集里没有这种题, 因为现在的分类器 20 道全对).
@@ -87,13 +98,38 @@ def mock_models() -> Callable[[EvalCase], ChatModel]:
 
 
 async def offline_report(cases: tuple[EvalCase, ...], *, times: int = 1) -> EvalReport:
-    """离线跑一遍两个组 (不触网也不打模型), 交回报告."""
+    """离线跑一遍工具 A/B 的两臂 (不触网也不打模型), 交回报告."""
     return await run_ab(
         cases,
         times=times,
+        arms=EXPERIMENTS["tools"].arms,
         model_for=mock_models(),
         writer=lambda line: None,
     )
+
+
+async def offline_prompt_report(
+    cases: tuple[EvalCase, ...], *, times: int = 1
+) -> EvalReport:
+    """离线跑一遍 prompt A/B 的两臂 (同上; 剧本一样, 因为它不看提示词)."""
+    return await run_ab(
+        cases,
+        times=times,
+        arms=PROMPT_ARMS,
+        model_for=mock_models(),
+        writer=lambda line: None,
+    )
+
+
+def differing_keys(first: Mapping[str, Any], second: Mapping[str, Any]) -> set[str]:
+    """两份配置快照之间不一样的那些键 —— A/B 的自变量就是它们."""
+    return {
+        key for key in set(first) | set(second) if first.get(key) != second.get(key)
+    }
+
+
+# 两次实验各自拨的那个开关 (`Arm` 的字段名) —— 「两组只差一个开关」那句承诺的底账
+FLIPPED: dict[str, str] = {"tools": "prune_tools", "prompt": "prompt_version"}
 
 
 # ---------------------------------------------------------------------------
@@ -144,10 +180,96 @@ async def test_the_two_groups_differ_only_in_the_pruning_switch() -> None:
     assert report.group(SCOPE_FULL).cases == report.group(SCOPE_PRUNED).cases
     assert full["工具范围"] == "全挂"
     assert pruned["工具范围"] == "按题裁剪"
-    differing = {
-        key for key in set(full) | set(pruned) if full.get(key) != pruned.get(key)
-    }
+    differing = differing_keys(full, pruned)
     assert differing == {"工具范围"}, f"两组不该差别的: {sorted(differing)}"
+
+
+async def test_the_prompt_arms_differ_only_in_the_version() -> None:
+    """prompt A/B 的两臂: 配置快照里只差「提示词」那一行, 工具那一行两边都是全挂.
+
+    与工具 A/B 那条同一个形状 (报告头部要能一眼看出两组差在哪), 而这条还多守一件
+    事: **别顺手把工具也裁上** —— 两组各差两个开关的话, 那次差距归因不到版本上.
+    """
+    report = await offline_prompt_report((CORRECT_CASE,))
+    baseline = report.group(PROMPT_BASELINE).attempts[0].facts.config
+    variant = report.group(PROMPT_VARIANT).attempts[0].facts.config
+
+    assert baseline["提示词"] == f"{PROMPT_NAME}/{PROMPT_BASELINE}"
+    assert variant["提示词"] == f"{PROMPT_NAME}/{PROMPT_VARIANT}"
+    assert baseline["工具范围"] == SCOPE_FULL == variant["工具范围"], "那次没裁工具"
+    differing = differing_keys(baseline, variant)
+    assert differing == {"提示词"}, f"两组不该差别的: {sorted(differing)}"
+
+
+def test_each_experiment_flips_exactly_one_switch() -> None:
+    """两次实验各自只拨**那一个**开关 —— 这是「两组只差一个开关」在表那一层的版本.
+
+    上头两条断的是跑出来的配置快照, 这条断的是表本身: 谁哪天给某一臂多配一个旋钮
+    (比如 prompt 那组顺手也裁上工具), 这里当场红, 而不必等跑完一次真模型才看出两组
+    差了两处.
+
+    `name` 不算开关 (两臂的名字本来就该不一样), 于是按字段名逐个比, 而不是比"几个
+    字段不同".
+    """
+    assert set(EXPERIMENTS) == set(FLIPPED), "有实验没跟上这张表 (或者反过来)"
+
+    for name, experiment in EXPERIMENTS.items():
+        first, second = experiment.arms
+        flipped = {
+            field.name
+            for field in dataclasses.fields(Arm)
+            if field.name != "name"
+            and getattr(first, field.name) != getattr(second, field.name)
+        }
+        assert flipped == {FLIPPED[name]}, f"{name} 那次拨的不是 {FLIPPED[name]}"
+
+
+async def test_a_version_that_is_not_on_disk_fails_before_anything_runs() -> None:
+    """钉的版本不在盘上 → **开跑前**就报, 而不是 120 跑一起记成 `BROKEN`.
+
+    跑批器那条开跑前自检验的是「第一个被测对象装得出来吗」(`runner._probe`), 而提示词
+    版本是**跑到第一题**才读的 —— 少了这一道, 一个写错的版本号会让整批记成 `BROKEN`
+    (真因只在每一跑的 `error` 里), 而入口那句「报告落盘」照样报成功. 于是这条断的是
+    "压根没开跑": 造模型那一步一次都没被调到.
+    """
+    asked: list[str] = []
+
+    def model_for(case: EvalCase) -> ChatModel:
+        """记下"有人来造模型了" —— 它被调到就说明已经开跑了."""
+        asked.append(case.id)
+        return MockLLM.scripted([text_response("好的")])
+
+    arms = (Arm(name="v9", prompt_version="v9"), Arm(name="v3", prompt_version="v3"))
+
+    with pytest.raises(MinimallConfigError) as caught:
+        await run_ab((CORRECT_CASE,), times=1, arms=arms, model_for=model_for)
+
+    assert "v9" in str(caught.value)
+    assert asked == [], "该在造模型之前拦下 (跑批器那一步自检也算开跑)"
+
+
+def test_each_experiment_writes_to_its_own_report_prefix() -> None:
+    """两次实验各落各的名字 —— 报告要长期留在盘上, 而票与文档按名字引它们.
+
+    钉住这两个名字是因为它们是**对外的** (issue 46 要把这几份数据写进文档, L5 之后
+    还要回看): 改名不是重构, 是让那几处引用一起失效.
+    """
+    assert EXPERIMENTS["tools"].out.name == "44-tools-ab"
+    assert EXPERIMENTS["prompt"].out.name == "45-prompt-ab"
+
+
+def test_the_prompt_arms_are_named_after_their_versions() -> None:
+    """组名就是版本号 —— 报告表头写着 `v3` / `v4`, 与配置快照里那一格对得上.
+
+    对照臂必须是**指名**的一版 (不从清单读): 靠清单的话, 谁把默认换成 v4 的那一刻,
+    两组就都成了 v4 —— 而报告上只是一次「两版成绩差不多」.
+    """
+    assert [arm.name for arm in PROMPT_ARMS] == [PROMPT_BASELINE, PROMPT_VARIANT]
+    assert [arm.prompt_version for arm in PROMPT_ARMS] == [
+        PROMPT_BASELINE,
+        PROMPT_VARIANT,
+    ]
+    assert PROMPT_BASELINE != PROMPT_VARIANT, "对照组与实验组不该是同一版"
 
 
 async def test_the_two_groups_run_the_same_number_of_attempts() -> None:
@@ -237,12 +359,12 @@ async def test_the_block_data_carries_what_the_markdown_says() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_the_report_lands_as_three_files(tmp_path: Path) -> None:
-    """三份文件都落下来: 框架的 JSON / 人看的 Markdown / 第八块的数据."""
+async def test_the_tools_report_lands_as_three_files(tmp_path: Path) -> None:
+    """工具 A/B 落三份: 框架的 JSON / 人看的 Markdown / 第八块的数据."""
     report = await offline_report((CORRECT_CASE, MISCLASSIFIED_CASE))
     prefix = tmp_path / "nested" / "44-tools-ab"
 
-    json_path, markdown_path, scoping_path = write_report(report, prefix)
+    json_path, markdown_path, scoping_path = write_tools_report(report, prefix)
 
     assert json_path.exists() and markdown_path.exists() and scoping_path.exists(), (
         "目录不存在时要自己建"
@@ -259,6 +381,32 @@ async def test_the_report_lands_as_three_files(tmp_path: Path) -> None:
         CORRECT_CASE.id,
         MISCLASSIFIED_CASE.id,
     }
+
+
+async def test_the_prompt_report_lands_as_two_files_without_the_extra_block(
+    tmp_path: Path,
+) -> None:
+    """prompt A/B 只落两份, 且 Markdown 尾巴上**没有**第八块.
+
+    那一块讲的是**分类器** (裁剪组才有的东西); prompt 那两臂压根没裁, 照抄过去就是
+    在报告里说一件没发生过的事 (票据 2026-09-28 补注 ④ 点的正是这一条). 于是这里断
+    三样: 少一份文件、少一块正文、组名就是版本号.
+    """
+    report = await offline_prompt_report((CORRECT_CASE,))
+    prefix = tmp_path / "45-prompt-ab"
+
+    paths = EXPERIMENTS["prompt"].write(report, prefix)
+
+    assert [path.name for path in paths] == ["45-prompt-ab.json", "45-prompt-ab.md"]
+    assert not (tmp_path / "45-prompt-ab-scoping.json").exists(), "那次实验没有第八块"
+    data: dict[str, Any] = json.loads(paths[0].read_text(encoding="utf-8"))
+    assert [group["name"] for group in data["groups"]] == [
+        PROMPT_BASELINE,
+        PROMPT_VARIANT,
+    ]
+    text = paths[1].read_text(encoding="utf-8")
+    assert "## 1. 配置快照" in text and "## 7. " in text, "框架那七块还在"
+    assert "## 8. 分类错误" not in text
 
 
 async def test_the_attempts_are_all_finished_in_the_offline_run() -> None:
@@ -281,6 +429,7 @@ async def test_the_progress_skips_the_pre_flight_probe() -> None:
     reports = await run_ab(
         cases,
         times=1,
+        arms=EXPERIMENTS["tools"].arms,
         model_for=mock_models(),
         writer=lines.append,
     )

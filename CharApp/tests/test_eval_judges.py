@@ -38,19 +38,21 @@ from CharApp.eval.judges import (
     ArgsJudge,
     ComplianceJudge,
     GuardrailJudge,
+    MarkdownJudge,
     ToolChoiceJudge,
 )
 
-# 五个判据各一份实例给全页共用 —— 它们**不存任何东西** (纯函数), 于是共用与各造
+# 六个判据各一份实例给全页共用 —— 它们**不存任何东西** (纯函数), 于是共用与各造
 # 一份等价, 而共用让每条用例只写自己关心的那部分
 TOOLS = ToolChoiceJudge()
 ARGS = ArgsJudge()
 ANSWER = AnswerJudge()
 COMPLIANCE = ComplianceJudge()
+MARKDOWN_JUDGE = MarkdownJudge()
 GUARDRAIL = GuardrailJudge()
 
-# 判据名 (报告的列标签)
-ALL_JUDGES = ("工具选择", "参数", "答复", "回答合规", "护栏")
+# 判据名 (报告的列标签; 与别的判据一样是字面量 —— 它们只在门面那处定义一次)
+ALL_JUDGES = ("工具选择", "参数", "答复", "回答合规", "markdown 强调", "护栏")
 
 
 def case(
@@ -98,12 +100,16 @@ def recall_of(judgment: Any) -> Metric:
 # ---------------------------------------------------------------------------
 
 
-def test_the_default_judges_are_five_and_fit_the_protocol() -> None:
-    """默认那五个判据都在, 且每个都**真的**合 `Judge` 协议 (名字就是报告的列).
+def test_the_default_judges_are_six_and_fit_the_protocol() -> None:
+    """默认那六个判据都在, 且每个都**真的**合 `Judge` 协议 (名字就是报告的列).
 
     协议是结构性的 (有那个方法就算), 所以这条断言能替跑批器先验一遍: 少写一个
     `judge`、把参数名写错, `isinstance` 当场就红, 而不是等跑分跑到一半记一条
     `judge_errors`.
+
+    第六条 (`markdown 强调`) 是 issue 45 加的: 它那条规则是一版提示词改动的判据,
+    而它进的是**默认那一套** —— 于是它同时出现在别的实验的报告里 (一次 A/B 的
+    两组必须用同一套判据, 而"同一套"的定义就是这一处).
     """
     assert tuple(DEFAULT_JUDGES) == ALL_JUDGES
     for name, judge in DEFAULT_JUDGES.items():
@@ -317,6 +323,68 @@ def test_a_missing_answer_is_not_a_compliance_failure() -> None:
 
     assert judgment.ok is True
     assert ANSWER.judge(case(), facts(answer=None)).ok is False
+
+
+# ---------------------------------------------------------------------------
+# 边界七: markdown 强调 (issue 45 那版提示词改动的判据)
+# ---------------------------------------------------------------------------
+
+
+def test_an_emphasis_mark_in_the_answer_is_caught() -> None:
+    """答复里出现 `**` 即违规 —— 页面上它显示成一对字面星号 (issue 38 §八第 11 条)."""
+    judgment = MARKDOWN_JUDGE.judge(
+        case(), facts(answer="好的, 这一单还是**待付款**, 你随时可以付.")
+    )
+
+    assert judgment.ok is False
+    assert "**" in judgment.reason
+
+
+def test_a_plain_answer_passes_the_markdown_judge() -> None:
+    """没写强调的答复照常过 (这条判据只盯那一对记号)."""
+    judgment = MARKDOWN_JUDGE.judge(
+        case(), facts(answer="好的, 这一单还是待付款, 你随时可以付.")
+    )
+
+    assert judgment.ok is True
+
+
+def test_the_markdown_judge_leaves_the_wanted_list_style_alone() -> None:
+    """短横线列点、数字与「」照旧放行 —— 那条风格正是提示词自己要求的.
+
+    划清边界是这条用例的全部用处: 判据一旦宽成「答复里不许有 markdown」, 就会把
+    提示词明写的写法 (「多条信息用短横线列点」) 判成违规 —— 那种红是判据的错,
+    不是模型的.
+    """
+    judgment = MARKDOWN_JUDGE.judge(
+        case(),
+        facts(answer="- 甲款 1299.00 元\n- 乙款 1599.00 元\n共 2 件, 订单 2026…1234"),
+    )
+
+    assert judgment.ok is True
+
+
+def test_a_missing_answer_is_not_a_markdown_failure() -> None:
+    """没答复的跑次不算违规 (与合规那条同一条口径: 那是「答复」那条判据的账)."""
+    judgment = MARKDOWN_JUDGE.judge(
+        case(), facts(answer=None, outcome=RunOutcome.SUSPENDED)
+    )
+
+    assert judgment.ok is True
+
+
+def test_the_markdown_judge_does_not_quote_the_answer() -> None:
+    """理由里**不引答复原文** —— 它会进报告 JSON, 而答复可能正含敏感值.
+
+    这条不是洁癖: 报告是要落盘、要随仓库留着的东西 (`eval/reports/`), 一段引文
+    就能把「这一跑泄漏了什么」原样抄进一份长期留存的文件里 —— 那正是判据要抓的
+    那件事. 于是那条理由只说"出现了什么记号", 一句答复都不带.
+    """
+    leaked = "你的收货地址是 **文三路 100 号**, 收件人张三."
+    judgment = MARKDOWN_JUDGE.judge(case(), facts(answer=leaked))
+
+    assert judgment.ok is False
+    assert "文三路" not in judgment.reason and "张三" not in judgment.reason
 
 
 # ---------------------------------------------------------------------------

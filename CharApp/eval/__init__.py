@@ -10,10 +10,10 @@
 | `harness.py` | 跑分环境: 假商城 + 内存快照 + 假记录库 + 装好的服务 (问答一套零件) |
 | `subject.py` | 被测对象: 问一句, 停在确认点上就**替买家点一下**, 交回一份事实 |
 | `golden.py` | 题集: `cases/*.yaml` 的加载与校验 |
-| `judges.py` | 判据: 三个工具指标 + 答复 + 回答合规 + 护栏 |
-| `run.py` | 跑分入口: 两组一起跑 + 报告落盘 + 第八块 (分类错误) |
+| `judges.py` | 判据: 三个工具指标 + 答复 + 回答合规 + markdown 强调 + 护栏 |
+| `run.py` | 跑分入口: 一次 A/B 的两臂一起跑 + 报告落盘 (`EXPERIMENTS` 表里两次) |
 | `cases/` | 题本身 (六个 YAML, 一页一个场景) |
-| `reports/` | 跑出来的报告 (框架的 JSON + Markdown, 外加第八块那份 JSON, 随仓库留着) |
+| `reports/` | 跑出来的报告 (框架的 JSON + Markdown; 工具 A/B 还多一份分类错误), 留着 |
 
 **它不是 pytest 用例集**: 跑分要落报告、要比两份文件、要传参数, 那是**独立入口**
 的活 (`run.py`, issue 44); `pytest` 里只留框架侧的自证用例 (issue 40) 与不触网的
@@ -42,6 +42,7 @@ from CharApp.eval.golden import SCENES, load_cases
 from CharApp.eval.harness import EvalHarness, open_harness
 from CharApp.eval.judges import (
     DEFAULT_JUDGES,
+    MARKDOWN_MARK,
     PARAMS,
     PRECISION,
     RECALL,
@@ -49,6 +50,7 @@ from CharApp.eval.judges import (
     ArgsJudge,
     ComplianceJudge,
     GuardrailJudge,
+    MarkdownJudge,
     ToolChoiceJudge,
 )
 from CharApp.eval.subject import HarnessSubject, subject_factory
@@ -58,6 +60,7 @@ __all__ = [
     "BIG_CART_BUYER",
     "BUYER_ID",
     "DEFAULT_JUDGES",
+    "MARKDOWN_MARK",
     "PARAMS",
     "PRECISION",
     "RECALL",
@@ -70,6 +73,7 @@ __all__ = [
     "EvalHarness",
     "GuardrailJudge",
     "HarnessSubject",
+    "MarkdownJudge",
     "ToolChoiceJudge",
     "agent_url",
     "build_mall",

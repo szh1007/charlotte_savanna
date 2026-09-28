@@ -11,9 +11,11 @@
 调代付的题) 都白跑 —— 报告上缺掉的恰好是 L3b 最该讲的那一块 (人工确认那条链到底
 跑不跑得通). 这与商城真假无关: 护栏是业务侧的, 换假商城照样挂.
 
-**这一页还管着 A/B 的那个开关** (issue 44): `prune_tools` 一开, 每道题按题面裁出
-几组工具交给模型 (`scoping.ToolScope`), 挂起-恢复那两段用的是**同一个**范围对象.
-它就是那次实验的自变量 —— 于是「两组只差这一个开关」这件事在代码里看得见.
+**这一页还管着两个 A/B 的开关**: `prune_tools` (issue 44) 一开, 每道题按题面裁出
+几组工具交给模型 (`scoping.ToolScope`), 挂起-恢复那两段用的是**同一个**范围对象;
+`prompt_version` (issue 45) 一给, 这一跑就用指定的那一版提示词. 两者各自是一次
+实验的自变量 —— 于是「两组只差这一个开关」这件事在代码里看得见. 两个开关都随
+`open_harness` 进装配, 于是挂起-恢复那一段自动同款 (不会只生效一半).
 
 **形状照抄 HTTP 那条路** (`CharAgent/server/app.py` 的 `resume_run`, 第 5 / 6 / 7 步),
 三处语义一处不改:
@@ -115,6 +117,9 @@ class HarnessSubject:
             (全部工具都交给模型 = 对照组); 开了就按 `case.question` 选几组
             (`scoping.ToolScope`), 于是模型**只看见、也只调得到**那几组.
             两段 (挂起前 / 恢复) 用的是同一个范围对象 —— 它是无状态的.
+        prompt_version: 这一跑用哪一版提示词 (issue 45 的那次 A/B); None = 读清单
+            那一版. 它是**整批恒定**的 (不随题面变), 所以进的是服务而不是会话 ——
+            见 `MinimallService.prompt_version`.
 
     attributes:
         (无公开属性; `harness` 是只读取数口, 给用例看记录层用)
@@ -128,12 +133,14 @@ class HarnessSubject:
         simulate_approval: bool = True,
         payment_password: str | None = None,
         prune_tools: bool = False,
+        prompt_version: str | None = None,
     ) -> None:
         self._model = model
         self._conversation = conversation
         self._simulate_approval = simulate_approval
         self._password = payment_password
         self._prune_tools = prune_tools
+        self._prompt_version = prompt_version
         self._harness: EvalHarness | None = None
         self._scope: ToolScope | None = None
 
@@ -150,7 +157,9 @@ class HarnessSubject:
             RunFacts: 这一跑的事实. 恢复那一段自己炸了时**照样返回** (记成
             `BROKEN` + 一句说明), 不往抛外 —— 一条题的装置坏了不该带走整批.
         """
-        async with open_harness(self._model) as harness:
+        async with open_harness(
+            self._model, prompt_version=self._prompt_version
+        ) as harness:
             self._harness = harness
             context = self._context_of(case, harness)
             # 范围**一次定死在这一跑上**: 两段会话 (挂起前 / 恢复) 装的是同一个对象,
@@ -386,6 +395,7 @@ def subject_factory(
     simulate_approval: bool = True,
     payment_password: str | None = None,
     prune_tools: bool = False,
+    prompt_version: str | None = None,
 ) -> SubjectFactory:
     """造一个「给这道题建一个对象」的工厂 (跑批器每一跑调它一次).
 
@@ -401,6 +411,8 @@ def subject_factory(
             `CHARAPP_EVAL_PAYMENT_PASSWORD` (`config.eval_payment_password`).
         prune_tools: 每道题按题面裁工具 (issue 44 的实验组); 默认不裁 —— 两组之间
             **只该差这一个开关**, 别的旋钮都要一样.
+        prompt_version: 这一批用哪一版提示词 (issue 45 的实验组); 默认 None = 读清单
+            那一版. 与上面那条同一个纪律: 一次 A/B 里两组**只该差一个开关**.
 
     Returns:
         SubjectFactory: 造对象用的协程 —— 会话编号带题号与序号 (`order-03-1`), 于是
@@ -421,6 +433,7 @@ def subject_factory(
             simulate_approval=simulate_approval,
             payment_password=resolved,
             prune_tools=prune_tools,
+            prompt_version=prompt_version,
         )
 
     return build
