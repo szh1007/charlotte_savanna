@@ -35,6 +35,7 @@ from CharAgent.checkpoint import InMemoryCheckpointSaver
 from CharAgent.checkpoint.postgres import PostgresCheckpointSaver
 from CharAgent.client import app
 from CharAgent.client.app import KillSwitch, build_saver_for, main, parse_argv
+from CharAgent.client.session import ChatSession
 from CharAgent.client.utils.types import DEFAULT_THREAD_ID, CliOptions
 from CharAgent.db.recorder import ConversationRecorder
 from CharAgent.model import HttpXChatModel, ModelConfigError, ModelConnectionError
@@ -1026,3 +1027,74 @@ def test_continue_without_an_interrupt_is_just_a_question() -> None:
     assert code == 0
     assert model.calls, "这句「继续」没被发给模型"
     assert model.calls[0]["messages"][-1] == {"role": "user", "content": "继续"}
+
+
+# ---------------------------------------------------------------------------
+# 完成行上的运行编号 (issue 39)
+# ---------------------------------------------------------------------------
+
+
+class _FixedRecorder:
+    """只交一个固定编号的记录员替身 (本用例看的是那一行怎么打)."""
+
+    run_id = "run-abc"
+
+    async def begin(self, *, thread_id: str, title: str = "") -> str | None:
+        return self.run_id
+
+    async def record(self, **kwargs: Any) -> bool:
+        return True
+
+    async def record_unfinished(self, **kwargs: Any) -> bool:
+        return True
+
+
+class _FakeRunner:
+    """只回答「存了几帧」的假跑手 —— 快照那一句不是本用例要看的."""
+
+    def __init__(self, frames: int = 2) -> None:
+        self._frames = frames
+
+    def run(self, pending: Any) -> int:
+        # 关掉那个协程: 本替身不真的跑它, 但不关会有「never awaited」的告警
+        pending.close()
+        return self._frames
+
+
+def _done_line(out: list[str]) -> str:
+    """从打印出来的行里挑完成那一行 (没有就断言失败)."""
+    done = [line for line in out if line.startswith("[完成]")]
+    assert done, f"没有完成行: {out}"
+    return done[0]
+
+
+async def test_the_done_line_carries_the_run_id_so_it_can_be_looked_up() -> None:
+    """`[完成]` 行附上这次运行的编号 —— 拿它去 `trace <run_id>` 就能回看.
+
+    从前这个编号要去库里捞 (issue 38 §八第 2 条), 而刚跑完一次问答的人手上只有
+    一句答复; 现在它就在那一行上 (与「快照」那句并列的附注).
+    """
+    session = ChatSession(
+        MockLLM.fixed(text_response("答完了")),
+        saver=InMemoryCheckpointSaver(),
+        recorder=_FixedRecorder(),
+    )
+    result = await session.ask("在吗")
+    out: list[str] = []
+
+    app.report_result(_FakeRunner(), session, result, out.append)
+
+    assert "运行 run-abc" in _done_line(out), _done_line(out)
+
+
+async def test_a_session_without_a_recorder_gets_no_run_note() -> None:
+    """没配记录员 = 没有编号 = 不附那一段 (不编一个出来)."""
+    session = ChatSession(
+        MockLLM.fixed(text_response("答完了")), saver=InMemoryCheckpointSaver()
+    )
+    result = await session.ask("在吗")
+    out: list[str] = []
+
+    app.report_result(_FakeRunner(), session, result, out.append)
+
+    assert "运行 " not in _done_line(out), _done_line(out)

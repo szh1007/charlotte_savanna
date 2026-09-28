@@ -86,7 +86,7 @@ v4 的"不复述地址姓名"判据（issue 45）要拿真实值去回答文本�
 | 2 | `tests/conftest.py` 改为从新模块 import（**161 个用例行为不变**） |
 | 3 | 框架侧：`FakeRecordDatabase` 提升为公共 API（含 `dispose` 空实现），`tests/doubles.py` 转发 |
 | 4 | 跑分环境的装配函数：`MinimallService` + `InMemoryCheckpointSaver` + 假库 + 假商城（docstring 写明三个坑） |
-| 5 | 读回：按 `run_id` 筛的工具轨迹（**不用假库的 `list_for_run`**） |
+| 5 | 读回：按 `run_id` 筛的工具轨迹（**不用假库的 `list_for_run`**）。**范围要看清**：这里说的是**单次运行的轨迹**（一条一条的调用行）；**跨工具的聚合**（次数 / 成功率 / 平均耗时）走 issue 39 的 `summarize_by_tool` —— 那是**一个查询面**，别在这里再写一套聚合（39 的验收第 4 条点的就是这件事） |
 | 6 | 用例：清单与 `LOG_FIELDS` 对齐；装配函数能真跑一次问答并读回轨迹 |
 
 ## 验收

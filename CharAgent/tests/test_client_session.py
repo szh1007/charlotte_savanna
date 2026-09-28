@@ -1411,3 +1411,143 @@ async def test_a_missing_prompt_version_stops_the_restart_loudly(
 
     with pytest.raises(PromptError):
         await reborn.ask("接着说")
+
+
+# ---------------------------------------------------------------------------
+# 运行编号 (issue 39: 跑完能直接拿到「刚才那次运行」的编号)
+#
+# 为什么要会话交这一个编号: 记录层的编号在 `_begin_run` 那一步才产生, 而调用方
+# (命令行 / 跑分器) 事后想回看这一次运行, 从前得先去库里捞 —— 一个它根本没有的
+# 编号. `LoopResult` 是**循环层**的结果, 不认识记录层的编号 (那是两层的分界),
+# 所以由**同时认识两层**的会话转一次手.
+# ---------------------------------------------------------------------------
+
+
+async def test_last_run_id_is_none_before_anything_runs() -> None:
+    """还没问过话: 没有「上一次运行」可言."""
+    session = make_session(
+        MockLLM.fixed(text_response("在的")), recorder=ResumeRecorder()
+    )
+
+    assert session.last_run_id is None
+
+
+async def test_ask_hands_back_the_run_id_it_opened() -> None:
+    """问一句之后, 那次运行的编号拿得到 —— 不必再去库里捞."""
+    recorder = ResumeRecorder()
+    session = make_session(MockLLM.fixed(text_response("在的")), recorder=recorder)
+
+    await session.ask("在吗")
+
+    assert session.last_run_id == "run-new", "记录员开的编号原样交回"
+    assert recorder.begins == ["在吗"], "标题候选就是这次提问"
+
+
+async def test_a_cli_resume_hands_back_the_new_run_it_opened() -> None:
+    """命令行 `--resume` (不传 `run_id`): 拿回的是**这一段新开**的那个编号."""
+    saver = InMemoryCheckpointSaver()
+    thread_id = "last-run-cli"
+    first = make_session(
+        MockLLM.fixed(text_response("第一段")), saver=saver, thread_id=thread_id
+    )
+    await first.ask("第一问")
+
+    recorder = ResumeRecorder()
+    second = make_session(
+        MockLLM.fixed(text_response("第二段")),
+        saver=saver,
+        thread_id=thread_id,
+        recorder=recorder,
+    )
+    assert second.last_run_id is None, "新会话还没跑过"
+
+    await second.resume()
+
+    assert second.last_run_id == "run-new", "这一段自己开的那一行"
+
+
+async def test_a_continuation_resume_hands_back_the_same_run() -> None:
+    """HITL 的第二段 (传了 `run_id`): 拿回的是**那一次运行**的编号.
+
+    恢复沿用挂起那次运行的编号 (issue 33) —— 属性跟着同一条口径: 这一段落的编号
+    与上一段是同一个, 不是新开的一个.
+    """
+    saver = InMemoryCheckpointSaver()
+    thread_id = "last-run-hitl"
+    first = make_session(
+        MockLLM.fixed(text_response("第一段")), saver=saver, thread_id=thread_id
+    )
+    await first.ask("第一问")
+
+    recorder = ResumeRecorder()
+    second = make_session(
+        MockLLM.fixed(text_response("第二段")),
+        saver=saver,
+        thread_id=thread_id,
+        recorder=recorder,
+    )
+
+    await second.resume(run_id="run-open")
+
+    assert second.last_run_id == "run-open"
+    assert recorder.begins == [], "第二段不新开账"
+
+
+async def test_last_run_id_stays_none_without_a_recorder() -> None:
+    """没配记录员 = 没有运行行 = 没有编号 (如实给 None, 不编一个出来)."""
+    session = make_session(MockLLM.fixed(text_response("在的")))
+
+    await session.ask("在吗")
+
+    assert session.last_run_id is None
+
+
+class CountingRecorder:
+    """每次开账交一个**递增**的编号 (看「跑完一轮编号换没换」用).
+
+    与 `ResumeRecorder` 的分工: 那个恒交 `"run-new"`, 适合断「记在哪一行」;
+    而「刷新」这件事得有个**会变的编号**才断得出来 —— 编号恒定时, 刷新与不刷新
+    在断言里一模一样 (那会写成一条永远通过的空用例).
+    """
+
+    def __init__(self) -> None:
+        self.opened = 0
+
+    async def begin(self, *, thread_id: str, title: str = "") -> str | None:
+        self.opened += 1
+        return f"run-{self.opened}"
+
+    async def record(self, **kwargs: Any) -> bool:
+        return True
+
+    async def record_unfinished(self, **kwargs: Any) -> bool:
+        return True
+
+
+async def test_a_later_question_refreshes_the_run_id() -> None:
+    """恢复之后再问一句: 编号换成**新开的那一行**, 不是还停在恢复那次的.
+
+    恢复沿用挂起那次运行的编号 (issue 33), 而**下一句提问是新的一次运行**
+    —— 编号跟着换. 不换的话, 拿它去 `trace` 看到的是上一段, 而调用方以为
+    看的是刚跑完的这一段.
+    """
+    saver = InMemoryCheckpointSaver()
+    thread_id = "last-run-refresh"
+    first = make_session(
+        MockLLM.fixed(text_response("第一段")), saver=saver, thread_id=thread_id
+    )
+    await first.ask("第一问")
+
+    recorder = CountingRecorder()
+    session = make_session(
+        MockLLM.fixed(text_response("第二段")),
+        saver=saver,
+        thread_id=thread_id,
+        recorder=recorder,
+    )
+    await session.resume(run_id="run-open")
+    assert session.last_run_id == "run-open", "恢复那一段沿用挂起时的编号"
+
+    await session.ask("第二问")
+
+    assert session.last_run_id == "run-1", "新问一句就是新的一次运行"

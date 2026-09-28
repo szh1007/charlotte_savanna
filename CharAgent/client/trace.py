@@ -39,7 +39,7 @@ import asyncio
 import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -49,11 +49,11 @@ from CharAgent.checkpoint.utils.history import display_width
 from CharAgent.client.app import load_root_env, use_utf8_stdio
 from CharAgent.db import Database, PgDatabase
 from CharAgent.db.cost import CostGap, RunCost
-from CharAgent.db.entities import Run, Thread, ToolCall
+from CharAgent.db.entities import Run, Thread, ToolCall, ToolCallStatus
 from CharAgent.db.errors import DbError
 from CharAgent.db.repositories.runs import RunsRepository
 from CharAgent.db.repositories.threads import ThreadsRepository
-from CharAgent.db.repositories.tool_calls import ToolCallsRepository
+from CharAgent.db.repositories.tool_calls import ToolCallsRepository, ToolCallSummary
 from CharAgent.db.schema import checkpoints
 
 # 表格的缩进与列分隔 (与 checkpoint/utils/history.py 那张历史表同一套排法)
@@ -64,6 +64,19 @@ _RESULT_INDENT = "      "
 # 工具调用表的列 (顺序即列顺序) 与右对齐的列 (序号: 一位数与两位数要对齐)
 _COLUMNS = ("#", "工具名", "状态", "耗时", "参数")
 _RIGHT_ALIGNED = frozenset({"#"})
+
+# 分布表的列 (第三档 --summary) 与右对齐的列 —— 除工具名外全是数字, 竖着比才顺眼
+_SUMMARY_COLUMNS = ("工具名", "次数", "成功", "失败", "挂起", "其他", "平均耗时")
+_SUMMARY_RIGHT_ALIGNED = frozenset(_SUMMARY_COLUMNS[1:])
+
+# 单列的三个状态 (**列名 -> 状态**): 其余三个 (pending / running / cancelled) 一起
+# 落进「其他」—— 它们都不算成功也不算失败, 而这张表要回答的是「这个工具用得怎么样」.
+# 成对写是因为列名与状态必须一起改 (加了具名列却忘了往这里加, 总数就对不上)
+_NAMED_STATUSES: tuple[tuple[str, ToolCallStatus], ...] = (
+    ("成功", ToolCallStatus.SUCCEEDED),
+    ("失败", ToolCallStatus.FAILED),
+    ("挂起", ToolCallStatus.NEEDS_APPROVAL),
+)
 
 # 参数与结果的截断宽度 (字符数): 参数是模型填的原始 JSON, 结果可能是整段文本 ——
 # 一行几百字会把表撑得没法看, 但截了必须报出总长 (见 _short)
@@ -328,31 +341,52 @@ def _calls_block(calls: Sequence[ToolCall]) -> list[str]:
         }
         for index, call in enumerate(calls, start=1)
     ]
+    table = _table_lines(cells, columns=_COLUMNS, right_aligned=_RIGHT_ALIGNED)
+    # 结果行要挂在**它自己那条调用**下面, 所以这里按行穿插 (`table[0]` 是表头)
+    lines = [header, table[0]]
+    for call, row_line in zip(calls, table[1:], strict=True):
+        lines.append(row_line)
+        if call.result is not None:
+            shown = _short(_result_text(call.result), _RESULT_WIDTH)
+            lines.append(f"{_RESULT_INDENT}└ 结果: {shown}")
+    return lines
+
+
+def _table_lines(
+    cells: Sequence[Mapping[str, str]],
+    *,
+    columns: Sequence[str],
+    right_aligned: frozenset[str],
+) -> list[str]:
+    """一组行 (每行是「列名 -> 文本」) -> 表头 + 每行一条 (已对齐, 带缩进).
+
+    两处表 (调用清单与分布) 共用它: 同一件事写两遍, 迟早一处改了另一处没改.
+
+    中文宽度的坑在这里: 宽度按 `display_width` 算 (见
+    `checkpoint/utils/history.py`), 不是 `len()` —— 否则中英混排的表会歪.
+
+    Returns:
+        list[str]: 第一条是表头 (列名本身就是那一格的文本), 之后每个 cell 一条.
+    """
     widths = {
         column: max(
             display_width(column),
             *(display_width(row[column]) for row in cells),
         )
-        for column in _COLUMNS
+        for column in columns
     }
 
     def row_text(row: Mapping[str, str]) -> str:
         pieces = []
-        for column in _COLUMNS:
+        for column in columns:
             text = row[column]
             pad = " " * (widths[column] - display_width(text))
-            # 序号右对齐 (一位数与两位数在同一列上对得齐), 其余左对齐
-            pieces.append(pad + text if column in _RIGHT_ALIGNED else text + pad)
+            # 数字右对齐 (一位数与两位数在同一列上对得齐), 其余左对齐
+            pieces.append(pad + text if column in right_aligned else text + pad)
         # 刻意不 rstrip: 末列的补白是表格宽度的一部分 (与 checkpoint 的历史表同)
         return _TABLE_INDENT + _SEPARATOR.join(pieces)
 
-    lines = [header, row_text({column: column for column in _COLUMNS})]
-    for call, row in zip(calls, cells, strict=True):
-        lines.append(row_text(row))
-        if call.result is not None:
-            shown = _short(_result_text(call.result), _RESULT_WIDTH)
-            lines.append(f"{_RESULT_INDENT}└ 结果: {shown}")
-    return lines
+    return [row_text({column: column for column in columns}), *map(row_text, cells)]
 
 
 def _result_text(result: object) -> str:
@@ -421,6 +455,79 @@ def _frame_text(view: Mapping[str, Any] | None) -> str:
 
 
 # ---------------------------------------------------------------------------
+# 第三档: 分布 (一批运行的聚合, issue 39)
+# ---------------------------------------------------------------------------
+
+
+def render_summary(
+    summaries: Sequence[ToolCallSummary],
+    *,
+    since: datetime | None = None,
+    until: datetime | None = None,
+) -> str:
+    """一批聚合行 -> 一张分布表 (可 print 的多行文本).
+
+    「挂起」单列 (issue 39 的定案): 它既不是成功也不是失败, 混进任何一边都会让
+    「工具数量 A/B」那两组对比失真 —— 挂起多的那一组会被算成失败多. 剩下三个
+    状态合成「其他」, 见 `_NAMED_STATUSES`.
+
+    Args:
+        summaries: 聚合行 (仓储按工具名升序给, 这里不重排).
+        since / until: 调用方要的范围 —— 这是**给人看的那行说明**, 不参与筛选
+            (筛已经在仓储那一步做完了; 这里再来一遍等于把同一组条件写两处).
+
+    Returns:
+        str: 多行文本 (末尾**不带**换行, 与 `render_trace` 同一条约定);
+        一行都没有时明说, 不打一张空表.
+    """
+    total = sum(item.total for item in summaries)
+    lines = [f"工具调用分布 ({len(summaries)} 个工具 / {total} 次)"]
+    scope = _scope_text(since, until)
+    if scope:
+        lines.append(f"  范围 {scope}")
+    if not summaries:
+        lines.append("  这段时间里一次调用都没有")
+        return "\n".join(lines)
+    lines.extend(
+        _table_lines(
+            [_summary_cell(item) for item in summaries],
+            columns=_SUMMARY_COLUMNS,
+            right_aligned=_SUMMARY_RIGHT_ALIGNED,
+        )
+    )
+    return "\n".join(lines)
+
+
+def _scope_text(since: datetime | None, until: datetime | None) -> str:
+    """范围那一行 (只给了一端就只写一端; 都没给 = 空串, 不编一个范围出来)."""
+    if since is None and until is None:
+        return ""
+    return f"{_moment(since)} → {_moment(until)}"
+
+
+def _summary_cell(item: ToolCallSummary) -> dict[str, str]:
+    """一行聚合 -> 表格的七个格子.
+
+    「其他」是**减出来**的 (总数减去三个具名列), 不是各自去查一遍 —— 状态是加过
+    值的 (`cancelled` 就是 #18 才加的), 减出来的写法不会因为漏更新而长期算错.
+
+    **被人工拒绝 (`cancelled`) 也落在「其他」里** —— 它与挂起同源 (都是高危动作被
+    挡下). 真要单独看它时再加一列, 那时这张表从七列变八列 (issue 39 的票面只列了
+    六个字段, 这一列是补的: 少了它, 总数与三个具名列加起来对不上).
+    """
+    named = {label: item.count_of(status) for label, status in _NAMED_STATUSES}
+    return {
+        "工具名": item.tool_name,
+        "次数": str(item.total),
+        **{label: str(count) for label, count in named.items()},
+        "其他": str(item.total - sum(named.values())),
+        "平均耗时": (
+            "-" if item.avg_duration_ms is None else f"{item.avg_duration_ms:.0f}ms"
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
 # 小工具 (取值 -> 一行文本)
 # ---------------------------------------------------------------------------
 
@@ -484,15 +591,22 @@ def _short(text: str, width: int) -> str:
 
 @dataclass(frozen=True, slots=True)
 class TraceOptions:
-    """命令行选项 (run_id 必给; --view 决定要不要读帧).
+    """命令行选项 —— 三档各占一组字段, 互斥关系由 `parse_argv` 判.
 
     attributes:
-        run_id: 要看的运行编号.
+        run_id: 要看的运行编号 (第一 / 第二档必给).
         show_view: 是否展开每帧的视图 (第二档).
+        summary: 第三档 —— 看一批运行的分布 (issue 39), 与编号互斥.
+        since / until: 分布的范围 (两端都是闭区间; None = 不限).
+        tool: 只看这一个工具 (None = 全部).
     """
 
-    run_id: str
+    run_id: str | None = None
     show_view: bool = False
+    summary: bool = False
+    since: datetime | None = None
+    until: datetime | None = None
+    tool: str | None = None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -500,23 +614,122 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m CharAgent.client.trace",
         description=(
-            "只读地回看一次运行: 工具调用清单 + 三档用量与金额 "
-            "(金额与算式都是收尾那一刻算好写进库的, 这里只读)"
+            "只读地回看运行. 三档: 给编号看这一次 (工具调用清单 + 三档用量与金额) · "
+            "编号加 --view 展开每帧的视图 · 给 --summary 看一片的分布. "
+            "三档互斥 (金额与算式都是收尾那一刻算好写进库的, 这里只读)"
         ),
     )
-    parser.add_argument("run_id", help="要看的运行编号 (charagent_runs.run_id)")
+    parser.add_argument(
+        "run_id",
+        nargs="?",
+        help="要看的运行编号 (charagent_runs.run_id); 与 --summary 二选一",
+    )
     parser.add_argument(
         "--view",
         action="store_true",
-        help="第二档: 展开每帧的视图 (那一轮真的发出去的东西) 与估算漂移",
+        help="第二档: 展开每帧的视图 (那一轮真的发出去的东西) 与估算漂移; "
+        "与 --summary 互斥",
     )
+    parser.add_argument(
+        "--summary",
+        action="store_true",
+        help="第三档: 看一片的工具调用分布 (按工具分组); 与运行编号互斥",
+    )
+    parser.add_argument(
+        "--since",
+        help="分布从哪一刻起 (含); 只写日期 = 那天 00:00 (不带时区按 UTC 认)",
+    )
+    parser.add_argument("--until", help="分布到哪一刻止 (含); 只写日期 = 含那一天")
+    parser.add_argument("--tool", help="只看这一个工具")
     return parser
 
 
+def _parse_moment(text: str | None, *, end_of_day: bool) -> datetime | None:
+    """命令行给的一串文本 -> 带时区的时刻; None = 没给.
+
+    认两种写法: 光一个日期 (`2026-09-28`) 与 ISO 8601 (`2026-09-28T12:30:00+08:00`).
+    没写时区的一律按 **UTC** 认 —— 与 `_moment` 打出来那串同一个口径 (本入口不做
+    本地时区换算).
+
+    `end_of_day`: 光写日期的**终点**补到当天最后一刻 —— 用户说「到 09-28」指的是
+    「含那一天」, 按零点算会把当天整个漏掉. 写了时刻的照那一刻算, 不补.
+
+    Raises:
+        ValueError: 认不出的写法 (由 `parse_argv` 翻成用法错).
+    """
+    if text is None:
+        return None
+    try:
+        moment = datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise ValueError(
+            f"认不出这个时刻: {text!r} (用 2026-09-28 或 ISO 8601 那种写法)"
+        ) from exc
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    if end_of_day and not _has_a_time_part(text):
+        moment += timedelta(days=1) - timedelta(microseconds=1)
+    return moment
+
+
+def _has_a_time_part(text: str) -> bool:
+    """那一串里写没写时刻 (写了时分秒就是写了 —— `2026-09-28T00:00` 也不例外)."""
+    return "T" in text or " " in text
+
+
 def parse_argv(argv: Sequence[str] | None = None) -> TraceOptions:
-    """命令行参数 -> TraceOptions (唯一一处把 argv 翻译成配置的地方)."""
-    args = build_parser().parse_args(argv)
-    return TraceOptions(run_id=args.run_id, show_view=args.view)
+    """命令行参数 -> TraceOptions (唯一一处把 argv 翻译成配置的地方).
+
+    档与档之间的互斥在这里判 —— argparse 管不了「给了 A 就不许给 B」这种组合:
+
+    - 既没编号也没 `--summary`: 说不清要看什么
+    - 编号与 `--summary` 一起: 「看这一次」与「看一片」是两件事
+    - `--summary` 与 `--view` 一起: 后者读的是**某一次运行**的帧
+    - `--since` / `--until` / `--tool` 落在没有 `--summary` 的时候: 它们只服务分布
+    """
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.summary:
+        if args.run_id is not None:
+            parser.error("--summary 看的是跨运行的分布, 不能再给运行编号")
+        if args.view:
+            parser.error("--summary 与 --view 是两档, 不能一起用")
+    else:
+        if args.run_id is None:
+            parser.error("要么给一个运行编号 (看这一次), 要么给 --summary (看一片)")
+        if args.since or args.until or args.tool:
+            parser.error("--since / --until / --tool 只在 --summary 下有意义")
+    try:
+        since = _parse_moment(args.since, end_of_day=False)
+        until = _parse_moment(args.until, end_of_day=True)
+    except ValueError as exc:
+        parser.error(str(exc))
+    return TraceOptions(
+        run_id=args.run_id,
+        show_view=args.view,
+        summary=args.summary,
+        since=since,
+        until=until,
+        tool=args.tool,
+    )
+
+
+async def _summary_text(database: Database, options: TraceOptions) -> str:
+    """第三档要打的那份文本 (读库 + 读之后的过滤都在这儿).
+
+    `--tool` 的过滤放在**读之后**: 仓储那个聚合入口的口径是「按给定的范围算」,
+    给它再加一个工具名的条件, 会让「别的工具调了多少」在这次查询里一并丢掉 ——
+    而「只看这一个」是**显示**上的事, 范围本身没变.
+    """
+    summaries = await ToolCallsRepository(database).summarize_by_tool(
+        since=options.since, until=options.until
+    )
+    if options.tool is not None:
+        summaries = [item for item in summaries if item.tool_name == options.tool]
+        if not summaries:
+            # 这里不能说「一次调用都没有」—— 别的工具有的是, 只是这一个没有
+            return f"{options.tool} 在这段时间里一次都没被调用"
+    return render_summary(summaries, since=options.since, until=options.until)
 
 
 def main(
@@ -526,6 +739,9 @@ def main(
     writer: Callable[[str], Any] | None = None,
 ) -> int:
     """进程入口: 读环境 -> 解析参数 -> 读库 -> 打印.
+
+    三档走两条读路径: 给编号的走 `load_trace` (这一次), 给 `--summary` 的走
+    `_summary_text` (这一片). 互斥由 `parse_argv` 保证, 这里不必再判.
 
     Args:
         argv: 命令行参数 (None 表示取 sys.argv[1:]; 测试直接传一个列表).
@@ -550,9 +766,16 @@ def main(
     owned = database is None
     db = PgDatabase() if database is None else database
     try:
-        data = asyncio.run(
-            load_trace(db, options.run_id, with_frames=options.show_view)
-        )
+        if options.summary:
+            text = asyncio.run(_summary_text(db, options))
+        else:
+            data = asyncio.run(
+                load_trace(db, options.run_id, with_frames=options.show_view)
+            )
+            if data is None:
+                say(f"没有这次运行: {options.run_id} (charagent_runs 里没有这个编号)")
+                return 1
+            text = render_trace(data, show_view=options.show_view)
     except DbError as exc:
         say(f"读取失败: {type(exc).__name__}: {exc}")
         return 1
@@ -561,10 +784,7 @@ def main(
         if owned:
             asyncio.run(db.dispose())
 
-    if data is None:
-        say(f"没有这次运行: {options.run_id} (charagent_runs 里没有这个编号)")
-        return 1
-    say(render_trace(data, show_view=options.show_view))
+    say(text)
     return 0
 
 

@@ -265,6 +265,11 @@ class ChatSession:
         # 快照存储里多一条新根 (旧链变孤儿) —— 内容不丢, 但「这段对话的快照」看起来
         # 就成了好几条互不相干的线.
         self._parent_id: str | None = None
+        # 最近一次运行用的是哪一行 (issue 39): `_begin_run` 开出来的编号留一份,
+        # 让调用方跑完能直接回看这一次 —— 从前它得先去库里捞, 而它手上根本没有
+        # 编号 (记账是旁挂的, 编号只有会话与记录员知道).
+        # None = 还没跑过, 或这个会话没配记录员 (没有记录层就没有运行行).
+        self._last_run_id: str | None = None
 
     # ------------------------------------------------------------------
     # 只读属性
@@ -292,6 +297,19 @@ class ChatSession:
         到底用的哪一版提示词」就查它.
         """
         return self._prompt_ref
+
+    @property
+    def last_run_id(self) -> str | None:
+        """最近一次运行 (`ask` / `resume`) 用的那一行编号; None = 还没跑过.
+
+        拿它去 `python -m CharAgent.client.trace <run_id>` 就能回看刚才那一次.
+        **没配记录员时恒为 None** —— 编号是记录层的东西, 不记账就没有它.
+
+        续跑两种情形与 `resume` 的口径一致: 命令行 `--resume` (不传 `run_id`)
+        开一行新账, 这个属性跟着换成新编号; HITL 的第二段沿用挂起那次运行的
+        编号 (issue 33), 属性本来就是它, 不变.
+        """
+        return self._last_run_id
 
     @property
     def tool_names(self) -> tuple[str, ...]:
@@ -373,6 +391,7 @@ class ChatSession:
         # 而它的 `run_id` 是指向那一行的外键 —— 行不在, 帧就盖不上编号. 编号定下来
         # 之后一路带着: 交给 loop (盖到每帧) 与收尾的 `_record`
         run_id = await self._begin_run(question)
+        self._last_run_id = run_id
         # 提问这一行**当场落库** (ticket 27): 用户已经在页面上看到自己那句话了,
         # 记录里不该等到跑完才出现 —— 运行中途刷新、被取消、或者进程被硬杀, 它都在
         await self._flush(run_id=run_id, start=since, messages=self._history[since:])
@@ -473,6 +492,9 @@ class ChatSession:
         finish_run = run_id is None
         if run_id is None:
             run_id = await self._begin_run()
+        # 这一段跑的是哪一行 (issue 39): 新开的那一个, 或调用方给的那一个 ——
+        # 两种情形都如实记下来, 调用方据此回看 (见 `last_run_id`)
+        self._last_run_id = run_id
         try:
             result = await self._run(
                 self._loop.resume(restored, run_id=run_id, approval=approval)

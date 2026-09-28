@@ -384,6 +384,19 @@ def _frame_note(
     return f"{prefix}{session.saver_name} 里 {count} 帧"
 
 
+def _run_note(session: ChatSession) -> str:
+    """这次运行的编号 (没有记录层就不附) —— 附在账目行尾.
+
+    有它才回看得动: `python -m CharAgent.client.trace <run_id>`. 从前那个编号
+    要去库里捞 (issue 38 §八第 2 条), 而刚跑完一次问答的人手上只有一句答复.
+
+    取的是**会话**上那一个 (记录层开出来的编号), 不是事件流里那个进程内编号 ——
+    两者在框架里本来就是两回事, 能拿去回看的只有前者.
+    """
+    run_id = session.last_run_id
+    return "" if run_id is None else f" · 运行 {run_id}"
+
+
 def report_result(
     runner: KillSwitch,
     session: ChatSession,
@@ -398,7 +411,10 @@ def report_result(
     writer("")
     writer(format_answer(result.content))
     writer("")
-    writer(f"[完成] {format_result(result)}{_frame_note(runner, session)}")
+    writer(
+        f"[完成] {format_result(result)}"
+        f"{_run_note(session)}{_frame_note(runner, session)}"
+    )
 
 
 def report_interrupt(

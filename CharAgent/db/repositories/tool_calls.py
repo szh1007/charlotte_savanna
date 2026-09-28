@@ -14,7 +14,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select, update
@@ -76,6 +77,32 @@ def build_tool_call(
         created_at=moment,
         updated_at=moment,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class ToolCallSummary:
+    """一个工具在一段范围里的调用情况 (聚合入口的返回行).
+
+    attributes:
+        tool_name: 工具名.
+        counts: 状态值 (`ToolCallStatus` 那一串) -> 条数. **只含有出现过的状态**
+            —— 没出现过的查回来是 0 (`count_of`), 不在这里占一个键.
+        avg_duration_ms: 平均耗时 (毫秒); 只算有 `duration_ms` 的行, 一条都没有
+            则是 None. **「不知道」与「0 毫秒」是两回事**, 别拿 0 顶替.
+    """
+
+    tool_name: str
+    counts: Mapping[str, int]
+    avg_duration_ms: float | None
+
+    @property
+    def total(self) -> int:
+        """这个工具一共被调了几次."""
+        return sum(self.counts.values())
+
+    def count_of(self, status: ToolCallStatus) -> int:
+        """某个状态的条数; 没出现过就是 0."""
+        return self.counts.get(status.value, 0)
 
 
 class ToolCallsRepository(PgRepository):
@@ -199,6 +226,52 @@ class ToolCallsRepository(PgRepository):
         )
         async with self._session() as session:
             return list(session.scalars(statement))
+
+    async def summarize_by_tool(
+        self,
+        *,
+        run_ids: Sequence[str] | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+    ) -> list[ToolCallSummary]:
+        """按工具聚合调用情况 (次数 / 各状态条数 / 平均耗时); 工具名升序.
+
+        给谁用 (issue 39): 命令行 `trace --summary` 给人看一片, 跑分器给程序读
+        一批运行 —— **同一个查询面**, 免得两处各写一套聚合口径迟早对不上.
+
+        范围可以叠加 (叠加时两个条件都要满足):
+        - `run_ids`: 只看这几次运行 (跑分器用它 —— 一批样本就是一批编号)
+        - `since` / `until`: 只看这个时间窗 (命令行用它 —— 「最近这周调了什么」)
+        - 都不给 = **全库** (给人看的视图, 量级大了别这么用)
+
+        三个条件各自的边界都是**闭区间** (起点 / 终点那一瞬算在里面).
+
+        **筛选与统计都在 Python 侧做** (那条 `select` 不带任何 `where`): 本项目的
+        量级是几十到几百行, 而 `tests/doubles.py` 那个假库**不过滤 WHERE 也不排序**
+        —— 条件写进 SQL 的实现在假库上会**静默返回错数** (跑分器用的正是假库);
+        而「SQL 与 Python 各筛一遍」会让同一组条件有**两处声明**, 加一个条件要动
+        三处 (签名 / `where` / `_in_scope`). 真库上的对照见
+        `test_db_tool_call_summary.py` 的最后一条.
+        数据涨到几万行时这里要改成 SQL 侧筛 + 聚合, 那时假库那条也要一并想办法.
+
+        Args:
+            run_ids: 只数这几次运行的调用; None = 不按运行筛.
+            since: 起点 (含); None = 不限.
+            until: 终点 (含); None = 不限.
+
+        Returns:
+            list[ToolCallSummary]: 每个**调用过**的工具一行 (按工具名升序);
+            范围内一条调用都没有 -> 空列表.
+
+        Raises:
+            DataStoreError: 库连不上 / 读失败.
+        """
+        wanted = None if run_ids is None else set(run_ids)
+        async with self._session() as session:
+            rows = list(session.scalars(select(ToolCall)))
+        return _group_by_tool(
+            [row for row in rows if _in_scope(row, wanted, since, until)]
+        )
 
     async def set_status(
         self,
@@ -352,3 +425,55 @@ class ToolCallsRepository(PgRepository):
         """
         session.expire_all()
         return session.get(ToolCall, (run_id, message_id, tool_call_id))
+
+
+# ---------------------------------------------------------------------------
+# 聚合 (纯函数: 行 -> 每工具一行)
+# ---------------------------------------------------------------------------
+
+
+def _in_scope(
+    row: ToolCall,
+    run_ids: set[str] | None,
+    since: datetime | None,
+    until: datetime | None,
+) -> bool:
+    """这一行在不在调用方要的范围里 (与那几条 WHERE 同一个口径, 闭区间).
+
+    为什么 WHERE 之外还要在 Python 侧筛一遍: 见 `summarize_by_tool` 的说明 ——
+    假库不问 WHERE, 于是「筛」这件事必须在这一层也成立.
+    """
+    return all(
+        (
+            run_ids is None or row.run_id in run_ids,
+            since is None or row.created_at >= since,
+            until is None or row.created_at <= until,
+        )
+    )
+
+
+def _group_by_tool(rows: Sequence[ToolCall]) -> list[ToolCallSummary]:
+    """行 -> 每个工具一行的聚合 (工具名与状态键都升序, 报告才 diff 得动).
+
+    耗时那一列只收**有值**的行: `pending` / `running` 那些还没执行完, 它们的
+    `duration_ms` 是 NULL —— 拿 0 顶替会把平均值往小里拉.
+    """
+    counts: dict[str, dict[str, int]] = {}
+    durations: dict[str, list[int]] = {}
+    for row in rows:
+        per_status = counts.setdefault(row.tool_name, {})
+        per_status[row.status] = per_status.get(row.status, 0) + 1
+        if row.duration_ms is not None:
+            durations.setdefault(row.tool_name, []).append(row.duration_ms)
+    return [
+        ToolCallSummary(
+            tool_name=name,
+            counts={status: counts[name][status] for status in sorted(counts[name])},
+            avg_duration_ms=(
+                sum(durations[name]) / len(durations[name])
+                if durations.get(name)
+                else None
+            ),
+        )
+        for name in sorted(counts)
+    ]

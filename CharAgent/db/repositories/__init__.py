@@ -37,6 +37,7 @@ from CharAgent.db.repositories.runs import RunsRepository
 from CharAgent.db.repositories.threads import ThreadsRepository
 from CharAgent.db.repositories.tool_calls import (
     ToolCallsRepository,
+    ToolCallSummary,
     build_tool_call,
 )
 
@@ -47,6 +48,7 @@ __all__ = [
     "PgRepository",
     "RunsRepository",
     "ThreadsRepository",
+    "ToolCallSummary",
     "ToolCallsRepository",
     "build_tool_call",
     "message_id_for",

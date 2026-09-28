@@ -121,6 +121,7 @@ from CharAgent.db.repositories import (
     RunsRepository,
     ThreadsRepository,
     ToolCallsRepository,
+    ToolCallSummary,
     build_tool_call,
     message_id_for,
 )
@@ -182,6 +183,7 @@ __all__ = [
     "TierVerdict",
     "ToolCall",
     "ToolCallStatus",
+    "ToolCallSummary",
     "ToolCallsRepository",
     "TranscriptLine",
     "TurnPair",

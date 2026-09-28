@@ -14,18 +14,20 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
 import pytest
+from doubles import FakeRecordDatabase
 
 from CharAgent.checkpoint.utils.history import display_width
 from CharAgent.client.trace import (
     FrameView,
     TraceData,
-    build_parser,
+    main,
     parse_argv,
+    render_summary,
     render_trace,
 )
 from CharAgent.db import (
@@ -33,6 +35,7 @@ from CharAgent.db import (
     Thread,
     ToolCall,
     ToolCallStatus,
+    ToolCallSummary,
     build_tool_call,
 )
 
@@ -657,7 +660,224 @@ def test_parser_takes_a_run_id_and_an_optional_view_flag():
     assert parse_argv(["--view", "abc123"]).show_view is True
 
 
-def test_run_id_is_required():
-    """不给编号是用法错 (argparse 自己报错并给退出码 2)."""
+def test_a_bare_invocation_is_a_usage_error():
+    """既没有编号也没有 `--summary`: 说不清要看什么, 报用法错 (退出码 2)."""
     with pytest.raises(SystemExit):
-        build_parser().parse_args([])
+        parse_argv([])
+
+
+def test_parser_takes_the_summary_mode_and_its_window():
+    """第三档: `--summary [--since ...] [--until ...] [--tool ...]` (issue 39)."""
+    options = parse_argv(
+        ["--summary", "--since", "2026-09-01", "--tool", "add_to_cart"]
+    )
+
+    assert options.summary is True
+    assert options.run_id is None
+    assert options.tool == "add_to_cart"
+    assert options.since == datetime(2026, 9, 1, tzinfo=UTC)
+
+
+def test_the_summary_mode_and_a_run_id_do_not_mix():
+    """一次看一个运行与看一片是两件事, 一起给说不清要哪个 → 用法错."""
+    with pytest.raises(SystemExit):
+        parse_argv(["abc123", "--summary"])
+
+
+def test_the_summary_mode_and_the_view_tier_do_not_mix():
+    """`--view` 读的是某一次运行的帧, `--summary` 看的是跨运行的分布."""
+    with pytest.raises(SystemExit):
+        parse_argv(["--summary", "--view"])
+
+
+def test_a_bare_date_as_the_start_means_that_day_starts():
+    options = parse_argv(["--summary", "--since", "2026-09-28"])
+
+    assert options.since == datetime(2026, 9, 28, tzinfo=UTC)
+
+
+def test_a_bare_date_as_the_end_covers_the_whole_day():
+    """`--until 2026-09-28` 含那一天 —— 用户说的是「到那天」, 不是「到那天的零点」."""
+    options = parse_argv(["--summary", "--until", "2026-09-28"])
+
+    assert options.until == datetime(2026, 9, 28, 23, 59, 59, 999999, tzinfo=UTC)
+
+
+def test_an_end_with_an_explicit_time_is_taken_literally():
+    """写全了时刻就照那一刻算 (不补到当天结束 —— 那是「只写日期」的便利)."""
+    options = parse_argv(["--summary", "--until", "2026-09-28T12:00:00"])
+
+    assert options.until == datetime(2026, 9, 28, 12, 0, 0, tzinfo=UTC)
+
+
+def test_a_moment_with_a_zone_keeps_it():
+    """带时区的写法按它自己那个时区认, 存下来是等价的 UTC 时刻."""
+    options = parse_argv(["--summary", "--since", "2026-09-28T12:00:00+08:00"])
+
+    assert options.since == datetime(2026, 9, 28, 4, 0, 0, tzinfo=UTC)
+
+
+def test_a_broken_moment_is_a_usage_error():
+    """认不出的时刻当场报用法错, 不静默当成「不限」—— 那会把范围悄悄放大."""
+    with pytest.raises(SystemExit):
+        parse_argv(["--summary", "--since", "昨天"])
+
+
+# ---------------------------------------------------------------------------
+# 第三档: 工具调用分布 (issue 39)
+# ---------------------------------------------------------------------------
+
+
+def test_the_summary_table_lists_every_tool_in_order():
+    """一行一个工具, 列是 次数 / 成功 / 失败 / 挂起 / 其他 / 平均耗时."""
+    text = render_summary(
+        [
+            ToolCallSummary(
+                tool_name="add_to_cart",
+                counts={"failed": 1, "succeeded": 2},
+                avg_duration_ms=120.0,
+            ),
+            ToolCallSummary(
+                tool_name="search_products",
+                counts={"succeeded": 9},
+                avg_duration_ms=210.0,
+            ),
+        ]
+    )
+    lines = text.splitlines()
+
+    assert "工具调用分布 (2 个工具 / 12 次)" in lines[0]
+    header = lines[1]
+    for column in ("工具名", "次数", "成功", "失败", "挂起", "其他", "平均耗时"):
+        assert column in header, f"表头少了 {column}"
+    assert "add_to_cart" in lines[2]
+    assert "search_products" in lines[3]
+
+
+def test_waiting_approval_gets_its_own_column():
+    """挂起单列 —— 混进成功或失败会让工具数量 A/B 的两组对比失真."""
+    text = render_summary(
+        [
+            ToolCallSummary(
+                tool_name="place_order",
+                counts={"succeeded": 1, "needs_approval": 2},
+                avg_duration_ms=None,
+            )
+        ]
+    )
+    row = text.splitlines()[2]
+
+    assert "挂起" in text.splitlines()[1], "挂起要有自己的列"
+    columns = row.split()
+    assert columns[1:6] == ["3", "1", "0", "2", "0"], f"数落在错的列上: {columns}"
+
+
+def test_a_tool_without_duration_prints_a_dash():
+    """没有耗时打 `-` (0 毫秒与「不知道」在屏幕上要分得开)."""
+    text = render_summary(
+        [
+            ToolCallSummary(
+                tool_name="place_order", counts={"pending": 1}, avg_duration_ms=None
+            )
+        ]
+    )
+
+    assert "-" in text.splitlines()[2].split(), text.splitlines()[2]
+
+
+def test_no_calls_at_all_says_it_plainly():
+    """范围内一次调用都没有: 明说, 不打一张空表."""
+    text = render_summary([])
+
+    assert text.startswith("工具调用分布 (0 个工具 / 0 次)")
+    assert "一次调用都没有" in text
+
+
+def test_the_window_is_printed_when_given():
+    """给了范围就把范围打出来 —— 只写日期的那一端要按补全后的时刻显示."""
+
+    def summary_row() -> list[ToolCallSummary]:
+        return [
+            ToolCallSummary(
+                tool_name="add_to_cart", counts={"succeeded": 1}, avg_duration_ms=None
+            )
+        ]
+
+    with_window = render_summary(summary_row(), since=datetime(2026, 9, 1, tzinfo=UTC))
+    without = render_summary(summary_row())
+
+    assert "2026-09-01 00:00:00Z" in with_window
+    assert "范围" not in without, "没给范围就不用编一个出来"
+
+
+# ---------------------------------------------------------------------------
+# 第三档的接线 (连着库跑一遍, 用假库 —— 不是真库)
+#
+# 上面那些钉的是**渲染**; 这几条钉的是**命令行真的读到了库**: 参数灌进仓储、
+# 分布打出来、`--tool` 的过滤与那个「没被调用过」的分支各走一遍. 用假库是因为
+# 它不碰 PG (本文件仍然不需要真库).
+# ---------------------------------------------------------------------------
+
+
+def _row(
+    tool: str, *, run_id: str = "run-1", index: int = 0, at: datetime = START
+) -> ToolCall:
+    """造一条工具调用行 (三列主键按 index 拉开, 不撞)."""
+    return build_tool_call(
+        run_id=run_id,
+        message_id="msg-1",
+        tool_call_id=f"call_{index}",
+        tool_name=tool,
+        status=ToolCallStatus.SUCCEEDED,
+        created_at=at,
+    )
+
+
+def _summary_out(*rows: ToolCall, argv: list[str] | None = None) -> list[str]:
+    """跑一次 `--summary` 并把打出来的行收回来."""
+    out: list[str] = []
+    code = main(
+        ["--summary"] if argv is None else argv,
+        database=FakeRecordDatabase(tool_calls=list(rows)),
+        writer=out.append,
+    )
+    assert code == 0, out
+    return out
+
+
+def test_the_summary_mode_reads_the_database() -> None:
+    """`--summary` 真的去读库: 两个工具两行, 分布打在第一行."""
+    out = _summary_out(_row("add_to_cart"), _row("search_products", index=1))
+
+    assert "工具调用分布 (2 个工具 / 2 次)" in out[0]
+
+
+def test_the_summary_mode_honours_the_window_from_the_command_line() -> None:
+    """命令行给的 `--since` 真的灌进了仓储 (窗外那条不算)."""
+    out = _summary_out(
+        _row("add_to_cart"),
+        _row("search_products", index=1, at=START - timedelta(days=1)),
+        argv=["--summary", "--since", START.strftime("%Y-%m-%d")],
+    )
+
+    assert "工具调用分布 (1 个工具 / 1 次)" in out[0]
+
+
+def test_the_summary_mode_filters_by_tool() -> None:
+    """`--tool` 只留那一个工具的行."""
+    out = _summary_out(
+        _row("add_to_cart"),
+        _row("search_products", index=1),
+        argv=["--summary", "--tool", "add_to_cart"],
+    )
+    text = "\n".join(out)
+
+    assert "add_to_cart" in text
+    assert "search_products" not in text, "过滤之后别的工具不该出现在表里"
+
+
+def test_a_tool_that_never_ran_says_so_instead_of_an_empty_table() -> None:
+    """`--tool` 指了个没跑过的: 明说它没被调用过 (不是「一次调用都没有」)."""
+    out = _summary_out(_row("add_to_cart"), argv=["--summary", "--tool", "place_order"])
+
+    assert "place_order 在这段时间里一次都没被调用" in out[0]
