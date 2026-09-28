@@ -86,6 +86,12 @@ if pending:
 - [ ] 跑分器**不调** `service.aclose()`，或调了也不炸（见 issue 41 的 `dispose` 坑）
 - [ ] 不模拟确认的那一组如实在报告里显示 `suspended` 计数
 
+> **2026-09-28 补注（issue 41 已落地）**：恢复那条路要的两样都在跑分环境里 ——
+> `harness.service`（`session_for` 在它上面，「重新装配一次」照 HTTP 那条路做）与
+> `harness.records`（挂起检测走 `ToolCallsRepository(harness.records).list_pending_approvals(thread_id)`）。
+> 本片验收里那句「跑分器不调 `service.aclose()`，或调了也不炸」已由 `open_harness` 的收尾覆盖
+> （假库有了 `dispose`）。详情见 issue 41 的「给 issue 42 / 43 / 44 / 45 的话」。
+
 ## 要定死的开放决策
 
 | # | 决策 | 倾向 |

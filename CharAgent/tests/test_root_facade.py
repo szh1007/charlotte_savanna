@@ -106,6 +106,20 @@ def test_the_excluded_packages_are_not_exported_at_the_root(package: str) -> Non
         assert name not in CharAgent.__all__, f"{name} 不该出现在根门面"
 
 
+def test_the_record_double_is_not_exported_at_the_root() -> None:
+    """记录层的假库也不上门面 —— **包内的某个模块**不上, 与那三个包同一件事.
+
+    `db/testing.py` 的处境与 `db/config.py` 的两个环境变量名常量一样: 是「要用库
+    的东西」那一层, 不是「装了 charagent 就有」的 API (需要的人按完整路径取).
+
+    为什么值得一条断言: 顺手在 `db/__init__.py` 里加一行 `from .testing import
+    FakeRecordDatabase` 不会报任何错, 只会让「装了就有这些 API」这句话里混进一个
+    **测试替身** —— 而那是别人写测试时才该出现的东西. 有一条用例在, 那一刻当场红.
+    """
+    assert "FakeRecordDatabase" not in _package_all("db")
+    assert not hasattr(CharAgent, "FakeRecordDatabase")
+
+
 def test_importing_the_root_does_not_pull_in_the_web_stack() -> None:
     """`import CharAgent` 不带 web 依赖 —— 「server 是可选层」这句话的证据.
 

@@ -106,6 +106,12 @@
 - [ ] 回答合规判据**放行余额**、**放行订单号**、抓住姓名/手机号/邮箱/门牌
 - [ ] 题面里无敏感值原文
 
+> **2026-09-28 补注（issue 41 已落地）**：跑分环境在 `CharApp/eval/harness.py` ——
+> `async with open_harness(model) as harness:`（假商城 + 内存快照 + 假记录库，模型所有权交出去）。
+> **单次运行的轨迹读 `harness.calls_of(run_id)`**；次数 / 成功率 / 平均耗时那类聚合走 issue 39 的
+> `summarize_by_tool`。敏感值清单是 `CharApp/eval/fixtures.SENSITIVE_VALUES`（从样本派生）。
+> 详情见 issue 41 的「给 issue 42 / 43 / 44 / 45 的话」。
+
 ## 要定死的开放决策
 
 | # | 决策 | 倾向 |

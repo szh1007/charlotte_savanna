@@ -1,6 +1,6 @@
 # 41 · 业务侧：跑分环境接线（假商城 + 内存记录层 + 敏感值清单）
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Type:** task
 
@@ -93,12 +93,12 @@ v4 的"不复述地址姓名"判据（issue 45）要拿真实值去回答文本�
 
 ## 验收
 
-- [ ] 一次问答跑完能读回**该次运行**的工具轨迹 —— 只读回这一次的，不是全库
-- [ ] `service.aclose()` 不炸（假库有了 `dispose`）
-- [ ] 敏感值清单与 `LOG_FIELDS` 有断言守着不漂
-- [ ] **`CharApp/tests` 的既有用例一条不变红**（抽模块是搬迁，不是重构）
-- [ ] 框架侧 `CharAgent` 的既有用例一条不变红（提升 `FakeRecordDatabase` 是搬迁 + 补一个空方法）
-- [ ] `FakeRecordDatabase` 提升后**不进根门面**
+- [x] 一次问答跑完能读回**该次运行**的工具轨迹 —— 只读回这一次的，不是全库
+- [x] `service.aclose()` 不炸（假库有了 `dispose`）
+- [x] 敏感值清单与 `LOG_FIELDS` 有断言守着不漂
+- [x] **`CharApp/tests` 的既有用例一条不变红**（抽模块是搬迁，不是重构）
+- [x] 框架侧 `CharAgent` 的既有用例一条不变红（提升 `FakeRecordDatabase` 是搬迁 + 补一个空方法）
+- [x] `FakeRecordDatabase` 提升后**不进根门面**
 
 ## 要定死的开放决策
 
@@ -108,3 +108,65 @@ v4 的"不复述地址姓名"判据（issue 45）要拿真实值去回答文本�
 | 2 | 跑分结果是 pytest 用例还是独立入口 | **独立入口**（要落报告 / compare / 传参）。`pytest` 里只留框架侧的自证用例（issue 40） |
 | 3 | 敏感值清单是"从样本派生"还是"独立声明" | **从样本派生**（单一来源）。清单与样本漂了就等于判据失效 |
 | 4 | 假商城跑分时用不用 `assert_all_mocked=True` | **用**（照 `conftest.py:276-288` 的既有取法）—— 漏铺的端点要当场炸，不是静默返回空 |
+
+## 实施记录（2026-09-28）
+
+**四件全部落地，六条验收框全勾。**
+
+| 交付物 | 落点 |
+|---|---|
+| 1 样本 + 假商城 + 敏感值清单 | `CharApp/eval/fixtures.py`（`build_mall()` / `mock_all()` / `SENSITIVE_VALUES`） |
+| 2 `conftest.py` 改为 import | `CharApp/tests/conftest.py`（`__all__` 声明转发面，fixture 改调 `build_mall`） |
+| 3 假库提升为包内公共 API | `CharAgent/db/testing.py`（含 `dispose`），`tests/doubles.py` 转发 |
+| 4 装配函数 | `CharApp/eval/harness.py`：`open_harness(model)` → `EvalHarness` |
+| 5 按 `run_id` 筛的工具轨迹 | `EvalHarness.calls_of(run_id)`（**不用**假库的 `list_for_run`） |
+| 6 用例 | `CharApp/tests/test_eval_fixtures.py`（3 条）+ `test_eval_harness.py`（6 条） |
+
+### 与票面的出入
+
+| 票面 | 实际做法 | 为什么 |
+|---|---|---|
+| §一抽「样本数据」与「假商城」两样 | 还搬了 `AGENT_BASE_URL` / `TOKEN` / `BUYER_ID` / `PAYMENT_PASSWORD` / `ORDER_NO` / `agent_url` | 样本与假商城都引用它们（`PROFILE["id"]`、`WRITE_ENDPOINTS` 的键、`build_mall` 的地址），留在 conftest 里就成了「从测试 import 生产常量」 |
+| §二只点名 `FakeRecordDatabase` | 连 `FakeRecordSession` / `record_message` / `record_thread` 一起搬 | 那个类离了会话替身不成立；两个造行的与假库同源（它的 docstring 例子就在用），分开摆等于把一份东西劈两半 |
+| §四「断言守着不漂」（先例是子集断言） | 写成**等式**：`set(SENSITIVE_VALUES) == masked - {"balance"}` | 先例那句 `declared - {"payment_password"} <= payload_names` 是子集，漏一个不报；这里两张表的差**只有余额**一格，等式说得清且更严 |
+| 决策 2「跑分结果是独立入口」 | 本片**没建**入口 | 入口要题集（42）与判据（42）才成立 —— 本片交的是它踩的地基 |
+
+### 两轴复核（`/code-review`）后的修补
+
+两个轴各一个子代理，审的是工作区（`CharApp/eval/` 与 `CharAgent/db/testing.py` 是新文件，不在 `git diff` 里，另行指读了）。
+
+**标准轴：1 条硬违规 + 1 条小项 + 5 条判断项，采纳 3 条**：
+
+| 复核意见 | 处置 |
+|---------|------|
+| **硬**：`db/testing.py` 里一个全角句号（项目 §4.9 明写标点一律英文） | **改**（它是从 `doubles.py` 逐字搬过来的旧毛病，但文件是新的，即在范围内） |
+| `EvalHarness.context` 有 `Args` 无 `Returns`，`session` 两者都无 | **改**：补齐 |
+| `doubles.py` 的转发不一致：两个类转发、两个造行的不转发，「只跟着假库走」这条理由对两者同样成立 | **改**：四个一起转发 + 加 `__all__`（顺带把三处测试 import 改回原样，转发这才有消费方） |
+| `testing.py` 里实体→表的映射写了五遍（`_TABLES` / `_KEYS` / `_PK_COLUMNS` / `_rows_of` / `rows_of`） | **保留**：这是搬迁前就有的（`doubles.py` 原文如此），而本片对它的承诺是「行为一字不改」—— 顺手改五处映射会让 diff 不再能证明这件事 |
+| `calls_of` 有 Feature Envy（跑分器伸手进记录层筛数据） | **保留**：票据 §三坑 1 点名「**跑分器自己按 `call.run_id` 筛**（零框架改动），不要改假库的过滤行为」 |
+| `testing` 这个名字（本仓既有的叫法是 `doubles`） | **保留**：决策 1 定的就是它；`tests/doubles.py` 仍在，两者是不同的东西（一个模块名，一个测试侧替身集合） |
+| 业务测试仍从 `CharAgent.tests.doubles` 取假库 | **保留**：业务借框架的测试替身是 PRD §5 既定的接缝（与 `mock_llm` / `trace_assertions` 同一类） |
+
+**规格轴：2 条「只做到一半」+ 2 条范围蔓延，采纳 3 条**：
+
+| 复核意见 | 处置 |
+|---------|------|
+| §二那句「『同一份事实两条路建得出来』**只有本片能证**」没人证 —— `calls_of` 只读记录层，没与内存那条（`LoopResult.turns`）对照过 | **改**：补一条用例（一次调两个工具，同一轮并行 —— 记录层靠时间戳排序，那是这条路上唯一可能分叉的地方），逐字段比 `ToolFact` 与调用行 |
+| 交付物 #3「`doubles.py` 转发」与字面有落差（见上） | **改**：补齐转发 |
+| `CharApp/eval/__init__.py` 里写「独立入口的活（`python -m CharApp.eval ...`）」—— **那个命令不存在** | **改**：改成「入口与题集在 issue 42 之后那几片」（本片新写的句子不该陈述一件当时为假的事） |
+| `EvalHarness.context` / `session` / `routes` 与「参数原文」那条用例属前瞻（42–46 号票对 harness API 零引用） | **保留**：三样今天都有消费方（`routes` 用来证「工具真打到商城了」），而「出口是什么」「租户用哪个」这类决定该有**一处**说了算 —— 摊到四个调用点去各自决定，正是 issue 30 那类半边生效的温床 |
+
+### 跑过的用例（收尾那一遍）
+
+| 命令 | 结果 |
+|------|------|
+| `pytest`（CharApp 全量） | **241 passed**（基线 232：本片 +9，既有 232 条一条不变红） |
+| `pytest`（CharAgent 全量） | **1370 passed, 132 deselected**（基线 1369：本片 +1 —— 根门面那条防漂断言） |
+| `ruff check .` + `format --check` | All checks passed |
+
+### 给 issue 42 / 43 / 44 / 45 的话
+
+- **读轨迹只有一处**：`harness.calls_of(run_id)`（单次运行的调用行）。**次数 / 成功率 / 平均耗时那类聚合走 issue 39 的 `summarize_by_tool`**，别在这里再写一套（本片交付物 #5 后半段点名的就是这件事）。
+- **跑分环境这样装**：`async with open_harness(model) as harness:` —— 它自带假商城 + 内存快照 + 假记录库，两处照生产读环境变量（`CHARAPP_THINKING` / `CHARAPP_CONTEXT_*`），报告头部那块配置快照记的就是它们。**模型的所有权交出去**（收尾时连它一起关），所以**为每一跑造一份**，别共享。
+- **43 的恢复路**：`harness.service` 就是那台 `MinimallService`（`session_for` 在它上面），「重新装配一次」照 HTTP 那条路做即可；挂起检测走 `ToolCallsRepository(harness.records).list_pending_approvals(thread_id)`（假库不过滤 WHERE，但挂起那条查询靠 `PendingAwareSession` 在 Python 侧补过语义）。
+- **44 / 45 要加的注入口还没开**：`open_harness(model)` 目前只收一个模型 —— 裁剪钩子（44）与 prompt 版本（45）要么加参数、要么加 `MinimallService` 上的字段，本片**没有**替它们先开（免得开错形状）。`harness.routes` 是「这一跑压根没打出去」那条断言的取数口。
