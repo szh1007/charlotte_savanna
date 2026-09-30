@@ -35,19 +35,17 @@ async def merge_retrieve(state: DataAgentState, runtime: Runtime[DataAgentContex
                 if col_id not in retrieved_columns_map:
                     pad_col_ids.append(col_id)
 
+        # 2.确认 [字段取值] -> [字段] 是否被召回
         for value in retrieved_values:
             col_id = value["column_id"]
-            _value = value["value"]
-
-            # 2.确认 [字段取值] -> [字段] 是否被召回
             if col_id not in retrieved_columns_map:
                 pad_col_ids.append(col_id)
 
-            # 3.确认 [字段取值] -> [字段取值示例] 是否包含本字段取值
-            if _value not in retrieved_columns_map[col_id]["examples"]:
-                retrieved_columns_map[col_id]["examples"].append(_value)
-
         # 补充缺失的字段
+        # 位置很关键: 必须排在识别缺字段之后, 且在下面的 examples 回填之前.
+        # examples 回填要读 retrieved_columns_map[col_id], 而补进来的字段此刻才进 map.
+        # 此前一版把补齐放在回填之后, 于是「取值命中而该字段未被列召回」这条兜底路径
+        # 一走就 KeyError —— 写了从未生效过 (issue C01).
         for col_id in pad_col_ids:
             # 查询字段 - mysql格式
             extend_column_mysql = await meta_mr.get_column_info_by_id(col_id)
@@ -57,6 +55,14 @@ async def merge_retrieve(state: DataAgentState, runtime: Runtime[DataAgentContex
 
             # 补充到召回字段 retrieved_columns_map
             retrieved_columns_map[col_id] = extend_column_qdrant
+
+        # 3.确认 [字段取值] -> [字段取值示例] 是否包含本字段取值
+        for value in retrieved_values:
+            col_id = value["column_id"]
+            _value = value["value"]
+
+            if _value not in retrieved_columns_map[col_id]["examples"]:
+                retrieved_columns_map[col_id]["examples"].append(_value)
 
         # 构建 [表] -> [字段] 的归属关系映射
         table_to_columns_map: dict[str, list[ColumnInfoQdrant]] = {}

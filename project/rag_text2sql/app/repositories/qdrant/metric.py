@@ -69,7 +69,7 @@ class MetricQdrantRepository:
 
         Args:
             embedding: 指标向量, 用于召回
-            score_threshold: 得分阈值, 用于筛选召回结果, 默认0.6
+            score_threshold: 得分阈值, 用于筛选召回结果, 默认0.7
 
         Returns:
             list[MetricInfoQdrant]: 召回的指标元数据列表

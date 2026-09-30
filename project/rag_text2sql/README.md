@@ -21,7 +21,7 @@
 
 | 组件 | 技术 |
 |------|------|
-| 流程编排 | LangGraph 1.x（StateGraph, 单图 9 节点, `stream_mode="custom"` 流式阶段上报） |
+| 流程编排 | LangGraph 1.x（StateGraph, 单图 **12 个节点 / 9 个逻辑阶段**, `stream_mode="custom"` 流式阶段上报） |
 | LLM | DeepSeek（OpenAI 兼容, temperature=0）, 用于关键词扩展 / 过滤 / SQL 生成 / 校正 |
 | Embedding | bge-large-zh-v1.5（1024 维）, 本地 OpenAI 兼容服务（TEI 风格, 端口 8088） |
 | 向量库 | Qdrant（`rag-text2sql-column` / `rag-text2sql-metric` 两集合, 余弦距离） |
@@ -40,12 +40,12 @@ project/rag_text2sql/
 ├── main.py                          # FastAPI 入口 (端口 8200)
 ├── app/
 │   ├── agent/                       # Agent 编排层
-│   │   ├── graph.py                 #   LangGraph 图定义 (9 节点 + 条件路由)
+│   │   ├── graph.py                 #   LangGraph 图定义 (12 节点 + 条件路由)
 │   │   ├── state.py                 #   DataAgentState / 表结构 / 指标 等 TypedDict
 │   │   ├── context.py               #   DataAgentContext (依赖注入到节点的仓库集合)
 │   │   ├── llm.py                   #   LLM 单例
 │   │   ├── prompt_loader.py         #   prompt 文件加载器
-│   │   └── nodes/                   #   9 个节点 (见 §3.2)
+│   │   └── nodes/                   #   12 个节点 / 9 个逻辑阶段 (见 §3.2)
 │   │       ├── _1_extract_keywords.py
 │   │       ├── _2_1_recall_column.py
 │   │       ├── _2_2_recall_metric.py
@@ -102,8 +102,7 @@ project/rag_text2sql/
 │   ├── filter_table_info.prompt                  # 表/字段裁剪 (查询规划专家)
 │   ├── filter_metric_info.prompt                 # 指标裁剪
 │   ├── generate_sql.prompt                       # SQL 生成
-│   ├── correct_sql.prompt                        # SQL 错误校正
-│   └── plan_sql.prompt                           # (实验性) 查询规划, 暂未挂载
+│   └── correct_sql.prompt                        # SQL 错误校正
 ├── frontend/                       # Vue 3 + Vite 前端 (端口 8201, /api 代理到 8200)
 │   └── src/App.vue                 #   单文件聊天页: 步骤流 / 结果表格 / 错误展示
 └── logs/                           # 运行日志 (app.log, 本地, 不提交)
@@ -124,7 +123,7 @@ main / api (FastAPI 路由 + 依赖注入)
 
 ## 3. 核心流程
 
-系统分为两个阶段: **离线元数据索引构建**（对 `meta_config.yaml` 建模的三类知识建立三级索引）与**在线查询 Agent**（单图 9 节点）。
+系统分为两个阶段: **离线元数据索引构建**（对 `meta_config.yaml` 建模的三类知识建立三级索引）与**在线查询 Agent**（单图 12 个节点 / 9 个逻辑阶段）。
 
 ### 3.1 元数据索引构建 — `python -m app.scripts.build_meta`
 
@@ -145,7 +144,7 @@ graph LR
 | 取值入 ES | `_save_column_value_to_es` | 仅 `sync: true` 的维度列（如 `province` / `category` / `brand`）, 从 dw 拉取**全量 distinct 值**（上限 100000）写入 ES, `value` 字段 ik_max_word 分词 |
 | 指标入 meta + Qdrant | `save_metric_info_to_meta_db` + `_save_metric_info_to_qdrant` | 指标表 + 指标-字段关联表（`column_metric`, 支撑 merge 阶段**按指标补列**）; 指标同样按 name/description/alias 三路向量点入库 |
 
-> 知识模型三类: **表/字段**（角色区分 `primary_key` / `foreign_key` / `dimension` / `measure`）、**指标**（`GMV` / `AOV` 等, 声明关联字段与别名）、**字段取值**（维度列枚举值）。字段与指标的 id 采用业务唯一键（`表名.字段名` / 指标名）, ES 文档 id 为 `字段id.取值`, 便于追溯去重。
+> 知识模型三类: **表/字段**（角色区分 `primary_key` / `foreign_key` / `dimension` / `measure`）、**指标**（`GMV` / `AOV` 等, 声明关联字段与别名）、**字段取值**（维度列枚举值）。字段与指标的 id 采用业务唯一键（`表名.字段名` / 指标名）；**ES 侧不做显式 `_id`**（bulk 时不传 `_id`, 由 ES 自动生成）, 去重靠文档体内的 `id` 字段。
 
 ### 3.2 查询 Agent — 在线自然语言转 SQL
 
@@ -340,7 +339,7 @@ curl -N -X POST http://127.0.0.1:8200/api/query -H "Content-Type: application/js
 ### 7.3 稳定性设计与落地路径
 
 - **隔离 LLM 随机性**: L1 评测时对 `_1` 扩展关键词 / `_4` 过滤用固定输出注入（直接喂题库关键词或 patch LLM）, 让检索链路可复现; L2 生成层单独全量跑 LLM 看真实分布
-- **逐节点快照**: 为每题记录 9 个节点的输入输出 JSON（一次执行收集全链 trace）, 指标异常时能直接定位到层
+- **逐节点快照**: 为每题记录 12 个节点（9 个逻辑阶段）的输入输出 JSON（一次执行收集全链 trace）, 指标异常时能直接定位到层
 - **真实执行**: SQL 统一在只读事务 / `LIMIT` 保护下执行, 结果序列化对比
 - 落地路径（三个里程碑）:
   1. 题库 + 执行器脚本（跑题 → 收集 trace → 算 L1/L2 指标 → 落盘 JSON 报告）
@@ -397,9 +396,9 @@ curl -N -X POST http://127.0.0.1:8200/api/query -H "Content-Type: application/js
 
 ### 8.9 工程化收尾
 
-- **问题**: 配置明文（conf/*.yaml 虽被 gitignore, 仍含密码与密钥）、无测试、prompt 存在实验性遗留（`plan_sql.prompt` 未挂载）。
+- **问题**: 配置明文（conf/*.yaml 虽被 gitignore, 仍含密码与密钥）、无测试（**已完成一部分**: C01 建了 `tests/` 骨架并钉住三处借道导入与两个真 bug；元数据构建与单节点的覆盖仍缺）。
 - **方案参考**: 敏感项迁移环境变量（与子项目 `.env` 模式对齐, 提供 `.env.example`）; 补元数据构建与单节点的自动化测试（HTTP seam / mock 存储）; 清理未用 prompt; 分支开发走根仓库 pre-commit 规范。
 
 ---
 
-> 最后更新: 2026-09-07
+> 最后更新: 2026-09-30（C01: 节点计数与 ES `_id` 口径修正 · 两处真 bug 修复 · 借道导入清理 · 测试骨架）

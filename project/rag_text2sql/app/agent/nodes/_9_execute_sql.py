@@ -21,4 +21,8 @@ async def execute_sql(state: DataAgentState, runtime: Runtime[DataAgentContext])
 
     except Exception as e:
         logger.error(f"SQL语句执行失败\n{e!s}")
+        # 必须推一条 error 事件: 本节点是链路终点, 不推的话前端既收不到 result
+        # 也收不到 error, 最后一个步骤永远停在 running (issue C01).
+        # 事件形状对齐 QueryService 与 _7_validate_sql 的既有口径.
+        writer({"error": str(e)})
         return {"error": str(e)}

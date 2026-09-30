@@ -1,7 +1,7 @@
 import uuid
+from pathlib import Path
 
 from langchain_openai import OpenAIEmbeddings
-from Lib.pathlib import Path
 from omegaconf import OmegaConf
 
 from app.conf.meta_config import MetaConfig, MetricConfig, TableConfig
