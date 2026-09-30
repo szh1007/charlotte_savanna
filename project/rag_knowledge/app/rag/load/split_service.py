@@ -17,11 +17,14 @@ def split_document(state: LoadState) -> LoadState:
     # 2.语义切割 (根据多级标题)
     chunks = _split_document_by_title(md_content, file_title)
 
-    # 3.精细切割(递归切割 + 合并)
-    chunks = _refine_split_and_merge_chunks(chunks)
-
-    # 4.属性对齐
+    # 3.属性对齐 (parent_title / part)
+    # 必须在下面的合并之前: 合并的判据是「两块 parent_title 相同」, 而未切分的块
+    # 到这一步才拿到 parent_title —— 放在合并之后的话, 这类块在判据里恒为 None
+    # (issue C02: 补齐与合并的先后反了).
     _padding_chunks_metadata(chunks)
+
+    # 4.精细切割(递归切割 + 合并)
+    chunks = _refine_split_and_merge_chunks(chunks)
 
     # 5.备份 chunks json
     _backup_chunks_json(md_path, chunks)
@@ -268,7 +271,11 @@ def _split_chunk_content(chunk: dict[str, str]) -> list[dict[str, str]]:
     spliter = RecursiveCharacterTextSplitter(
         chunk_size=CHUNK_SIZE - len(prefix),  # 600 - 标题前缀的长度
         chunk_overlap=CHUNK_OVERLAP,
-        separators=["\n\n", "\n", "。", "！", "？", "；", "，", " "],  # noqa: RUF001
+        # 末尾那个 "" 是 LangChain 的「实在切不动就按字符硬切」兜底, 不能省 ——
+        # 少了它, 一段没有分隔符的文本 (典型: 被压成一行的 HTML 表格) 会整段返回,
+        # chunk_size 形同虚设. 实测: chunk_size=574 切 'x'*1400 得到 1 片 1400 字符;
+        # 修复前真实产物里有 793 / 944 / 1403 字符的块 (issue C02).
+        separators=["\n\n", "\n", "。", "！", "？", "；", "，", " ", ""],  # noqa: RUF001
     )
 
     for index, text in enumerate(spliter.split_text(deal_content), start=1):
@@ -289,6 +296,9 @@ def _split_chunk_content(chunk: dict[str, str]) -> list[dict[str, str]]:
 def _padding_chunks_metadata(chunks: list[dict[str, str]]):
     """
     补充未精细切割的chunks的属性 parent_title, part
+
+    对未切分的块, `parent_title` 就是它自己的标题 —— 也就是说这类块的合并只可能
+    发生在「同一标题出现两次」的情形; 标题各不相同的相邻块不会被误并.
     """
     for chunk in chunks:
         if "parent_title" not in chunk:

@@ -6,6 +6,7 @@ from ...infra.model import infra_model
 from ...process.query.agent.state import QueryState
 from ...shared.runtime.load_prompt import load_prompt
 from ...shared.runtime.logger import logger, step_log
+from ...shared.utils.escape_milvus_string_utils import build_in_expr
 from .config import MILVUS_CHUNK_RRF_TOP_K
 
 
@@ -71,12 +72,13 @@ def _select_chunks_in_milvus(
     reqs_list = infra_milvus.create_requests(
         dense_vector=dense_vector,
         sparse_vector=sparse_vector,
-        expr=f"item_name in {item_names}",
+        expr=build_in_expr("item_name", item_names),
         limit=MILVUS_CHUNK_RRF_TOP_K * 2,
     )
 
     # 3.混合查询
-    response = infra_milvus.hybrid_search(
+    # hybrid_search 已经拆掉外层 per-query 维度, 且失败/无命中返回空列表
+    return infra_milvus.hybrid_search(
         collection_name=infra_milvus.chunks_collection,
         reqs=reqs_list,
         ranker_weights=(0.7, 0.3),  # rewritten_query检索, 同时兼顾双方权重
@@ -92,8 +94,6 @@ def _select_chunks_in_milvus(
             "content",
         ],
     )
-
-    return response[0]
 
 
 @step_log("_after_deal_milvus_result")

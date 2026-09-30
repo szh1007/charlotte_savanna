@@ -17,6 +17,10 @@ tester.run_eval()
 
 from app.rag_eval import RagEvalTester
 
+# pytest 见到它就整模块跳过 —— 这是「最小调用样例」脚本, 需要真实 Milvus / LLM / Mongo.
+# 要跑它: `python -m tests.test_rag_eval_tester` (issue C02 收口时加的标记)
+__test__ = False
+
 
 def run_insert_test_data():
     """

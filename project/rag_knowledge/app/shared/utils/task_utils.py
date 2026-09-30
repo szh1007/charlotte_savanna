@@ -45,7 +45,7 @@ _NODE_NAME_TO_CN: dict[str, str] = {
     "node_answer_output": "生成答案",
     "node_rerank": "重排序",
     "node_rrf": "倒排融合",
-    "node_web_search_mcp": "网络搜索",
+    "node_web_search": "网络搜索",
     "node_search_embedding": "切片搜索",
     "node_search_embedding_hyde": "切片搜索(假设性文档)",
     "node_multi_search": "多路搜索",

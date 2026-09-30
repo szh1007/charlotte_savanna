@@ -1,14 +1,12 @@
 import copy
 from dataclasses import dataclass, field
 
-from ..shared.config.bailian_mcp_config import McpConfig, mcp_config
 from ..shared.config.embedding_config import EmbeddingConfig, embedding_config
 from ..shared.config.llm_config import LLMConfig, llm_config
 from ..shared.config.milvus_config import MilvusConfig, milvus_config
 from ..shared.config.mineru_config import MinerUConfig, mineru_config
 from ..shared.config.minio_config import MinIOConfig, minio_config
 from ..shared.config.reranker_config import RerankerConfig, reranker_config
-from ..shared.config.settings_config import AppSettings, settings
 
 """
 创建一个实体类
@@ -37,7 +35,6 @@ class InfraConfig:
         default_factory=lambda: copy.deepcopy(embedding_config)
     )
     llm_config: LLMConfig = field(default_factory=lambda: copy.deepcopy(llm_config))
-    mcp_config: McpConfig = field(default_factory=lambda: copy.deepcopy(mcp_config))
     milvus_config: MilvusConfig = field(
         default_factory=lambda: copy.deepcopy(milvus_config)
     )
@@ -50,7 +47,6 @@ class InfraConfig:
     reranker_config: RerankerConfig = field(
         default_factory=lambda: copy.deepcopy(reranker_config)
     )
-    settings: AppSettings = field(default_factory=lambda: copy.deepcopy(settings))
 
 
 infra_config = InfraConfig()

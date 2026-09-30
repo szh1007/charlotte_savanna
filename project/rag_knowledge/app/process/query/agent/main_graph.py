@@ -3,7 +3,7 @@ from langgraph.graph import END, StateGraph
 from ..nodes._08_item_name_confirm import node_item_name_confirm
 from ..nodes._09_1_search_embedding import node_search_embedding
 from ..nodes._09_2_search_embedding_hyde import node_search_embedding_hyde
-from ..nodes._09_3_web_search_mcp import node_web_search_mcp
+from ..nodes._09_3_web_search import node_web_search
 from ..nodes._10_rrf import node_rrf
 from ..nodes._11_rerank import node_rerank
 from ..nodes._12_answer_output import node_answer_output
@@ -25,7 +25,7 @@ graph = (
     .add_node(node_item_name_confirm)
     .add_node(node_search_embedding)
     .add_node(node_search_embedding_hyde)
-    .add_node(node_web_search_mcp)
+    .add_node(node_web_search)
     .add_node(node_rrf)
     .add_node(node_rerank)
     .add_node(node_answer_output)
@@ -37,12 +37,12 @@ graph = (
             "DIRECT_OUTPUT": "node_answer_output",
             "COMMON_SEARCH": "node_search_embedding",
             "HYDE": "node_search_embedding_hyde",
-            "WEB_SEARCH": "node_web_search_mcp",
+            "WEB_SEARCH": "node_web_search",
         },
     )
     .add_edge("node_search_embedding", "node_rrf")
     .add_edge("node_search_embedding_hyde", "node_rrf")
-    .add_edge("node_web_search_mcp", "node_rrf")
+    .add_edge("node_web_search", "node_rrf")
     .add_edge("node_rrf", "node_rerank")
     .add_edge("node_rerank", "node_answer_output")
     .add_edge("node_answer_output", END)

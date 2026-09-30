@@ -119,7 +119,11 @@ def hybrid_search(
     :param limit: 混合搜索最终返回结果数量, 默认 5
     :param output_fields: 需要返回的字段列表, 默认返回 item_name
     :param search_params: 搜索参数, 如 ef/topk 等, 默认 None
-    :return: 混合搜索结果列表, 搜索失败返回 None
+    :return: 命中列表 (已拆掉 pymilvus 的外层 per-query 维度).
+        检索失败或没有命中一律返回空列表 —— **绝不返回 None**:
+        调用方此前一律 `response[0]`, 拿到 None 就会崩在
+        `'NoneType' object is not subscriptable` 上, 真正的错因 (Milvus 抖动)
+        反被这一行不相干的类型错误盖住.
     """
     try:
         # 初始化加权排名器: 按照权重融合稠密和稀疏向量的搜索结果
@@ -142,13 +146,15 @@ def hybrid_search(
             search_params=search_params,
         )
 
-        result_count = len(res[0]) if res and res[0] else 0
+        # pymilvus 返回的是「每个 query 一份命中」的外层列表; 本项目每个请求只发
+        # 一个 query, 所以在这里一次拆掉 —— 免得三个调用方各写一遍 response[0]
+        hits = res[0] if res else []
         logger.info(
-            f"Milvus 混合搜索完成, 集合[{collection_name}]共检索到{result_count}条结果"
+            f"Milvus 混合搜索完成, 集合[{collection_name}]共检索到{len(hits)}条结果"
         )
-        return res
+        return hits
     except Exception as e:
         logger.error(
             f"Milvus 混合搜索执行失败, 集合[{collection_name}]:{e!s}", exc_info=True
         )
-        return None
+        return []

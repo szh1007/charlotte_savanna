@@ -28,6 +28,7 @@ from app.process.load.nodes._05_item_name_recognition import (
 from app.process.load.nodes._06_bge_embedding import node_bge_embedding
 from app.process.load.nodes._07_import_milvus import node_import_milvus
 from app.process.query.agent.state import create_query_default_state
+from app.process.query.nodes._08_item_name_confirm import node_item_name_confirm
 from app.process.query.nodes._09_1_search_embedding import node_search_embedding
 from app.process.query.nodes._09_2_search_embedding_hyde import (
     node_search_embedding_hyde,
@@ -40,7 +41,6 @@ from app.rag_eval.dataset import (
     TEST_FILE_TITLE,
     TEST_ITEM_NAME,
     build_import_chunks,
-    build_web_search_docs,
     load_batch_eval_cases,
 )
 from app.rag_eval.metrics import evaluate_query_state
@@ -259,32 +259,56 @@ def run_query_eval_case(case_data: dict) -> dict:
     给定一条题库问题, 让真实查询链路完整跑一遍,
     最后把查询结果和标注答案做对比.
     """
-    # 1. 构造查询 state. 这里直接把题库里的 expected_item_names 放进去,
-    # 避免主体识别波动影响"召回评测"本身.
+    # 1. 构造查询 state. 只给原始问题 —— **不再注入 expected_item_names**:
+    # 注进去的话, 主体识别那一层根本没跑, 报告里的"平均主体命中率"是 1.0
+    # 这个构造出来的数, 不代表系统能力 (issue C02).
+    # 也不注入联网占位数据了: 那是 rerank 强制要求 web 非空时代的补丁,
+    # 空值降级落地后这条约束已经不存在, 而假文档会真的进精排池抢名次.
     state = create_query_default_state(
         session_id=f"{case_data['case_id']}_query",
         original_query=case_data["question"],
         rewritten_query=case_data["question"],
-        item_names=case_data["expected_item_names"],
         is_stream=False,
-        web_search_docs=build_web_search_docs(),
     )
 
-    # 2. 固定 HyDE 输出, 避免大模型随机性影响评测稳定性.
+    # 2. 真实跑主体识别 (LLM 改写 + 提取 item_names + 拿 item_name 集合确认).
+    # 历史读写在这里被替换掉: 评测要的是「给定这句话, 它能不能认出主体」,
+    # 不是多轮指代消解; 真读写会让同一题第二次跑的结果和第一次不一样,
+    # 也会把评测流量写进线上的 Mongo 历史.
+    with (
+        patch(
+            "app.rag.query.item_name_confirm_service._get_history_by_session_id",
+            return_value=[],
+        ),
+        patch(
+            "app.rag.query.item_name_confirm_service._save_user_chat_message",
+            return_value=None,
+        ),
+    ):
+        state.update(node_item_name_confirm(state))
+
+    # 3. 主体没确认出来 → 三路召回跑不了. 如实记成"这条没召回"
+    # (后面几层全 0), 而不是替它把答案填进去.
+    if not state.get("item_names"):
+        return evaluate_query_state(result_state=state, expected=case_data)
+
+    # 4. 固定 HyDE 输出, 避免大模型随机性影响评测稳定性.
     # 这样每次跑同一题, HyDE 这一层的检索输入都保持一致.
     # 问题 -> 假设性答案
+    # **边界要说清**: 被固定的是「HyDE 那一路的召回输入」, 所以报告里
+    # HyDE 那一层的分数不代表真实 HyDE 效果; 其余三层走真链路.
     with patch(
         "app.rag.query.hyde_search_service._call_llm_by_rewritten_query",
         return_value="本RAG项目评估中, 无假设性输出, 忽略即可",
     ):
-        # 3. 逐层执行真实查询链路.
+        # 5. 逐层执行真实查询链路.
         # 每个节点执行完后, 结果都会回写到 state 里, 供后续评测计算使用.
         state.update(node_search_embedding(state))
         state.update(node_search_embedding_hyde(state))
         state = node_rrf(state)
         state = node_rerank(state)
 
-    # 4. 用 metrics 模块统一计算这条题的评测结果.
+    # 6. 用 metrics 模块统一计算这条题的评测结果.
     return evaluate_query_state(result_state=state, expected=case_data)
 
 
@@ -406,6 +430,20 @@ def _to_chinese_summary(summary: dict) -> dict:
     }
 
 
+# 报告口径. 随数字一起写进报告文件, 免得报告被单独拿走之后没人知道哪个数不能当真.
+REPORT_CAVEATS: list[str] = [
+    "题库的问句里**已经写了主体名**; 所以「平均主体命中率」量的是"
+    "「明说的名字能不能对上库里 item_name 的写法」, 不含「从口语化提问里推断主体」.",
+    "主体识别走真实链路 (LLM 改写 + 提取 + item_name 集合确认); 历史读写被替换为空,"
+    " 因为要测的是「给定这句话能不能认出主体」, 不是多轮指代消解.",
+    "HyDE 那一路的召回输入被固定成一段占位文字 (为了让同一题每次跑的结果一致),"
+    " 所以 HyDE 那一层的分数**不代表真实 HyDE 效果**; 其余三层走真链路.",
+    "联网那一路不参与评测 (评测对象是本地知识库召回), 不再注入占位文档.",
+    "题库只有一篇文档 (hak180产品安全手册, 19 个 chunk), 题数 50 ——"
+    " 规模小, 跨文档与多主体的情形没被覆盖.",
+]
+
+
 def save_batch_eval_report(
     eval_results: list[dict],
     summary: dict,
@@ -431,6 +469,8 @@ def save_batch_eval_report(
     report_path.write_text(
         json.dumps(
             {
+                # 口径随数字一起走 —— 报告被单独拿走时, 这几句不能掉队.
+                "口径说明": REPORT_CAVEATS,
                 "汇总结果": _to_chinese_summary(summary),
                 "详细结果": [
                     _to_chinese_case_result(result) for result in eval_results

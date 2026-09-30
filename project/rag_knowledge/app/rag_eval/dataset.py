@@ -8,8 +8,7 @@
 
 阅读顺序建议:
 1. 先看 `build_import_chunks()`, 理解测试知识有哪些;
-2. 再看 `build_web_search_docs()`, 理解联网占位数据;
-3. 最后看 `load_batch_eval_cases()`, 理解题库文件如何读取.
+2. 再看 `load_batch_eval_cases()`, 理解题库文件如何读取.
 """
 
 import json
@@ -50,31 +49,6 @@ def build_import_chunks() -> list[dict]:
     if not IMPORT_CHUNKS_JSON_FILE.is_file():
         raise FileNotFoundError(f"测试知识文件不存在: {IMPORT_CHUNKS_JSON_FILE}")
     return json.loads(IMPORT_CHUNKS_JSON_FILE.read_text(encoding="utf-8"))
-
-
-def build_web_search_docs() -> list[dict]:
-    """
-    构造联网占位结果.
-
-    返回值:
-    - list[dict]: 模拟联网检索结果的列表
-
-    字段说明:
-    - title: 网页标题
-    - text: 网页摘要(与 rerank 阶段读取的字段名一致)
-    - url: 网页地址
-
-    为什么只放一条固定数据:
-    - 当前项目 rerank 阶段要求同时存在本地候选和联网候选;
-    - 评测重点是本地召回链路, 所以这里用稳定占位数据避免联网波动干扰结果.
-    """
-    return [
-        {
-            "title": "联网占位结果",
-            "text": "这是一条联网占位结果, 用于满足 rerank 入参, 不提供关键答案.",
-            "url": "https://example.com/hak180-placeholder",
-        }
-    ]
 
 
 def load_batch_eval_cases() -> list[dict]:

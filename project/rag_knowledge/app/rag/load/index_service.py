@@ -32,7 +32,7 @@ def _validate_data(state: LoadState) -> list[dict[str, str]]:
 @step_log("_prepared_chunks_collection")
 def _prepared_chunks_collection():
     """创建chunks集合"""
-    milvus_client = infra_milvus.client()
+    milvus_client = infra_milvus.require_client()
 
     # 检查集合是否已存在
     if milvus_client.has_collection(infra_milvus.chunks_collection):
@@ -97,7 +97,7 @@ def _prepared_chunks_collection():
 def _insert_chunks_data(embeddings: list[dict]):
     """插入数据"""
     file_title: str = embeddings[0].get("file_title")
-    milvus_client = infra_milvus.client()
+    milvus_client = infra_milvus.require_client()
 
     # 2.先删除旧数据
     milvus_client.delete(

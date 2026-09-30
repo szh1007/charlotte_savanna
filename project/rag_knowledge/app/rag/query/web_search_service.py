@@ -46,34 +46,3 @@ def _call_tavily_search(rewritten_query: str):
             )
 
     return web_search_docs
-
-
-# @step_log("_call_mcp_tool")
-# async def _call_mcp_tool(rewritten_query: str):
-#     """OpenAI MCP"""
-#     mcp_server = MCPServerStreamableHttp(
-#         name="TEST_MCP_NAME",
-#         params={
-#             "url": "TEST_MCP_URL",
-#             "headers": {"Authorization": f"Bearer TEST_API_KEY"},
-#             "timeout": 10,
-#         },
-#         cache_tools_list=True,
-#         max_retry_attempts=3,
-#     )
-
-#     # 连接mcp服务
-#     await mcp_server.connect()
-
-#     try:
-#         # list_tool = await mcp_server.list_tools()
-#         result = await mcp_server.call_tool(
-#             tool_name="TEST_TOOL_NAME",
-#             arguments={"query": rewritten_query, "count": 10},
-#         )
-#         return result
-#     except Exception as e:
-#         logger.exception(f"MCP连接失败/调用工具失败: {str(e)}")
-#     finally:
-#         # 释放mcp资源实例
-#         await mcp_server.cleanup()

@@ -120,7 +120,7 @@ def _backup_chunks_json_with_item_name(md_path: str, chunks: list[dict[str, str]
 @step_log("_prepared_item_name_collection")
 def _prepared_item_name_collection():
     """创建item_name对应的集合"""
-    milvus_client = infra_milvus.client()
+    milvus_client = infra_milvus.require_client()
 
     # 检查集合是否已存在
     if milvus_client.has_collection(infra_milvus.item_name_collection):
@@ -183,7 +183,7 @@ def _insert_item_name_data(item_name, file_title):
     dense_vector = result["dense"][0]
     sparse_vector = result["sparse"][0]
 
-    milvus_client = infra_milvus.client()
+    milvus_client = infra_milvus.require_client()
 
     # 2.先删除旧数据
     milvus_client.delete(

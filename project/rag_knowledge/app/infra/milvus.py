@@ -25,8 +25,23 @@ class InfraMilvus:
         return infra_config.milvus_config.dim
 
     def client(self):
-        """获取 Milvus 客户端"""
+        """获取 Milvus 客户端 (连不上返回 None, 供健康检查判空用)"""
         return get_milvus_client()
+
+    def require_client(self):
+        """取客户端, **取不到就报错**.
+
+        载入链路用这个: `client()` 返回 None 是给健康检查判空用的
+        (`rag_eval/runner.py` 就是 `is not None`), 而 load 侧四个调用点此前拿到
+        None 直接 `.has_collection(...)`, 崩在 AttributeError 上 —— 真正的错因
+        (Milvus 连不上 / 没配 URL) 反被这一行不相干的类型错误盖住 (issue C02).
+        """
+        client = self.client()
+        if client is None:
+            raise RuntimeError(
+                "Milvus 客户端不可用 (连接失败或未配置 MILVUS_URL), 无法执行索引操作"
+            )
+        return client
 
     def create_requests(
         self,

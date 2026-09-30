@@ -1,10 +1,20 @@
+"""手工跑一遍加载图的**脚本**, 不是单元测试.
+
+它需要真实 MySQL / Milvus / MinerU, 且在 import 期就执行 —— 作为 pytest 用例会在
+**收集期**就炸 (issue C02 收口时改掉). `__test__ = False` 让 pytest 跳过整个模块;
+要跑它仍然可以: `python -m tests.test_load_graph`.
+"""
+
 from rich import print as rprint
 
-from ..app.process.load.agent.main_graph import graph
-from ..app.process.load.agent.state import create_default_state
+from app.process.load.agent.main_graph import graph
+from app.process.load.agent.state import create_default_state
+
+# pytest 见到它就整模块跳过 (这是脚本, 不是用例)
+__test__ = False
 
 
-def test_load_graph() -> None:
+def run_load_graph() -> None:
     """加载图完整执行: PDF 读取路径"""
     test_state = create_default_state(
         task_id="test_load_graph",
@@ -18,4 +28,5 @@ def test_load_graph() -> None:
     assert result["task_id"] == "test_load_graph"
 
 
-test_load_graph()
+if __name__ == "__main__":
+    run_load_graph()

@@ -24,6 +24,12 @@ def rerank_documents(state: QueryState) -> QueryState:
     # 2.对齐数据格式
     merged_list = _merge_rrf_and_web(rrf_chunks, web_search_docs)
 
+    # 2.5 两路都没东西可精排 —— 直接给空结果, 别把空列表喂给打分模型
+    if not merged_list:
+        logger.warning("两路召回都为空, 跳过精排, reranked_docs 置空")
+        state["reranked_docs"] = []
+        return state
+
     # 3.封装问题+答案的配对
     question_answer_pair = _create_question_answer_pair(rewritten_query, merged_list)
 
@@ -39,13 +45,20 @@ def rerank_documents(state: QueryState) -> QueryState:
 
 @step_log("_validate_data")
 def _validate_data(state: QueryState):
-    rewritten_query = state.get("rewritten_query")
-    rrf_chunks = state.get("rrf_chunks", [])
-    web_search_docs = state.get("web_search_docs", [])
+    """获取参数.
 
-    if not rrf_chunks or not web_search_docs or not rewritten_query:
-        logger.error("rrf_chunks / web_search_docs / rewritten_query 参数为空")
-        raise ValueError("rrf_chunks / web_search_docs / rewritten_query 参数为空")
+    只有 `rewritten_query` 是**真的必需** —— 没有它就没有可用来打分的问句.
+    两路召回结果为空都不是错误: 单路空 = 这一路没贡献, 全空 = 这次检索不到东西,
+    两者都该走到作答节点的「不知道」分支, 而不是把整条链变成 500 (issue C02).
+    """
+    rewritten_query = state.get("rewritten_query")
+    rrf_chunks = state.get("rrf_chunks") or []
+    web_search_docs = state.get("web_search_docs") or []
+
+    if not rewritten_query:
+        logger.error("rewritten_query 参数为空")
+        raise ValueError("rewritten_query 参数为空")
+
     return rewritten_query, rrf_chunks, web_search_docs
 
 
@@ -76,7 +89,12 @@ def _merge_rrf_and_web(
                 "text": doc.get("text"),
                 "score": 0.0,
                 "type": "web_search",
-                "url": "",
+                # url 必须原样带过来: 它此前被硬编码成空串, 于是答案里写着
+                # 「来源: 联网搜索」却给不出链接 —— 「可溯源」在 web 这一路是空的
+                # (issue C02).
+                # (score 保持 0.0 是有意的: 它马上会被 reranker 的分数覆盖,
+                #  两路在这里只是先对齐形状.)
+                "url": doc.get("url", ""),
             }
         )
 
@@ -163,19 +181,24 @@ def _dynamic_topk(merged_list: list[dict]):
     if max_topk > min_topk:
         # 从 min_topk 开始检查断崖
         for i in range(min_topk - 1, max_topk - 1):
-            current, next = merged_list[i], merged_list[i + 1]
+            current_chunk, next_chunk = merged_list[i], merged_list[i + 1]
+            current_score = current_chunk.get("score", 0.0)
+            next_score = next_chunk.get("score", 0.0)
 
             # 计算绝对插值和百分比差值
-            abs = current.get("score", 0.0) - next.get("score", 0.0)
-            ratio = abs / current.get("score")
+            gap = current_score - next_score
+            # 分母为 0 时没有「百分比」可言 (分数已归一化到 0~1, 当前项为 0
+            # 意味着后面全是 0, 不存在断崖) —— 此前直接相除会 ZeroDivisionError
+            # (issue C02)
+            ratio = gap / current_score if current_score else 0.0
 
-            if abs > RERANK_GAP_ABS or ratio > RERANK_GAP_RATIO:
+            if gap > RERANK_GAP_ABS or ratio > RERANK_GAP_RATIO:
                 # 断崖处
                 top_k = i + 1
                 logger.debug(
                     f"下标{i}位置发生断崖\n"
-                    f"当前值: {current.get('score')}\n"
-                    f"下一个值: {next.get('score', 0.0)}"
+                    f"当前值: {current_score}\n"
+                    f"下一个值: {next_score}"
                 )
                 break
 

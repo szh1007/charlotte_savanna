@@ -8,6 +8,13 @@ from ...shared.runtime.logger import logger, step_log
 from ...shared.utils.sse_utils import SSEEvent, push_to_session
 from .config import QUERY_HISTORY_LIMIT
 
+# 三路召回全空时给的话. **写死, 不叫模型** —— 手上没有资料可依据, 叫它只会编.
+# (issue C02: 此前这里直接 raise, 于是「检索不到」被当成错误, 整条链变成 500.)
+NO_RELEVANT_DOC_ANSWER = (
+    "没有在知识库里找到和这个问题相关的资料, 不好凭空作答。"
+    "可以换个说法再问一次, 或者补充一下具体是哪个设备、哪个型号。"
+)
+
 
 @step_log("generate_answer")
 def generate_answer(state: QueryState) -> QueryState:
@@ -21,27 +28,46 @@ def generate_answer(state: QueryState) -> QueryState:
             _validate_data(state)
         )
 
-        # 2.2 获取有效的聊天记录
-        histories = _get_history_by_session_id(session_id)
+        if reranked_docs:
+            # 2.2 获取有效的聊天记录
+            histories = _get_history_by_session_id(session_id)
 
-        # 2.3 拼接总提示词
-        answer_prompt = _create_answer_prompt(
-            item_names, rewritten_query, reranked_docs, histories
-        )
+            # 2.3 拼接总提示词
+            answer_prompt = _create_answer_prompt(
+                item_names, rewritten_query, reranked_docs, histories
+            )
 
-        # 2.4 调用模型获取answer
-        answer = _call_llm_create_answer(session_id, answer_prompt, is_stream)
+            # 2.4 调用模型获取answer
+            answer = _call_llm_create_answer(session_id, answer_prompt, is_stream)
 
-        # 2.5 提取片段中的图片image_urls
-        image_urls = _extract_chunk_and_url_image(reranked_docs)
+            # 2.5 提取片段中的图片image_urls
+            state["image_urls"] = _extract_chunk_and_url_image(reranked_docs)
+        else:
+            # 2.4' 一路都没捞到东西 —— 这是「检索不到」, 不是错误.
+            logger.warning(f"本次没有召回任何资料, 返回固定答复: {rewritten_query}")
+            answer = NO_RELEVANT_DOC_ANSWER
+            _push_fixed_answer(session_id, answer, is_stream)
 
         # 2.6 更新state
         state["answer"] = answer
-        state["image_urls"] = image_urls
 
     # 3.保存聊天记录(助手回答)
     _save_assistant_message(state)
     return state
+
+
+def _push_fixed_answer(session_id: str, answer: str, is_stream: bool) -> None:
+    """把写死的答复按流式协议推给前端.
+
+    用的是与真流式同一个事件类型 —— 前端不必为「这句是固定文案」分叉.
+    """
+    if not is_stream:
+        return
+    push_to_session(
+        session_id=session_id,
+        event=SSEEvent.DELTA,
+        data={SSEEvent.DELTA: answer},
+    )
 
 
 @step_log("_answer_exists_in_state")
@@ -57,19 +83,20 @@ def _answer_exists_in_state(state: QueryState) -> bool:
 
 @step_log("_validate_data")
 def _validate_data(state: QueryState):
+    """取参数.
+
+    `reranked_docs` **不在必填之列**: 一路都没召回是「检索不到」而不是错误,
+    由 `generate_answer` 走固定答复那条分支 (issue C02).
+    """
     session_id = state.get("session_id")
     item_names = state.get("item_names")
     rewritten_query = state.get("rewritten_query")
-    reranked_docs = state.get("reranked_docs")
+    reranked_docs = state.get("reranked_docs") or []
     is_stream = state.get("is_stream", False)
 
-    if not session_id or not item_names or not rewritten_query or not reranked_docs:
-        logger.error(
-            "session_id / item_names / rewritten_query / reranked_docs 参数为空"
-        )
-        raise ValueError(
-            "session_id / item_names / rewritten_query / reranked_docs 参数为空"
-        )
+    if not session_id or not item_names or not rewritten_query:
+        logger.error("session_id / item_names / rewritten_query 参数为空")
+        raise ValueError("session_id / item_names / rewritten_query 参数为空")
     return session_id, item_names, rewritten_query, reranked_docs, is_stream
 
 
@@ -97,12 +124,18 @@ def _create_answer_prompt(
     # 参考文档 chunks
     context: str = ""
     for doc in reranked_docs:
-        context += (
-            f"标题: {doc.get('title')}\n"
-            f"来源: {'联网搜索' if doc.get('type') == 'web_search' else '向量数据库'}\n"
-            f"置信度: {doc.get('score')}\n"
-            f"内容: {doc.get('text')}\n\n"
-        )
+        is_web = doc.get("type") == "web_search"
+        lines = [
+            f"标题: {doc.get('title')}",
+            f"来源: {'联网搜索' if is_web else '向量数据库'}",
+        ]
+        # 联网那一路要把链接给到模型, 否则「可溯源」这句话在 web 上是空的
+        # (issue C02: 链接此前在精排合并时被丢掉了)
+        if is_web and doc.get("url"):
+            lines.append(f"链接: {doc.get('url')}")
+        lines.append(f"置信度: {doc.get('score')}")
+        lines.append(f"内容: {doc.get('text')}")
+        context += "\n".join(lines) + "\n\n"
 
     # 历史聊天记录 histories
     if histories:

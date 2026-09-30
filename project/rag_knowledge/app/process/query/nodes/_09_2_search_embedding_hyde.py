@@ -4,6 +4,7 @@ from rich import print as rprint
 
 from ....rag.query.hyde_search_service import search_by_hyde
 from ....shared.runtime.logger import node_log
+from ....shared.runtime.route_isolation import isolate_route
 from ....shared.utils.task_utils import add_done_task, add_running_task
 from ..agent.state import QueryState, create_query_default_state
 
@@ -19,7 +20,9 @@ def node_search_embedding_hyde(state: QueryState) -> QueryState:
     """
     cur_func_name = sys._getframe().f_code.co_name
     add_running_task(state["session_id"], cur_func_name, state.get("is_stream"))
-    hyde_embedding_chunks = search_by_hyde(state)
+    hyde_embedding_chunks = isolate_route(
+        "HyDE 召回", lambda: search_by_hyde(state), []
+    )
     add_done_task(state["session_id"], cur_func_name, state.get("is_stream"))
     return {"hyde_embedding_chunks": hyde_embedding_chunks}
 

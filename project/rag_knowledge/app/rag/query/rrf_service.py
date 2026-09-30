@@ -3,16 +3,24 @@ from ...shared.runtime.logger import logger, step_log
 from .config import MILVUS_CHUNK_RRF_TOP_K
 
 
-@step_log("_validate_data")
-def _validate_data(state: QueryState):
-    """获取核心参数并且校验"""
+@step_log("_collect_route_chunks")
+def _collect_route_chunks(state: QueryState):
+    """获取两路召回结果.
 
-    embedding_chunks = state.get("embedding_chunks")
-    hyde_embedding_chunks = state.get("hyde_embedding_chunks")
+    **单路为空不是错误**: 它只意味着这一路没有贡献 (知识库里没有该主体的内容,
+    或某一路的外部依赖没返回东西). 上一版在这里 raise, 于是「单路为空」会把整条
+    问答链变成 500 —— 评测里必须塞一条假 web 文档才跑得起来, 正是这条硬伤的副产品
+    (issue C02). 两路都空时同样不抛, 由 `_use_rrf_rank` 返回空列表,
+    交给作答节点走「检索不到」的正常分支.
+    """
+    embedding_chunks = state.get("embedding_chunks") or []
+    hyde_embedding_chunks = state.get("hyde_embedding_chunks") or []
 
     if not embedding_chunks or not hyde_embedding_chunks:
-        logger.error("embedding_chunks / hyde_embedding_chunks 参数为空")
-        raise ValueError("embedding_chunks / hyde_embedding_chunks 参数为空")
+        logger.warning(
+            "召回有一路为空, 按「这一路没有贡献」降级继续: "
+            f"embedding={len(embedding_chunks)} hyde={len(hyde_embedding_chunks)}"
+        )
     return embedding_chunks, hyde_embedding_chunks
 
 
@@ -54,8 +62,8 @@ def _use_rrf_rank(weights: list, k: int = 60):
 
 @step_log("fuse_by_rrf")
 def fuse_by_rrf(state: QueryState) -> QueryState:
-    # 1.获取并校验参数
-    embedding_chunks, hyde_embedding_chunks = _validate_data(state)
+    # 1.取两路召回结果 (空值不抛, 见 _collect_route_chunks)
+    embedding_chunks, hyde_embedding_chunks = _collect_route_chunks(state)
 
     # 2.RRF排名融合
     weights = [

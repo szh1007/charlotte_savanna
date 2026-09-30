@@ -161,8 +161,8 @@ def _select_item_names_milvus(item_names: list[str]):
             limit=5 * 2,  # 多路查询, 每一路10个
         )
 
-        # 4.混合查询
-        response = infra_milvus.hybrid_search(
+        # 4.混合查询 (hybrid_search 已拆掉外层 per-query 维度, 失败返回空列表)
+        real_response = infra_milvus.hybrid_search(
             collection_name=infra_milvus.item_name_collection,
             reqs=reqs_list,
             ranker_weights=(0.4, 0.6),  # item_name检索, 更倾向于稀疏的权重
@@ -172,7 +172,6 @@ def _select_item_names_milvus(item_names: list[str]):
         )
 
         # 5. 解析结果
-        real_response = response[0]  # 混合检索只有1个query, 所以固定结果取第1个
         if not real_response:
             logger.warning(
                 f"{src_item_name} 相似度检索结果为空, "

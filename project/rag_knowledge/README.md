@@ -1,7 +1,7 @@
 # rag_knowledge — 基于 LangGraph 的工业级 RAG 知识库问答系统
 
 > 面向产品说明书 / 技术文档等**垂直领域知识库**的问答系统: 离线加载构建索引, 在线检索生成答案。
-> 核心思路: **主体识别（item_name）+ 多路召回（向量 / HyDE / Web）+ 融合排序（RRF）+ 精排（Rerank）+ 溯源回答**。
+> 核心思路: **主体识别（item_name）+ 三路并行召回（向量 / HyDE / Web）+ RRF 融合前两路 + 精排合并第三路（Rerank）+ 溯源回答**。
 
 ---
 
@@ -10,7 +10,7 @@
 | 能力 | 说明 |
 |------|------|
 | 文档加载 | PDF / Markdown 解析, 图片语义化, 标题级分块, 主体识别, 混合向量入库 |
-| 问答检索 | 问题改写 + 主体确认, 三路并行召回, RRF 融合, Rerank 精排, 流式输出 |
+| 问答检索 | 问题改写 + 主体确认, 三路并行召回（RRF 只融前两路, Web 在精排层并入）, Rerank 精排, 流式输出 |
 | 会话能力 | 多轮对话（指代消解）, 历史记录存储（MongoDB） |
 | 输出形式 | 文本答案 + 引用图片, 支持 SSE 流式 |
 | 评估体系 | golden 题库 + 分层检索指标（精确率/召回率/必命中率/MRR@5/NDCG@5）, 报告落盘 artifacts/ |
@@ -96,14 +96,14 @@ project/rag_knowledge/
 │       ├── model/                  #   llm_utils（客户端缓存）/ embedding_utils（BGE-M3 单例）/ reranker_utils
 │       ├── runtime/                #   logger（节点日志装饰器）/ load_prompt（模板渲染）
 │       ├── tool/                   #   工具占位
-│       └── utils/                  #   sse_utils（SSE 队列）/ task_utils（任务状态）/ rate_limit_utils / path_utils
+│       └── utils/                  #   sse_utils（SSE 队列）/ task_utils（任务状态）/ rate_limit_utils / escape_milvus_string_utils
 ├── assets/                         # 上传的源文档（按日期目录归档）
 ├── output/                         # 加载产物
 │   ├── <文档名>/                   #   解压目录: markdown + images/
 │   ├── zip/                        #   MinerU 返回的 zip 包
 │   └── ...
 ├── logs/                           # 运行日志
-├── tests/                          # 图级冒烟测试 + 评测最小调用样例（test_rag_eval_tester）
+├── tests/                          # 纯函数回归用例 + 4 个手工跑图脚本（test_load_graph 等, 已标 __test__ = False）
 └── .env                            # 环境变量（RK_ 前缀, 不提交）
 ```
 
@@ -156,7 +156,7 @@ graph LR
     A[node_item_name_confirm<br/>改写问题 + 确认主体] -->|DIRECT_OUTPUT| G[node_answer_output]
     A -->|COMMON_SEARCH| B[node_search_embedding<br/>向量检索]
     A -->|HYDE| C[node_search_embedding_hyde<br/>HyDE 检索]
-    A -->|WEB_SEARCH| D[node_web_search_mcp<br/>Tavily 网络搜索]
+    A -->|WEB_SEARCH| D[node_web_search<br/>Tavily 网络搜索]
     B --> E[node_rrf<br/>RRF 融合]
     C --> E
     D --> E
@@ -165,14 +165,15 @@ graph LR
     G --> X[END]
 ```
 
-> `router_after_item_name_confirm` 返回三个路由目标时, LangGraph 会**并行**执行三路召回, 汇总到 `node_rrf`。
+> `router_after_item_name_confirm` 返回三个路由目标时, LangGraph 会**并行**执行三路召回, 三条边都汇到 `node_rrf`。
+> **但 `node_rrf` 只融合前两路**（向量 / HyDE, 各 0.5 权重）—— 联网那一份只是**穿过**这个节点, 真正并入是在 `node_rerank` 的 `_merge_rrf_and_web` 里。别把「三条边汇到 RRF」读成「RRF 融了三路」。
 
 | 节点 | 服务实现 | 职责 | 关键细节 |
 |------|----------|------|----------|
 | `_08 node_item_name_confirm` | `item_name_confirm_service.confirm_item_name` | 改写问题 + 确认知识库中存在的主体 | ① 取最近 10 条历史 → ② LLM（JSON 模式）提取 `item_names` + 改写 `rewritten_query`（指代消解 / 去口语化, ≤100 字符）→ ③ 每个 item_name 向量化后在 `item_name` 集合混合检索（稠密 0.4 / 稀疏 0.6）→ ④ 阈值判定: score ≥ **0.70** 为确定主体, ≥ **0.60** 为候选主体 → ⑤ 写状态并保存用户提问历史。**路由决策**: 有确定主体 → 三路并行检索; 仅候选 → 直接把候选列表作为答案输出; 无主体 → 提示"未检测到主体" |
 | `_09-1 node_search_embedding` | `embedding_search_service.search_by_embedding` | 普通向量混合检索（第一路） | `rewritten_query` 向量化 → Milvus 稠密 + 稀疏混合检索（权重 0.7 / 0.3, 偏向稠密语义）, `expr="item_name in [...]"` 过滤主体, 取 Top 10 候选 → 最终 Top 5 |
 | `_09-2 node_search_embedding_hyde` | `hyde_search_service.search_by_hyde` | HyDE 检索（第二路, 提高召回） | ① LLM 先生成一段假设性答案（≤300 字）→ ② `问题 + 假设性答案` 拼接后向量检索 → 同样的 expr 过滤。弥补问题表述不清、向量匹配不足的场景 |
-| `_09-3 node_web_search_mcp` | `web_search_service.search_by_web` | Tavily 网络搜索（第三路, 补充知识库不足） | `rewritten_query` 直接搜索, 过滤 `score > 0.5`, 取前 10 条; 结果标记 `type=web_search` 带 URL |
+| `_09-3 node_web_search` | `web_search_service.search_by_web` | Tavily 网络搜索（第三路, 补充知识库不足） | `rewritten_query` 直接搜索（`max_results=5`）, 过滤 `score > 0.5`; 结果标记 `type=web_search` 带 URL |
 | `_10 node_rrf` | `rrf_service.fuse_by_rrf` | RRF 加权融合排序 | `rrf_score = w * (1 / (k + rank))`, k=60; embedding 与 hyde 各 0.5 权重; 按 chunk_id 去重累加, 取 Top 5 |
 | `_11 node_rerank` | `rerank_service.rerank_documents` | bge-reranker 精确打分重排 | ① RRF 结果与 Web 结果合并统一格式 → ② 超长文本（超过 512 token 窗口）先用 LLM 压缩 → ③ reranker 对「问题-文本」对打分（normalize）→ ④ 排序后**动态 TopK**: 从第 3 名起检测"断崖"（相邻分差 > 0.2 或降幅 > 20%）, 断崖即截断, 上限 10 条 |
 | `_12 node_answer_output` | `answer_service.generate_answer` | 生成最终答案 | ① 若 state 已有 answer（主体未确认分支）直接返回 → ② 组装 prompt（参考内容 + 置信度 + 来源 + 历史对话 + 主体）→ ③ 模型生成（流式则 SSE `DELTA` 逐字推送）→ ④ 从命中 chunk 提取图片 URL → ⑤ 保存助手回答到 MongoDB |
@@ -253,13 +254,29 @@ graph LR
 1. **评测数据入库** (`run_insert_test_data`): 读取真实加载产物 `output/hak180产品安全手册/hak180产品安全手册_new.json` → 走真实导入链路（`_05` 主体识别 / `_06` 向量化 / `_07` 导入 Milvus, 完成后 flush 保证检索可见）→ 查询真实 chunk_id, 生成题库 `artifacts/eval_cases.json`（含 `gold_chunk_ids` 相关标注 + `must_hit_chunk_ids` 关键标注）
 2. **批量评测** (`run_eval`): 逐条走真实查询链路（`_09-1` 普通检索 / `_09-2` HyDE / `_10` RRF / `_11` Rerank）→ 每层独立计算指标 → 汇总平均 → 报告落盘 `artifacts/eval_report.json`（汇总 + 每题分层详情）
 
-### 6.3 稳定性设计
+### 6.3 口径与稳定性设计
 
-- **固定 LLM 不确定性**: 主体识别与 HyDE 输出用 `patch` 固定（题库直接注入 `expected_item_names`, HyDE 输出固定文案）, 排除模型随机性对检索指标的影响
+> 这一节 2026-09-30（issue C02）改过口径, 改动写在每条里 —— **读数字之前先读这里**。
+
+- **主体识别走真实链路**: 只给原始问题, **不再注入 `expected_item_names`**。
+  此前是注进去的, 于是那一层根本没跑, 报告里的"主体命中率 1.0"是**构造出来的数**,
+  不代表系统能力。现在命中率是真测出来的; 若主体没确认出来, 这一题如实记成全 0。
+  （历史读写被替换为空: 要测的是「给定这句话能不能认出主体」, 不是多轮指代消解,
+  真读写还会让同一题第二次跑的结果和第一次不一样。）
+- **HyDE 那一路的输入被固定**: 为了让同一题每次跑的结果一致, HyDE 的假设性答案固定成
+  一段占位文字 —— 所以**那一层的分数不代表真实 HyDE 效果**; 其余三层走真链路。
+  这条边界同时写进了报告文件的 `口径说明` 字段。
+- **联网那一路不参与评测**: 评测对象是本地知识库召回。此前 rerank 强制要求 web 非空,
+  评测里塞过一条**假文档**; 空值降级落地后这条约束没有了, 假文档也不再注入
+  （它本来会真的进精排池抢名次）。
 - **4 层独立评估**: 普通检索 / HyDE 检索 / RRF 融合 / 最终重排结果分别算分, 可定位"哪一层拖了后腿"（基础召回差 / 融合后掉了 / rerank 选错）
-- **Web 占位**: 联网检索用固定占位结果, 避免网络波动干扰, 评测重点聚焦本地召回链路
 
-### 6.4 当前基线（50 用例, 2026-09-01）
+### 6.4 基线（50 用例, 2026-09-01 跑的 —— **旧口径, 待重跑**）
+
+> ⚠️ **下表是 2026-09-01 那一版的数**: 当时主体识别被 `patch` 掉（题库直接注入
+> `expected_item_names`）, 并且用了一条**联网占位文档**满足 rerank 的入参要求。
+> 2026-09-30（C02）把这两条都改了（见 §6.3）, **数字会变**, 新基线待重跑覆盖。
+> 旧数字特意留着 —— 让人看得见口径变过, 而不是让两组不可比的数悄悄混在一起。
 
 | 层级 | 精确率 | 召回率 | 必命中率 | MRR@5 | NDCG@5 |
 |------|--------|--------|----------|-------|--------|
@@ -268,7 +285,10 @@ graph LR
 | RRF 融合 | 0.536 | 0.660 | 0.760 | 0.834 | 0.660 |
 | 最终重排结果 | 0.625 | 0.562 | 0.760 | 0.792 | 0.586 |
 
-主体命中率 1.0。可读结论: Rerank 提升精确率（0.536 → 0.625）但牺牲召回率（0.660 → 0.562）, 动态 TopK 断崖截断是主要原因（见 §5.2-2）; 可结合 §7 改进方向继续迭代。
+「主体命中率 1.0」是**旧口径下的构造值**（预期主体被直接塞进 state, 那层没跑）——
+新口径下它是真测值。
+
+**可读结论（旧口径仍然成立的部分）**: Rerank 提升精确率（0.536 → 0.625）但牺牲召回率（0.660 → 0.562）, 动态 TopK 断崖截断是主要原因（见 §5.2-2）; 可结合 §7 改进方向继续迭代。
 
 ### 6.5 运行方式
 
@@ -368,8 +388,8 @@ python -m project.rag_knowledge.app.api.server
 python -m project.rag_knowledge.app.process.load.nodes._05_item_name_recognition
 python -m project.rag_knowledge.app.process.query.nodes._08_item_name_confirm
 
-# 4. 图级测试
-python -m pytest project/rag_knowledge/tests/
+# 4. 回归测试（纯函数, 不需要 Milvus / LLM / Mongo）
+cd project/rag_knowledge && python -m pytest
 
 # 5. RAG 评估（详见 §6, 需在子项目目录下运行）
 cd project/rag_knowledge && python -m tests.test_rag_eval_tester
@@ -379,4 +399,4 @@ cd project/rag_knowledge && python -m tests.test_rag_eval_tester
 
 ---
 
-> 最后更新: 2026-09-01
+> 最后更新: 2026-09-30（C02: 分块两处真 bug 修复 · 单路为空降级而非 500 · Milvus 返回值契约 · 联网链接不再丢 · 过滤表达式转义 · 评测口径改为「主体识别真跑」· 死代码清理 · 测试骨架）
