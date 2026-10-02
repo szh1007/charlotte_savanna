@@ -72,7 +72,6 @@ def test_chunk_metrics_on_a_perfect_hit():
     assert metrics["precision"] == 1.0
     assert metrics["recall"] == 1.0
     assert metrics["must_hit_rate"] == 1.0
-    assert metrics["first_hit_rank"] == 1
     assert metrics["mrr_at_k"] == 1.0
 
 
@@ -84,7 +83,6 @@ def test_chunk_metrics_penalises_a_late_first_hit():
         must_hit_chunk_ids=["1"],
     )
 
-    assert metrics["first_hit_rank"] == 3
     assert metrics["mrr_at_k"] == round(1 / 3, 4)
 
 
@@ -106,7 +104,6 @@ def test_chunk_metrics_with_nothing_retrieved():
     )
 
     assert metrics["recall"] == 0.0
-    assert metrics["first_hit_rank"] == 0
 
 
 def test_chunk_metrics_ndcg_rewards_putting_the_right_answer_first():

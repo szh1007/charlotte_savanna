@@ -1,12 +1,14 @@
 """
 RAG 评估执行模块.
 
-可以把这个文件理解成"评估流程主脚本", 主要负责 4 件事:
+可以把这个文件理解成"评估流程主脚本", 主要负责 3 件事:
 
-1. 把测试知识通过真实导入链路写入 Milvus;
-2. 读取题库, 逐条走真实查询链路;
-3. 统计每一层的召回效果;
-4. 输出汇总结果和报告文件.
+1. 读取题库, 逐条走真实查询链路;
+2. 统计每一层的召回效果;
+3. 输出汇总结果和报告文件.
+
+**评测知识从哪来**: 由真实加载链路 (`load_graph`) 建进 Milvus, 这个包不自己导入
+测试数据 —— 见 `dataset.py` 的说明.
 
 这个文件不追求过度抽象, 优先保证:
 - 顺着往下读就能看懂;
@@ -15,18 +17,12 @@ RAG 评估执行模块.
 """
 
 import json
-import time
+from datetime import datetime
 from pathlib import Path
 from statistics import mean
 from unittest.mock import patch
 
 from app.infra.milvus import infra_milvus
-from app.process.load.agent.state import create_default_state
-from app.process.load.nodes._05_item_name_recognition import (
-    node_item_name_recognition,
-)
-from app.process.load.nodes._06_bge_embedding import node_bge_embedding
-from app.process.load.nodes._07_import_milvus import node_import_milvus
 from app.process.query.agent.state import create_query_default_state
 from app.process.query.nodes._08_item_name_confirm import node_item_name_confirm
 from app.process.query.nodes._09_1_search_embedding import node_search_embedding
@@ -35,19 +31,18 @@ from app.process.query.nodes._09_2_search_embedding_hyde import (
 )
 from app.process.query.nodes._10_rrf import node_rrf
 from app.process.query.nodes._11_rerank import node_rerank
-from app.rag_eval.dataset import (
-    ARTIFACTS_DIR,
-    IMPORT_CHUNKS_JSON_FILE,
-    TEST_FILE_TITLE,
-    TEST_ITEM_NAME,
-    build_import_chunks,
-    load_batch_eval_cases,
-)
+from app.rag.query.config import RERANK_MAX_TOPK
+from app.rag_eval.dataset import ARTIFACTS_DIR, load_batch_eval_cases
 from app.rag_eval.metrics import evaluate_query_state
 from app.shared.clients import mongo_utils
 from app.shared.config.embedding_config import embedding_config
 from app.shared.config.milvus_config import milvus_config
 from app.shared.config.reranker_config import reranker_config
+
+# 精确率只对最终层有意义: 前几层的"检索条数"是我们自己设的召回池大小, 分母
+# (命中数 / K) 因此是人为的 —— 池子设 20 就是 20 分之一, 它测的是池子多大,
+# 不是检索准不准. 最终层的条数由断崖截出来, 那才是真正交付给作答链路的列表.
+_PRECISION_LAYERS = {"reranked_docs"}
 
 LAYER_LABELS = {
     "embedding_chunks": "普通检索",
@@ -57,27 +52,12 @@ LAYER_LABELS = {
 }
 
 
-def insert_env_ready() -> bool:
-    """
-    判断"测试数据入库"所需环境是否齐全.
-
-    返回值:
-    - True: 可以执行入库
-    - False: 缺少必要配置
-    """
-    return bool(
-        milvus_config.milvus_url
-        and milvus_config.chunks_collection
-        and milvus_config.item_name_collection
-        and (embedding_config.bge_m3_path or embedding_config.bge_m3)
-    )
-
-
 def batch_eval_ready() -> bool:
     """
     判断"批量评测"所需环境是否齐全.
 
-    和入库相比, 这里额外要求 reranker 模型可用.
+    Milvus / chunk 集合 / item_name 集合 / BGE-M3 四样缺一不可: 前三样决定
+    检索跑不跑得起来, 最后一样决定 query 能不能向量化.
 
     返回值:
     - True: 可以执行批量评测
@@ -110,134 +90,6 @@ def close_mongo_client() -> None:
     mongo_tool = getattr(mongo_utils, "_history_mongo_tool", None)
     if mongo_tool is not None:
         mongo_tool.client.close()
-
-
-def _query_chunk_rows_with_retry(
-    milvus_client,
-    *,
-    file_title: str,
-    expected_count: int,
-    retry_times: int = 5,
-) -> list[dict]:
-    """
-    查询刚写入的 chunk 数据, 并做几次短暂重试.
-
-    参数:
-    - milvus_client: 当前项目的 Milvus 客户端
-    - file_title: 本次导入文件标题, 用于过滤出当前测试数据
-    - expected_count: 期望查回多少条 chunk
-    - retry_times: 最多重试次数
-
-    返回值:
-    - list[dict]: 查询到的 chunk 行数据
-
-    为什么要重试:
-    - 向量库刚写完数据时, 马上查询有时会出现短暂延迟.
-    """
-    for _ in range(retry_times):
-        chunk_rows = milvus_client.query(
-            collection_name=infra_milvus.chunks_collection,
-            filter=f"item_name == '{TEST_ITEM_NAME}'",
-            output_fields=[
-                "chunk_id",
-                "item_name",
-                "title",
-                "part",
-                "file_title",
-                "content",
-            ],
-        )
-        chunk_rows = [row for row in chunk_rows if row.get("file_title") == file_title]
-        if len(chunk_rows) >= expected_count:
-            chunk_rows.sort(key=lambda row: row["part"])
-            return chunk_rows
-        time.sleep(0.3)
-    return []
-
-
-def insert_batch_eval_dataset() -> dict:
-    """
-    写入评测测试数据, 并生成题库文件.
-
-    返回值:
-    - item_name: 本次写入的主体名称
-    - item_rows: item_name 集合查询结果
-    - chunk_rows: chunk 集合查询结果
-    - case_count: 本次生成的题库问题数量
-
-    执行步骤:
-    1. 检查环境;
-    2. 构造导入 state;
-    3. 走真实导入节点;
-    4. 查询回刚写入的数据;
-    5. 根据真实 chunk_id 生成题库;
-    6. 返回本次入库结果.
-    """
-    if not insert_env_ready():
-        raise RuntimeError("缺少 Milvus 或 Embedding 配置, 无法执行评测数据入库. ")
-
-    milvus_client = infra_milvus.client()
-    if milvus_client is None:
-        raise RuntimeError("MilvusClient 未成功初始化, 无法执行评测数据入库. ")
-
-    # 1. 准备导入 state.
-    # 参数说明:
-    # - task_id: 本次导入任务标识
-    # - file_title: 这份测试知识的标题
-    # - md_path: 主体识别节点要求非空, 指向真实加载产物(备份写入为幂等覆盖)
-    # - chunks: 待导入的测试知识数据集(来自真实加载产物 _new.json)
-    state = create_default_state(
-        task_id="rag_eval_batch_insert",
-        file_title=TEST_FILE_TITLE,
-        md_path=str(IMPORT_CHUNKS_JSON_FILE),
-        chunks=build_import_chunks(),
-    )
-
-    # 2. 固定主体识别结果, 保证测试数据每次都稳定.
-    # 这里不让大模型自由识别, 是为了避免测试数据每次导入出来的主体名称不一致.
-    with patch(
-        "app.rag.load.item_name_service._call_llm_return_item_name",
-        return_value=TEST_ITEM_NAME,
-    ):
-        state = node_item_name_recognition(
-            state
-        )  # item_name  item_name存储到向量数据库
-
-        # 3. 继续走真实导入链路: 向量化 -> 写入 Milvus.
-        state = node_bge_embedding(state)
-        state = node_import_milvus(state)
-
-    # 4. flush 使删除/插入对检索立即可见.
-    # Milvus 的 delete 是软删除, 不 flush 时旧批次数据可能仍被 ANN 检索命中,
-    # 导致库中存在多批次重复数据, 检索结果与题库 chunk_id 对不上.
-    milvus_client.flush(collection_name=infra_milvus.chunks_collection)
-    milvus_client.flush(collection_name=infra_milvus.item_name_collection)
-
-    # 5. 查询 item_name 集合, 确认主体索引已经写入.
-    item_rows = milvus_client.query(
-        collection_name=infra_milvus.item_name_collection,
-        filter=f"file_title == '{TEST_FILE_TITLE}'",
-        output_fields=["item_name", "file_title"],
-    )
-    if not item_rows:
-        raise RuntimeError("item_name 集合中未查询到评测数据. ")
-
-    # 6. 查询 chunk 集合, 拿到真实 chunk_id.
-    # 供题库同步使用(content 匹配对齐).
-    chunk_rows = _query_chunk_rows_with_retry(
-        milvus_client,
-        file_title=TEST_FILE_TITLE,
-        expected_count=len(build_import_chunks()),
-    )
-    if len(chunk_rows) != len(build_import_chunks()):
-        raise RuntimeError("chunks 集合中的评测数据数量与预期不一致. ")
-
-    return {
-        "item_name": state["item_name"],
-        "item_rows": item_rows,
-        "chunk_rows": chunk_rows,
-        "case_count": len(load_batch_eval_cases()),
-    }
 
 
 def run_query_eval_case(case_data: dict) -> dict:
@@ -290,26 +142,27 @@ def run_query_eval_case(case_data: dict) -> dict:
     # 3. 主体没确认出来 → 三路召回跑不了. 如实记成"这条没召回"
     # (后面几层全 0), 而不是替它把答案填进去.
     if not state.get("item_names"):
-        return evaluate_query_state(result_state=state, expected=case_data)
+        return evaluate_query_state(
+            result_state=state, expected=case_data, rank_k=RERANK_MAX_TOPK
+        )
 
-    # 4. 固定 HyDE 输出, 避免大模型随机性影响评测稳定性.
-    # 这样每次跑同一题, HyDE 这一层的检索输入都保持一致.
-    # 问题 -> 假设性答案
-    # **边界要说清**: 被固定的是「HyDE 那一路的召回输入」, 所以报告里
-    # HyDE 那一层的分数不代表真实 HyDE 效果; 其余三层走真链路.
-    with patch(
-        "app.rag.query.hyde_search_service._call_llm_by_rewritten_query",
-        return_value="本RAG项目评估中, 无假设性输出, 忽略即可",
-    ):
-        # 5. 逐层执行真实查询链路.
-        # 每个节点执行完后, 结果都会回写到 state 里, 供后续评测计算使用.
-        state.update(node_search_embedding(state))
-        state.update(node_search_embedding_hyde(state))
-        state = node_rrf(state)
-        state = node_rerank(state)
+    # 4. 逐层执行真实查询链路.
+    # 每个节点执行完后, 结果都会回写到 state 里, 供后续评测计算使用.
+    #
+    # HyDE 走真实 LLM. 此前这里把它固定成一段占位文字, 想借此消除随机性 ——
+    # 但那条路的检索文本是 f"问题: {rewritten_query}, 假设性答案: {hyde_answer}",
+    # 问题原文仍在里面, 于是「固定」不但没消掉 HyDE, 反而把它退化成了普通检索的
+    # 近似 (报告里两层数字 0.619 / 0.618 几乎相同就是证据), RRF 融合也随之变成
+    # 同义反复. 代价是同一道题每次跑结果会有波动 —— 那是真实链路固有的.
+    state.update(node_search_embedding(state))
+    state.update(node_search_embedding_hyde(state))
+    state = node_rrf(state)
+    state = node_rerank(state)
 
     # 6. 用 metrics 模块统一计算这条题的评测结果.
-    return evaluate_query_state(result_state=state, expected=case_data)
+    return evaluate_query_state(
+        result_state=state, expected=case_data, rank_k=RERANK_MAX_TOPK
+    )
 
 
 def summarize_eval_results(eval_results: list[dict]) -> dict:
@@ -376,28 +229,35 @@ def summarize_eval_results(eval_results: list[dict]) -> dict:
 
 
 def _to_chinese_case_result(eval_result: dict) -> dict:
-    """
-    将单条评测结果转成更适合直接写报告的中文结构.
+    """将单条评测结果转成更适合直接写报告的中文结构.
+
+    两处口径上的取舍:
+    1. 题库标注 (`gold_chunk_ids` / `must_hit_chunk_ids`) 是题目自带的, 以前每层
+       各带一份, 等于同一份数据抄四遍 —— 现在提到题目级只写一次;
+    2. **精确率只给最终层看** —— 前几层的"检索条数"是我们自己设的召回池大小,
+       精确率的分母 (命中数 / K) 因此是人为的, 换个池子大小数就变, 它测的是池子
+       多大而不是检索准不准. 最终层的条数由断崖截出来, 那才是真正交付的列表.
     """
     chinese_layers = {}
     for layer_name, layer_result in eval_result.get("layers", {}).items():
-        chinese_layers[LAYER_LABELS.get(layer_name, layer_name)] = {
+        layer_block = {
             "检索结果chunk_id列表": layer_result.get("retrieved_chunk_ids", []),
             "检索结果数量": layer_result.get("retrieved_count", 0),
-            "标注相关chunk_id列表": layer_result.get("gold_chunk_ids", []),
-            "标注相关数量": layer_result.get("gold_count", 0),
             "命中chunk_id列表": layer_result.get("hit_chunk_ids", []),
-            "命中数量": layer_result.get("hit_count", 0),
-            "必须命中chunk_id列表": layer_result.get("must_hit_chunk_ids", []),
             "必须命中结果列表": layer_result.get("must_hit_ids", []),
-            "必须命中数量": layer_result.get("must_hit_count", 0),
-            "精确率": layer_result.get("precision", 0.0),
-            "召回率": layer_result.get("recall", 0.0),
-            "必命中率": layer_result.get("must_hit_rate", 0.0),
-            "MRR@5": layer_result.get("mrr_at_k", 0.0),
-            "NDCG@5": layer_result.get("ndcg_at_k", 0.0),
-            "首个命中位置": layer_result.get("first_hit_rank", 0),
         }
+        if layer_name in _PRECISION_LAYERS:
+            layer_block["精确率"] = layer_result.get("precision", 0.0)
+        layer_block.update(
+            {
+                "召回率": layer_result.get("recall", 0.0),
+                "必命中率": layer_result.get("must_hit_rate", 0.0),
+                # @K 跟着系统的返回条数上限走 (见 evaluate_query_state 的说明)
+                f"MRR@{RERANK_MAX_TOPK}": layer_result.get("mrr_at_k", 0.0),
+                f"NDCG@{RERANK_MAX_TOPK}": layer_result.get("ndcg_at_k", 0.0),
+            }
+        )
+        chinese_layers[LAYER_LABELS.get(layer_name, layer_name)] = layer_block
 
     return {
         "用例ID": eval_result.get("case_id", ""),
@@ -405,6 +265,8 @@ def _to_chinese_case_result(eval_result: dict) -> dict:
         "预期主体列表": eval_result.get("expected_item_names", []),
         "识别主体列表": eval_result.get("predicted_item_names", []),
         "主体命中率": eval_result.get("item_name_hit_rate", 0.0),
+        "标注相关chunk_id列表": eval_result.get("gold_chunk_ids", []),
+        "必须命中chunk_id列表": eval_result.get("must_hit_chunk_ids", []),
         "分层结果": chinese_layers,
     }
 
@@ -415,13 +277,18 @@ def _to_chinese_summary(summary: dict) -> dict:
     """
     chinese_layers = {}
     for layer_name, layer_summary in summary.get("layers", {}).items():
-        chinese_layers[LAYER_LABELS.get(layer_name, layer_name)] = {
-            "平均精确率": layer_summary.get("avg_precision", 0.0),
-            "平均召回率": layer_summary.get("avg_recall", 0.0),
-            "平均必命中率": layer_summary.get("avg_must_hit_rate", 0.0),
-            "平均MRR@5": layer_summary.get("avg_mrr_at_k", 0.0),
-            "平均NDCG@5": layer_summary.get("avg_ndcg_at_k", 0.0),
-        }
+        layer_block = {}
+        if layer_name in _PRECISION_LAYERS:
+            layer_block["平均精确率"] = layer_summary.get("avg_precision", 0.0)
+        layer_block.update(
+            {
+                "平均召回率": layer_summary.get("avg_recall", 0.0),
+                "平均必命中率": layer_summary.get("avg_must_hit_rate", 0.0),
+                f"平均MRR@{RERANK_MAX_TOPK}": layer_summary.get("avg_mrr_at_k", 0.0),
+                f"平均NDCG@{RERANK_MAX_TOPK}": layer_summary.get("avg_ndcg_at_k", 0.0),
+            }
+        )
+        chinese_layers[LAYER_LABELS.get(layer_name, layer_name)] = layer_block
 
     return {
         "用例总数": summary.get("case_count", 0),
@@ -436,18 +303,33 @@ REPORT_CAVEATS: list[str] = [
     "「明说的名字能不能对上库里 item_name 的写法」, 不含「从口语化提问里推断主体」.",
     "主体识别走真实链路 (LLM 改写 + 提取 + item_name 集合确认); 历史读写被替换为空,"
     " 因为要测的是「给定这句话能不能认出主体」, 不是多轮指代消解.",
-    "HyDE 那一路的召回输入被固定成一段占位文字 (为了让同一题每次跑的结果一致),"
-    " 所以 HyDE 那一层的分数**不代表真实 HyDE 效果**; 其余三层走真链路.",
+    "HyDE 走真实 LLM 生成假设性答案 (不再固定输出); 因此同一道题重跑会有波动.",
     "联网那一路不参与评测 (评测对象是本地知识库召回), 不再注入占位文档.",
-    "题库只有一篇文档 (hak180产品安全手册, 19 个 chunk), 题数 50 ——"
-    " 规模小, 跨文档与多主体的情形没被覆盖.",
+    "评测库是 4 份项目说明文档, 共 132 个 chunk (BilibiliDownloader 19 / CharPlot 24"
+    " / rag_knowledge 45 / rag_text2sql 44), 题数 40 —— 每份文档 10 题.",
+    "gold 只标「答案实际所在的 chunk」(1~5 条), 不是「主题相关集合」."
+    " 10 道精确题各 1 条; 其余是聚合题 (答案天然分散在多个小节, 如「计划从哪些方面"
+    " 改进」, 最多 5 条) —— 聚合题的 recall 是连续取值, 比 gold=1 的 0/1 分布更能"
+    " 分出检索质量的高低. must_hit 是其中缺了就答不出来的那一条.",
+    "gold/must 存的是 chunk_id, 而 Milvus 的 chunk_id 是**自增主键** —— 重建索引后"
+    " 全部重新分配, 题库必须跟着重映射, 否则 gold 会集体指向别的 chunk 而不报错.",
+    "索引侧从 2026-10-03 起在每个 chunk 的检索正文首行拼上祖先章节路径"
+    " (`## 5. 快速开始 > ### 5.2 环境变量`), 让子块带上它所属的节; 早于该日建的"
+    " 索引没有这条路径, 聚合题的召回会偏低.",
+    "返回条数由断崖决定 (见 README §6.3): 分数相对头部衰减过多就在那里断开,"
+    " 上下限是 RERANK_MIN_TOPK / RERANK_MAX_TOPK.",
+    "MRR@K / NDCG@K 的 K 取 RERANK_MAX_TOPK (返回条数上限) —— 固定 @5 会和"
+    " 「实际返回几条」脱节: 返回 8 条时第 6~8 位里的命中明明捞到了, 指标却按 0 算.",
+    "精确率只报最终层: 前几层的检索条数是我们自己设的召回池 (不是最终交付的列表),"
+    " 精确率的分母因此是人为的 —— 池子设多大, 数就是多大分之一, 它测的是池子"
+    " 而不是检索准不准. 最终层的条数由断崖截出来, 才代表真正交给作答链路的内容.",
 ]
 
 
 def save_batch_eval_report(
     eval_results: list[dict],
     summary: dict,
-    report_name: str = "eval_report.json",
+    report_name: str | None = None,
 ) -> Path:
     """
     保存批量评测报告.
@@ -459,11 +341,18 @@ def save_batch_eval_report(
     参数:
     - eval_results: 每道题的详细评测结果
     - summary: 整体汇总结果
-    - report_name: 报告文件名, 默认 `eval_report.json`
+    - report_name: 报告文件名; 不传时自动带上时间戳
+      (`eval_report_YYYYmmdd_HHMMSS.json`)
 
     返回值:
     - Path: 报告文件路径
+
+    为什么要时间戳: 口径或配置一变, 两组数字就不可比 —— 覆盖式写盘会让「上一版
+    到底多少分」变成查无对证 (这一轮改分块、改题库、改返回条数, 每次都覆盖了上一版).
     """
+    if not report_name:
+        report_name = f"eval_report_{datetime.now():%Y%m%d_%H%M%S}.json"
+
     ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
     report_path = ARTIFACTS_DIR / report_name
     report_path.write_text(
@@ -515,7 +404,10 @@ def run_batch_eval(case_list: list[dict] | None = None) -> dict:
 
     # 题库中的 gold/must 标注为当前库中的真实 chunk_id(字符串), 直接与检索结果比对.
     # 逐题跑查询链路, 拿到每一道题的分层评测结果.
-    eval_results = [run_query_eval_case(case_data) for case_data in real_case_list]
+    eval_results = []
+    for i, case_data in enumerate(real_case_list):
+        print(f"{'-' * 50} case-{i + 1}: {case_data['question']} {'-' * 50}")
+        eval_results.append(run_query_eval_case(case_data))
     # 再把所有题的结果做平均汇总.
     summary = summarize_eval_results(eval_results)
     # 最后把结果写到报告文件.

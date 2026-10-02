@@ -3,7 +3,7 @@ from ...infra.model import infra_model
 from ...process.query.agent.state import QueryState
 from ...shared.runtime.logger import logger, step_log
 from ...shared.utils.escape_milvus_string_utils import build_in_expr
-from .config import MILVUS_CHUNK_RRF_TOP_K
+from .config import MILVUS_CHUNK_RECALL_TOP_K
 
 
 @step_log("search_by_embedding")
@@ -45,7 +45,7 @@ def _select_chunks_in_milvus(item_names: list[str], rewritten_query: str):
         dense_vector=dense_vector,
         sparse_vector=sparse_vector,
         expr=build_in_expr("item_name", item_names),
-        limit=MILVUS_CHUNK_RRF_TOP_K * 2,
+        limit=MILVUS_CHUNK_RECALL_TOP_K * 2,
     )
 
     # 3.混合查询
@@ -55,7 +55,7 @@ def _select_chunks_in_milvus(item_names: list[str], rewritten_query: str):
         reqs=reqs_list,
         ranker_weights=(0.7, 0.3),  # rewritten_query检索, 同时兼顾双方权重
         norm_score=True,
-        limit=MILVUS_CHUNK_RRF_TOP_K,
+        limit=MILVUS_CHUNK_RECALL_TOP_K,
         output_fields=[
             "chunk_id",
             "file_title",

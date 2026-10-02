@@ -121,7 +121,7 @@ def _compute_rank_metrics(
     - k: 只评估前 k 个位置
 
     返回值:
-    - dict: 包含 mrr_at_k / ndcg_at_k / first_hit_rank
+    - dict: 包含 mrr_at_k / ndcg_at_k
 
     公式:
     1. MRR@k = 1 / rank_of_first_hit, 未命中为 0;
@@ -130,11 +130,9 @@ def _compute_rank_metrics(
     """
     top_k = retrieved[:k]
     mrr = 0.0
-    first_hit_rank = 0
     for i, chunk_id in enumerate(top_k, start=1):
         if chunk_id in gold_set:
             mrr = 1.0 / i
-            first_hit_rank = i
             break
 
     dcg = sum(
@@ -148,7 +146,6 @@ def _compute_rank_metrics(
     return {
         "mrr_at_k": round(mrr, 4),
         "ndcg_at_k": round(ndcg, 4),
-        "first_hit_rank": first_hit_rank,
     }
 
 
@@ -239,13 +236,11 @@ def compute_chunk_metrics(
         # NDCG@k: 按位置打折的命中累积 / 理想排序累积.
         # 反映"正确答案整体靠前程度".
         "ndcg_at_k": rank_metrics["ndcg_at_k"],
-        # 第一个命中 gold 的排名(1 起), 0 表示未命中.
-        "first_hit_rank": rank_metrics["first_hit_rank"],
     }
 
 
 def evaluate_query_state(
-    result_state: dict[str, Any], expected: dict[str, Any]
+    result_state: dict[str, Any], expected: dict[str, Any], rank_k: int = 5
 ) -> dict[str, Any]:
     """
     将一次完整查询链路的 state 与标注答案进行对比.
@@ -253,6 +248,9 @@ def evaluate_query_state(
     参数:
     - result_state: 当前题目跑完整条查询链路后的 state
     - expected: 题库里这道题的标注数据
+    - rank_k: MRR / NDCG 看前 k 个位置. 由调用方传系统的返回条数上限
+      (`RERANK_MAX_TOPK`) —— 固定的 5 会和「实际返回几条」脱节: 返回 8 条时,
+      第 6~8 位里的命中明明捞到了, 指标却按 0 算.
 
     返回值:
     - dict: 这道题的完整评测结果
@@ -281,6 +279,7 @@ def evaluate_query_state(
             retrieved_chunk_ids=extract_chunk_ids(result_state.get(layer_name, [])),
             gold_chunk_ids=gold_chunk_ids,
             must_hit_chunk_ids=must_hit_chunk_ids,
+            rank_k=rank_k,
         )
 
     return {
@@ -290,6 +289,10 @@ def evaluate_query_state(
         "question": expected.get("question", ""),
         # 题库里配置的预期主体列表.
         "expected_item_names": expected_item_names,
+        # 题库标注 (各层共用同一份) —— 放在题目级写一次.
+        # 每层各自带一份的话, 一份数据要在报告里抄四遍, 纯冗余.
+        "gold_chunk_ids": gold_chunk_ids,
+        "must_hit_chunk_ids": must_hit_chunk_ids,
         # 当前流程最终识别出来的主体列表.
         "predicted_item_names": result_state.get("item_names", []),
         # 主体命中率:

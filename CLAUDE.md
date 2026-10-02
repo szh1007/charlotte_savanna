@@ -263,7 +263,7 @@ charlotte_savanna/
 - **后端**：FastAPI（`app/api/server.py`，端口 8100，原生 HTML 页面）+ LangGraph 双图（`load_graph` 离线建索引 / `query_graph` 在线问答）
 - **检索链路**：主体识别（item_name）+ 三路并行召回（向量 / HyDE / Tavily）+ RRF 融合 + bge-reranker 精排 + 溯源回答（SSE 流式）
 - **基础设施**：Milvus（`chunks` + `item_name` 两个集合）、MinerU 远程 PDF 解析、MinIO 图片存储、MongoDB 会话历史、BGE-M3 混合向量
-- **评估体系**：`app/rag_eval/` 统一入口 `RagEvalTester`，golden 题库 + 4 层检索指标（精确率/召回率/必命中率/MRR@5/NDCG@5），报告落盘 `artifacts/`
+- **评估体系**：`app/rag_eval/` 统一入口 `RagEvalTester`，golden 题库 + 4 层检索指标（召回率/必命中率/MRR@K/NDCG@K，精确率只报最终层），报告落盘 `artifacts/`
 - **配置**：环境变量 `RK_` 前缀（独立 `.env`），详细文档见 `project/rag_knowledge/README.md`
 
 ### 4.7 FastAPI / LangGraph（rag_text2sql 子项目）
@@ -355,7 +355,7 @@ charlotte_savanna/
 | 加载链路（load_graph） | ✅ | PDF（MinerU）/ MD → 图片语义化 → 分块 → 主体识别 → BGE-M3 → Milvus |
 | 查询链路（query_graph） | ✅ | 改写 + 主体确认 → 三路召回（向量/HyDE/Web）→ RRF → Rerank → 溯源回答 |
 | 基础设施 | ✅ | Milvus / MinIO / MongoDB / MinerU 远程解析 / Tavily |
-| 评估体系（rag_eval） | ✅ | golden 题库 50 用例 + 4 层检索指标，报告落盘 artifacts/ |
+| 评估体系（rag_eval） | ✅ | golden 题库 40 用例（4 份项目文档 × 10 题）+ 4 层检索指标，报告落盘 artifacts/ |
 
 > 已闭环，通过 `python -m project.rag_knowledge.app.api.server` 启动（127.0.0.1:8100，原生 HTML 页面，无独立前端）。详细文档见 `project/rag_knowledge/README.md`。
 

@@ -2,16 +2,14 @@
 RAG 评估测试类.
 
 这个文件故意写得很薄.
-你只需要记住一个类和两个方法:
+你只需要记住一个类和一个方法:
 
-- `RagEvalTester.run_insert_test_data()`
 - `RagEvalTester.run_eval()`
 
 其他具体流程都放在 `runner.py` 里.
 
-当前设计思路是:
-- 测试知识数据尽量多一些;
-- 测试问题保持少量但有代表性.
+前提: **知识库已经由真实加载链路 (`load_graph`) 建好, 题库也已经就位** ——
+评测包不负责导数据, 只负责拿题库去打这条已经跑起来的检索链路.
 """
 
 
@@ -25,27 +23,9 @@ class RagEvalTester:
     from app.rag_eval import RagEvalTester
 
     tester = RagEvalTester()
-    tester.run_insert_test_data()
     tester.run_eval()
     ```
     """
-
-    def run_insert_test_data(self) -> dict:
-        """
-        插入评测测试数据.
-
-        返回值包含:
-        - item_name: 写入的主体名称
-        - item_rows: item_name 集合查询结果
-        - chunk_rows: chunks 集合查询结果
-        - case_count: 生成的评测用例数量
-        """
-        from app.rag_eval.runner import close_mongo_client, insert_batch_eval_dataset
-
-        try:
-            return insert_batch_eval_dataset()
-        finally:
-            close_mongo_client()
 
     def run_eval(self) -> dict:
         """

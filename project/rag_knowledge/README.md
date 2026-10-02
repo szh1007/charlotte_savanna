@@ -13,7 +13,7 @@
 | 问答检索 | 问题改写 + 主体确认, 三路并行召回（RRF 只融前两路, Web 在精排层并入）, Rerank 精排, 流式输出 |
 | 会话能力 | 多轮对话（指代消解）, 历史记录存储（MongoDB） |
 | 输出形式 | 文本答案 + 引用图片, 支持 SSE 流式 |
-| 评估体系 | golden 题库 + 分层检索指标（精确率/召回率/必命中率/MRR@5/NDCG@5）, 报告落盘 artifacts/ |
+| 评估体系 | golden 题库 + 分层检索指标（召回率/必命中率/MRR@K/NDCG@K, 精确率只报最终层）, 报告落盘 artifacts/ |
 
 ### 技术栈
 
@@ -63,7 +63,6 @@ project/rag_knowledge/
 │   │   ├── hyde_prompt.prompt                    # 查询: HyDE 假设性答案
 │   │   ├── answer_out.prompt                     # 查询: 最终回答生成
 │   │   ├── image_summary.prompt                  # 加载: 图片语义总结（VL）
-│   │   ├── rerank_text_refine.prompt             # 查询: Rerank 前长文本压缩
 │   │   └── product_recognition_system.prompt     # 辅助
 │   ├── rag/                        # 业务服务层（节点调用的具体实现）
 │   │   ├── load/                   #   加载服务
@@ -86,10 +85,10 @@ project/rag_knowledge/
 │   │       └── config.py           #     阈值 / TopK / Rerank 参数
 │   ├── rag_eval/                   # RAG 评估子系统（评测样本 + 指标 + 执行）
 │   │   ├── dataset.py              #   测试知识 / 题库定义与读写
-│   │   ├── metrics.py              #   指标计算（主体命中率 / P / R / 必命中率 / MRR@5 / NDCG@5）
-│   │   ├── runner.py               #   评估执行: 数据入库 -> 批量评测 -> 汇总报告
+│   │   ├── metrics.py              #   指标计算（主体命中率 / 召回率 / 必命中率 / MRR@K / NDCG@K）
+│   │   ├── runner.py               #   评估执行: 走真实查询链路 -> 分层算分 -> 汇总报告
 │   │   ├── tester.py               #   RagEvalTester 统一入口类
-│   │   └── artifacts/              #   题库 eval_cases.json + 评测报告 eval_report.json
+│   │   └── artifacts/              #   题库 eval_cases.json + 评测报告 eval_report_<时间戳>.json
 │   └── shared/                     # 共享层（跨业务复用的基础能力）
 │       ├── clients/                #   milvus_utils（混合检索）/ mongo_utils（历史 CRUD）
 │       ├── config/                 #   各组件环境变量配置（llm / embedding / reranker / milvus / mineru / minio / mongo）
@@ -144,7 +143,7 @@ graph LR
 | `_01 node_entry` | `entry_service.resolve_input_file` | 识别输入文件类型, 校验路径 | 按扩展名设置 `is_md_read_enabled` / `is_pdf_read_enabled`; 不支持的类型抛异常; 记录 `file_title` |
 | `_02 node_pdf_to_md` | `pdf_parse_service.parse_pdf_to_markdown` | 调用 MinerU 将 PDF 解析为 Markdown | 三步: ① 创建上传 URL + batch_id → ② `requests.Session`（`trust_env=False` 防止请求头污染）上传 → ③ 轮询 `extract-results` 直到 `state=done`, 下载 zip 解压, `full.md` 重命名为 `<title>.md` |
 | `_03 node_md_img` | `enrich_markdown_images` | 处理 Markdown 中的图片: 让图片"可被检索" | ① 扫描 md 引用的图片及其前后 100 字符上下文 → ② VL 视觉模型总结图片含义 → ③ 上传 MinIO 获取 URL → ④ 把 `![xx](local)` 替换为 `![图片概述](URL)`, 产物写入 `<title>_new.md`; 图片目录为空则跳过 |
-| `_04 node_document_split` | `split_service.split_document` | 文档分块（语义切块 + 长度控制 + 可追溯） | ① **按多级标题切割**（连续标题拼接为父子链; 无标题内容归属下一个标题; 代码块整体保留）→ ② 超过 `CHUNK_SIZE=600` 用 RecursiveCharacterTextSplitter 递归切割（overlap=50, 分隔符: 段落→句子→标点）→ ③ 小于 `CHUNK_MIN=400` 且同父标题的相邻块合并（上限 `CHUNK_MAX_SIZE=1000`）→ ④ 补齐 `parent_title` / `part` 元数据 → ⑤ 备份 chunks 到 `<title>.json` |
+| `_04 node_document_split` | `split_service.split_document` | 文档分块（语义切块 + 长度控制 + 可追溯） | ① **按多级标题切割**（连续标题拼接为父子链; 无标题内容归属下一个标题; 代码块整体保留; 同时用**标题栈**给每块记下祖先链 `section_path`）→ ② 超过 `CHUNK_SIZE=600` 用 RecursiveCharacterTextSplitter 递归切割（overlap=50, 分隔符: 段落→句子→标点）→ ③ 小于 `CHUNK_MIN=400` 且同父标题的相邻块合并（上限 `CHUNK_MAX_SIZE=1000`）→ ④ 补齐 `parent_title` / `part` 元数据 → ⑤ **把祖先链替换进检索正文首行**（`### 5.2 环境变量` → `## 5. 快速开始 > ### 5.2 环境变量`; 必须排在 ②③ 之后, 那两个判据依赖 content 以标题行开头; 文档 H1 不入链）→ ⑥ 备份 chunks 到 `<title>.json` |
 | `_05 node_item_name_recognition` | `item_name_service.recognize_and_index_item_name` | 识别文档核心主体名称（如"HAK_180烫金机"） | ① LLM 基于前 5 个 chunk（≤2000 字符）识别 item_name（失败降级用 file_title）→ ② 写入每个 chunk → ③ 创建 `item_name` 集合（稠密 HNSW + 稀疏倒排）→ ④ item_name 向量化后入库（先按 `file_title` 删旧再插入） |
 | `_06 node_bge_embedding` | `embedding_service.generate_chunk_embeddings` | BGE-M3 批量向量化（稠密 + 稀疏） | 按 `EMBEDDING_BATCH_SIZE=5` 分批; 向量化文本为 `item_name + "_" + content`, 让主体信息参与语义匹配; 稀疏向量转 `{idx: weight}` 字典便于 Milvus 存储 |
 | `_07 node_import_milvus` | `index_service.index_chunks` | 将向量数据导入 Milvus `chunks` 集合 | 集合含 `chunk_id / content / file_title / item_name / title / parent_title / part / dense_vector / sparse_vector`; 先按 `file_title` 删除旧文档数据再插入（幂等重传） |
@@ -175,7 +174,7 @@ graph LR
 | `_09-2 node_search_embedding_hyde` | `hyde_search_service.search_by_hyde` | HyDE 检索（第二路, 提高召回） | ① LLM 先生成一段假设性答案（≤300 字）→ ② `问题 + 假设性答案` 拼接后向量检索 → 同样的 expr 过滤。弥补问题表述不清、向量匹配不足的场景 |
 | `_09-3 node_web_search` | `web_search_service.search_by_web` | Tavily 网络搜索（第三路, 补充知识库不足） | `rewritten_query` 直接搜索（`max_results=5`）, 过滤 `score > 0.5`; 结果标记 `type=web_search` 带 URL |
 | `_10 node_rrf` | `rrf_service.fuse_by_rrf` | RRF 加权融合排序 | `rrf_score = w * (1 / (k + rank))`, k=60; embedding 与 hyde 各 0.5 权重; 按 chunk_id 去重累加, 取 Top 5 |
-| `_11 node_rerank` | `rerank_service.rerank_documents` | bge-reranker 精确打分重排 | ① RRF 结果与 Web 结果合并统一格式 → ② 超长文本（超过 512 token 窗口）先用 LLM 压缩 → ③ reranker 对「问题-文本」对打分（normalize）→ ④ 排序后**动态 TopK**: 从第 3 名起检测"断崖"（相邻分差 > 0.2 或降幅 > 20%）, 断崖即截断, 上限 10 条 |
+| `_11 node_rerank` | `rerank_service.rerank_documents` | bge-reranker 精确打分重排 | ① RRF 结果与 Web 结果合并统一格式 → ② 按本批最长文本选窗口档位（1024 / 2048, 见 `RERANK_LENGTH_TIERS`）→ ③ reranker 对「问题-文本」对打分（normalize, **超窗口直接截断, 不做 LLM 压缩**）→ ④ 与 RRF 先验**加权融合**（`RERANK_FUSION_ALPHA`）, 其中**文档标题片再打折**（`DOC_HEAD_SCORE_FACTOR`, 见 §5.2-11）→ ⑤ 排序后**动态 TopK**: 从 `RERANK_MIN_TOPK` 起检测"断崖"（相对**第 1 名**的累计衰减 > 0.2）, 断崖即截断, 上限 `RERANK_MAX_TOPK` |
 | `_12 node_answer_output` | `answer_service.generate_answer` | 生成最终答案 | ① 若 state 已有 answer（主体未确认分支）直接返回 → ② 组装 prompt（参考内容 + 置信度 + 来源 + 历史对话 + 主体）→ ③ 模型生成（流式则 SSE `DELTA` 逐字推送）→ ④ 从命中 chunk 提取图片 URL → ⑤ 保存助手回答到 MongoDB |
 
 ---
@@ -217,12 +216,13 @@ graph LR
 | 8 | **HyDE 假设性答案质量差** | 查看 `_09-2` 生成的假设性答案 | 假设答案编造细节会带偏检索。改进 hyde_prompt 约束; 或降级为仅拼接改写问题 |
 | 9 | **源文档本身不完整** | 对比 pdf 与 `<title>_new.md` 内容 | MinerU 解析丢页 / 丢表格; 图片内容只靠 VL 摘要（信息密度低）。换解析模型版本 / 补 OCR 校验 |
 | 10 | **知识库数据量不足** | 统计 Milvus 集合行数 | 该领域文档没入库是召回率低的第一大来源; 建立文档覆盖度清单 |
+| 11 | **子块缺父节语义**（聚合题的重灾区） | 取一个子节的 chunk, 看 content 首行是不是只有它自己那一级 | 问题问「快速开始包含哪些步骤」时, §5.2 那一段整段没有「快速开始」四个字, 向量和精排都认不出它属于那一节 —— 实测它在全文档 24 条候选里排第 23 名, 而同节的 §5.1（首行带父标题）排第 1。**已修**: 加载时为每块拼上祖先链（`## 5. 快速开始 > ### 5.2 环境变量`）; **旧索引要重建才生效** |
 
 ### 5.2 准确率低（捞回来的内容不相关 / 回答错误）
 
 | # | 可能原因 | 定位方法 | 解决方向 |
 |---|----------|----------|----------|
-| 1 | **Rerank 输入被截断** | `_11` 日志中压缩触发频率 | 长 chunk 被 LLM 压缩后丢失细节 → 精排失真。提高 `RERANK_MAX_INPUT_TOKENS`（512, 视模型而定）; 或分片精排后聚合 |
+| 1 | **Rerank 输入被截断** | `_11` 日志中的窗口档位 | 候选超过模型窗口时被**截断**（不再走 LLM 压缩 —— 压缩稿和评测标注的原文本对不上）。当前窗口 2048, 语料最长约 1250 token, 一般不触发; 真超了就换窗口更大的模型或把分块调细 |
 | 2 | **动态 TopK 断崖误判** | 检查 `_11` 截断位置与分数分布 | `RERANK_GAP_ABS / RERANK_GAP_RATIO = 0.2` 过敏感时把"相关但不连续"的内容截掉。用测试集校准或放宽阈值 |
 | 3 | **多主体混合污染** | 提问涉及多个 item_name 时检查 expr 结果 | `in` 匹配多个文档, 内容相近时答案混乱。按主体拆分多轮检索; 或让 Rerank 时强制同主体聚合 |
 | 4 | **Web 结果干扰** | 检查 `web_search_docs` 是否挤占 TopK | Tavily 结果与本地文档表述不一致 → 稀释本地答案。降低 web 权重 / 仅做兜底（本地检索为空才启用） |
@@ -231,7 +231,8 @@ graph LR
 | 7 | **历史对话误导** | 检查 `history_text` 组装 | 历史中错误信息被带入当前回答。限制历史条数（`QUERY_HISTORY_LIMIT=10`）; 仅保留高置信主体的历史 |
 | 8 | **图片摘要噪音** | 查看 `_new.md` 中图片替换文本 | VL 摘要错误会把错误"事实"注入 chunk。提高 VL 提示词约束; 摘要前增加图片相关性判断 |
 | 9 | **向量检索 TopK 内噪声多** | 检查 `_09` 返回 chunk 的 score 分布 | 混合权重（稠密 0.7 / 稀疏 0.3）不适配当前文档类型时低分噪声混入。调权重 / 加最低分数过滤 |
-| 10 | **指标无法量化** | 查看 `app/rag_eval/artifacts/eval_report.json` 的 4 层指标 | 评估体系已落地（见 §6）: 用题库 + 分层指标定位薄弱层, 调优后重跑评测对比基线 |
+| 10 | **指标无法量化** | 查看 `app/rag_eval/artifacts/` 下最新一份评测报告的 4 层指标 | 评估体系已落地（见 §6）: 用题库 + 分层指标定位薄弱层, 调优后重跑评测对比基线（报告带时间戳, 旧基线不会被覆盖） |
+| 11 | **文档标题片挤占** | 看最终结果里有没有 `# 项目名 …` 那一块, 以及它是不是 gold | 它是全库唯一「含项目名 + 通篇讲这个项目」的块, 与任何带主体名的问题字面重合度都最高 —— 实测 40 题里 **35 题它都进了候选池**, 而真正拿它当答案的只有 **2 题**（「XX 是什么项目」那类）, 其余 13 次保留都是占位。**已修**: 融合分上打折（`DOC_HEAD_SCORE_FACTOR=0.7`）—— **降权而不是排除**, 因为那 2 题要它; 实测打折后平均召回 53.0%→55.5%、平均精确 49.0%→54.8%（两边同涨）, 而完全排除反而更差 |
 
 ---
 
@@ -247,12 +248,17 @@ graph LR
 | 精确率 (precision) | 检索结果中真正相关 chunk 的占比 | 命中相关数 / 检索结果数 |
 | 召回率 (recall) | 标注相关 chunk 中被找回的占比 | 命中相关数 / 标注相关数 |
 | 必命中率 (must_hit_rate) | 标注为"关键"的 chunk 是否打中 | 命中关键数 / 标注关键数 |
-| MRR@5 / NDCG@5 | 正确答案在 Top5 中的排序质量 | 首个命中位置倒数 / 位置折扣累积 |
+| MRR@K / NDCG@K | 正确答案在 Top-K 中的排序质量 | 首个命中位置倒数 / 位置折扣累积 |
 
-### 6.2 评估流程（两步, 全部走真实链路）
+> **两个口径提示**（读数字之前先看这里）：
+> - **精确率只报最终层**。前几层的「检索条数」是我们自己设的召回池（不是最终交付的列表），精确率的分母因此是人为的 —— 池子设多大，数就是多大分之一，它测的是池子而不是检索准不准。最终层的条数由断崖截出来，才代表真正交给作答链路的内容。
+> - **MRR / NDCG 的 K 取 `RERANK_MAX_TOPK`**（返回条数上限），字段名会跟着变（`MRR@8`）。固定的 @5 会和「实际返回几条」脱节：返回 8 条时第 6~8 位里的命中明明捞到了，指标却按 0 算。
 
-1. **评测数据入库** (`run_insert_test_data`): 读取真实加载产物 `output/hak180产品安全手册/hak180产品安全手册_new.json` → 走真实导入链路（`_05` 主体识别 / `_06` 向量化 / `_07` 导入 Milvus, 完成后 flush 保证检索可见）→ 查询真实 chunk_id, 生成题库 `artifacts/eval_cases.json`（含 `gold_chunk_ids` 相关标注 + `must_hit_chunk_ids` 关键标注）
-2. **批量评测** (`run_eval`): 逐条走真实查询链路（`_09-1` 普通检索 / `_09-2` HyDE / `_10` RRF / `_11` Rerank）→ 每层独立计算指标 → 汇总平均 → 报告落盘 `artifacts/eval_report.json`（汇总 + 每题分层详情）
+### 6.2 评估流程（全部走真实链路）
+
+1. **建索引**: 知识文档由真实加载链路（`load_graph`）建进 Milvus。评测包**不自己导数据** —— 早先那套「评测数据入库」会把同一篇文档二次灌库, 题库的 `gold_chunk_ids` 指向一份只有评测才存在的副本; 现在题库指向的就是线上检索会命中的那些 chunk。
+2. **准备题库**: `artifacts/eval_cases.json`, 每条含 `question` / `expected_item_names` / `gold_chunk_ids`（答案**实际所在**的 chunk, 1~5 条）/ `must_hit_chunk_ids`（缺了就答不出来的那一条）。精确题 gold 少、聚合题 gold 多, 两类混着放。
+3. **批量评测** (`run_eval`): 逐条走真实查询链路（`_09-1` 普通检索 / `_09-2` HyDE / `_10` RRF / `_11` Rerank）→ 每层独立计算指标 → 汇总平均 → 报告落盘 `artifacts/eval_report_<时间戳>.json`（分层汇总 + 每题详情）。带时间戳是为了留痕: 口径或配置一变两组数字就不可比, 覆盖式写盘会让「上一版多少分」查无对证。
 
 ### 6.3 口径与稳定性设计
 
@@ -263,51 +269,45 @@ graph LR
   不代表系统能力。现在命中率是真测出来的; 若主体没确认出来, 这一题如实记成全 0。
   （历史读写被替换为空: 要测的是「给定这句话能不能认出主体」, 不是多轮指代消解,
   真读写还会让同一题第二次跑的结果和第一次不一样。）
-- **HyDE 那一路的输入被固定**: 为了让同一题每次跑的结果一致, HyDE 的假设性答案固定成
-  一段占位文字 —— 所以**那一层的分数不代表真实 HyDE 效果**; 其余三层走真链路。
-  这条边界同时写进了报告文件的 `口径说明` 字段。
+- **HyDE 走真实链路**: 生成假设性答案这一路不再固定输出, 所以同一题重跑会有波动 ——
+  那是真实链路的固有属性。此前把它固定成一段占位文字想消掉随机性, 但那条路的检索文本
+  仍然拼着原问题, 于是既没消掉 HyDE、又把它退化成了普通检索的近似, RRF 融合也随之
+  变成同义反复（报告里两层数字几乎相同就是证据）。
+- **返回条数由断崖决定**: 精排打分后按「相对头部的累计衰减」找断点 —— 分数
+  跌破 `head - RERANK_GAP_ABS` 或 `head * (1 - RERANK_GAP_RATIO)` 的位置就断开,
+  它之前的保留。上下限分别是 `RERANK_MAX_TOPK` 和 `RERANK_MIN_TOPK`: 一路平滑
+  找不到断点就顶到上限, 断得再早就保底下限。
+  注意上限同时是 precision 的分母和 recall 的分子上限, 而每题 gold 只有 1~5 条 ——
+  两个指标被同一个 K 绑死, 调大调小只是换刻度: **读 precision 时先看这一层返回了几条**。
 - **联网那一路不参与评测**: 评测对象是本地知识库召回。此前 rerank 强制要求 web 非空,
   评测里塞过一条**假文档**; 空值降级落地后这条约束没有了, 假文档也不再注入
   （它本来会真的进精排池抢名次）。
 - **4 层独立评估**: 普通检索 / HyDE 检索 / RRF 融合 / 最终重排结果分别算分, 可定位"哪一层拖了后腿"（基础召回差 / 融合后掉了 / rerank 选错）
 
-### 6.4 基线（50 用例, 2026-09-01 跑的 —— **旧口径, 待重跑**）
+### 6.4 基线
 
-> ⚠️ **下表是 2026-09-01 那一版的数**: 当时主体识别被 `patch` 掉（题库直接注入
-> `expected_item_names`）, 并且用了一条**联网占位文档**满足 rerank 的入参要求。
-> 2026-09-30（C02）把这两条都改了（见 §6.3）, **数字会变**, 新基线待重跑覆盖。
-> 旧数字特意留着 —— 让人看得见口径变过, 而不是让两组不可比的数悄悄混在一起。
-
-| 层级 | 精确率 | 召回率 | 必命中率 | MRR@5 | NDCG@5 |
-|------|--------|--------|----------|-------|--------|
-| 普通检索 | 0.544 | 0.669 | 0.780 | 0.859 | 0.672 |
-| HyDE 检索 | 0.488 | 0.598 | 0.740 | 0.778 | 0.614 |
-| RRF 融合 | 0.536 | 0.660 | 0.760 | 0.834 | 0.660 |
-| 最终重排结果 | 0.625 | 0.562 | 0.760 | 0.792 | 0.586 |
-
-「主体命中率 1.0」是**旧口径下的构造值**（预期主体被直接塞进 state, 那层没跑）——
-新口径下它是真测值。
-
-**可读结论（旧口径仍然成立的部分）**: Rerank 提升精确率（0.536 → 0.625）但牺牲召回率（0.660 → 0.562）, 动态 TopK 断崖截断是主要原因（见 §5.2-2）; 可结合 §7 改进方向继续迭代。
+> **待跑**。此前 2026-09-01 有一版 50 用例（hak180 设备手册）的基线, 但那套题库与
+> 分块产物都已被替换 —— 题库换成 4 份项目说明文档 × 10 题（40 用例, gold 平均 2.4 条）,
+> 分块也重建过, 两组数字不可比, 旧表已随之移除。跑一次 `run_eval` 即得新基线。
 
 ### 6.5 运行方式
 
 ```bash
 cd project/rag_knowledge   # 评测代码使用 app 包内导入, 需在此目录下运行
 
-# 方式一: 最小调用样例（先入库, 再评测）
+# 方式一: 最小调用样例（知识库与题库都已就位后直接跑评测）
 python -m tests.test_rag_eval_tester
 
 # 方式二: 代码内调用
 python -c "
 from app.rag_eval import RagEvalTester
 tester = RagEvalTester()
-tester.run_insert_test_data()   # 首次或知识变更后执行
-tester.run_eval()               # 输出汇总指标, 报告落盘 artifacts/eval_report.json
+tester.run_eval()               # 输出汇总指标, 报告落盘 artifacts/eval_report_<时间戳>.json
 "
 ```
 
-> 前置依赖: Milvus + BGE-M3 可用; 批量评测额外要求 reranker 模型; 知识库变更后需先重新入库再评测。
+> 前置依赖: Milvus + BGE-M3 可用, 知识库已由真实加载链路建好, 题库已就位。
+> 知识库变更（重新分块/换文档）后, 题库里的 `gold_chunk_ids` 会全部失效, 需要重建题库。
 
 ---
 
@@ -317,7 +317,7 @@ tester.run_eval()               # 输出汇总指标, 报告落盘 artifacts/eva
 
 ### 7.1 完善评估体系（基础版已落地, 见 §6）
 
-- **现状**: 基于 golden dataset 的分层检索评测已落地（`app/rag_eval/`, 50 用例, 4 层检索指标, 见 §6）, "调优无量化指标"的问题已解决。
+- **现状**: 基于 golden dataset 的分层检索评测已落地（`app/rag_eval/`, 40 用例 / 4 份文档, 4 层检索指标, 见 §6）, "调优无量化指标"的问题已解决。
 - **方案参考**: 引入 **RAGAS** 或 LlamaIndex 评测框架, 补充生成质量指标 `faithfulness`（忠实度）/ `answer_relevancy`（回答相关性）; 题库扩充多主体 / 跨文档问题; 自定义题库可直接传 `run_batch_eval(case_list=...)`。
 
 ### 7.2 增加 BM25 关键词检索路（提升召回率）

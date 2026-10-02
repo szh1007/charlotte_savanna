@@ -16,8 +16,19 @@ class InfraModel:
     def embedding(self, texts: list[str]) -> dict[str, list]:
         return generate_embeddings(texts)
 
-    def reranker_compute_scores(self, qa_pairs: list[list[str]]):
-        return get_reranker_model().compute_score(qa_pairs, normalize=True)
+    def reranker_compute_scores(
+        self, qa_pairs: list[list[str]], max_length: int | None = None
+    ):
+        """给问答对打分, 归一化到 0~1.
+
+        `max_length` 不传就用模型加载时的窗口; 传了就用这一次的 —— 调用方可以
+        按本批文本的实际长度选窄一点的窗口, 少 padding 也就少算 (attention 是
+        平方复杂度).
+        """
+        kwargs = {"normalize": True}
+        if max_length is not None:
+            kwargs["max_length"] = max_length
+        return get_reranker_model().compute_score(qa_pairs, **kwargs)
 
     def reranker_compute_token_num(self, content: str):
         tokenizer = get_reranker_model().tokenizer
