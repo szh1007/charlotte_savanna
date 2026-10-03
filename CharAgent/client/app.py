@@ -85,8 +85,9 @@ from CharAgent.client.utils.types import DEFAULT_THREAD_ID, CliOptions
 from CharAgent.db import PgDatabase
 from CharAgent.db.errors import PricingNotReadyError
 from CharAgent.db.recorder import ConversationRecorder, RunRecorder
-from CharAgent.model import ModelError, chat_model_from_env
+from CharAgent.model import HttpXChatModel, ModelError, chat_model_from_env
 from CharAgent.model.protocol import ChatModel
+from CharAgent.model.utils.config import strip_provider_prefix
 from CharAgent.retry import (
     FailoverChatModel,
     ModelSwitch,
@@ -313,6 +314,19 @@ ENV_FALLBACK_BASE_URL = "CLOSEAI_BASE_URL"
 ENV_FALLBACK_MODEL = "CLOSEAI_CHAT_MODEL"
 
 
+# 备份端点的**方言** (2026-10-05 真机实测, 见 C25): 这一家 (OpenAI 兼容的 /chat/
+# completions) 只要带上 function tools, 就必须把思考显式关掉 —— 不带
+# `reasoning_effort` 会被它当成「默认开着思考」而拒掉 (400: "Function tools with
+# reasoning_effort are not supported ... set reasoning_effort to 'none'"), 带 high 更是
+# 一样拒; 只有 `"none"` 那条路 200. 于是装配备份适配器时给它一个**实例默认**:
+# 调用方不显式传 effort 时 (现在两个入口都不传), 每一次请求都会带上 "none".
+#
+# 为什么放在装配这一层而不是框架的包装里: 这是**这一家**的方言, 不是「主备包装」
+# 该知道的事 —— failover 包装的契约是「不吞不改任何参数」, 让它去改参数等于把
+# 供应商的脾气焊进通用层.
+_FALLBACK_REASONING_EFFORT = "none"
+
+
 def fallback_model_from_env(env: Mapping[str, str] | None = None) -> ChatModel | None:
     """造备份模型 (CLOSEAI_*); 没配齐返回 None —— 没有备份照样跑.
 
@@ -320,9 +334,13 @@ def fallback_model_from_env(env: Mapping[str, str] | None = None) -> ChatModel |
     跑通主模型的人不该被另一家的 key 拦住 (与 `chat_model_from_env` 缺
     DEEPSEEK_API_KEY 就报错正好相反: 那个是必需品, 这个是有则更好).
 
-    走的是同一个适配器工厂 (显式传全三个参数, 于是不读 DEEPSEEK_*): CloseAI 是
-    OpenAI 兼容端点, 请求体与主模型同形; 模型名里的 `provider:` 前缀由它剥掉,
-    于是这个适配器的 `.model` 就是价目表的键 —— 记账那一列靠它对齐.
+    走的是同一个适配器工厂 (显式传全参数, 于是不读 DEEPSEEK_*): CloseAI 是 OpenAI
+    兼容端点, 请求体与主模型同形; 模型名里的 `provider:` 前缀由它剥掉, 于是这个
+    适配器的 `.model` 就是价目表的键 —— 记账那一列靠它对齐.
+
+    **方言那一处例外**: 这一家带 tools 时必须显式 `reasoning_effort="none"`
+    (真机实测, 见上面的常量), 于是这里多传一个实例默认 —— 那是**装配**该知道的事,
+    不是通用包装该替谁做的主.
 
     Args:
         env: 环境变量表 (默认读 `os.environ`; 测试注入用).
@@ -336,7 +354,15 @@ def fallback_model_from_env(env: Mapping[str, str] | None = None) -> ChatModel |
     name = source.get(ENV_FALLBACK_MODEL)
     if not (key and base_url and name):
         return None
-    return chat_model_from_env(api_key=key, base_url=base_url, model=name)
+    # 直接造适配器而不是走 `chat_model_from_env`: 那个工厂读的是主模型那套 env
+    # (DEEPSEEK_*), 而这里三个值都是显式的, 还多一个方言默认 —— 为这一处给工厂
+    # 加参数不划算. 剥前缀与那个工厂同款 (价目表的键要的是裸名)
+    return HttpXChatModel(
+        api_key=key,
+        base_url=base_url,
+        model=strip_provider_prefix(name),
+        reasoning_effort=_FALLBACK_REASONING_EFFORT,
+    )
 
 
 def build_saver_for(options: CliOptions) -> CheckpointSaver:
