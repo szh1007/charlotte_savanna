@@ -174,6 +174,11 @@ runs = Table(
         comment="运行状态机 (RunStatus): created / running / waiting_tool / "
         "waiting_user / retrying / failed / finished / cancelled",
     ),
+    # 名字与日志里那个 request_id **同名不同义** (这一行不进 DDL, 所以它是一句
+    # Python 注释而不是 comment= 里的字): 结构化日志的 `request_id` 是一次 HTTP
+    # 请求的号 (每次不同), 而这一列是**幂等键** (客户端重试时故意复用同一个值).
+    # 别拿日志那个来填它 —— 语义相反, 而且唯一约束会让「同一个号」变成硬冲突
+    # (见 structured_logging/context.py 的 TraceIds.)
     Column(
         "request_id",
         String(255),

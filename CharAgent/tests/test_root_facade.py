@@ -29,7 +29,7 @@ import pytest
 
 import CharAgent
 
-# 汇聚进根门面的框架包 (十层; client / server / eval 刻意不在内, 见模块 docstring)
+# 汇聚进根门面的框架包 (十一层; client / server / eval 刻意不在内, 见模块 docstring)
 FRAMEWORK_PACKAGES = (
     "model",
     "tool",
@@ -41,6 +41,7 @@ FRAMEWORK_PACKAGES = (
     "db",
     "prompt",
     "redact",
+    "structured_logging",
 )
 
 # 同一份名单的「出口目」: 它们也是框架的包, 但刻意不进门面 (见模块 docstring)
@@ -86,7 +87,7 @@ def test_root_all_has_no_duplicates_and_no_ghosts() -> None:
 
 
 def test_package_facades_do_not_collide_with_each_other() -> None:
-    """十层之间不许有同名 API —— 根门面是它们的合集, 重名会让先导入的胜出."""
+    """十一层之间不许有同名 API —— 根门面是它们的合集, 重名会让先导入的胜出."""
     seen: dict[str, str] = {}
     collisions: list[str] = []
     for package in FRAMEWORK_PACKAGES:
@@ -118,6 +119,10 @@ def test_the_record_double_is_not_exported_at_the_root() -> None:
     """
     assert "FakeRecordDatabase" not in _package_all("db")
     assert not hasattr(CharAgent, "FakeRecordDatabase")
+    # `logging/testing.py` 那一对是同一类东西 (两个项目的用例共用的支撑, 不是库 API)
+    assert "logging_to" not in _package_all("structured_logging")
+    assert "restore_logging" not in _package_all("structured_logging")
+    assert not hasattr(CharAgent, "logging_to")
 
 
 def test_importing_the_root_does_not_pull_in_the_web_stack() -> None:

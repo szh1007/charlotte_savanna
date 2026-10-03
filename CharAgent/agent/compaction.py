@@ -74,7 +74,6 @@ CheckpointState 上 (v4 起随快照一起存).
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
@@ -91,8 +90,9 @@ from CharAgent.agent.utils.messages import (
 from CharAgent.model.protocol import ChatModel
 from CharAgent.model.utils.config import THINKING_OFF_EFFORT
 from CharAgent.model.utils.types import FinishReason, ModelMessage, Usage
+from CharAgent.structured_logging import get_logger
 
-logger = logging.getLogger("charagent.agent")
+logger = get_logger("agent")
 
 # 默认值 (业务按自己的窗口与账单调, 见 CharApp 的 CHARAPP_CONTEXT_*):
 # 单请求 2.4 万 token 上下开始压 —— 对 6 万 token 的运行预算来说留了足够余量,

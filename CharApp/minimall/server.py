@@ -86,6 +86,7 @@ from CharAgent.db import PgDatabase
 from CharAgent.retry.idempotency import IdempotencyStore
 from CharAgent.server import ServerAuthError, create_app
 from CharAgent.stream import EventSink
+from CharAgent.structured_logging import configure_logging
 from CharApp.minimall.client import HEADER_TOKEN, HEADER_USER_ID
 from CharApp.minimall.config import (
     ServerConfig,
@@ -354,9 +355,9 @@ def create_minimall_app(
 
 
 def uvicorn_config(app: FastAPI, config: ServerConfig) -> uvicorn.Config:
-    """这个服务怎么跑 (uvicorn 的三个设置, 单独一处以便用例钉住它们).
+    """这个服务怎么跑 (uvicorn 的四个设置, 单独一处以便用例钉住它们).
 
-    除了「听哪儿」, 另两个都是**安全 / 可读性**的决定, 不是随手写的默认值:
+    除了「听哪儿」, 另三个都是**安全 / 可读性**的决定, 不是随手写的默认值:
 
     - `access_log=False` (issue 29): 访问日志记的是整条 URL, 而本服务的 URL 里
       **会带用户数据** —— 列会话那条路的搜索词走查询串 (`?q=`, 见
@@ -366,9 +367,21 @@ def uvicorn_config(app: FastAPI, config: ServerConfig) -> uvicorn.Config:
       的值; 失去的那点观测由别处补 (启动 / 重试 / 降级那几行自己打, 外加 issue 28
       的 `trace` 只读入口).
     - `log_level="info"` 保留: 启动那一句人话与 uvicorn 自己的错误都靠它.
+    - `log_config=None` (issue 38): 不让 uvicorn 装它自己那套 handler —— 装了的
+      话它那几行 (`Started server process` / `Application startup complete`) 是
+      **另一种格式**, 与进程其余的行混在同一个日志文件里, 按行消费的那一头
+      (jq / 采集器) 会在它们身上断掉. 关掉之后 uvicorn 的 logger 没有自己的
+      handler, 自然向上冒到根上那个出口 —— 于是整个进程只有一种格式.
+      **`access_log=False` 与它互不影响**: 那一条关的是「记不记」, 这一条管的是
+      「记成什么样」.
     """
     return uvicorn.Config(
-        app, host=config.host, port=config.port, log_level="info", access_log=False
+        app,
+        host=config.host,
+        port=config.port,
+        log_level="info",
+        access_log=False,
+        log_config=None,
     )
 
 
@@ -393,31 +406,19 @@ async def _serve(app: FastAPI, service: MinimallService, config: ServerConfig) -
             await service.aclose()
 
 
-def _configure_logging() -> None:
-    """让本进程自己的日志看得见 (启动的一句人话 / 重试提示 / 停机).
-
-    为什么不直接 `basicConfig(level=INFO)`: 那会把 httpx 每个请求一行的 INFO
-    也接到控制台 —— 一次问答十几次工具调用, 有用那几行会被冲走. 这里只给自己
-    这个包的 logger 挂一个输出口, 其余照旧 (uvicorn 自己那套照常输出).
-    """
-    if logger.handlers:
-        return
-    handler = logging.StreamHandler()
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-    logger.addHandler(handler)
-    logger.setLevel(logging.INFO)
-    # 别再往根上冒: 使用者可能自己配了 root handler, 那会打两遍
-    logger.propagate = False
-
-
 def log_writer() -> Callable[[str], Any]:
     """**交给框架的那个**日志出口: 先打码, 再写进本进程的日志 (issue 29).
 
     说清它盖的范围: 它管的是「框架通过 `writer` 往日志里写的那几行」(现在就是重试
-    提示), **不是**本进程所有日志 —— 框架自己打的异常栈不经过这里 (它用
-    `charagent.<子包>` 那几个 logger, 框架目前没有统一的日志出口), 那条路还漏原文,
-    落点在 `CharAgent/docs/DESIGN.md` 的 #38 (日志结构化 + 全链路关联) —— 见
-    `CharApp/docs/adr/0019` 的「代价与边界」与 issue 29 的实现记录.
+    提示).
+
+    **它与进程那层脱敏是两道, 不是一道** (issue 38 落地之后): `main` 里那次
+    `configure_logging(redactor=build_redactor())` 给**整个进程**的日志出口挂了一道
+    打码工序 —— 框架自己打的异常栈现在也过那道 (issue 29 在「代价与边界」里记下的
+    那条已知未堵的口子, 由上一条堵上). 这里包的是**交给框架的那个 writer**: 它保证
+    的是「这句话在递给日志之前就已经打过码」, 与出口装没装、装在哪一层无关 —— 用例
+    里挂一个裸 handler 时, 兜住的正是这一道. 两道叠在同一条话上是幂等的 (打过码的
+    串不再匹配那四条规则), 代价是每行多跑一次正则.
 
     为什么包在这一层 (而不是在框架那侧的重试提示里): 上游模型报错的正文会顺着
     「异常 → 重试提示 → writer」这条链一路走下来 (`CharAgent/model/parse.py` 的
@@ -442,7 +443,11 @@ def main() -> int:
         (不抛: 配置类错误在这里被翻译成一行日志 + 退出码; 端口被占用由 uvicorn
         自己报错退出)
     """
-    _configure_logging()
+    # 日志出口: 框架那一个 (difficulties #38) + **本业务**的打码名单 —— 名单是
+    # 业务的知识 (哪个字段敏感), 规矩是框架的, 两边在这一次调用里接上. 一行就够
+    # 的理由: 出口、格式、三个 id、以及「哪几家吵闹的库压到 WARNING」都在框架那边
+    # 定死, 业务只说「我叫什么、我哪些格子敏感」
+    configure_logging(level=logging.INFO, redactor=build_redactor())
     load_root_env()
     use_utf8_stdio()
     try:

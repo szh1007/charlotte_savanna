@@ -132,7 +132,6 @@ WHERE, 一行都没命中就是 404 (`ThreadNotFoundError`); 于是「改别人�
 from __future__ import annotations
 
 import asyncio
-import logging
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, replace
 from functools import partial
@@ -181,6 +180,7 @@ from CharAgent.server.history import (
     conversation_of,
     pending_approval_row,
 )
+from CharAgent.server.middleware import RequestIdMiddleware
 from CharAgent.server.runs import (
     RunHandle,
     RunRegistry,
@@ -204,6 +204,7 @@ from CharAgent.server.utils.types import (
     ContextProvider,
     SessionProvider,
 )
+from CharAgent.structured_logging import get_logger, log_context
 
 # 恢复那条路 (与 POST /runs 并肩: 一条起新问题, 一条给旧挂起一个结论)
 RESUME_PATH = "/runs/{run_id}/resume"
@@ -225,7 +226,7 @@ _pending_tasks: set[asyncio.Task[None]] = set()
 
 # 同一棵日志树 (`runs.py` 那条说明适用): 框架只在自己**没有调用方可以上抛**的
 # 那几个点上说话, 这里之所以算一个, 是因为越界的取消请求不该悄悄过去 (见 cancel_run).
-logger = logging.getLogger("charagent.server")
+logger = get_logger("server")
 
 
 def create_app(
@@ -280,6 +281,10 @@ def create_app(
         replay_guard = PgIdempotencyStore(database)
 
     app = FastAPI()
+    # 每个请求发一个 request_id 并让它贯穿这一程的日志 (difficulties #38): 挂在
+    # 最外层, 于是连下面那几条只读路由也带上号. 号也在响应头里回给客户端 ——
+    # 报错时截图上的那一串, 是唯一能把「他说的那一次」与「日志里那一次」对上的东西
+    app.add_middleware(RequestIdMiddleware)
     # 两张表挂到 app.state 上: 排查时看得见「现在有哪些会话 / 哪些运行在跑」,
     # 测试也据此断言「登记了 / 放开了」(框架内部状态, 不是给业务改的接口).
     app.state.session_registry = registry
@@ -1161,23 +1166,33 @@ def _finish_run(
         bookkeeping: 恢复那条路要结的两笔账 (幂等键 + 「谁批的」); None = 这不是
             一次恢复 (起新问题那条路没有这些账).
     """
-    try:
-        close_stream(task, stream)
-    finally:
-        entry.router.unbind(stream)
-        registry.release(thread_id)
-        runs.finish(stream.run_id)
-        if bookkeeping is not None:
-            # 这里**不能直接 await** (本回调是同步的, 而且上面那几行不许被一个
-            # await 拖住): 派一个任务去结这两笔账
-            # 引用留着并挂到任务集里 (RUF006 的那条理由): 不留引用的话, 这个任务
-            # 可能被垃圾回收掉 —— 那时它会**静默消失**, 而那两笔账就永远结不了
-            settled = asyncio.create_task(
-                _settle_approvals(task, bookkeeping),
-                name=f"charagent-approvals:{stream.run_id}",
-            )
-            _pending_tasks.add(settled)
-            settled.add_done_callback(_pending_tasks.discard)
+    # 收尾回调跑在**另一个上下文**里 (asyncio 记的是注册那一刻的上下文, 不是任务
+    # 自己那份), 于是任务里绑的三个号它一个都看不见 —— 而这一行恰是最需要号的: 它
+    # 带着 traceback, 是回看一次失败运行的入口. 两个值都有现成的来源: `thread_id`
+    # 是入参, 运行编号从会话上取 (同一段会话不许并发, 所以刚跑完那一次就是要收的
+    # 这一笔, 见 `ChatSession.last_run_id`).
+    #
+    # 这个 `with` 包住**整段** (含 finally): 下面派出去的那个收尾任务
+    # (`_settle_approvals`) 自己也会打日志, 而任务复制的是**派它的那一刻**的上下文
+    # —— 包在外面, 那几行才带得上号.
+    with log_context(thread_id=thread_id, run_id=entry.session.last_run_id):
+        try:
+            close_stream(task, stream)
+        finally:
+            entry.router.unbind(stream)
+            registry.release(thread_id)
+            runs.finish(stream.run_id)
+            if bookkeeping is not None:
+                # 这里**不能直接 await** (本回调是同步的, 而且上面那几行不许被一个
+                # await 拖住): 派一个任务去结这两笔账
+                # 引用留着并挂到任务集里 (RUF006 的那条理由): 不留引用的话, 这个任务
+                # 可能被垃圾回收掉 —— 那时它会**静默消失**, 而那两笔账就永远结不了
+                settled = asyncio.create_task(
+                    _settle_approvals(task, bookkeeping),
+                    name=f"charagent-approvals:{stream.run_id}",
+                )
+                _pending_tasks.add(settled)
+                settled.add_done_callback(_pending_tasks.discard)
 
 
 async def _settle_approvals(

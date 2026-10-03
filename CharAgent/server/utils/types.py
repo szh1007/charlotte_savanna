@@ -68,6 +68,12 @@ MESSAGE_FIELD = "message"
 # 等一个「开场事件」 —— 而事件类型是封闭的七类, 不该为本层另开一种.
 RUN_ID_HEADER = "X-Run-Id"
 
+# 一次 HTTP 请求的编号 (difficulties #38): 请求头里带它就用它 (上游转发方可以
+# 从浏览器那一次点击一路带下来), 没带就自己发一个; 响应头里回同一个值.
+# 它不是上面那个运行编号: 一个是「这一次请求」, 一个是「这一次运行」——
+# 运行编号从事件流拿, 请求编号从响应头拿, 两者的用途不同 (见 middleware.py).
+REQUEST_ID_HEADER = "X-Request-Id"
+
 # SSE 的 media type (text/event-stream; EventSource 与 curl 都按它认).
 SSE_MEDIA_TYPE = "text/event-stream"
 

@@ -33,7 +33,6 @@ finally 里: 任务**可能一步都没跑就被取消** (请求刚建好任务,
 from __future__ import annotations
 
 import asyncio
-import logging
 from dataclasses import dataclass
 from uuid import uuid4
 
@@ -42,8 +41,9 @@ from CharAgent.server.utils.types import (
     RUN_FAILED_CODE,
 )
 from CharAgent.stream import TERMINAL_TYPES, EventType, StreamEvent
+from CharAgent.structured_logging import get_logger
 
-logger = logging.getLogger("charagent.server")
+logger = get_logger("server")
 
 # 取消时补的终局事件文案: 陈述事实, 不是给人看的话术 (降级文案归业务).
 CANCELLED_TEXT = "本次运行在完成前被取消"

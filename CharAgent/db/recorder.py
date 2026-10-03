@@ -93,7 +93,6 @@
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -135,10 +134,11 @@ from CharAgent.db.repositories.tool_calls import (
 from CharAgent.db.state import run_status_for_outcome, tool_call_status_for_outcome
 from CharAgent.model.utils.types import ModelMessage
 from CharAgent.prompt import ref_name
+from CharAgent.structured_logging import get_logger
 
 # 同一棵日志树 (与 checkpoint 那几处同一个做法): 记不上账是**要有人知道**的事,
 # 但它的严重程度不到「打断用户这一句」—— 所以是 warning 而不是异常
-logger = logging.getLogger("charagent.db")
+logger = get_logger("db")
 
 # 「上一轮没记上」那条提示行的正文 (落库时 `hidden=False`, 用户看得见)
 MISSED_TURN_TEXT = "(这中间有一轮对话没能记录下来)"

@@ -35,16 +35,16 @@ sha 对不上时的动作是**用当前文件 + 一条 warning**, 三条路里�
 from __future__ import annotations
 
 import hashlib
-import logging
 import os
 from typing import Any
 
 from CharAgent.model.utils.types import ModelMessage
 from CharAgent.prompt.errors import PromptRefMismatchError
 from CharAgent.prompt.load import load_prompt
+from CharAgent.structured_logging import get_logger
 
 # 同一棵日志树 (与 checkpoint / db 那两处同一个做法)
-logger = logging.getLogger("charagent.prompt")
+logger = get_logger("prompt")
 
 # 身份说明在历史里的位置与角色: 它恒为 messages[0], role 恒为 system.
 #

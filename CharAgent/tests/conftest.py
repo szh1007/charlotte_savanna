@@ -1,4 +1,4 @@
-"""CharAgent 测试共享 fixtures: 模型适配器实例 + 本地存储接入.
+"""CharAgent 测试共享 fixtures: 模型适配器实例 + 本地存储接入 + 日志出口.
 
 两条原则:
 - **默认用例不依赖外部服务**: 模型走 respx 拦截 (chat_model), checkpoint 走内存版
@@ -9,13 +9,18 @@
 
 本文件里的数据库操作一律**同步** psycopg: 异步连接在 Windows 的默认事件循环
 (Proactor) 上跑不起来, 理由与实现一致 (见 checkpoint/postgres.py 的 docstring).
+
+日志那三个名字 (`LOG_PHONE` / `LOG_MASKED_PHONE` / `LOG_REDACTOR`) 与 `log_stream`
+夹具给两个文件共用: `test_logging.py` (单元) 与 `test_server_logging.py` (HTTP
+那一路) 验的是同一套打码与同一批号牌, 各抄一份名单的话, 「谁真的打了码」就说不清了.
 """
 
 from __future__ import annotations
 
 import asyncio
+import io
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from uuid import uuid4
 
@@ -32,6 +37,29 @@ from CharAgent.checkpoint.utils.errors import CheckpointConfigError
 from CharAgent.db import PgDatabase
 from CharAgent.db.schema import threads
 from CharAgent.model import HttpXChatModel
+from CharAgent.redact import WIPE, RuleRedactor
+from CharAgent.structured_logging.testing import logging_to
+
+# 用例里的手机号 (真形状, 与 redact 包的四条规则对得上) 与它打码后的样子
+LOG_PHONE = "13800000003"
+LOG_MASKED_PHONE = "138****0003"
+
+# 打码名单: 手机号走规则 (留头留尾), 余额整段抹掉 —— 与业务侧那份同形, 只是
+# 少几行 (用例要验的是「按声明打」这条机制, 不是业务那张表)
+LOG_REDACTOR = RuleRedactor(fields={"**.phone": "phone", "**.balance": WIPE})
+
+
+@pytest.fixture
+def log_stream() -> Iterator[io.StringIO]:
+    """装一个写进内存缓冲的日志出口, 用完把世界还成原来的样子.
+
+    还原那件事交给 `logging_to` (框架的测试支撑, 两个项目的用例共用一份) ——
+    `configure_logging` 改的是**全局状态**, 不还原的话后面跑的用例会莫名其妙地
+    多几行输出 (或者少几行), 而那种串味最难查.
+    """
+    stream = io.StringIO()
+    with logging_to(stream, redactor=LOG_REDACTOR):
+        yield stream
 
 
 @pytest_asyncio.fixture

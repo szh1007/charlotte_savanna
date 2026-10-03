@@ -21,6 +21,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
@@ -28,6 +29,7 @@ from conftest import ADDRESSES, PROFILE
 
 from CharAgent.client.app import _retry_notice
 from CharAgent.retry.utils.types import RetryAttempt
+from CharAgent.structured_logging.testing import logging_to
 from CharApp.minimall.log_redaction import (
     LOG_FIELDS,
     build_redactor,
@@ -75,6 +77,46 @@ def test_a_phone_number_never_reaches_the_log_file(tmp_path: Path) -> None:
     assert PHONE not in written, "手机号原文落进了日志"
     assert "138****0003" in written, "打码后的那串该在日志里 (留头留尾看得见形状)"
     assert "重试" in written, "重试提示本身要留着 —— 打码不该把观测一起打没"
+
+
+def test_a_framework_exception_never_reaches_the_configured_log_file(
+    tmp_path: Path,
+) -> None:
+    """验收 (issue 38): **框架自己打的异常栈**落盘之后也搜不到原文.
+
+    与上面那条的分工: 那条走的是**业务递给框架的 writer** (重试提示), 这条走的是
+    **进程那个出口** (`configure_logging`) —— 框架 `charagent.*` 那几个 logger 打的
+    traceback 走的正是这一条. issue 29 时它漏原文 (`adr/0019` 的「代价与边界」第一条
+    记着), 现在它与别的行过同一道工序.
+
+    用真文件而不是内存缓冲: 这条链上任何一环接错 (出口没装、工序挂错位置) 都要在这里
+    红 —— 而它最终要保证的正是「落盘的那份里没有原文」.
+    """
+    log_file = tmp_path / "charagent.jsonl"
+    with (
+        log_file.open("w", encoding="utf-8") as stream,
+        logging_to(stream, redactor=build_redactor()),
+    ):
+        # 供应商回的错误正文里带着手机号 (真机上就是这样流进 traceback 的)
+        try:
+            raise RuntimeError(f"上游拒绝: 输入里有手机号 {PHONE}, 请检查")
+        except RuntimeError as exc:
+            logging.getLogger("charagent.client").error(
+                "运行 %s 异常终止: %s",
+                "run-1",
+                type(exc).__name__,
+                exc_info=exc,
+            )
+
+    written = log_file.read_text(encoding="utf-8")
+    line = json.loads(written.strip().splitlines()[-1])
+
+    assert written, "这一行没写进文件 (出口接错了)"
+    assert PHONE not in written, "框架异常栈里的手机号原文落进了日志"
+    assert "138****0003" in line["exc"], "打码后的那串该在 traceback 里"
+    assert "Traceback (most recent call last)" in line["exc"], "栈还得是栈"
+    assert line["logger"] == "charagent.client"
+    assert line["msg"] == "运行 run-1 异常终止: RuntimeError"
 
 
 def test_the_declared_fields_are_masked_by_name_at_any_depth() -> None:

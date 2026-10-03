@@ -48,6 +48,7 @@ from CharAgent.checkpoint import config as checkpoint_config
 from CharAgent.model.utils.types import ModelMessage, ModelResponse, Usage
 from CharAgent.retry.idempotency import InMemoryIdempotencyStore
 from CharAgent.server import RUN_ID_HEADER
+from CharAgent.structured_logging.testing import restore_logging
 from CharAgent.tests.doubles import FakeRecordDatabase, PendingAwareDatabase
 from CharAgent.tests.mock_llm import (
     MockLLM,
@@ -942,17 +943,18 @@ def test_the_process_reports_a_missing_token_in_one_line(monkeypatch, capsys) ->
     这一条断的是「启动期错误被翻成人话」这条路 —— 会抛的是同一批错误 (共用
     `STARTUP_ERRORS`), 该说的也是同一句话.
 
-    为什么先把 handler 清掉: 日志口是 `_configure_logging` 挂的, 而它挂上就不再
-    换 —— 上一个用例挂的那个指着当时的 stderr, `capsys` 抓不到. 清一次, 让
-    `main` 重新挂一个指向当前 stderr 的.
+    为什么要把这一次调用包起来 (`restore_logging`): `main` 一进门就调
+    `configure_logging`, 而它把出口装在**根**上、指向**当时**的 stderr ——
+    `capsys` 因此抓得到这一句; 代价是这一次装的 handler 会留在进程里 (指着
+    capsys 已经收走的那个流). 出块还原, 后面的用例就不会踩到它.
     """
     from CharApp.minimall import server as server_module
 
-    server_module.logger.handlers.clear()
     # 空值 = 没配: dotenv 不覆盖已存在的键, 所以真 .env 里那个值不会把它填回来
     monkeypatch.setenv(ENV_TOKEN, "")
 
-    assert server_module.main() == 1
+    with restore_logging():
+        assert server_module.main() == 1
     assert "启动失败" in capsys.readouterr().err
 
 
@@ -967,10 +969,10 @@ def test_the_process_reports_a_bad_context_knob_in_one_line(
     """
     from CharApp.minimall import server as server_module
 
-    server_module.logger.handlers.clear()
     monkeypatch.setenv(ENV_CONTEXT_WATERMARK, "1.5")
 
-    assert server_module.main() == 1
+    with restore_logging():
+        assert server_module.main() == 1
     err = capsys.readouterr().err
     assert "启动失败" in err
     assert ENV_CONTEXT_WATERMARK in err, "那句人话要说清是哪一行配置写坏了"

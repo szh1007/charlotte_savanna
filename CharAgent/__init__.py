@@ -5,7 +5,8 @@
 各子包自己也各有一份门面 (`CharAgent.checkpoint.__all__` 等), 本文件是它们的
 合集, 不新造 API.
 
-汇聚的十个包 (P0 的八个 + 后来补的 `prompt` 与 `redact`; 职责见下表).
+汇聚的十一个包 (P0 的八个 + 后来补的 `prompt` / `redact` / `structured_logging`;
+职责见下表).
 (框架另外还有三个包 —— `client` / `server` / `eval` —— 刻意不在这里, 见下面第四条)
 
 | 包 | 一句话 |
@@ -20,6 +21,7 @@
 | `db` | 五实体数据模型 + 表定义 + alembic 迁移 + 仓储 |
 | `prompt` | 提示词集中存放与按名加载 (`templates/*.prompt` + `load_prompt`) |
 | `redact` | 日志脱敏 (四条通用打码规则 + 业务声明的字段路径) |
+| `structured_logging` | 结构化日志 (一处出口 + 打码工序 + 三个 id 贯穿) |
 
 四条刻意的排除 (不是漏了, 理由各不同):
 
@@ -276,6 +278,26 @@ from CharAgent.stream import (
     StreamEvent,
 )
 
+# --- structured_logging: 结构化日志 + 三个 id 贯穿 (difficulties #38) -------
+# 出口 (`configure_logging`) 与取号 (`get_logger`) 在 config 里, 三个 id 与
+# `log_context` 在 context 里 —— 门面把两半一起上浮, 因为它们是一件事的两面
+# (打日志的人既要拿到 logger, 也要让那一行带上号)
+from CharAgent.structured_logging import (
+    ID_FIELDS,
+    LOGGER_ROOT,
+    JsonFormatter,
+    LoggingConfigError,
+    LoggingError,
+    PlainFormatter,
+    RedactFilter,
+    TraceBinding,
+    TraceIds,
+    configure_logging,
+    current_ids,
+    get_logger,
+    log_context,
+)
+
 # --- tool: @tool 装饰器 + schema 生成 --------------------------------------
 # 注意: 装饰器 `tool` 刻意不在本文件导入 (会遮蔽子包 CharAgent.tool, 见模块 docstring)
 from CharAgent.tool import (
@@ -297,6 +319,8 @@ __all__ = [
     "BACKEND_NAMES",
     "DEFAULT_CODEC",
     "IDENTITY_ROLE",
+    "ID_FIELDS",
+    "LOGGER_ROOT",
     "MASK_RULES",
     "RUN_STATUS_FOR_OUTCOME",
     "SCHEMA_VERSION",
@@ -358,6 +382,9 @@ __all__ = [
     "InMemoryCheckpointSaver",
     "InMemoryIdempotencyStore",
     "InvalidTransitionError",
+    "JsonFormatter",
+    "LoggingConfigError",
+    "LoggingError",
     "LoopConfigError",
     "LoopGuard",
     "LoopOutcome",
@@ -382,6 +409,7 @@ __all__ = [
     "PgDatabase",
     "PgIdempotencyStore",
     "PgRepository",
+    "PlainFormatter",
     "PostgresCheckpointSaver",
     "PriceTable",
     "PricingNotReadyError",
@@ -392,6 +420,7 @@ __all__ = [
     "PromptVariableError",
     "RedactConfigError",
     "RedactError",
+    "RedactFilter",
     "Redactor",
     "RedisCheckpointSaver",
     "RetryAttempt",
@@ -430,6 +459,8 @@ __all__ = [
     "ToolProvider",
     "ToolSchemaInfo",
     "ToolSpec",
+    "TraceBinding",
+    "TraceIds",
     "TraceSink",
     "TranscriptLine",
     "TrimAndSummarize",
@@ -448,9 +479,11 @@ __all__ = [
     "check_identifier",
     "checkpoint_saver_from_env",
     "checkpoints",
+    "configure_logging",
     "conversation_turns",
     "cost_of",
     "count_visible",
+    "current_ids",
     "deref_prompt",
     "detach_identity",
     "detach_view_identity",
@@ -459,11 +492,13 @@ __all__ = [
     "ensure_transition",
     "execute_tool",
     "format_history",
+    "get_logger",
     "has_visible_answer",
     "identity_message",
     "is_retryable",
     "load_pricing",
     "load_prompt",
+    "log_context",
     "mask_text",
     "message_id_for",
     "messages",

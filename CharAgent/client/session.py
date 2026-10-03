@@ -58,7 +58,6 @@ summary_covers 两个字段, 记的是「压到哪一步了」) —— 那是进
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 from collections.abc import Awaitable, Sequence
 from dataclasses import replace
@@ -96,6 +95,7 @@ from CharAgent.prompt import (
     restore_identity,
 )
 from CharAgent.stream.utils.types import EventSink
+from CharAgent.structured_logging import get_logger, log_context
 from CharAgent.tool import Tool, ToolExecution
 from CharAgent.tool.tools_demo import (
     batch_convert_lengths,
@@ -107,7 +107,7 @@ from CharAgent.tool.tools_demo import (
 
 # 同一棵日志树 (与 checkpoint / prompt / db 那几处同一个做法): 会话层只在**收尾
 # 那条路**上记日志 —— 那条路不能上抛, 于是必须留痕 (见 _reclaim_progress)
-logger = logging.getLogger("charagent.client")
+logger = get_logger("client")
 
 
 # CLI 默认开放的工具集 (演示工具集, 业务无关、无外部依赖、确定性输出).
@@ -381,46 +381,55 @@ class ChatSession:
             用户已经看到答复了 (终局事件在 loop 里就发过), 不该因为一行账写不进去
             把一次跑完的问答变成一次失败.
         """
-        await self._hydrate_once()
-        # 记进记录表时从这里切开: 前面那段历史上一次已经写过了, 重写会写出重复行
-        since = len(self._history)
-        # 摘要「新不新」也在这里判 (比较基准是跑之前那份, 而 _run 会把它覆盖掉)
-        before_summary = self._summary
-        self._history.append({"role": "user", "content": question})
-        # 开账: 这一轮的运行行**先建出来** (ticket 22). 帧是在运行中途逐轮落盘的,
-        # 而它的 `run_id` 是指向那一行的外键 —— 行不在, 帧就盖不上编号. 编号定下来
-        # 之后一路带着: 交给 loop (盖到每帧) 与收尾的 `_record`
-        run_id = await self._begin_run(question)
-        self._last_run_id = run_id
-        # 提问这一行**当场落库** (ticket 27): 用户已经在页面上看到自己那句话了,
-        # 记录里不该等到跑完才出现 —— 运行中途刷新、被取消、或者进程被硬杀, 它都在
-        await self._flush(run_id=run_id, start=since, messages=self._history[since:])
-        try:
-            result = await self._run(
-                self._loop.run(
-                    self._history,
-                    run_id=run_id,
-                    # 身份说明的引用**逐次给**: 历史可能是刚从快照读回来的那一段,
-                    # 它用的也许是另一版提示词 (引用跟着历史一起换, 见 _hydrate_once)
-                    prompt_ref=self._prompt_ref,
-                    summary=self._summary,
-                    summary_covers=self._summary_covers,
-                    # 接着上一段的快照链往下写 (水合之后第一帧就挂在那条链上)
-                    parent_id=self._parent_id,
-                )
+        # 这一程的号牌 (difficulties #38): 会话编号装配时就定了, 运行编号要等
+        # `_begin_run` 把那一行建出来才有 —— 先绑前者, 拿到编号再补绑. 出块时
+        # `log_context` 会把它们还回去, 于是下一句问话不会带着这一句的号
+        with log_context(thread_id=self._thread_id) as trace:
+            await self._hydrate_once()
+            # 记进记录表时从这里切开: 前面那段历史上一次已经写过了, 重写会写出重复行
+            since = len(self._history)
+            # 摘要「新不新」也在这里判 (比较基准是跑之前那份, 而 _run 会把它覆盖掉)
+            before_summary = self._summary
+            self._history.append({"role": "user", "content": question})
+            # 开账: 这一轮的运行行**先建出来** (ticket 22). 帧是在运行中途逐轮落盘的,
+            # 而它的 `run_id` 是指向那一行的外键 —— 行不在, 帧就盖不上编号. 编号定下来
+            # 之后一路带着: 交给 loop (盖到每帧) 与收尾的 `_record`
+            run_id = await self._begin_run(question)
+            self._last_run_id = run_id
+            # 号牌补上: 从这一刻起这一程打的日志都带着它 (见 structured_logging 包)
+            trace.bind(run_id=run_id)
+            # 提问这一行**当场落库** (ticket 27): 用户已经在页面上看到自己那句话了,
+            # 记录里不该等到跑完才出现 —— 中途刷新 / 被取消 / 进程被硬杀, 它都在
+            await self._flush(
+                run_id=run_id, start=since, messages=self._history[since:]
             )
-        except BaseException as exc:
-            # 取消与失败那一轮也要记: 用户确实说过那句话, 页面上也显示了它 ——
-            # 记录里不该凭空少一轮 (取消与失败在记录里长得一样, 区别在运行行)
-            await self._record_unfinished(question, exc, run_id=run_id, since=since)
-            raise
-        await self._record(
-            result,
-            run_id=run_id,
-            since=since,
-            summary=result.summary if result.summary != before_summary else None,
-        )
-        return result
+            try:
+                result = await self._run(
+                    self._loop.run(
+                        self._history,
+                        run_id=run_id,
+                        # 身份说明的引用**逐次给**: 历史可能刚从快照读回来, 而它
+                        # 用的也许是另一版提示词 (引用跟着历史换, 见 _hydrate_once)
+                        prompt_ref=self._prompt_ref,
+                        summary=self._summary,
+                        summary_covers=self._summary_covers,
+                        # 接着上一段的快照链往下写 (水合之后第一帧就挂在那条链上)
+                        parent_id=self._parent_id,
+                    )
+                )
+            except BaseException as exc:
+                # 取消与失败那一轮也要记: 用户确实说过那句话, 页面上也显示了它 ——
+                # 记录里不该凭空少一轮 (取消与失败在记录里长得一样, 区别在运行行)
+                await self._record_unfinished(question, exc, run_id=run_id, since=since)
+                raise
+            await self._record(
+                result,
+                run_id=run_id,
+                since=since,
+                summary=result.summary if result.summary != before_summary else None,
+            )
+            self._log_run_finished(result)
+            return result
 
     async def resume(
         self,
@@ -475,49 +484,89 @@ class ChatSession:
             (不调 `_flush`), 失败时也只写一句「这一轮没答完」而不是「提问 + 没答完」
             (见 `_record_unfinished`).
         """
-        checkpoint = await self._saver.load_latest(self._thread_id)
-        if checkpoint is None:
-            return None
-        # 身份说明被剥离过的帧 (v5) 先补回来再交给 loop —— 补它要读盘, 而 loop 不碰
-        # 磁盘; 不补的话 loop 会当场拦下 (见 AgentLoop.resume 的护栏)
-        restored = self._restore(checkpoint)
-        # 这一段产生的消息从第几条开始: 起点的长度就是下标基准, 与 loop 的落库
-        # 协作者同一个口径 (`flushed = len(messages)`) —— 两边算的编号必须对得上,
-        # 否则收尾会把运行中已经写过的行再写一遍 (那会变成两条一样的消息)
-        since = len(restored.state.messages)
-        # 摘要「新不新」的基准要在跑之前取 (与 `ask` 同一条: _run 会把它覆盖掉)
-        before_summary = self._summary
-        # 没传 run_id = 这一次是新的一次运行: 那一行由这一段开出来, 于是它的收尾
-        # **必须**落到那一行上 (没落的行会永远停在 running).
-        finish_run = run_id is None
-        if run_id is None:
-            run_id = await self._begin_run()
-        # 这一段跑的是哪一行 (issue 39): 新开的那一个, 或调用方给的那一个 ——
-        # 两种情形都如实记下来, 调用方据此回看 (见 `last_run_id`)
-        self._last_run_id = run_id
-        try:
-            result = await self._run(
-                self._loop.resume(restored, run_id=run_id, approval=approval)
+        # 这一程的号牌 (difficulties #38): 与 `ask` 同一条 —— 会话编号先绑, 运行
+        # 编号到下面才拿得到 (新开一个, 或由调用方给), 拿到之后补绑
+        with log_context(thread_id=self._thread_id) as trace:
+            checkpoint = await self._saver.load_latest(self._thread_id)
+            if checkpoint is None:
+                return None
+            # 身份说明被剥离过的帧 (v5) 先补回来再交给 loop —— 补它要读盘, 而 loop 不碰
+            # 磁盘; 不补的话 loop 会当场拦下 (见 AgentLoop.resume 的护栏)
+            restored = self._restore(checkpoint)
+            # 这一段产生的消息从第几条开始: 起点的长度就是下标基准, 与 loop 的落库
+            # 协作者同一个口径 (`flushed = len(messages)`) —— 两边算的编号必须对得上,
+            # 否则收尾会把运行中已经写过的行再写一遍 (那会变成两条一样的消息)
+            since = len(restored.state.messages)
+            # 摘要「新不新」的基准要在跑之前取 (与 `ask` 同一条: _run 会把它覆盖掉)
+            before_summary = self._summary
+            # 没传 run_id = 这一次是新的一次运行: 那一行由这一段开出来, 于是它的收尾
+            # **必须**落到那一行上 (没落的行会永远停在 running).
+            finish_run = run_id is None
+            if run_id is None:
+                run_id = await self._begin_run()
+            # 这一段跑的是哪一行 (issue 39): 新开的那一个, 或调用方给的那一个 ——
+            # 两种情形都如实记下来, 调用方据此回看 (见 `last_run_id`)
+            self._last_run_id = run_id
+            # 号牌补上: 从这一刻起这一程打的日志都带着它 (见 structured_logging 包)
+            trace.bind(run_id=run_id)
+            try:
+                result = await self._run(
+                    self._loop.resume(restored, run_id=run_id, approval=approval)
+                )
+            except BaseException as exc:
+                # 失败与取消那一段**不碰**别人开的账 (finish_run 仍是上面那个值): 那次
+                # 运行还没结束 (它还等着人给结论), 这一段只是它的第二段 —— 把 failed
+                # 写上去等于把一次还能恢复的运行判死, 用户只能重新问一遍. 而那一段自己
+                # 开的账必须收掉, 否则那一行永远停在 running
+                await self._record_unfinished(
+                    None, exc, run_id=run_id, since=since, finish_run=finish_run
+                )
+                raise
+            # 跑到了结局就记上去 —— 包括「又挂起一次」(那时写的是 waiting_user, 不是
+            # 终态), 以及这次运行的终态. 于是「谁收尾」不靠调用方传, 而是看这一段真的
+            # 跑成了什么
+            await self._record(
+                result,
+                run_id=run_id,
+                since=since,
+                summary=result.summary if result.summary != before_summary else None,
             )
-        except BaseException as exc:
-            # 失败与取消那一段**不碰**别人开的账 (finish_run 仍是上面那个值): 那次
-            # 运行还没结束 (它还等着人给结论), 这一段只是它的第二段 —— 把 failed
-            # 写上去等于把一次还能恢复的运行判死, 用户只能重新问一遍. 而那一段自己
-            # 开的账必须收掉, 否则那一行永远停在 running
-            await self._record_unfinished(
-                None, exc, run_id=run_id, since=since, finish_run=finish_run
-            )
-            raise
-        # 跑到了结局就记上去 —— 包括「又挂起一次」(那时写的是 waiting_user, 不是
-        # 终态), 以及这次运行的终态. 于是「谁收尾」不靠调用方传, 而是看这一段真的
-        # 跑成了什么
-        await self._record(
-            result,
-            run_id=run_id,
-            since=since,
-            summary=result.summary if result.summary != before_summary else None,
+            self._log_run_finished(result)
+            return result
+
+    def _log_run_finished(self, result: LoopResult) -> None:
+        """一段运行跑完了, 记一行 (difficulties #38 的「关键上下文」那一格).
+
+        为什么这一行值得写 (此前这里一行都不写): 别的日志都是**出了事**才响的
+        (失败 / 降级 / 记账写不进去), 于是「跑顺的时候日志里空空如也」—— 那对一个
+        要给人看的系统是反的: 出问题时想比对的那份「正常长什么样」根本不存在, 而
+        一次问答花了多少 token / 几轮 / 多久, 恰恰只有这一行记着.
+
+        三个 id 由上下文自动带上 (本方法跑在 `ask` / `resume` 的 `log_context` 块内),
+        这里只补**这一次运行自己的事实**: 结局 / 轮数 / 用量 / 耗时 / 模型.
+
+        走 `extra=` 而不是拼进那句话: 拼进去是给人念的, 而这一行的用处是**被筛**
+        (`jq 'select(.tokens > 10000)'` / 按 outcome 挑挂起的那些) —— 与 `msg` 那份
+        人话各司其职.
+
+        **只记「跑完的」**: 失败与取消那两条路各有各的落点 (server 层那条带完整
+        traceback 的 ERROR; 命令行那层由调用方接住), 在这里再记一遍就是同一件事写两次.
+        """
+        logger.info(
+            "一段运行跑完: %s, %d 轮, %d tokens, %.0f ms",
+            result.outcome,
+            result.turn_count,
+            result.total_tokens,
+            result.elapsed_ms,
+            extra={
+                "outcome": str(result.outcome),
+                "turns": result.turn_count,
+                "tokens": result.total_tokens,
+                "elapsed_ms": round(result.elapsed_ms, 1),
+                "truncations": result.truncation_count,
+                "model": self._model_name,
+            },
         )
-        return result
 
     async def frame_count(self) -> int | None:
         """本会话存了几帧快照; None 表示这个后端不留历史 (如 Redis latest 模式).
