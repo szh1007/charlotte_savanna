@@ -7,6 +7,7 @@
 
 import re
 
+from django.contrib import admin
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.utils import timezone
@@ -203,6 +204,10 @@ class CreateReportTests(TestCase):
         # OG 文本
         self.assertIn("测试旅程", report.og_title)
         self.assertIn("100%", report.og_description)
+
+    def test_report_registered_in_admin(self):
+        # 12 张表全部注册后台 (报告为只读快照, 供人工核对分享页内容)
+        self.assertTrue(admin.site.is_registered(CharplotReviewReport))
 
     def test_no_report_before_clear(self):
         clear_level(self.journey.levels.first(), [True] * 6)

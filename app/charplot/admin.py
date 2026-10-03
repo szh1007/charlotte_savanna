@@ -12,6 +12,7 @@ from .models import (
     CharplotProfile,
     CharplotQuestion,
     CharplotQuestionFlag,
+    CharplotReviewReport,
     CharplotUserEvent,
 )
 
@@ -154,6 +155,31 @@ class CharplotAttemptAdmin(admin.ModelAdmin):
         "is_correct",
         "user_answer",
         "duration",
+    )
+
+
+@admin.register(CharplotReviewReport)
+class CharplotReviewReportAdmin(admin.ModelAdmin):
+    """复盘报告后台管理 (只读快照: 人工核对分享页内容与 OG 卡片).
+
+    报告为通关时快照, 生成后不可变 (后台仅查看, 不提供编辑入口);
+    slug 用于拼 /r/{slug} 公开分享链接人工验证.
+    """
+
+    list_display = ("id", "journey", "user", "slug", "created_at")
+    list_select_related = ("journey", "user")
+    search_fields = ("slug", "og_title", "journey__title", "user__username")
+    readonly_fields = (
+        "journey",
+        "user",
+        "slug",
+        "knowledge_summary",
+        "stats",
+        "og_title",
+        "og_description",
+        "og_image",
+        "created_at",
+        "updated_at",
     )
 
 

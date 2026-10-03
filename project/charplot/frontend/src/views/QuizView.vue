@@ -5,6 +5,8 @@
 // 学当前关时后台预生成下一关 (进入关卡与通关时触发, 进入下一关零等待).
 // 断点续答: 每次进入/下一题都从后端拉取当前题 (current_index 定位),
 // 中途退出再进自动续答; 进度/剩余心持久化在后端 (charplot_level).
+// 韧性: 生成中先探任务存活 (服务重启后任务残留但已死) → 任务丢失/生成失败/
+// 加载失败三种异常态都各有重试与退出入口, 不留空转骨架.
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
@@ -14,9 +16,10 @@ import {
   flagQuestion,
   getLevel,
   getLevels,
+  probeTaskAlive,
   restartLevel,
   startLevelGeneration,
-  subscribePipeline,
+  subscribeTaskEvents,
   type AnswerResult,
   type FlagReason,
   type LevelDetail,
@@ -41,6 +44,8 @@ type Phase =
   | 'failed'
   | 'generating'
   | 'generation_failed'
+  | 'task_lost'
+  | 'load_error'
   | 'locked'
 
 const detail = ref<LevelDetail | null>(null)
@@ -79,29 +84,51 @@ function subscribeGeneration(taskId: string) {
   closeSse?.()
   genProgress.value = 0
   genStage.value = ''
-  closeSse = subscribePipeline(taskId, {
+  closeSse = subscribeTaskEvents(taskId, {
     onEvent: (ev: PipelineEvent) => {
       genProgress.value = ev.progress
       genStage.value = ev.message
       if (ev.stage === 'done') loadLevel()
       else if (ev.stage === 'error') phase.value = 'generation_failed'
     },
+    onLost: () => {
+      phase.value = 'task_lost'
+    },
   })
 }
 
-/** 触发生成本关题目 (渐进生成); 已就绪/生成中直接订阅或跳过.
+/** 触发生成本关题目 (渐进生成); 已就绪直接答题.
  * 返回是否已就绪可答题 (供调用方决定预生成下一关). */
 async function ensureGenerated(): Promise<boolean> {
-  const d = detail.value
+  let d = detail.value
   if (!d) return false
-  if (d.questions_status === 'generating') {
-    if (d.latest_task_id) subscribeGeneration(d.latest_task_id)
-    phase.value = 'generating'
-    return false
-  }
   if (d.questions_status === 'ready') {
     phase.value = 'answering'
     return true
+  }
+  if (d.questions_status === 'generating') {
+    // 韧性: 服务重启后任务 hash 残留但执行体已死 → 先探一次, 不空转进度条
+    if ((await probeTaskAlive(d.latest_task_id)) !== false) {
+      if (d.latest_task_id) subscribeGeneration(d.latest_task_id)
+      phase.value = 'generating'
+      return false
+    }
+    // 任务不存在: 重拉关卡 —— 后端回收器已把实体推回失败态 (可重试)
+    const fresh = await getLevel(levelId.value).catch(() => null)
+    if (fresh) {
+      detail.value = fresh
+      d = fresh
+    }
+    if (d.questions_status === 'ready') {
+      // 任务其实已成功 (探测与拉取之间刚完成): 直接答题, 不重复出题
+      phase.value = 'answering'
+      return true
+    }
+    if (d.questions_status === 'generating') {
+      // 实体口径未变 (陈旧锁未到期): 给重试/退出入口, 后台恢复前不再空转
+      phase.value = 'task_lost'
+      return false
+    }
   }
   try {
     const { task_id } = await startLevelGeneration(journeyId.value, d.seq)
@@ -144,7 +171,8 @@ async function loadLevel() {
     }
   } catch (e) {
     ElMessage.error(e instanceof ApiError ? e.message : '关卡加载失败, 请稍后重试')
-    phase.value = 'loading'
+    // 失败态收敛到错误视图 (不再停留在 loading 骨架)
+    phase.value = 'load_error'
   }
 }
 
@@ -248,6 +276,19 @@ onUnmounted(() => closeSse?.())
       <el-skeleton :rows="4" animated />
     </section>
 
+    <!-- 关卡加载失败: 重试或退出 (失败态不留 loading 骨架) -->
+    <section v-else-if="phase === 'load_error'" class="panel gen-card">
+      <p class="gen-emoji" aria-hidden="true">⚠️</p>
+      <h2 class="gen-title">关卡加载失败</h2>
+      <p class="gen-detail">网络或服务暂时不可用, 稍后重试即可。</p>
+      <div class="gen-actions">
+        <el-button round @click="router.push(`/journeys/${journeyId}/levels`)">
+          返回关卡列表
+        </el-button>
+        <el-button type="primary" round @click="loadLevel">重试</el-button>
+      </div>
+    </section>
+
     <!-- 题目生成中 (渐进生成): SSE 进度, 完成后自动进入答题 -->
     <section v-else-if="detail && phase === 'generating'" class="panel gen-card">
       <p class="gen-emoji" aria-hidden="true">✨</p>
@@ -256,6 +297,27 @@ onUnmounted(() => closeSse?.())
         {{ genStage || 'AI 正在基于本关知识点出题, 请稍候…' }}
       </p>
       <el-progress :percentage="genProgress" :stroke-width="10" class="gen-progress" />
+      <div class="gen-actions">
+        <el-button round @click="router.push(`/journeys/${journeyId}/levels`)">
+          返回关卡列表
+        </el-button>
+      </div>
+    </section>
+
+    <!-- 生成任务丢失 (AI 服务重启/任务过期): 重新排队或退出 -->
+    <section v-else-if="detail && phase === 'task_lost'" class="panel gen-card">
+      <p class="gen-emoji" aria-hidden="true">🛰️</p>
+      <h2 class="gen-title">生成任务已丢失</h2>
+      <p class="gen-detail">
+        生成任务已中断 (AI 服务可能重启过)。可以重新生成; 若后台仍标记生成中,
+        稍等片刻再试 (陈旧锁最长 10 分钟自动放开)。
+      </p>
+      <div class="gen-actions">
+        <el-button round @click="router.push(`/journeys/${journeyId}/levels`)">
+          返回关卡列表
+        </el-button>
+        <el-button type="primary" round @click="loadLevel">重新生成</el-button>
+      </div>
     </section>
 
     <!-- 生成失败: 可重试 -->
@@ -263,9 +325,12 @@ onUnmounted(() => closeSse?.())
       <p class="gen-emoji" aria-hidden="true">😿</p>
       <h2 class="gen-title">题目生成失败</h2>
       <p class="gen-detail">生成服务暂时不可用, 稍后重试即可, 进度不会丢失。</p>
-      <el-button type="primary" size="large" round @click="ensureGenerated">
-        重试生成
-      </el-button>
+      <div class="gen-actions">
+        <el-button round @click="router.push(`/journeys/${journeyId}/levels`)">
+          返回关卡列表
+        </el-button>
+        <el-button type="primary" round @click="ensureGenerated">重试生成</el-button>
+      </div>
     </section>
 
     <!-- 未解锁 (前置章节 Boss 未通关) -->
@@ -301,7 +366,7 @@ onUnmounted(() => closeSse?.())
         </h3>
         <p class="feedback-explanation">{{ result.explanation || '暂无讲解' }}</p>
 
-        <!-- 来源引用位: 真实知识源填充前显示占位 -->
+        <!-- 来源引用 (幻觉防护第二层): 出题时的检索片段来源, 未检索到则留空 -->
         <div v-if="sources.length" class="sources">
           <span class="sources-label">来源:</span>
           <a
@@ -315,7 +380,7 @@ onUnmounted(() => closeSse?.())
             {{ src }}
           </a>
         </div>
-        <p v-else class="sources-placeholder">来源引用将在接入真实知识源后显示</p>
+        <p v-else class="sources-placeholder">本题没有可展示的来源引用</p>
 
         <!-- 通关: 查看结算; 进行中: 下一题; 心扣完: 由 failed-card 提供重开 -->
         <el-button
@@ -569,6 +634,15 @@ onUnmounted(() => closeSse?.())
 .gen-progress {
   max-width: 320px;
   margin: 0 auto;
+}
+
+/* 异常态动作组 (重试 + 退出): 生成中/失败/丢失三态共用 */
+.gen-actions {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 16px;
+  flex-wrap: wrap;
 }
 
 /* ---- 心扣完 ---- */

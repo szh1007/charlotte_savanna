@@ -1,8 +1,10 @@
 <script setup lang="ts">
 // 知识库管理页: 管理员预建主题知识库.
-// 创建(主题名/描述/封面) → 上传文档 → 触发索引(stub, SSE 假进度)
-// → 状态机流转就绪; 软删可恢复; 失败可重试; 下线/上线.
+// 创建(主题名/描述/封面) → 上传文档 → 触发索引(真实解析/切分/向量化/入库,
+// SSE 阶段进度) → 状态机流转就绪; 软删可恢复; 失败可重试; 下线/上线.
 // 视觉遵循 /frontend-design: 状态徽章 + 索引进度 stepper 为签名元素.
+// 韧性: 索引中先探任务存活 (服务重启后任务残留但已死) → 任务丢失时给
+// 「重新索引」入口 (后端 claim 对超 10 分钟陈旧任务放行重抢).
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import type { UploadFile } from 'element-plus'
@@ -12,11 +14,12 @@ import {
   deleteKbDocument,
   getKnowledgeBase,
   getKnowledgeBases,
+  probeTaskAlive,
   restoreKbDocument,
   setKbOffline,
   setKbOnline,
   startKbIndex,
-  subscribePipeline,
+  subscribeTaskEvents,
   uploadKbDocuments,
   type KbDocument,
   type KnowledgeBaseDetail,
@@ -48,6 +51,8 @@ const currentStage = ref('')
 const progress = ref(0)
 const stageMessage = ref('')
 const indexing = ref(false)
+// 索引任务已丢失 (探测确认): 提示原因并放开「重新索引」入口
+const taskLost = ref(false)
 const closeSse = ref<(() => void) | null>(null)
 
 // ---- 文档上传 ----
@@ -80,9 +85,11 @@ const STATUS_LABELS: Record<string, string> = {
   offline: '已下线',
 }
 
+// indexing 也在内: 任务丢失 (服务重启) 时给人工重抢入口, 后端 claim 对
+// 非陈旧任务直接跳过 (幂等), 不会造成双重索引
 const canIndex = computed(() => {
   const s = current.value?.status
-  return s === 'draft' || s === 'ready' || s === 'failed'
+  return s === 'draft' || s === 'indexing' || s === 'ready' || s === 'failed'
 })
 
 const canOffline = computed(() => current.value?.status === 'ready')
@@ -127,12 +134,18 @@ async function onCreate() {
 async function openDetail(id: number) {
   drawerOpen.value = true
   detailLoading.value = true
+  taskLost.value = false // 每次开抽屉重置: 丢失态只属于当前库
   try {
     const detail = await getKnowledgeBase(id)
     current.value = detail
-    // 任务中断后回到页面: 若状态为索引中则尝试续推 (SSE 404 兜底)
-    if (detail.status === 'indexing' && detail.latest_task_id) {
-      beginSse(detail.latest_task_id)
+    if (detail.status === 'indexing') {
+      // 任务中断后回到页面: 先探任务存活 —— 活着续推进度 (SSE),
+      // 已死 (FastAPI 重启/过期) 则给「重新索引」入口, 不空转 stepper
+      if ((await probeTaskAlive(detail.latest_task_id)) === false) {
+        taskLost.value = true
+      } else if (detail.latest_task_id) {
+        beginSse(detail.latest_task_id)
+      }
     }
   } catch (e) {
     ElMessage.error(e instanceof ApiError ? e.message : '加载详情失败')
@@ -154,8 +167,9 @@ function beginSse(taskId: string) {
   closeSse.value?.()
   currentStage.value = 'parsing'
   progress.value = 0
+  taskLost.value = false
   indexing.value = true
-  closeSse.value = subscribePipeline(taskId, {
+  closeSse.value = subscribeTaskEvents(taskId, {
     onEvent: (ev: PipelineEvent) => {
       currentStage.value = ev.stage
       progress.value = ev.progress
@@ -165,6 +179,10 @@ function beginSse(taskId: string) {
         indexing.value = false
         reloadDetail().catch(() => {})
       }
+    },
+    onLost: () => {
+      indexing.value = false
+      taskLost.value = true
     },
   })
 }
@@ -355,7 +373,7 @@ onUnmounted(() => {
                 :disabled="indexing"
                 @click="onIndex"
               >
-                {{ current.status === 'failed' ? '重新索引' : '触发索引' }}
+                {{ current.status === 'draft' ? '触发索引' : '重新索引' }}
               </el-button>
               <el-button
                 v-if="canOffline"
@@ -375,13 +393,20 @@ onUnmounted(() => {
               >
                 恢复上线
               </el-button>
+              <el-button size="small" round plain @click="drawerOpen = false">
+                关闭
+              </el-button>
             </div>
           </div>
           <p v-if="current.status === 'failed'" class="fail-message">
             {{ current.error_message || '索引失败, 点击「重新索引」重试' }}
           </p>
+          <p v-if="taskLost" class="fail-message">
+            索引任务已中断 (AI 服务可能重启过)。点「重新索引」重新排队;
+            后台仍标记索引中时, 陈旧锁最长 10 分钟自动放开。
+          </p>
 
-          <!-- 索引进度 (stub SSE) -->
+          <!-- 索引进度 (真实索引阶段 SSE) -->
           <section v-if="indexing" class="index-progress" aria-label="索引进度">
             <ol class="stepper">
               <li

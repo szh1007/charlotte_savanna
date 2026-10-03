@@ -1,6 +1,6 @@
 """CharPlot FastAPI 服务 - AI 能力端.
 
-职责: 知识管道 / RAG 全链路 / 任务系统 (stub 管道 + 异步任务 + SSE 进度).
+职责: 知识管道 / RAG 全链路 / 任务系统 (异步任务 + SSE 进度).
 Django 侧 = 状态与数据 (app/charplot), FastAPI 侧 = AI 能力, 二者通过
 HTTP + 共享 MySQL/Redis 通信.
 """
@@ -62,9 +62,10 @@ app.add_middleware(
 
 @app.get("/ai/health")
 async def health():
-    """健康检查 - 探活共享 Redis.
+    """健康检查 - 探活共享 Redis + 暴露 rerank 运行时状态.
 
-    三端联通的基础链路: 前端可轮询此端点确认 AI 服务就绪.
+    三端联通的基础链路: 前端可轮询此端点确认 AI 服务就绪; rerank 状态
+    如实反映「本地模型在不在」(缺失即降级不精排), 与 README 架构意图对照.
     """
     redis_status = "ok"
     try:
@@ -77,10 +78,20 @@ async def health():
     except Exception:
         redis_status = "error"
 
+    # 探测改动不影响探活结论 (rag 依赖缺失时健康检查仍需可用)
+    rerank = {"degraded": True, "reason": "状态不可用"}
+    try:
+        from ..rag.rerank import rerank_status
+
+        rerank = rerank_status()
+    except Exception as exc:
+        rerank = {"degraded": True, "reason": f"状态读取失败: {exc}"}
+
     payload = {
         "status": "ok" if redis_status == "ok" else "degraded",
         "service": "charplot-fastapi",
         "redis": redis_status,
+        "rerank": rerank,
         "time": datetime.now().isoformat(),
     }
     return payload
@@ -122,7 +133,7 @@ async def status_summary(req: StatusSummaryRequest):
 
 @app.post("/ai/pipeline", response_model=PipelineResponse)
 async def start_pipeline(req: PipelineRequest):
-    """启动知识管道: 创建异步任务, 后台执行 stub 管道."""
+    """启动知识管道: 创建异步任务, 后台执行四阶段管道."""
     task_id = await task_system.create_task(
         req.journey_id, req.input_type, req.content or "", req.kb_id
     )
@@ -168,6 +179,11 @@ async def search_kb(req: KbSearchRequest):
         chunks = rag_search(req.kb_id, req.query, req.top_k)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        # 检索依赖不可达 (Milvus 连接/embedding 模型加载/Django 软删查询):
+        # 服务端暂时不可用, 与 django_client 的注释承诺一致 (前端可重试)
+        logger.exception("知识库检索失败 (kb=%s)", req.kb_id)
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     return KbSearchResponse(chunks=[KbSearchChunk(**chunk) for chunk in chunks])
 
 

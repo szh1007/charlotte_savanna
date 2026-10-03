@@ -1,10 +1,12 @@
 <script setup lang="ts">
 // 应用壳: 渐变背景 + 顶部导航.
-// 导航 = Logo + 登录态(徽章组 + 个人主页入口 + 登出) / 游客态(登录/注册).
+// 导航 = Logo + 双后端健康指示 + 登录态(徽章组 + 个人主页入口 + 登出) /
+// 游客态(登录/注册).
 import { onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { ApiError } from '@/api/client'
+import HealthPill from '@/components/HealthPill.vue'
 import { useAuth } from '@/stores/auth'
 
 const router = useRouter()
@@ -55,6 +57,9 @@ async function onLogout() {
       </router-link>
 
       <nav class="nav-actions" aria-label="用户操作">
+        <!-- 双后端健康指示 (业务端 / AI 端, 异常变红) -->
+        <HealthPill />
+
         <!-- 已登录: 游戏化状态徽章组 + 个人主页 + 登出 -->
         <template v-if="state.user">
           <div class="badges" aria-label="游戏化状态">

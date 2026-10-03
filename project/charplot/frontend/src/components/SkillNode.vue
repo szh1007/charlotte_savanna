@@ -9,7 +9,7 @@ import type { SkillTreeNode } from '@/api/client'
 
 const props = defineProps<NodeProps<SkillTreeNode>>()
 
-/** 多关进度徽章文本: 有 Level 数据才显示 (如 2/3), 本期恒为空. */
+/** 多关进度徽章文本: 该知识点已通关/总关卡数 (如 2/3). */
 const progressText = computed(() => {
   const { cleared_levels, total_levels } = props.data
   return total_levels > 0 ? `${cleared_levels}/${total_levels}` : ''

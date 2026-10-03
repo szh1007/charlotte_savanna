@@ -3,6 +3,8 @@
 // 渐进生成: 进入页面时对 frontier (第一个未通关关) 及其下一关触发
 // 出题生成 (预生成), 生成中订阅 SSE 进度, 失败可重试; Boss 关与解锁状态
 // 在卡片上标记. 地图页点击知识点节点时带 query.kp 过滤到该知识点关卡.
+// 韧性: 生成中关卡先探任务存活 (服务重启后任务残留但已死), 任务丢失的
+// 卡片切「生成已中断 · 重新生成」, 不空转进度条.
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
@@ -10,8 +12,9 @@ import {
   ApiError,
   getJourney,
   getLevels,
+  probeTaskAlive,
   startLevelGeneration,
-  subscribePipeline,
+  subscribeTaskEvents,
   type JourneyDetail,
   type LevelSummary,
   type PipelineEvent,
@@ -29,6 +32,8 @@ const loading = ref(true)
 const genSubs = ref<Record<number, () => void>>({})
 // level.id → 生成进度 (前端展示)
 const genProgress = ref<Record<number, number>>({})
+// level.id → 任务已丢失 (探测确认), 卡片切可重试态
+const genLost = ref<Record<number, boolean>>({})
 
 /** query.kp 过滤: 地图页点节点进入只显示该知识点关卡, 无 kp 显示全部. */
 const shownLevels = computed(() =>
@@ -63,25 +68,64 @@ async function loadLevels() {
   levels.value = res.levels
 }
 
+/** 取消单关订阅与进度态 (终端事件 / 任务丢失 / 卸载共用). */
+function closeLevelSub(levelId: number) {
+  genSubs.value[levelId]?.()
+  delete genSubs.value[levelId]
+  delete genProgress.value[levelId]
+}
+
 /** 订阅单关生成进度; done/error → 刷新列表 (失败态在卡片上可重试). */
 function subscribeLevelGen(levelId: number, taskId: string) {
   genSubs.value[levelId]?.()
+  delete genLost.value[levelId]
   genProgress.value[levelId] = 0
-  genSubs.value[levelId] = subscribePipeline(taskId, {
+  genSubs.value[levelId] = subscribeTaskEvents(taskId, {
     onEvent: (ev: PipelineEvent) => {
       if (ev.stage === 'done' || ev.stage === 'error') {
-        genSubs.value[levelId]?.()
-        delete genSubs.value[levelId]
-        delete genProgress.value[levelId]
-        loadLevels().catch(() => {})
+        closeLevelSub(levelId)
+        refreshLevels().catch(() => {})
       } else {
         genProgress.value[levelId] = ev.progress
       }
     },
+    onLost: () => {
+      closeLevelSub(levelId)
+      genLost.value[levelId] = true
+    },
   })
 }
 
-/** 触发生成 (渐进 + 预生成): frontier 及其下一关; 生成中任务续订阅. */
+/** 重新拉列表 + 收口生成中的关卡 (刷新后卡片状态才是权威). */
+async function refreshLevels() {
+  await loadLevels()
+  await syncGeneratingLevels()
+}
+
+/**
+ * 生成中关卡收口: 探测任务存活 —— 活着订阅进度, 已死 (服务重启/过期)
+ * 标记 genLost 让卡片出「重新生成」按钮, 不再空转 0% 进度条.
+ */
+async function syncGeneratingLevels() {
+  for (const level of levels.value) {
+    if (level.questions_status !== 'generating') {
+      delete genLost.value[level.id]
+      continue
+    }
+    if (genSubs.value[level.id]) continue // 已订阅, 不重复
+    if ((await probeTaskAlive(level.latest_task_id)) === false) {
+      genLost.value[level.id] = true
+      continue
+    }
+    if (level.latest_task_id) {
+      subscribeLevelGen(level.id, level.latest_task_id)
+    } else {
+      genLost.value[level.id] = true // 生成中却无任务 id: 无法订阅, 直接给重试
+    }
+  }
+}
+
+/** 触发生成 (渐进 + 预生成): frontier 及其下一关. */
 async function ensureGeneration() {
   const sorted = [...levels.value].sort((a, b) => a.seq - b.seq)
   const frontier = sorted.find((l) => l.status !== 'cleared')
@@ -97,14 +141,13 @@ async function ensureGeneration() {
       } catch {
         /* 生成启动失败静默: 进入关卡时按渐进生成再触发 */
       }
-    } else if (level.questions_status === 'generating' && level.latest_task_id) {
-      subscribeLevelGen(level.id, level.latest_task_id)
     }
   }
 }
 
-/** 生成失败重试 (卡片按钮). */
+/** 生成失败 / 中断重试 (卡片按钮). */
 async function retryGeneration(level: LevelSummary) {
+  delete genLost.value[level.id]
   try {
     const { task_id } = await startLevelGeneration(journeyId.value, level.seq)
     subscribeLevelGen(level.id, task_id)
@@ -119,6 +162,7 @@ onMounted(async () => {
     if (detail.value.status === 'ready') {
       await loadLevels()
       await ensureGeneration()
+      await syncGeneratingLevels()
     }
   } catch (e) {
     ElMessage.error(e instanceof ApiError ? e.message : '关卡加载失败, 请稍后重试')
@@ -176,7 +220,10 @@ onUnmounted(() => {
           </div>
           <h2 class="level-kp">{{ level.kp_title }}</h2>
           <div class="level-meta">
-            <template v-if="level.questions_status === 'generating'">
+            <template v-if="level.questions_status === 'generating' && genLost[level.id]">
+              <span class="gen-failed-text">生成已中断</span>
+            </template>
+            <template v-else-if="level.questions_status === 'generating'">
               <span>✨ 题目生成中 {{ genProgress[level.id] ?? 0 }}%</span>
             </template>
             <template v-else-if="level.questions_status === 'failed'">
@@ -206,7 +253,17 @@ onUnmounted(() => {
           <span class="status-tag" :class="STATUS_META[level.status]?.cls">
             {{ STATUS_META[level.status]?.label }}
           </span>
-          <template v-if="level.questions_status === 'failed' && !level.cleared">
+          <template v-if="genLost[level.id]">
+            <el-button plain round @click="router.push(`/journeys/${journeyId}/map`)">
+              返回地图
+            </el-button>
+            <el-button type="warning" round @click="retryGeneration(level)">
+              重新生成
+            </el-button>
+          </template>
+          <template
+            v-else-if="level.questions_status === 'failed' && !level.cleared"
+          >
             <el-button type="warning" round @click="retryGeneration(level)">
               生成失败 · 重试
             </el-button>

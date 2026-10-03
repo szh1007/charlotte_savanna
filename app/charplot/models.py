@@ -348,8 +348,8 @@ class CharplotQuestion(models.Model):
 
     options 仅选择/判断类型使用 (判断 = 固定 [对, 错] 选项, 由前端内置);
     answer 存 JSON: 选择 = 正确选项下标 int, 判断 = "true"/"false", 填空 =
-    可接受答案字符串数组 (归一化后模糊匹配). sources 为来源引用数组,
-    真实管道生成后填充, 当前 stub 留空占位.
+    可接受答案字符串数组 (归一化后模糊匹配). sources 为来源引用数组
+    (出题时的检索片段来源, 可空: 未配置检索源的知识点出题时留空).
     """
 
     class QuestionType(models.TextChoices):

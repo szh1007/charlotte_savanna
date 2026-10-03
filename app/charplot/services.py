@@ -346,8 +346,30 @@ def save_journey_graph(journey, task_id, graph):
         )
 
 
+def _is_stale_mark(entity, task_id) -> bool:
+    """陈旧失败标记判定: 实体已被更新的任务接管 → 本标记作废.
+
+    只回滚「自己那次抢占」: 任务 A 失败/被回收时若实体已由任务 B 重新
+    抢占 (latest_task_id=B), A 的失败标记不得覆盖 B 的运行; 实体无主
+    (latest_task_id 为空) 时接受标记 (内部端点一次性调用场景).
+    判定命中时打 warning 并返回 True, 调用方直接 return 不做改动.
+    """
+    if entity.latest_task_id and entity.latest_task_id != task_id:
+        logger.warning(
+            "忽略陈旧失败标记 (%s=%s, task=%s, 现任=%s)",
+            type(entity).__name__,
+            entity.pk,
+            task_id,
+            entity.latest_task_id,
+        )
+        return True
+    return False
+
+
 def mark_journey_failed(journey, task_id, error_message):
     """任务失败标记: status=failed + 失败原因 (FastAPI 经内部端点调用)."""
+    if _is_stale_mark(journey, task_id):
+        return journey
     journey.status = CharplotJourney.Status.FAILED
     journey.latest_task_id = task_id
     journey.error_message = error_message[:1000]
@@ -370,7 +392,7 @@ def _kp_status(prereq_ids, cleared_kp_ids):
     """知识点点亮状态: 依赖全部通关才解锁, 否则锁定.
 
     纯函数便于测试: 调用方把已通关知识点 id 集合 (由通关结算
-    产出) 注入, 本期无关卡数据时传空集 → 有前置依赖的知识点一律锁定.
+    产出) 注入, 无通关记录的知识点不在集合内 → 有前置依赖的一律锁定.
     """
     if prereq_ids and not set(prereq_ids) <= set(cleared_kp_ids):
         return "locked"
@@ -480,112 +502,6 @@ def normalize_answer(text):
     return "".join(normalized.split()).lower()
 
 
-# stub 题目干扰项兜底词 (章节/知识点不足时填充选项)
-_STUB_DISTRACTORS = ("核心概念", "基础理论", "实践技巧")
-
-# 关卡题数 (5-8 范围)
-_STUB_QUESTION_COUNT = 6
-
-
-def _stub_questions(level, journey):
-    """确定性 stub 题目 (真实生成后替换).
-
-    6 题 = 选择 2 + 判断 2 + 填空 1 + 判断 1 (简单收尾): 由浅入深
-    (识别 → 回忆), 填空中后段难度峰值, 简单判断题收尾保成功感.
-    内容基于图谱内知识点/章节标题派生, 讲解自洽; sources 留空为来源引用位
-    (真实生成时填充). 同一旅程重复生成结果一致 (重开同题).
-    """
-    kp = level.knowledge_point
-    chapter = kp.chapter
-    # 干扰项候选: 其他知识点标题 + 兜底词, 与正确项去重后取 3 个
-    others = [
-        p.title
-        for ch in journey.chapters.all()
-        for p in ch.knowledge_points.all()
-        if p.id != kp.id and p.title != kp.title
-    ]
-    chapter_titles = list(journey.chapters.values_list("title", flat=True))
-    summary = kp.summary or f"本图谱解构出的核心知识点, 贯穿「{chapter.title}」章节."
-    prereq_titles = list(kp.prerequisites.values_list("title", flat=True))
-
-    def distractors(exclude, count=3):
-        pool = [t for t in (others + list(_STUB_DISTRACTORS)) if t not in exclude]
-        # 确定性去重保序, 不足时兜底词补齐
-        seen, picks = set(), []
-        for item in pool:
-            if item not in seen:
-                seen.add(item)
-                picks.append(item)
-            if len(picks) >= count:
-                break
-        return (picks + list(_STUB_DISTRACTORS))[:count]
-
-    chapter_options = distractors(chapter.title)
-    summary_options = distractors(summary)
-    questions = [
-        {
-            "question_type": CharplotQuestion.QuestionType.CHOICE,
-            "content": f"「{kp.title}」在本图谱中属于哪个章节?",
-            "options": [chapter.title, *chapter_options],
-            "answer": [0],
-            "explanation": (
-                f"「{kp.title}」属于「{chapter.title}」章节, 同章知识点共同"
-                f"构成该部分的知识结构."
-            ),
-        },
-        {
-            "question_type": CharplotQuestion.QuestionType.CHOICE,
-            "content": f"下列关于「{kp.title}」的概述, 最准确的是?",
-            "options": [summary, *summary_options],
-            "answer": [0],
-            "explanation": f"「{kp.title}」的概述: {summary}",
-        },
-        {
-            "question_type": CharplotQuestion.QuestionType.JUDGE,
-            "content": f"「{kp.title}」是「{chapter.title}」章节的知识点.",
-            "options": [],
-            "answer": ["true"],
-            "explanation": (
-                f"「{kp.title}」是「{chapter.title}」的知识点之一, 该章共"
-                f" {chapter.knowledge_points.count()} 个知识点."
-            ),
-        },
-        {
-            "question_type": CharplotQuestion.QuestionType.FILL,
-            "content": (
-                f"请补全知识点名称: 概述为「{summary[:40]}…」的知识点是 ____"
-                if len(summary) > 40
-                else f"请补全知识点名称: 概述为「{summary}」的知识点是 ____"
-            ),
-            "options": [],
-            "answer": [kp.title],
-            "explanation": f"正确答案: 「{kp.title}」. {summary}",
-        },
-        {
-            "question_type": CharplotQuestion.QuestionType.JUDGE,
-            "content": f"「{kp.title}」的前置知识点必须全部通关后, 本知识点才会解锁.",
-            "options": [],
-            "answer": ["true" if prereq_titles else "false"],
-            "explanation": (
-                f"「{kp.title}」的前置依赖: {'、'.join(prereq_titles) or '无'}. "
-                f"技能树按前置依赖解锁, 依赖满足前节点锁定."
-            ),
-        },
-        {
-            "question_type": CharplotQuestion.QuestionType.JUDGE,
-            "content": f"本图谱的所有知识点都属于「{chapter.title}」这一个章节.",
-            "options": [],
-            "answer": ["true" if len(chapter_titles) == 1 else "false"],
-            "explanation": (
-                f"本图谱共 {len(chapter_titles)} 个章节: "
-                f"{'、'.join(chapter_titles)}. "
-                f"「{kp.title}」属于「{chapter.title}」."
-            ),
-        },
-    ]
-    return questions
-
-
 def ensure_levels_for_journey(journey):
     """为无关卡的知识点创建关卡 (空关待生成, 题目由 FastAPI 任务生成).
 
@@ -690,6 +606,8 @@ def _review_candidates(journey, exclude_kp_ids, today):
     时间衰减: 距上次复习越久越优先, 从未复习按
     REVIEW_NEVER_DAYS 天计; priority = error_score * (days + 1),
     排序 priority 降序 → error_score 降序 → id 升序 (确定性 tie-break).
+    天数用 localdate() 而非 .date(): aware datetime 的 .date() 取 UTC 日期,
+    本地凌晨 (UTC 前一天) 会多算一天, 与 Dashboard 弱项清单口径不一致.
     """
     qs = CharplotKnowledgePoint.objects.filter(
         chapter__journey=journey, error_score__gt=0
@@ -697,7 +615,7 @@ def _review_candidates(journey, exclude_kp_ids, today):
     ranked = []
     for kp in qs:
         days = (
-            (today - kp.last_reviewed_at.date()).days
+            (today - timezone.localdate(kp.last_reviewed_at)).days
             if kp.last_reviewed_at
             else REVIEW_NEVER_DAYS
         )
@@ -931,8 +849,17 @@ def save_generated_questions(level, task_id, questions):
                     )
                 else:
                     CharplotQuestion.objects.create(level=level, order=index, **data)
-            # 尾部多余旧题删除 (仅可能为无 Attempt 的复习复制题)
-            for question in old_questions[len(validated) :]:
+            # 尾部多余旧题删除: 逐题确认无 Attempt 才删 (Attempt.question 是
+            # CASCADE, 删题连带删历史); 有历史记录的题保留在题库尾部
+            tail = old_questions[len(validated) :]
+            attempted = set(
+                CharplotAttempt.objects.filter(question__in=tail).values_list(
+                    "question_id", flat=True
+                )
+            )
+            for question in tail:
+                if question.id in attempted:
+                    continue
                 question.delete()
         else:
             level.questions.all().delete()
@@ -952,7 +879,12 @@ def save_generated_questions(level, task_id, questions):
 
 
 def mark_level_generation_failed(level, task_id, error_message):
-    """生成失败标记 (内部端点; best-effort 重试语义在 FastAPI 任务侧)."""
+    """生成失败标记 (内部端点; best-effort 重试语义在 FastAPI 任务侧).
+
+    陈旧标记 (关卡已被新任务接管) 直接忽略, 见 _is_stale_mark.
+    """
+    if _is_stale_mark(level, task_id):
+        return level
     level.questions_status = CharplotLevel.QuestionsStatus.FAILED
     level.latest_task_id = task_id
     level.save(update_fields=["questions_status", "latest_task_id", "updated_at"])
@@ -1244,8 +1176,8 @@ def build_report_stats(journey):
 def build_knowledge_summary(journey):
     """知识总结: 章节 → 知识点 (标题 + 概述).
 
-    stub 阶段为图谱确定性聚合, 与 JourneyDetail 图谱同源 (LLM 文字总结
-    接入后, 分享页同步增强, 快照结构不变).
+    图谱确定性聚合 (无 LLM), 与 JourneyDetail 图谱同源; 报告为通关时
+    快照, 只读不改.
     """
     chapters = []
     for chapter in journey.chapters.prefetch_related("knowledge_points").all():
@@ -1556,7 +1488,12 @@ def save_kb_index_success(kb, task_id):
 
 
 def mark_kb_index_failed(kb, task_id, error_message):
-    """索引失败: → failed + error_message (截断, 供管理页重试提示)."""
+    """索引失败: → failed + error_message (截断, 供管理页重试提示).
+
+    陈旧标记 (知识库已被新任务接管) 直接忽略, 见 _is_stale_mark.
+    """
+    if _is_stale_mark(kb, task_id):
+        return kb
     kb.status = CharplotKnowledgeBase.Status.FAILED
     kb.latest_task_id = task_id
     kb.error_message = (error_message or "")[:1000]

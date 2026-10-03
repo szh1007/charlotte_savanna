@@ -15,7 +15,7 @@
 | 闯关学习 | 关卡按知识点粒度渐进生成（3 分钟/关），选择 / 判断 / 填空三题型，5 心动值安全失败机制，断点续答，通关结算 |
 | 间隔复习 | 新关生成时混入 Top 20% 历史易错题（易错分 × 时间衰减规则调度，无 LLM 参与） |
 | 复盘报告 | 通关后生成知识总结，slug 公开只读分享页（无登录可看 + OG 卡片） |
-| 知识库（RAG） | 管理员预建知识库（文档上传 / 软删 / 全量重建），主题卡片直达 Journey；企业级检索链路：解析 → 按类型调优切分 → bge-m3 embedding → Milvus 混合检索 → query rewrite → **rerank 必配** → 带引用生成 |
+| 知识库（RAG） | 管理员预建知识库（文档上传 / 软删 / 全量重建），主题卡片直达 Journey；企业级检索链路：解析 → 按类型调优切分 → bge-m3 embedding → Milvus 混合检索 → query rewrite → rerank 精排（本地模型缺失时降级不精排，`/ai/health` 暴露真实状态）→ 带引用生成 |
 | 游戏化 | XP / 等级 / 连胜（冻结卡降级为学习币兑换）/ 心动值 / 学习币，全部规则层后端强制 |
 | 后台分析 | 掌握度矩阵 / 活动统计 / 易错清单（事实聚合）+ LLM 文字版状态总结 |
 | 幻觉防护 | 三层：题目讲解只基于检索片段 + 来源引用展示 + 「题目有问题」反馈标记 |
@@ -26,7 +26,7 @@
 |------|------|
 | 状态与数据端 | Django 6.0 + DRF + MySQL + Redis（`app/charplot`, 主项目 8000 端口） |
 | AI 能力端 | FastAPI 0.139（端口 8004） |
-| 三件套分工 | LangGraph = 知识管道编排（`pipeline/`）· DeepAgents = 检索/出题 subagent（`agents/`）· LangChain = RAG 组件（`rag/`） |
+| 三件套分工 | LangGraph = 知识管道编排（`pipeline/`）· DeepAgents = 检索 subagent（`agents/`）· LangChain = RAG 组件（`rag/`） |
 | LLM | DeepSeek（`init_chat_model` 接入, `CHARPLOT_DEEPSEEK_MODEL_NAME`） |
 | Embedding / Rerank | 本地 bge-m3（稠密+稀疏一次出, 1024 维）/ bge-reranker-v2-m3, modelscope 预下载到本地目录（见 §5.3）, 加载前校验存在, 缺失不自动下载 |
 | 向量库 | Milvus（KB 级 collection, 全量重建 + 软删 filter） |
@@ -71,9 +71,9 @@
 
 | 流程 | 编排 | 状态 |
 |------|------|------|
-| A. 知识管道: 解析(无 LLM) → 主内容分析 → 联网搜索增强 → 图谱解构 | LangGraph StateGraph 编排, 检索环节套 DeepAgents | ✅ |
+| A. 知识管道: 解析(无 LLM) → 主内容分析 → 联网搜索增强 → 图谱解构 | LangGraph StateGraph 编排, 检索环节套 DeepAgents subagent | ✅ |
 | B. RAG: 索引(批处理) → 检索(rewrite → 混合 → rerank → Top-K) | LangChain 管线式, 被动服务 | ✅ |
-| C. 题目生成: 知识点 + 检索片段 → 题目 JSON(讲解+来源引用) | DeepAgents 出题 subagent | ✅ |
+| C. 题目生成: 知识点 + 检索片段 → 题目 JSON(讲解+来源引用) | LLM 单轮生成 + 结构校验 (非 subagent) | ✅ |
 | D. 闯关答题: 判分/心动值/间隔复习混入 | 纯规则, **无 LLM** | ✅ |
 | E. LLM 状态总结: 统计聚合 → 文字报告 | 裸 LLM 调用 | ✅ |
 
@@ -91,12 +91,13 @@ project/charplot/                    # FastAPI 侧（AI 能力）
 │   │                               #   + stages/ (parse/analyze/search/deconstruct) + graph.py
 │   │                               #   + contract/types/llm/questions/parsers/json_utils
 ├── agents/                          # DeepAgents 检索 subagent + @tool 源封装
+│   │                               #   (出题/解构为裸 LLM 调用, 不在本目录)
 ├── rag/                             # 索引(chunking/embeddings/milvus) + 检索(retriever/
 │   │                               #   query_rewrite/rerank)
 ├── prompt/                          # prompt 配置(analyze/search/deconstruct/questions/status_summary)
 ├── frontend/                        # Vue 3 + Vite + TS (11 views: Home/闯关地图/答题/复盘/
 │   │                               #   Profile/Dashboard/KBManage/Login…)
-├── tests/                           # FastAPI 侧 9 个测试文件 (Redis /15 隔离 + Fake LLM, 不触网)
+├── tests/                           # FastAPI 侧 11 个测试文件 (Redis /15 隔离 + Fake LLM, 不触网)
 ├── .env / .env.example              # CHARPLOT_* 前缀独立配置 (不提交 / 模板可提交)
 └── pytest.ini                       # pythonpath=../.. → 以 project.charplot.* 包导入
 
@@ -109,7 +110,7 @@ app/charplot/                        # Django 侧（状态与数据, 主项目�
 ├── views_api.py / views_html.py     # API + 公开分享页 (CBV)
 ├── dashboard.py                     # 掌握度/活动/易错点聚合
 ├── urls_api.py / urls_html.py / serializers.py / permissions.py / signals.py
-└── migrations/ (9) / tests/ (265 用例)
+└── migrations/ (9) / tests/ (277 用例)
 ```
 
 ---
@@ -147,7 +148,9 @@ app/charplot/                        # Django 侧（状态与数据, 主项目�
 | level-generation | 10 / 60 / 90 / 100 | 关卡 questions_status=failed, 可重试；generating 超 10 分钟可重新抢占 |
 | kb-index | parsing 15 → 逐文档 40→85 → 90 → 100 | kb → failed, 可重试；indexing 超 10 分钟可重新抢占 |
 
-SSE 事件统一 `pipeline-progress`，每帧带递增 `id`，断线重连按 `Last-Event-ID` 增量续推。任务不持久化（FastAPI 重启丢失 → 前端兜底「重新生成」）。失败语义：落库写自动重试 1 次（transient 5xx/连接错误）。
+SSE 事件统一 `pipeline-progress`，每帧带递增 `id`，断线重连按 `Last-Event-ID` 增量续推。失败语义：落库写自动重试 1 次（transient 5xx/连接错误）。
+
+任务不持久化（FastAPI 重启丢失执行体，Redis 里的任务 hash 仍在），**孤儿任务回收**兜底：订阅时若「无新事件 + 执行体不在进程注册表 + 状态仍是 running」，判定为服务重启遗留 → 写终止 error 事件（订阅方按既有失败分支恢复）+ 经内部端点把实体推回失败态（关卡/知识库/旅程 `failed`），前端点「重试」即可真跑，不必等陈旧锁到期。（判据为单进程部署前提，本项目不启用多 worker。）
 
 ---
 
@@ -206,7 +209,7 @@ cd project/charplot/frontend && npm run dev  # 127.0.0.1:9004
 cd project/charplot && pytest
 
 # Django 侧 (需本机 MySQL/Redis, settings.dev)
-python manage.py test app.charplot           # 265 用例
+python manage.py test app.charplot           # 277 用例
 ```
 
 ---
@@ -226,44 +229,49 @@ python manage.py test app.charplot           # 265 用例
 | 知识库管理链路 / 真实 Milvus 索引 + 混合检索 + rerank + 软删过滤 | ✅ |
 | 主题卡片 + KB 驱动旅程 / 分析 Dashboard / LLM 状态总结 / 题目反馈标记 | ✅ |
 
-**2026-09-08 业务完整性审查**：三端（FastAPI 7 端点 + 13 内部调用 / Django 12 表 41 路由 265 测试 / 前端 11 页 30 API 调用）与数据契约逐条核对一致，无断链、无 stub 参与运行时；`stub.py`（早期退役产物）与 `services._stub_questions`（早期遗留）为有意保留的死代码。
+**2026-09-08 业务完整性审查**：三端（FastAPI 7 端点 + 13 内部调用 / Django 12 表 41 路由 / 前端 11 页 30 API 调用）与数据契约逐条核对一致，无断链；早期 stub 产物（`pipeline/stub.py`、`services._stub_questions`）已于 2026-10-03 清理出仓库（归档在仓库外 `Temp/charplot-c03/`，零引用不留痕）。
 
 ---
 
-## 7. 已知问题与改进建议（2026-09-08 审查）
+## 7. 已知问题与改进建议
 
-### 7.1 韧性缺口（最值得修）
+> 2026-09-08 审查列出的问题，除标「保留」外均已在 **2026-10-03（C03）** 处置；下表为处置结果。
 
-| 位置 | 问题 |
-|------|------|
-| frontend: LevelList / QuizView / KBManage | SSE 任务丢失（FastAPI 重启等）后卡死在 generating/indexing 态且无恢复入口：QuizView 无退出/重试按钮、LevelList 卡片无兜底动作、KBManage indexing 态禁用重试按钮（后端允许超 10 分钟重抢, UI 无入口）。承诺的「SSE 404 → 前端兜底重新生成」仅 JourneyDetail 实现。`client.ts:691 getTaskStatus` 轮询函数已封装未接线, 可直接补 |
-| api/server.py:167-171 | `/ai/kb/search` 的 RuntimeError（Milvus/Django 不可达/模型加载失败）直达 500, django_client.py:291 注释承诺转 503 —— 注释与实现不一致 |
-| api/tasks.py:201 | 管道 error 事件 progress 恒 0（`last_progress` 死变量, 应报崩溃前阶段 60） |
+### 7.1 韧性（C03 已修）
 
-### 7.2 Django 规则层边界（低危）
+| 位置 | 问题 | 处置 |
+|------|------|------|
+| frontend: LevelList / QuizView / KBManage | SSE 任务丢失（FastAPI 重启等）后卡死在 generating/indexing 态且无恢复入口 | 三页进入时 `getTaskStatus` 探测任务存活（SSE 断流后再探一次确认），任务已死 → QuizView「生成任务已丢失」视图、LevelList 卡片「生成已中断 · 重新生成」、KBManage 索引中放开「重新索引」；三页都有退出路径 |
+| api/tasks.py | 服务重启后任务 hash 仍在 running、事件 LIST 不再增长 → 订阅方无限空转 | 新增孤儿任务回收（判据: 无新事件 + 执行体不在进程注册表 + 状态 running）: 写终止 error 事件 + 实体推回失败态；单进程部署为前提 |
+| api/server.py `/ai/kb/search` | RuntimeError（Milvus / 模型 / Django 不可达）直达 500，注释承诺 503 | 按注释实现：→ 503（服务端暂时不可用，前端可重试） |
+| api/tasks.py | 管道失败时 error 事件 `progress` 恒 0（`last_progress` 死变量） | 三个任务执行体统一报「崩溃前那一阶段的进度」（读任务 hash 的 progress；孤儿回收同理） |
 
-| 位置 | 问题 |
-|------|------|
-| services.py:1063 / views_api.py:373 | 脏数据兜底抛基类 `LevelError` → 500 而非 400（应 catch 基类或改抛子类） |
-| views_api.py:393-399 | 重开接口只拦 cleared, 进行中（hearts>0）可任意重置进度重答刷 XP（收益有界: 10 级封顶, 建议加 hearts<=0 失败态校验） |
-| services.py:699-700 | 复习衰减用 UTC `.date()`, dashboard.py:220 用 `localdate()` —— 凌晨窗口复习排序与弱项清单可能差 1 天, 建议统一 |
-| services.py:906-936 | update-in-place 尾部删题未按题确认无 Attempt, 极端序列（重开答全旧题 + 重生成题数变少）可能连带删除历史 Attempt |
-| admin.py | CharplotReviewReport 未注册后台（其余 11 模型均已注册） |
+### 7.2 Django 规则层边界（C03 已修）
 
-### 7.3 小缺陷与清理
+| 位置 | 问题 | 处置 |
+|------|------|------|
+| services.py / views_api.py | 脏数据兜底抛基类 `LevelError` → 500 而非 400 | 答题视图改捕基类 `LevelError`（新增子类自动 400），与其余业务异常一致 |
+| views_api.py 重开接口 | 只拦 cleared，进行中（hearts>0）可重置进度重答刷 XP | 加失败态校验：hearts>0 → 400「本关未处于失败状态」 |
+| services.py `_review_candidates` | 复习衰减用 UTC `.date()`，Dashboard 用 `localdate()`，凌晨窗口差 1 天 | 统一到 `localdate()`（本地自然日语义） |
+| services.py update-in-place | 尾部删题未逐题确认无 Attempt，极端序列可能连带删历史 | 删前按题判 `Attempt` 存在性，有历史记录的题保留在题库尾部 |
+| admin.py | `CharplotReviewReport` 未注册后台 | 已注册（只读快照: 人工核对分享页 / OG 卡片的入口） |
 
-- HeartsBar.vue:19 扣心动画指错心（`flying = max - now - 1` 倒序索引, 应为 `now`）
-- QuizView.vue:145-147 关卡加载失败残留 loading 骨架（应收敛错误视图）
-- pipeline/stub.py、services.py:490-586 `_stub_questions`：退役 stub, 保留参考或清理
-- 过时注释/文案多处（KBManage "stub 索引"、QuizView "来源引用待接入"、Profile "闯关答题未上线"、SkillNode "本期恒为空"、client.ts 596 等）—— 功能早已真实实现, 注释未同步
-- client.ts 未使用导出：`checkDjangoHealth`/`checkAiHealth`/`getTaskStatus`
+### 7.3 小缺陷与清理（C03 已修）
+
+- HeartsBar 扣心动画指错心（倒序索引 → 改为 `flying = now`）
+- QuizView 关卡加载失败残留 loading 骨架（→ 收敛为「关卡加载失败」错误视图）
+- 退役 stub 清理：`pipeline/stub.py`、`services._stub_questions`（零引用，归档到仓库外 `Temp/charplot-c03/`）
+- 过时注释/文案同步（KBManage "stub 索引"、QuizView "来源引用待接入"、Profile "闯关答题未上线"、SkillNode "本期恒为空"、client.ts "全量重建 stub" 等）
+- `client.ts` 未使用导出接线：`checkDjangoHealth` / `checkAiHealth` → 顶部导航双后端健康指示；`getTaskStatus` → 三页任务存活探测
+- rerank 表述口径：README 不再写「必配」；`/ai/health` 增加 `rerank` 字段（`{degraded, reason|model}`），架构意图与运行时事实并列可见
 
 ### 7.4 架构级取舍与风险（有意识, 非缺陷）
 
 - **同步阻塞在事件循环**：pipeline kb 检索、bge-m3 encode（模型 4.3GB, 首次加载 + CPU 推理）、FlagReranker 全为同步调用跑在 async 事件循环上, 首次加载/推理最长可冻结 Redis 心跳数十秒；单机自用可接受, SSE 断线靠 Last-Event-ID 续推兜底（有测试覆盖）
-- **agents/（DeepAgents 0.7 编排）无测试覆盖**：真实 `create_deep_agent` 执行只靠运行期验证, 测试用 Fake 替换（conftest）
+- **孤儿回收依赖单进程**：判定「执行体不在注册表」在多 worker 部署下会误判（别的 worker 里的活任务被当孤儿）；本项目 `uvicorn.run` 单进程启动, 若将来加 worker 需把判据换成跨进程心跳
+- **agents/ 覆盖最小**：`build_search_tools` 的闭包绑定有测试钉住（循环变量捕获回归）；真实 `create_deep_agent` 执行路径仍需真模型且输出非确定，只靠运行期验证（测试用 Fake 替换, conftest）
 - rag/__init__.py 顶层 re-export 使 import 顺序敏感（kb_source → rag.retriever → pipeline 环）, 当前入口顺序无环
-- 有意降级（非未完成）：Tavily key 缺失跳网络源 / rerank 留空不精排 / rewrite 失败用原 query / kb 旅程绕过 subagent 走确定性 KbSource 检索
+- 有意降级（非未完成）：Tavily key 缺失跳网络源 / rerank 本地模型缺失降级不精排（`/ai/health` 可见）/ rewrite 失败用原 query / kb 旅程绕过 subagent 走确定性 KbSource 检索
 
 ---
 

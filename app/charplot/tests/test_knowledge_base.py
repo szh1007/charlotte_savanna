@@ -485,6 +485,21 @@ class KbIndexInternalEndpointTests(TestCase):
         self.assertEqual(self.kb.status, CharplotKnowledgeBase.Status.FAILED)
         self.assertLessEqual(len(self.kb.error_message), 1000)  # 截断
 
+    def test_stale_failed_mark_ignored(self):
+        # 知识库已被新任务接管 (重抢/孤儿回收竞态): 旧任务的失败标记作废
+        self.claim(task_id="task-2")
+        resp = self.client.post(
+            self.failed_url,
+            {"task_id": "task-1", "error_message": "旧任务崩溃"},
+            format="json",
+            HTTP_X_INTERNAL_TOKEN=INTERNAL_TOKEN,
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.kb.refresh_from_db()
+        self.assertEqual(self.kb.status, CharplotKnowledgeBase.Status.INDEXING)
+        self.assertEqual(self.kb.latest_task_id, "task-2")
+        self.assertEqual(self.kb.error_message, "")
+
 
 # ---------------------------------------------------------------------------
 # D. topics (用户端可见性)

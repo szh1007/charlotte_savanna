@@ -12,7 +12,7 @@ FlagEmbedding 依赖在 requirements.txt (新增, 与 rag_knowledge
 """
 
 import logging
-from typing import Protocol
+from typing import NamedTuple, Protocol
 
 from ..api import config
 
@@ -85,6 +85,45 @@ class NoopReranker:
 _reranker_instance = None
 
 
+class _LocalModel(NamedTuple):
+    """reranker 本地来源解析结果: path=None 即降级, reason 给出原因.
+
+    configured 区分「配置留空」与「配置了但本地缺失」—— 两者都降级,
+    但只有后者值得 warning (前者是用户没启用的正常状态).
+    """
+
+    path: str | None
+    reason: str
+    configured: bool
+
+
+def _resolve_local_model() -> _LocalModel:
+    """解析 reranker 本地模型 (降级决策的**唯一来源**).
+
+    get_reranker 与 rerank_status 共用同一处判断, 避免「运行时事实」与
+    「健康检查口径」两处漂移.
+    """
+    model_ref = config.RERANKER_MODEL.strip()
+    if not model_ref:
+        return _LocalModel(None, "未配置 CHARPLOT_RERANKER_MODEL", configured=False)
+    local_path = config.resolve_local_model_path(model_ref)
+    if local_path is None:
+        return _LocalModel(None, f"本地模型未找到: {model_ref}", configured=True)
+    return _LocalModel(local_path, "", configured=True)
+
+
+def rerank_status() -> dict:
+    """rerank 运行时状态 (供 /ai/health 暴露): 真实精排 or 降级 + 原因.
+
+    README §1/§2 把 rerank 写作「必配链路」是架构意图, 本地模型缺失时
+    实现走 Noop 降级 —— 本函数把运行时事实显式暴露, 两者不再打架.
+    """
+    resolved = _resolve_local_model()
+    if resolved.path is None:
+        return {"degraded": True, "reason": resolved.reason}
+    return {"degraded": False, "model": resolved.path}
+
+
 def get_reranker() -> Reranker:
     """按配置构建 Reranker (惰性单例; 测试可 monkeypatch 本函数注入假件).
 
@@ -94,17 +133,16 @@ def get_reranker() -> Reranker:
     """
     global _reranker_instance
     if _reranker_instance is None:
-        model_ref = config.RERANKER_MODEL.strip()
-        if not model_ref:
-            _reranker_instance = NoopReranker()
-        elif (local_path := config.resolve_local_model_path(model_ref)) is None:
-            logger.warning(
-                "reranker 本地模型未找到 (%s), 检索降级不精排; 期望下载到 "
-                "%s/models/BAAI/bge-reranker-v2-m3 后重启生效",
-                model_ref,
-                config.MODELSCOPE_ROOT,
-            )
-            _reranker_instance = NoopReranker(reason=f"本地模型未找到: {model_ref}")
+        resolved = _resolve_local_model()
+        if resolved.path is None:
+            if resolved.configured:
+                logger.warning(
+                    "reranker %s, 检索降级不精排; 期望下载到 "
+                    "%s/models/BAAI/bge-reranker-v2-m3 后重启生效",
+                    resolved.reason,
+                    config.MODELSCOPE_ROOT,
+                )
+            _reranker_instance = NoopReranker(reason=resolved.reason)
         else:
-            _reranker_instance = BGEReranker(model_name=local_path)
+            _reranker_instance = BGEReranker(model_name=resolved.path)
     return _reranker_instance

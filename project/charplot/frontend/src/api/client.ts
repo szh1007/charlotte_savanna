@@ -8,6 +8,8 @@ export interface HealthStatus {
   service: string
   db?: 'ok' | 'error'
   redis?: 'ok' | 'error'
+  /** rerank 运行时状态 (仅 /ai/health 返回; degraded = 降级不精排 + 原因). */
+  rerank?: { degraded: boolean; reason?: string; model?: string }
   time: string
 }
 
@@ -593,7 +595,7 @@ export function getTopics(): Promise<{ topics: Topic[] }> {
 }
 
 /**
- * 触发索引任务 (POST /ai/kb/index, 全量重建 stub).
+ * 触发索引任务 (POST /ai/kb/index, 真实解析 → 切分 → 向量化 → Milvus 全量重建).
  * 幂等由后端 claim 保证 (索引中/下线/无文档 → 任务直接 done 跳过).
  */
 export function startKbIndex(kbId: number): Promise<{ task_id: string }> {
@@ -693,6 +695,21 @@ export function getTaskStatus(taskId: string): Promise<TaskStatus> {
 }
 
 /**
+ * 任务存活探测 (韧性兜底): 服务重启后任务残留但执行体已死, 或任务已过期.
+ * 返回 true 运行中 / false 已终结或不存在 (含 404) / null 探测失败 (网络等,
+ * 不下结论 —— 调用方按「仍存活」处理, 交给 SSE 报错).
+ */
+export async function probeTaskAlive(taskId: string): Promise<boolean | null> {
+  if (!taskId) return false
+  try {
+    return (await getTaskStatus(taskId)).status === 'running'
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 404) return false
+    return null
+  }
+}
+
+/**
  * SSE 订阅管道进度. 返回 close 函数.
  * EventSource 断线自动重连并携带 Last-Event-ID (服务端增量续推);
  * 收到终端事件 (done/error) 或组件卸载时必须主动 close, 阻止无限重连.
@@ -727,6 +744,26 @@ export function subscribePipeline(
     handlers.onStateChange?.(source.readyState === 2 ? 'closed' : 'reconnecting')
   }
   return close
+}
+
+/**
+ * 订阅任务进度 + 任务丢失判定 (三页共用的韧性规则, 收敛在此一处).
+ * SSE 被服务端拒绝而不再重连时探测一次任务: 确已不存在才判「丢失」
+ * (任务过期 / 服务重启), 回调交调用方切可重试态; 网络抖动不误报.
+ */
+export function subscribeTaskEvents(
+  taskId: string,
+  handlers: { onEvent: (ev: PipelineEvent) => void; onLost: () => void },
+): () => void {
+  return subscribePipeline(taskId, {
+    onEvent: handlers.onEvent,
+    onStateChange: (state) => {
+      if (state !== 'closed') return
+      probeTaskAlive(taskId).then((alive) => {
+        if (alive === false) handlers.onLost()
+      })
+    },
+  })
 }
 
 // ---- 分析 Dashboard ----

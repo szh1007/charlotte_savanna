@@ -9,14 +9,16 @@ const props = defineProps<{ hearts: number; max?: number }>()
 const max = computed(() => props.max ?? 5)
 const lost = computed(() => max.value - props.hearts)
 
-// 最近一次被扣的心下标 (0-based), 短暂置位触发飞走动画后清除
+// 最近一次被扣的心下标 (0-based), 短暂置位触发飞走动画后清除.
+// 心按 i <= hearts 点亮 → 刚被扣掉的正是第 now 颗 (0-based now), 即
+// 第一颗 is-lost 的心; 用 max - now - 1 会指到仍亮着的第一颗.
 const flying = ref(-1)
 let lastHearts = props.hearts
 watch(
   () => props.hearts,
   (now) => {
     if (now < lastHearts) {
-      flying.value = max.value - now - 1
+      flying.value = now
       setTimeout(() => {
         flying.value = -1
       }, 700)

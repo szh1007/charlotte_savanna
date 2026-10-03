@@ -6,7 +6,7 @@ Top 20% 混入、选题、衰减闭环) / Boss 锁定与解锁 / submit_answer �
 (题目未就绪、锁定关、复习题易错分路由).
 """
 
-from datetime import timedelta
+from datetime import datetime, time, timedelta
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
@@ -45,6 +45,11 @@ User = get_user_model()
 
 TODAY = timezone.localdate()
 INTERNAL_TOKEN = "test-internal-token"
+
+
+def local_hour(day, hour):
+    """本地某日某点 (aware datetime): Asia/Shanghai 的 UTC 日期是前一天."""
+    return timezone.make_aware(datetime.combine(day, time(hour=hour)))
 
 
 def make_multi_chapter_journey(user, chapter_kps=(1, 1)):
@@ -296,6 +301,29 @@ class SaveQuestionsTests(TestCase):
         self.assertEqual(first.content, "合法选择题 0")
         self.assertEqual(first.question_type, CharplotQuestion.QuestionType.CHOICE)
 
+    def test_save_tail_questions_with_attempts_kept(self):
+        # 极端序列: 旧题答过后重生成且题数变少 → 尾部有 Attempt 的旧题保留
+        # (Attempt.question 是 CASCADE, 删题会连带删历史); 无 Attempt 的照删
+        level = make_level_ready(self.journey, count=4)
+        old = list(level.questions.order_by("order", "id"))
+        CharplotAttempt.objects.create(
+            user=self.user,
+            level=level,
+            question=old[3],
+            is_correct=False,
+            user_answer=["x"],
+            duration=1,
+        )
+        resp = self.save(
+            [valid_question("choice", 0), valid_question("judge", 1)], seq=level.seq
+        )
+        self.assertEqual(resp.status_code, 200)
+        level.refresh_from_db()
+        self.assertEqual(level.questions.count(), 3)  # 2 新 + 1 保留
+        self.assertTrue(CharplotQuestion.objects.filter(pk=old[3].pk).exists())
+        self.assertFalse(CharplotQuestion.objects.filter(pk=old[2].pk).exists())
+        self.assertEqual(CharplotAttempt.objects.filter(question=old[3]).count(), 1)
+
     def test_save_no_attempts_rebuilds(self):
         questions = [valid_question("choice", 0)]
         resp = self.save(questions)
@@ -330,6 +358,26 @@ class FailedMarkTests(TestCase):
             self.level.questions_status, CharplotLevel.QuestionsStatus.FAILED
         )
         self.assertEqual(self.level.latest_task_id, "task-1")
+
+    def test_stale_failed_mark_ignored(self):
+        # 关卡已被新任务接管 (重抢/孤儿回收竞态): 旧任务的失败标记不覆盖新任务
+        CharplotLevel.objects.filter(pk=self.level.pk).update(latest_task_id="task-2")
+        resp = self.client.post(
+            self.url,
+            {
+                "task_id": "task-1",
+                "level_seq": self.level.seq,
+                "error_message": "旧任务崩溃",
+            },
+            format="json",
+            HTTP_X_INTERNAL_TOKEN=INTERNAL_TOKEN,
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.level.refresh_from_db()
+        self.assertEqual(
+            self.level.questions_status, CharplotLevel.QuestionsStatus.PENDING
+        )
+        self.assertEqual(self.level.latest_task_id, "task-2")
 
     def test_missing_token_403(self):
         resp = self.client.post(
@@ -368,6 +416,22 @@ class ReviewAlgorithmTests(TestCase):
         )["review_questions"]
         self.assertEqual(len(questions), 1)
         self.assertEqual(questions[0]["source_kp_id"], kp2.id)
+
+    def test_review_decay_uses_local_date(self):
+        """本地凌晨复习 (UTC 仍是前一天) 不额外多算一天.
+
+        kp1 今天本地 05:00 复习 (易错分 3) / kp2 昨天本地 05:00 复习
+        (易错分 2): 本地口径 → kp2 priority 4 > kp1 3; 若按 UTC 日期算,
+        两者都是 6 → 平手后 kp1 (易错分高) 反超, 排序被时区带偏.
+        """
+        kp1, kp2 = self.kps
+        kp1.error_score, kp2.error_score = 3, 2
+        kp1.last_reviewed_at = local_hour(TODAY, 5)
+        kp2.last_reviewed_at = local_hour(TODAY - timedelta(days=1), 5)
+        CharplotKnowledgePoint.objects.bulk_update(
+            [kp1, kp2], ["error_score", "last_reviewed_at"]
+        )
+        self.assertEqual(_review_candidates(self.journey, set(), TODAY), [kp2, kp1])
 
     def test_never_reviewed_uses_30_days_cap(self):
         kp = self.kps[1]

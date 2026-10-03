@@ -93,5 +93,5 @@ def validate_graph_dict(data: dict) -> GraphContract:
 
 
 def to_contract_dict(graph: GraphContract) -> dict:
-    """GraphContract → 契约 dict (与 stub 输出同构, 供落库端点消费)."""
+    """GraphContract → 契约 dict (v1 契约形状, 供落库端点消费)."""
     return graph.model_dump(exclude_none=True)

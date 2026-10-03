@@ -105,14 +105,31 @@ def test_kb_input_full_flow_done(client, monkeypatch, mock_django_save):
 
 def test_pipeline_exception_sets_task_error(client, monkeypatch):
     async def boom(inp, emit):
-        raise RuntimeError("stub 管道崩溃")
+        raise RuntimeError("模拟管道崩溃")
 
     monkeypatch.setattr(tasks, "run_pipeline", boom)
     task_id = start_pipeline(client).json()["task_id"]
 
     assert wait_task_status(client, task_id, "error")
     body = client.get(f"/ai/tasks/{task_id}").json()
-    assert "stub 管道崩溃" in body["error_message"]
+    assert "模拟管道崩溃" in body["error_message"]
+
+
+def test_pipeline_error_reports_last_stage_progress(client, monkeypatch):
+    """管道崩溃: error 事件报崩溃前那一阶段的进度 (不再恒 0)."""
+    from tests.test_tasks_sse import read_stream
+
+    async def boom(inp, emit):
+        await emit("searching", 60, "联网搜索")
+        raise RuntimeError("LLM 超时")
+
+    monkeypatch.setattr(tasks, "run_pipeline", boom)
+    task_id = start_pipeline(client).json()["task_id"]
+    assert wait_task_status(client, task_id, "error")
+
+    events = read_stream(client, task_id)
+    assert [e[2]["progress"] for e in events] == [60, 60]
+    assert events[-1][2]["stage"] == "error"
 
 
 def test_pipeline_exception_marks_journey_failed(client, monkeypatch, mock_django_save):

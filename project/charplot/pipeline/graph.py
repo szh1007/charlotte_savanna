@@ -77,7 +77,7 @@ async def run_pipeline(inp, emit) -> dict:
     """执行知识管道, 返回契约图谱 dict (签名不变).
 
     emit(stage, progress, message) async 回调上报进度 (任务系统写 Redis + SSE);
-    每个阶段真实执行对应工作, 不再有 stub 模拟延迟.
+    每个阶段真实执行对应工作 (无模拟延迟).
     """
     graph = build_graph(emit)
     result = await graph.ainvoke({"inp": inp})

@@ -591,6 +591,33 @@ class QuizApiTests(TestCase):
         self.assertEqual(payload["current_index"], 0)
         self.assertEqual(payload["status"], "pending")
 
+    def test_restart_in_progress_level_rejected(self):
+        # 进行中 (hearts > 0) 不可重开: 否则可反复重置进度重答刷 XP
+        self.client.post(
+            f"{self.level_url}/answer/",
+            {"question_id": self.current().id, "answer": self.current().answer},
+            format="json",
+        )
+        resp = self.client.post(f"{self.level_url}/restart/")
+        self.assertEqual(resp.status_code, 400)
+        self.level.refresh_from_db()
+        self.assertEqual(self.level.current_index, 1)  # 进度未被重置
+        self.assertEqual(self.level.hearts, MAX_HEARTS)
+
+    def test_answer_with_stale_progress_returns_400(self):
+        # 脏数据兜底 (进度越界, 题库变更等): 规则层抛 LevelError → 400 而非 500
+        question_id = self.current().id
+        CharplotLevel.objects.filter(pk=self.level.pk).update(
+            current_index=self.level.questions.count() + 3
+        )
+        resp = self.client.post(
+            f"{self.level_url}/answer/",
+            {"question_id": question_id, "answer": [0]},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("进度异常", resp.json()["detail"])
+
     def test_restart_cleared_level_rejected(self):
         for _ in range(6):
             self.level.refresh_from_db()

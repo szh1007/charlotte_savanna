@@ -11,8 +11,11 @@ Redis 数据结构 (db 0, charplot:task: 前缀):
 不同任务类型不同 stage 列表, 同一事件名).
 
 SSE 恢复: 客户端断线重连带 Last-Event-ID (= 最后收到的序号), 服务端从
-LIST 增量续推, 不丢事件; 服务重启丢内存任务 → GET events 404 → 前端兜底
-「重新生成」.
+LIST 增量续推, 不丢事件.
+
+服务重启的兜底: 重启只丢内存里的执行体, Redis 里的任务 hash 仍是 running;
+订阅时发现「无新事件 + 执行体不在进程注册表」即判定孤儿任务 → 写终止
+error 事件 (前端按既有失败分支给重试入口) 并经内部端点把实体推回失败态.
 """
 
 import asyncio
@@ -87,30 +90,32 @@ async def _init_task(
     task_type: str,
     stage: str,
     entity_type: str = "journey",
+    entity_seq: int | None = None,
 ) -> None:
     """初始化任务 hash (hset + EXPIRE), 内存 registry 由调用方注册执行体.
 
     entity_type 泛化 (journey / kb), hash 增写 entity_id/entity_type
     两键; 旧键 journey_id 保留 (get_task 与测试不读该键, 向后兼容).
+    entity_seq 仅出题任务写 (关卡序号), 孤儿回收时按 seq 定位关卡.
     """
     redis = get_redis()
     now = datetime.now(UTC).isoformat()
+    mapping = {
+        "status": "running",
+        "stage": stage,
+        "progress": 0,
+        "journey_id": str(entity_id),
+        "entity_id": str(entity_id),
+        "entity_type": entity_type,
+        "task_type": task_type,
+        "error_message": "",
+        "created_at": now,
+        "updated_at": now,
+    }
+    if entity_seq is not None:
+        mapping["entity_seq"] = str(entity_seq)
     async with redis.pipeline() as pipe:
-        pipe.hset(
-            _task_key(task_id),
-            mapping={
-                "status": "running",
-                "stage": stage,
-                "progress": 0,
-                "journey_id": str(entity_id),
-                "entity_id": str(entity_id),
-                "entity_type": entity_type,
-                "task_type": task_type,
-                "error_message": "",
-                "created_at": now,
-                "updated_at": now,
-            },
-        )
+        pipe.hset(_task_key(task_id), mapping=mapping)
         pipe.expire(_task_key(task_id), TASK_TTL_SECONDS)
         pipe.expire(_events_key(task_id), TASK_TTL_SECONDS)
         await pipe.execute()
@@ -134,7 +139,13 @@ async def create_task(
 async def create_level_generation_task(journey_id: int, level_seq: int) -> str:
     """初始化出题任务 hash 并后台执行 (/ai/levels/generate)."""
     task_id = uuid.uuid4().hex
-    await _init_task(task_id, journey_id, TASK_TYPE_LEVEL_GENERATION, "preparing")
+    await _init_task(
+        task_id,
+        journey_id,
+        TASK_TYPE_LEVEL_GENERATION,
+        "preparing",
+        entity_seq=level_seq,
+    )
     _tasks_registry[task_id] = asyncio.create_task(
         _run_level_generation_task(task_id, journey_id, level_seq)
     )
@@ -151,6 +162,19 @@ async def create_kb_index_task(kb_id: int) -> str:
     await _init_task(task_id, kb_id, TASK_TYPE_KB_INDEX, "parsing", entity_type="kb")
     _tasks_registry[task_id] = asyncio.create_task(_run_kb_index_task(task_id, kb_id))
     return task_id
+
+
+def _progress_of(state: dict) -> int:
+    """任务 hash 里最近一次事件进度 (解析容错, 缺失/脏值退 0)."""
+    try:
+        return int(state.get("progress") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+async def _last_progress(task_id: str) -> int:
+    """任务中断时 error 事件报的进度 = 崩溃前那一阶段的进度 (不再恒 0)."""
+    return _progress_of(await get_redis().hgetall(_task_key(task_id)))
 
 
 async def get_task(task_id: str) -> dict | None:
@@ -198,7 +222,6 @@ async def _run_task(
 ) -> None:
     """任务执行体: 管道 → 图谱落库 → done; 任何失败 → error + 失败标记."""
     redis = get_redis()
-    last_progress = 0
     try:
         graph = await run_pipeline(
             PipelineInput(
@@ -215,7 +238,7 @@ async def _run_task(
         await redis.hset(_task_key(task_id), mapping={"status": "done"})
     except Exception as exc:
         logger.exception("任务 %s 失败 (journey=%s)", task_id, journey_id)
-        await emit(task_id, "error", last_progress, f"生成失败: {exc}")
+        await emit(task_id, "error", await _last_progress(task_id), f"生成失败: {exc}")
         await redis.hset(
             _task_key(task_id),
             mapping={"status": "error", "error_message": str(exc)[:1000]},
@@ -255,7 +278,9 @@ async def _run_level_generation_task(
         await redis.hset(_task_key(task_id), mapping={"status": "done"})
     except Exception as exc:
         logger.exception("出题任务 %s 失败 (journey=%s)", task_id, journey_id)
-        await emit(task_id, "error", 0, f"题目生成失败: {exc}")
+        await emit(
+            task_id, "error", await _last_progress(task_id), f"题目生成失败: {exc}"
+        )
         await redis.hset(
             _task_key(task_id),
             mapping={"status": "error", "error_message": str(exc)[:1000]},
@@ -354,7 +379,7 @@ async def _run_kb_index_task(task_id: str, kb_id: int) -> None:
         await redis.hset(_task_key(task_id), mapping={"status": "done"})
     except Exception as exc:
         logger.exception("索引任务 %s 失败 (kb=%s)", task_id, kb_id)
-        await emit(task_id, "error", 0, f"索引失败: {exc}")
+        await emit(task_id, "error", await _last_progress(task_id), f"索引失败: {exc}")
         await redis.hset(
             _task_key(task_id),
             mapping={"status": "error", "error_message": str(exc)[:1000]},
@@ -366,10 +391,59 @@ async def _run_kb_index_task(task_id: str, kb_id: int) -> None:
         _tasks_registry.pop(task_id, None)
 
 
+async def _mark_entity_failed(task_id: str, state: dict, message: str) -> None:
+    """孤儿任务对应实体推回失败态 (Django 内部端点, best-effort).
+
+    按 task_type 分流: kb → failed / 出题 → 关卡 failed / 其余 → 旅程 failed.
+    出题任务缺 entity_seq (旧 hash) 时跳过 (Django 按 seq 定位关卡);
+    调用失败只记 warning: SSE error 事件已保证前端有重试入口.
+    """
+    entity_id = int(state.get("entity_id") or 0)
+    task_type = state.get("task_type", "")
+    try:
+        if task_type == TASK_TYPE_KB_INDEX:
+            await mark_kb_index_failed(entity_id, task_id, message)
+        elif task_type == TASK_TYPE_LEVEL_GENERATION:
+            seq = int(state.get("entity_seq") or 0)
+            if seq:
+                await mark_level_generation_failed(entity_id, seq, task_id, message)
+        else:
+            await mark_journey_failed(entity_id, task_id, message)
+    except Exception as exc:
+        logger.warning("孤儿任务实体回滚失败 (task=%s): %s", task_id, exc)
+
+
+async def _reap_orphan_task(task_id: str) -> bool:
+    """孤儿任务回收: 服务重启后任务 hash 仍在 (running) 但执行体已消失.
+
+    判定依据是**进程内注册表** —— 活任务必然在 _tasks_registry 里, 不在
+    即执行体已终结 (终止事件未写入) 或随进程消失; 单进程部署为该判据的
+    前提 (多 worker 下别的 worker 里的活任务会被误判, 本项目不启用).
+    处置: 写终止 error 事件 (SSE 客户端据此走既有失败分支) + 实体推回
+    失败态 (前端点重试即可真跑, 不必等 10 分钟陈旧锁到期).
+    返回 True = 本轮刚回收, 调用方重读事件 LIST 把该帧推给客户端.
+    """
+    if task_id in _tasks_registry:
+        return False  # 活任务: 零额外开销直接放行
+    redis = get_redis()
+    state = await redis.hgetall(_task_key(task_id))
+    if state.get("status") != "running":
+        return False  # 已终结 (正常路径) 或已回收, 幂等
+    message = "任务已中断 (AI 服务重启), 请重新生成"
+    await emit(task_id, "error", _progress_of(state), message)
+    await redis.hset(
+        _task_key(task_id), mapping={"status": "error", "error_message": message}
+    )
+    await _mark_entity_failed(task_id, state, message)
+    logger.warning("回收孤儿任务 %s (type=%s)", task_id, state.get("task_type", ""))
+    return True
+
+
 async def event_stream(task_id: str, start_after: int = -1) -> AsyncIterator[str]:
     """SSE 帧流: 全量/增量重放事件 LIST, 终端事件 (done/error) 后流结束.
 
     start_after = Last-Event-ID (重连时从增量续推; -1 = 全量重放).
+    无新事件时先查孤儿任务 (服务重启遗留), 回收后下一轮推送终止帧.
     """
     redis = get_redis()
     last = start_after
@@ -380,4 +454,6 @@ async def event_stream(task_id: str, start_after: int = -1) -> AsyncIterator[str
             last = idx
             if json.loads(raw)["stage"] in TERMINAL_STAGES:
                 return
+        if await _reap_orphan_task(task_id):
+            continue  # 已写入终止事件, 下一轮 lrange 会读到并结束流
         await asyncio.sleep(EVENT_POLL_INTERVAL)

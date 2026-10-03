@@ -1,8 +1,8 @@
 <script setup lang="ts">
 // 闯关地图页: 技能树可视化 (节点 + 依赖边 + 点亮状态).
 // 数据源 GET /api/charplot/journeys/{id}/skill-tree/; 点亮状态由后端计算
-// (本期无通关数据, 依赖未满足锁定; 通关后自然点亮).
-// 旅程未就绪 (生成中/失败) 时引导回详情页; 点击解锁节点进入关卡入口 (占位页).
+// (依赖边未满足即锁定, 前置关卡通关后自然点亮).
+// 旅程未就绪 (生成中/失败) 时引导回详情页; 点击解锁节点进入该知识点的关卡列表.
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
@@ -29,7 +29,7 @@ const clearedCount = computed(
 )
 const totalCount = computed(() => tree.value?.nodes.length ?? 0)
 
-/** 点击解锁/已通关节点 → 关卡入口 (LevelList 占位页). */
+/** 点击解锁/已通关节点 → 该知识点的关卡列表 (LevelList). */
 function openLevel(nodeId: number) {
   router.push({
     name: 'level-list',

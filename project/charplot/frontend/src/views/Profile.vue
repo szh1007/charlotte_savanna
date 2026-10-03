@@ -63,9 +63,9 @@ interface PanelStat {
 
 const panelStats: PanelStat[] = [
   { key: 'login_days', label: '登录天数', hint: '每天登录自动累计' },
-  { key: 'answered', label: '已答题数', hint: '闯关答题上线后自动统计' },
-  { key: 'correct', label: '答对数', hint: '闯关答题上线后自动统计' },
-  { key: 'wrong', label: '答错数', hint: '闯关答题上线后自动统计' },
+  { key: 'answered', label: '已答题数', hint: '答题记录 (含复习题) 实时统计' },
+  { key: 'correct', label: '答对数', hint: '答对即计入, 含复习题' },
+  { key: 'wrong', label: '答错数', hint: '答错即计入, 含复习题' },
 ]
 </script>
 

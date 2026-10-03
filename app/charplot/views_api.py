@@ -60,11 +60,7 @@ from .services import (
     InsufficientCoinsError,
     JourneyGraphError,
     KnowledgeBaseStateError,
-    LevelClearedError,
-    LevelFailedError,
-    LevelLockedError,
-    LevelNotCurrentError,
-    LevelNotReadyError,
+    LevelError,
     build_skill_tree,
     buy_streak_freeze,
     claim_kb_index,
@@ -370,13 +366,9 @@ class LevelAnswerView(APIView):
                 answer=data["answer"],
                 duration=data.get("duration", 0),
             )
-        except (
-            LevelClearedError,
-            LevelFailedError,
-            LevelNotCurrentError,
-            LevelNotReadyError,
-            LevelLockedError,
-        ) as exc:
+        except LevelError as exc:
+            # 捕获基类: 关卡规则层所有业务异常 (含脏数据兜底 LevelError 本身)
+            # 一律 400 中文 detail, 不再漏成 500
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(result)
 
@@ -385,7 +377,8 @@ class LevelRestartView(APIView):
     """重开关卡 (POST /api/charplot/levels/{id}/restart/).
 
     5 心扣完本关失败后重开: 心与进度重置 (题目保持已生成题库);
-    Attempt 历史保留不覆盖; 已通关关卡禁止重开 (防丢通关状态).
+    Attempt 历史保留不覆盖; 已通关关卡禁止重开 (防丢通关状态);
+    进行中/未开始 (hearts > 0) 同样禁止 —— 否则可随时重置进度重答刷 XP.
     """
 
     permission_classes = [IsAuthenticated]
@@ -395,6 +388,12 @@ class LevelRestartView(APIView):
         if level.cleared:
             return Response(
                 {"detail": "本关已通关, 无需重开"}, status=status.HTTP_400_BAD_REQUEST
+            )
+        if level.hearts > 0:
+            # 未失败不可重开: 否则可随时重置进度重答刷 XP (失败态 hearts=0)
+            return Response(
+                {"detail": "本关未处于失败状态, 无需重开"},
+                status=status.HTTP_400_BAD_REQUEST,
             )
         restart_level(level)
         return Response(LevelDetailSerializer(level, context={"request": request}).data)

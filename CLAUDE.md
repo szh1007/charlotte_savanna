@@ -104,7 +104,7 @@ charlotte_savanna/
 │   │   ├── admin.py             #   后台管理（旅程/关卡/答题/知识库的人工验证入口）
 │   │   ├── urls_api.py / urls_html.py / serializers.py / permissions.py / signals.py
 │   │   ├── migrations/          #   9 个迁移
-│   │   ├── tests/               #   265 用例（含内部端点认证 / 规则层）
+│   │   ├── tests/               #   277 用例（含内部端点认证 / 规则层）
 │   │   └── uploads/             #   知识库文档 / OG 图片上传（.gitignore 排除）
 ├── project/                     # 独立子项目（deep_search / menu / video_downloader / rag_knowledge / rag_text2sql / charplot）
 │   ├── deep_search/             #   深度检索智能体（FastAPI + DeepAgents）
@@ -161,7 +161,7 @@ charlotte_savanna/
 │   │   │                        #   本地模型 bge-m3 / bge-reranker-v2-m3（modelscope 预下载, 缺失降级）
 │   │   ├── prompt/              #   prompt 配置（analyze/search/deconstruct/questions/status_summary）
 │   │   ├── frontend/            #   Vue 3 + Vite 前端（端口 9004, /api→8000, /ai→8004）
-│   │   ├── tests/               #   FastAPI 侧测试（9 文件, Redis /15 隔离 + Fake LLM）
+│   │   ├── tests/               #   FastAPI 侧测试（11 文件, Redis /15 隔离 + Fake LLM）
 │   │   ├── .env / .env.example  #   CHARPLOT_* 独立环境变量（不提交 / 模板）
 │   │   └── README.md            #   子项目文档
 ├── templates/                   # 全局模板目录
@@ -375,10 +375,10 @@ charlotte_savanna/
 
 | 组件 | 状态 | 说明 |
 |------|------|------|
-| Django 数据端（`app/charplot/`） | ✅ | 12 表 + 41 路由（13 个内部端点 X-Internal-Token fail closed）+ 规则层（判分/心动值/重开/XP/连胜冻结/易错分/间隔复习），265 用例 |
-| FastAPI AI 端（`project/charplot/api/`） | ✅ | 7 个 `/ai/*` 端点（端口 8004）+ 任务系统（Redis /4 + SSE 续推），LangGraph 管道图 + DeepAgents 检索 + LangChain RAG 真实接线 |
+| Django 数据端（`app/charplot/`） | ✅ | 12 表 + 41 路由（13 个内部端点 X-Internal-Token fail closed）+ 规则层（判分/心动值/重开/XP/连胜冻结/易错分/间隔复习），277 用例 |
+| FastAPI AI 端（`project/charplot/api/`） | ✅ | 7 个 `/ai/*` 端点（端口 8004）+ 任务系统（Redis /4 + SSE 续推 + 孤儿任务回收），LangGraph 管道图 + DeepAgents 检索 + LangChain RAG 真实接线 |
 | 知识管道（`pipeline/`） | ✅ | 解析(txt/md/html/pdf/docx/pptx/链接) → 主内容分析 → 联网搜索增强 → 图谱解构, 检索源可插拔（网络/Context7/文档/知识库） |
-| RAG 链路（`rag/`） | ✅ | modelscope 本地 bge-m3 embedding + bge-reranker-v2-m3 rerank（必配链路）, Milvus 混合检索 + 软删 filter |
+| RAG 链路（`rag/`） | ✅ | modelscope 本地 bge-m3 embedding + bge-reranker-v2-m3 rerank（必配链路；本地模型缺失时降级不精排, `/ai/health` 暴露真实状态）, Milvus 混合检索 + 软删 filter |
 | 前端（`frontend/`） | ✅ | Vue 3 + Element Plus 动漫主题（9004, /api /r→8000, /ai→8004）, 11 个 view 全部接通 |
 
 > 业务链路已闭环（2026-09-08 三侧契约核对零断链）。已实现：旅程创建 → 图谱落库 → 技能树 → 渐进出题（间隔复习混入）→ 闯关答题 → 复盘分享 → Dashboard + LLM 状态总结 + 知识库管理。启动与已知边界见 `project/charplot/README.md`。
@@ -502,4 +502,4 @@ cd project/charplot/frontend && npm install
 
 ---
 
-> **最后更新**：2026-09-18 | **维护者**：Claude Code (charlotte)
+> **最后更新**：2026-10-03 | **维护者**：Claude Code (charlotte)

@@ -12,7 +12,7 @@ from tests.conftest import KB_CONTENTS, FakeChatModel, wait_task_status
 from tests.test_kb_index import start_index
 from tests.test_tasks_sse import read_stream
 
-from project.charplot.api import tasks
+from project.charplot.api import config, tasks
 from project.charplot.pipeline import llm as pipeline_llm
 from project.charplot.rag import milvus as rag_milvus
 from project.charplot.rag import query_rewrite, retriever
@@ -169,6 +169,44 @@ def test_search_api_endpoint(client, monkeypatch, fake_rag_deps):
 def test_search_api_empty_query_400(client, fake_rag_deps):
     resp = client.post("/ai/kb/search", json={"kb_id": 1, "query": ""})
     assert resp.status_code == 400
+
+
+def test_search_api_dependency_failure_503(client, monkeypatch):
+    """检索依赖不可达 (Milvus 连接/embedding 模型/Django 软删查询) → 503.
+
+    与 django_client 的注释承诺一致 (服务端暂时不可用, 前端可重试),
+    不再让 RuntimeError 直达 500.
+    """
+
+    def boom(kb_id, query, top_k=None):
+        raise RuntimeError("Milvus 不可达")
+
+    monkeypatch.setattr(retriever, "search_kb", boom)
+    resp = client.post("/ai/kb/search", json={"kb_id": 1, "query": "装饰器"})
+    assert resp.status_code == 503
+    assert "Milvus 不可达" in resp.json()["detail"]
+
+
+# ---- /ai/health: rerank 运行时状态 ----
+# (README §1/§2 把 rerank 写作「必配链路」是架构意图; 本地模型缺失时实现
+#  降级 Noop 不精排, 健康检查如实暴露, 两者不再打架)
+
+
+def test_health_exposes_rerank_degraded(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "RERANKER_MODEL", str(tmp_path / "missing"))
+    body = client.get("/ai/health").json()
+    assert body["status"] == "ok"
+    assert body["rerank"]["degraded"] is True
+    assert "本地模型未找到" in body["rerank"]["reason"]
+
+
+def test_health_exposes_rerank_ready(client, monkeypatch, tmp_path):
+    local = tmp_path / "bge-reranker-v2-m3"
+    local.mkdir()
+    (local / "config.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(config, "RERANKER_MODEL", str(local))
+    body = client.get("/ai/health").json()
+    assert body["rerank"] == {"degraded": False, "model": str(local)}
 
 
 # ---- KbSource 协议适配 (管道检索源接入位) ----
