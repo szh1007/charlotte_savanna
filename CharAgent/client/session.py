@@ -94,6 +94,7 @@ from CharAgent.prompt import (
     resolve_model_name,
     restore_identity,
 )
+from CharAgent.retry.serving import ServingRecord, serving_scope
 from CharAgent.stream.utils.types import EventSink
 from CharAgent.structured_logging import get_logger, log_context
 from CharAgent.tool import Tool, ToolExecution
@@ -133,15 +134,16 @@ class ChatSession:
     (模型能看到前面聊过什么), 落进快照的也是整段对话.
 
     Args:
-        model: 已装好的模型 (生产走 `app.build_model`: 裸适配器 + 重试包装;
+        model: 已装好的模型 (生产走 `app.build_model`: 裸适配器 + 重试 + 主备包装;
             测试可以直接塞 MockLLM —— ChatModel 是薄协议, 换谁都不改本类).
         saver: 快照存储 (三实现之一). CLI 里必有: 断点续跑与历史视图都靠它,
             没有它本类的一半方法无从谈起, 所以不给默认值.
         tools: 开放给模型的工具集, None 表示不开放工具 (纯聊天).
         thread_id: 会话编号 (快照按它分区); 同一个编号才能跨进程接着跑.
-        model_name: 实际生效的模型名 (写进身份说明). None 表示按
+        model_name: 配置里生效的模型名 (写进身份说明). None 表示按
             `--model` → `.env` 的 DEEPSEEK_MODEL_NAME → 默认值 的次序解析
-            (见 resolve_model_name).
+            (见 resolve_model_name). **记账那一列未必是它**: 熔断切到备份的那
+            几趟, 运行行按实际答话的模型记 (见 `_recorded_model`).
         event_sink: 事件出口 (CLI 传 EventPrinter; 测试传收集器). None 表示
             不接出口 —— 事件仍会触发 hooks, 只是没人接收.
         guard: 循环软限制; None 表示 LoopGuard() 默认 (max_turns=10).
@@ -384,7 +386,13 @@ class ChatSession:
         # 这一程的号牌 (difficulties #38): 会话编号装配时就定了, 运行编号要等
         # `_begin_run` 把那一行建出来才有 —— 先绑前者, 拿到编号再补绑. 出块时
         # `log_context` 会把它们还回去, 于是下一句问话不会带着这一句的号
-        with log_context(thread_id=self._thread_id) as trace:
+        #
+        # 并排开的服务台账 (difficulties #14) 同一个生命周期: 熔断切过模型的那趟
+        # 运行, 模型层往里记「谁答的话」, 收尾记账时读它 —— 见 retry/serving.py
+        with (
+            log_context(thread_id=self._thread_id) as trace,
+            serving_scope() as serving,
+        ):
             await self._hydrate_once()
             # 记进记录表时从这里切开: 前面那段历史上一次已经写过了, 重写会写出重复行
             since = len(self._history)
@@ -420,13 +428,16 @@ class ChatSession:
             except BaseException as exc:
                 # 取消与失败那一轮也要记: 用户确实说过那句话, 页面上也显示了它 ——
                 # 记录里不该凭空少一轮 (取消与失败在记录里长得一样, 区别在运行行)
-                await self._record_unfinished(question, exc, run_id=run_id, since=since)
+                await self._record_unfinished(
+                    question, exc, run_id=run_id, since=since, serving=serving
+                )
                 raise
             await self._record(
                 result,
                 run_id=run_id,
                 since=since,
                 summary=result.summary if result.summary != before_summary else None,
+                serving=serving,
             )
             self._log_run_finished(result)
             return result
@@ -485,8 +496,13 @@ class ChatSession:
             (见 `_record_unfinished`).
         """
         # 这一程的号牌 (difficulties #38): 与 `ask` 同一条 —— 会话编号先绑, 运行
-        # 编号到下面才拿得到 (新开一个, 或由调用方给), 拿到之后补绑
-        with log_context(thread_id=self._thread_id) as trace:
+        # 编号到下面才拿得到 (新开一个, 或由调用方给), 拿到之后补绑.
+        # 服务台账 (difficulties #14) 同 `ask`: 续跑这一段自己算一趟 (HITL 的第二段
+        # 是同一个 run 的后半程, 那一趟的账上会记着两段各自服务的模型)
+        with (
+            log_context(thread_id=self._thread_id) as trace,
+            serving_scope() as serving,
+        ):
             checkpoint = await self._saver.load_latest(self._thread_id)
             if checkpoint is None:
                 return None
@@ -519,7 +535,12 @@ class ChatSession:
                 # 写上去等于把一次还能恢复的运行判死, 用户只能重新问一遍. 而那一段自己
                 # 开的账必须收掉, 否则那一行永远停在 running
                 await self._record_unfinished(
-                    None, exc, run_id=run_id, since=since, finish_run=finish_run
+                    None,
+                    exc,
+                    run_id=run_id,
+                    since=since,
+                    finish_run=finish_run,
+                    serving=serving,
                 )
                 raise
             # 跑到了结局就记上去 —— 包括「又挂起一次」(那时写的是 waiting_user, 不是
@@ -530,6 +551,7 @@ class ChatSession:
                 run_id=run_id,
                 since=since,
                 summary=result.summary if result.summary != before_summary else None,
+                serving=serving,
             )
             self._log_run_finished(result)
             return result
@@ -712,6 +734,7 @@ class ChatSession:
         since: int,
         summary: str | None = None,
         finish_run: bool = True,
+        serving: ServingRecord | None = None,
     ) -> None:
         """把这一轮交给记录员 (没配记录员 = 一步都不走).
 
@@ -720,20 +743,35 @@ class ChatSession:
 
         `finish_run` 照原样转给记录员 (见 `resume` 的说明): False = 这一段的账
         不归它收 (那一次运行还开着, 等着人给结论).
+
+        `serving` 是这一趟的服务台账 (见 `ask` 的说明): 模型名从它读 ——
+        None 表示这一程没开台账 (老调用方), 那就按配置里那个名字记.
         """
         if self._recorder is None:
             return
         # 模型名由**会话**告诉记录员: loop 手上是个薄协议的模型对象 (没有名字属性),
-        # 而 `LoopResult` 里也没有 —— 装配处是唯一知道「这次跑的是哪个模型」的地方
+        # 而 `LoopResult` 里也没有 —— 装配处是唯一知道「这次跑的是哪个模型」的地方.
+        # 熔断切过模型的话, 这里记的是**实际答话**的那个 (价目表按名查, 记错就是
+        # 一笔对不上的账 —— 见 retry/serving.py)
         await self._recorder.record(
             thread_id=self._thread_id,
             result=result,
             run_id=run_id,
             since=since,
             summary=summary,
-            model=self._model_name,
+            model=self._recorded_model(serving),
             finish_run=finish_run,
         )
+
+    def _recorded_model(self, serving: ServingRecord | None) -> str | None:
+        """这一趟记成哪个模型名: 谁服务记谁; 一个都没服务过就记配置里那个.
+
+        两个模型都用过时是**组合名** (如 `主+备`): 它是个事实, 而价目表里查不到
+        它 —— 于是金额留空并写明原因, 绝不按其中一家的单价算一笔对不上的账.
+        """
+        if serving is None:
+            return self._model_name
+        return serving.model_name(self._model_name)
 
     async def _record_unfinished(
         self,
@@ -743,6 +781,7 @@ class ChatSession:
         run_id: str | None,
         since: int,
         finish_run: bool = True,
+        serving: ServingRecord | None = None,
     ) -> None:
         """把「这一轮没答完」交给记录员 (取消与失败都算).
 
@@ -770,7 +809,7 @@ class ChatSession:
             status=status,
             run_id=run_id,
             since=since,
-            model=self._model_name,
+            model=self._recorded_model(serving),
             finish_run=finish_run,
         )
 

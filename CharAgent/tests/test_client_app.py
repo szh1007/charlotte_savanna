@@ -40,10 +40,14 @@ from CharAgent.client.utils.types import DEFAULT_THREAD_ID, CliOptions
 from CharAgent.db.recorder import ConversationRecorder
 from CharAgent.model import HttpXChatModel, ModelConfigError, ModelConnectionError
 from CharAgent.model.utils.types import FinishReason, ModelMessage, ModelResponse
-from CharAgent.retry import RetryingChatModel
+from CharAgent.retry import FailoverChatModel, ModelSwitch, RetryingChatModel
 
 # 仓库根 (起子进程时当 cwd, 子进程才 import 得到 CharAgent)
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# 真实的备份工厂 (在 import 期抓住, 早于 conftest 的夹子): 要验「配了备份」
+# 那几条用例把它换回去 —— 夹子的替身是「一律没有备份」, 见 conftest.
+_REAL_FALLBACK_FACTORY = app.fallback_model_from_env
 
 
 @pytest.fixture(autouse=True)
@@ -544,6 +548,76 @@ def test_build_model_wraps_the_adapter_with_retry_by_default(
     assert isinstance(wrapped._model, HttpXChatModel), "包装里套的不是裸适配器"
     assert isinstance(bare, HttpXChatModel), "--no-retry 应当直接给裸适配器"
     assert not isinstance(bare, RetryingChatModel)
+
+
+def test_build_model_wires_the_backup_when_the_env_has_one(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    """配齐 CLOSEAI_* 时, 主备包装套在**重试里面** (ADR-0025 的嵌套顺序).
+
+    顺序是这一层的要害: 熔断闸在里面才看得见每一次物理调用 (每次重试都数得到),
+    反过来套则「重试 3 次全挂」才算 1 次失败, 闸要过很久才跳. 不真发请求 ——
+    只断言对象形状与两层的名字 (名字 = 价目表的键).
+    """
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-charagent")
+    monkeypatch.setenv("CLOSEAI_API_KEY", "sk-test-closeai")
+    monkeypatch.setenv("CLOSEAI_BASE_URL", "https://api.closeai.example/v1")
+    monkeypatch.setenv("CLOSEAI_CHAT_MODEL", "openai:gpt-6-luna")
+    # conftest 的夹子默认把备份换成「没有」; 这条用例要的就是真的那个工厂
+    monkeypatch.setattr(app, "fallback_model_from_env", _REAL_FALLBACK_FACTORY)
+
+    wrapped = app.build_model(CliOptions(), print)
+    bare = app.build_model(CliOptions(use_retry=False), print)
+
+    assert isinstance(wrapped, RetryingChatModel)
+    assert isinstance(wrapped._model, FailoverChatModel)
+    assert isinstance(bare, FailoverChatModel), "--no-retry 关的是重试, 不是主备"
+    assert [breaker.name for breaker in bare.breakers] == [
+        "deepseek-flash",
+        "gpt-6-luna",
+    ], "两侧的名字要与价目表的键对齐 (provider 前缀已剥掉)"
+    assert "[failover]" not in capsys.readouterr().out, "切换提示只在真切的时候打"
+
+
+async def test_the_backup_factory_needs_all_three_variables() -> None:
+    """CLOSEAI_* 三样齐全才算配了备份: 缺一样就当没配 (加固不是启动前提).
+
+    走 `_REAL_FALLBACK_FACTORY` 而不是模块属性: 后者在用例里已经被 conftest 的夹子
+    换成了「一律没有备份」—— 这条用例要验的正是**工厂自己**的判据 (注入 env 表).
+    """
+    complete = {
+        "CLOSEAI_API_KEY": "sk-test-closeai",
+        "CLOSEAI_BASE_URL": "https://api.closeai.example/v1",
+        "CLOSEAI_CHAT_MODEL": "openai:gpt-6-luna",
+    }
+
+    assert _REAL_FALLBACK_FACTORY({}) is None
+    for missing in complete:
+        partial = {key: value for key, value in complete.items() if key != missing}
+        assert _REAL_FALLBACK_FACTORY(partial) is None, f"缺 {missing} 也算没配"
+
+    model = _REAL_FALLBACK_FACTORY(complete)
+
+    assert isinstance(model, HttpXChatModel)
+    assert model.model == "gpt-6-luna", "剥掉 provider 前缀 = 价目表里的键"
+    await model.aclose()
+
+
+def test_the_switch_notice_says_who_took_over(
+    capsys: pytest.CaptureFixture,
+) -> None:
+    """终端那行切换提示 (on_switch 回调): 用户该看得见「这句是另一家答的」."""
+    app._switch_notice(print)(
+        ModelSwitch(
+            from_name="deepseek-flash", to_name="gpt-6-luna", reason="连续 3 次失败熔断"
+        )
+    )
+
+    out = capsys.readouterr().out
+    assert "[failover]" in out
+    assert "deepseek-flash" in out
+    assert "gpt-6-luna" in out
 
 
 class _FlakyModel:

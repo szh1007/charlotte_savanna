@@ -1,15 +1,18 @@
-"""retry 包静态零件: 失败尝试记录与幂等认领裁决 (#13 #17).
+"""retry 包静态零件: 失败尝试记录 / 幂等认领裁决 / 熔断态与切换记录 (#13 #14 #17).
 
 行为在包顶层 (policy 退避策略 / executor 驱动器 / chat_model 重试包装 /
-idempotency 幂等键与存储), 纯数据结构与回调形状集中于此供各模块与门面共享
-(对齐 stream/utils, agent/utils 的「表与行为分离」惯例).
+circuit 熔断闸 / failover 主备包装 / idempotency 幂等键与存储), 纯数据结构与
+回调形状集中于此供各模块与门面共享 (对齐 stream/utils, agent/utils 的
+「表与行为分离」惯例).
 
-大白话版 (本文件 = 两张单据的格式表):
+大白话版 (本文件 = 三张单据的格式表):
 - RetryAttempt: 「我又失败了一次」的记录单 —— 第几次、等多久再试、已经花掉
   多久、为什么失败; 递给 on_retry 的接收方 (记 token 账 / 观测打点).
   注意它是**失败尝试**的记录, 最后一次成功不产生记录.
 - ClaimResult: 幂等认领的裁决书 —— 这次请求拿到执行权了吗? 还是有人正在做
   (IN_PROGRESS, 不得重复执行) / 早就做完了 (COMPLETED, 附上既有结果).
+- CircuitState / ModelSwitch: 熔断闸现在是什么态, 以及「这一跳切到了谁」——
+  后者递给 on_switch 的接收方 (日志 / 终端提示 / 观测).
 """
 
 from __future__ import annotations
@@ -67,8 +70,35 @@ class RetryAttempt:
     result: object | None = None
 
 
+class CircuitState(StrEnum):
+    """熔断闸的三种态 (difficulties #14): 状态由「计数 + 时钟」算出来, 不由人设置."""
+
+    CLOSED = "closed"  # 关闭: 正常放行, 数连续失败
+    OPEN = "open"  # 打开: 直接拒绝, 一个请求都不发 (冷却中)
+    HALF_OPEN = "half_open"  # 半开: 冷却已过, 只放**一个**探测
+
+
+@dataclass(frozen=True, slots=True)
+class ModelSwitch:
+    """一次「熔断改走备份」的记录 (on_switch 载荷, #14).
+
+    attributes:
+        from_name: 从哪个模型切走 (闸刚被拨开的那个).
+        to_name: 切到哪个模型 (这一跳实际去调的那个).
+        reason: 为什么切 —— 一句人看的话 (连续几次失败熔断 / 探测失败等).
+    """
+
+    from_name: str
+    to_name: str
+    reason: str
+
+
 # 重试通知回调: 每次「决定再试一次」时调用 (在等待之前), 同步或异步都接受.
 # on_retry 收的是**序列** (可挂多个, 按序列顺序串行调用); 某个回调抛异常即
 # 中止其后的回调并把异常向上抛 (对齐 stream 包的 EventSink: 这是调用方自己的
 # 观测链, 通知失败要让它看见; 与 hooks 注册表的插件异常隔离语义相反).
 type RetryCallback = Callable[[RetryAttempt], Awaitable[None] | None]
+
+# 切换通知回调: 每次「这一跳改走另一个模型」时调用, 同步或异步都接受.
+# 语义与 on_retry 完全一致 (序列 / 串行 / 异常不隔离), 只是载荷换成 ModelSwitch.
+type SwitchCallback = Callable[[ModelSwitch], Awaitable[None] | None]

@@ -5,7 +5,8 @@ RecordingSleep / FixedRandom 服务 #61 的确定性 (时间与随机性可注�
 FakeRedisClient 服务 checkpoint 的 Redis 实现 · EventCollector 服务事件流断言与
 快照 (#4/#63) · PendingAwareDatabase 服务挂起-恢复那条路 (#25: 在假库之上补一条
 「按未决筛」的语义, 框架与业务两边的用例共用) · `hang_forever` 服务超时那条路
-(#15: 永不返回的协程载体, 执行层与 loop 层两条用例共用).
+(#15: 永不返回的协程载体, 执行层与 loop 层两条用例共用) · `no_backup_endpoint`
+服务「默认不碰真的备份端点」(#14: 框架与业务两个套件共用一份, 见它的 docstring).
 
 **假库本体 (`FakeRecordSession` / `FakeRecordDatabase` 与两个造行的) 自 issue 41 起
 住在 `CharAgent/db/testing.py`** —— 业务侧的离线跑分器也要一份记录层, 而它不该去
@@ -43,6 +44,8 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
+
+import pytest
 
 from CharAgent.db.entities import ToolCall, ToolCallStatus
 from CharAgent.db.errors import DataStoreError
@@ -384,3 +387,31 @@ async def hang_forever() -> str:
     """
     await asyncio.Event().wait()
     return "到不了这里"
+
+
+@pytest.fixture(autouse=True)
+def no_backup_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    """默认不给模型装配备份端点 (CLOSEAI_*): 用例不该因为本机 .env 而改变装配.
+
+    为什么放在这里 (而不是各 conftest 各抄一份): 框架与业务两个套件都要它, 而两份
+    抄本迟早在「哪些变量」上漂 —— 与假库 (`CharAgent/db/testing.py`) 上浮到包里
+    是同一条理由. 两边的 conftest 各 import 一次, autouse 在各自的目录里生效.
+
+    为什么非要有这道夹子: 装配代码读的**就是**环境变量 (`build_model` ->
+    `fallback_model_from_env`), 而两个套件里都有几步会把根 .env 读进来 (CLI 入口的
+    `load_root_env` / PG 那几个夹具的按需读取) —— 那之后「本机 .env 里配了备份」会
+    悄悄改变每一条用例的装配结果, 甚至让本该离线的一条去调真的另一家端点.
+
+    两手都做, 因为泄漏有两条路: 删环境变量管住**测试进程启动时**就带着的那份
+    (`pytest -m pg` 之后 .env 进了 os.environ), 换掉工厂管住**用例自己**在读 .env
+    之后再装配 (CLI 那条路就是如此 —— 只删环境变量拦不住它).
+
+    换工厂用的是本仓已有的做法 (见 test_client_app.py: 只换最外层的生产工厂, 被测
+    代码一行不改). 要验「配了备份会怎样」的用例自己 `monkeypatch.setattr` / 传
+    `env=` 调 `fallback_model_from_env` —— 本夹子之后生效的才说了算.
+    """
+    for name in ("CLOSEAI_API_KEY", "CLOSEAI_BASE_URL", "CLOSEAI_CHAT_MODEL"):
+        monkeypatch.delenv(name, raising=False)
+    from CharAgent.client import app as client_app
+
+    monkeypatch.setattr(client_app, "fallback_model_from_env", lambda *a, **k: None)

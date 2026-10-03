@@ -13,8 +13,10 @@
 
 三件事在这里各有一处落地:
 1. **带工具问答端到端** —— `--question` 或交互模式, 走完整 loop + 七类事件实时打印
-2. **重试包装接线** —— `build_model` 里那一行 `RetryingChatModel(chat_model_from_env())`
-   就是重试包一直缺的那个接线点; `--no-retry` 可关掉做对照
+2. **模型这一层的接线** —— `build_model` 里那两行: 里面套主备包装
+   (`FailoverChatModel(主, 备)`, 备模型从 CLOSEAI_* 读, 没配就没有), 外面套
+   `RetryingChatModel`; `--no-retry` 可关掉重试做对照. 嵌套顺序与理由见
+   `retry/failover.py` 与 ADR-0025
 3. **断点续跑 + 存储切换** —— Ctrl-C 打断 (kill switch) 与 `/resume`; `--backend`
    三选一, loop 与模型一行不动
 
@@ -45,8 +47,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import os
 import sys
-from collections.abc import Callable, Coroutine, Sequence
+from collections.abc import Callable, Coroutine, Mapping, Sequence
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -84,7 +87,15 @@ from CharAgent.db.errors import PricingNotReadyError
 from CharAgent.db.recorder import ConversationRecorder, RunRecorder
 from CharAgent.model import ModelError, chat_model_from_env
 from CharAgent.model.protocol import ChatModel
-from CharAgent.retry import RetryAttempt, RetryCallback, RetryingChatModel, RetryPolicy
+from CharAgent.retry import (
+    FailoverChatModel,
+    ModelSwitch,
+    RetryAttempt,
+    RetryCallback,
+    RetryingChatModel,
+    RetryPolicy,
+    SwitchCallback,
+)
 
 # 每次「跑一个协程」返回的结果类型 (只在本模块内用于标注, 故用局部 TypeVar)
 _T = TypeVar("_T")
@@ -233,24 +244,26 @@ def parse_argv(argv: Sequence[str] | None = None) -> CliOptions:
 
 
 def build_model(options: CliOptions, writer: Callable[[str], Any]) -> ChatModel:
-    """按配置造模型: httpx 裸调适配器 + (默认) 重试包装.
+    """按配置造模型: httpx 裸调适配器 + (配了就有) 主备包装 + (默认) 重试包装.
 
-    这是重试包一直在等的接线下手处 —— `retry/` 交付后生产调用点为零, 而重试
-    以**组合**方式挂在 ChatModel 协议层 (协议是 Protocol, 不要求继承), 于是
-    loop 与 model 一行都不用改: 换个对象传进去就生效.
+    两层的嵌套顺序是**定死的** (理由见 `retry/failover.py` 与 ADR-0025)::
 
-    重试发生时打一行提示 (on_retry 回调): 演示时能看见「限流了, 等 0.4 秒再试」
-    —— 不打印的话, 用户只会觉得这次特别慢. 注意那次失败的响应**已经计费**
-    (重试链路的双计费口径), 所以提示里带上原因, 账目不含糊.
+        RetryingChatModel(FailoverChatModel(主, 备))   <- 熔断闸看得见每一次物理调用
+
+    备份模型从 CLOSEAI_* 读 (另一家, 真容灾), **没配就没有** —— 那时这一层只剩
+    「一个带熔断闸的模型」: 主模型连错几次之后快失败, 不再空转.
 
     Args:
         options: 启动选项 (模型名 / 是否重试).
-        writer: 输出函数 (重试提示往哪儿打).
+        writer: 输出函数 (重试与切换的提示往哪儿打).
 
     Raises:
         ModelConfigError: DEEPSEEK_API_KEY 没配 (报错信息里指向 .env.example).
     """
     base = chat_model_from_env(model=options.model_name)
+    backup = fallback_model_from_env()
+    if backup is not None:
+        base = FailoverChatModel(base, backup, on_switch=[_switch_notice(writer)])
     if not options.use_retry:
         return base
     return RetryingChatModel(
@@ -259,7 +272,12 @@ def build_model(options: CliOptions, writer: Callable[[str], Any]) -> ChatModel:
 
 
 def _retry_notice(writer: Callable[[str], Any]) -> RetryCallback:
-    """造一个「重试了」的通知回调 (打印一行, 不改变重试行为)."""
+    """造一个「重试了」的通知回调 (打印一行, 不改变重试行为).
+
+    重试发生时打一行提示 (on_retry 回调): 演示时能看见「限流了, 等 0.4 秒再试」
+    —— 不打印的话, 用户只会觉得这次特别慢. 注意那次失败的响应**已经计费**
+    (重试链路的双计费口径), 所以提示里带上原因, 账目不含糊.
+    """
 
     def announce(attempt: RetryAttempt) -> None:
         """重试发生时的通知 (on_retry 回调, 只打印不改变重试行为)."""
@@ -269,6 +287,56 @@ def _retry_notice(writer: Callable[[str], Any]) -> RetryCallback:
         )
 
     return announce
+
+
+def _switch_notice(writer: Callable[[str], Any]) -> SwitchCallback:
+    """造一个「切到备份了」的通知回调 (打印一行, 不改变切换行为).
+
+    与重试那行同一个道理: 换了另一家的模型答话, 用户该看得见 —— 否则只会觉得
+    「这句怎么答得不一样/怎么慢了」. 框架侧同一件事还会落进日志 (retry/failover).
+    """
+
+    def announce(switch: ModelSwitch) -> None:
+        """切换发生时的通知 (on_switch 回调, 只打印不改变切换行为)."""
+        writer(
+            f"[failover] {switch.from_name} 熔断, "
+            f"本次调用改走 {switch.to_name}: {switch.reason}"
+        )
+
+    return announce
+
+
+# 备份模型的三个环境变量 (另一家的 OpenAI 兼容端点, 与嵌入模型同一套 CLOSEAI_
+# 前缀; 根 .env.example 有模板). **三样齐全才算配了备份** —— 少一样就当没配.
+ENV_FALLBACK_API_KEY = "CLOSEAI_API_KEY"
+ENV_FALLBACK_BASE_URL = "CLOSEAI_BASE_URL"
+ENV_FALLBACK_MODEL = "CLOSEAI_CHAT_MODEL"
+
+
+def fallback_model_from_env(env: Mapping[str, str] | None = None) -> ChatModel | None:
+    """造备份模型 (CLOSEAI_*); 没配齐返回 None —— 没有备份照样跑.
+
+    为什么「没配齐 = 没配」而不是报错: 备份是**加固**, 不是启动前提 —— 只想本地
+    跑通主模型的人不该被另一家的 key 拦住 (与 `chat_model_from_env` 缺
+    DEEPSEEK_API_KEY 就报错正好相反: 那个是必需品, 这个是有则更好).
+
+    走的是同一个适配器工厂 (显式传全三个参数, 于是不读 DEEPSEEK_*): CloseAI 是
+    OpenAI 兼容端点, 请求体与主模型同形; 模型名里的 `provider:` 前缀由它剥掉,
+    于是这个适配器的 `.model` 就是价目表的键 —— 记账那一列靠它对齐.
+
+    Args:
+        env: 环境变量表 (默认读 `os.environ`; 测试注入用).
+
+    Returns:
+        ChatModel | None: 配齐了就是那个 httpx 适配器; 否则 None.
+    """
+    source = os.environ if env is None else env
+    key = source.get(ENV_FALLBACK_API_KEY)
+    base_url = source.get(ENV_FALLBACK_BASE_URL)
+    name = source.get(ENV_FALLBACK_MODEL)
+    if not (key and base_url and name):
+        return None
+    return chat_model_from_env(api_key=key, base_url=base_url, model=name)
 
 
 def build_saver_for(options: CliOptions) -> CheckpointSaver:
@@ -850,6 +918,7 @@ __all__ = [
     "build_model",
     "build_parser",
     "build_saver_for",
+    "fallback_model_from_env",
     "load_root_env",
     "main",
     "parse_argv",

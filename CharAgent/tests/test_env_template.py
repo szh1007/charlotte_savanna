@@ -18,6 +18,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from CharAgent.checkpoint import config as checkpoint_config
+from CharAgent.client import app as client_app
 from CharAgent.db import config as db_config
 from CharAgent.db import cost as db_cost
 
@@ -39,14 +40,24 @@ CHECKPOINT_VARS = (
 DB_VARS = (db_config.ENV_DSN, db_config.ENV_ECHO)
 # 成本折算的价目表 (ticket 28): 常量声明在 db/cost.py 里 (读它的也是那个模块)
 COST_VARS = (db_cost.ENV_MODEL_PRICES,)
+# 备份模型 (困难点 #14 的 failover): 三个名字声明在 client/app.py 里 —— 装配那一层
+# 读它们, 于是也归这条守卫管 (名字不带 CHARAGENT_ 前缀: 它们是**供应商侧**的配置,
+# 与嵌入模型共用 CLOSEAI_ 一套)
+FALLBACK_VARS = (
+    client_app.ENV_FALLBACK_API_KEY,
+    client_app.ENV_FALLBACK_BASE_URL,
+    client_app.ENV_FALLBACK_MODEL,
+)
 
 
 def test_template_lists_every_checkpoint_and_db_variable() -> None:
-    """模板里逐个写明了 checkpoint 与 db 读的每个变量名."""
+    """模板里逐个写明了 checkpoint / db / 装配层读的每个变量名."""
     text = TEMPLATE.read_text(encoding="utf-8")
 
     missing = [
-        name for name in (*CHECKPOINT_VARS, *DB_VARS, *COST_VARS) if name not in text
+        name
+        for name in (*CHECKPOINT_VARS, *DB_VARS, *COST_VARS, *FALLBACK_VARS)
+        if name not in text
     ]
 
     assert missing == [], f".env.example 缺少这些变量名: {missing}"

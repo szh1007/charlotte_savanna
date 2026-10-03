@@ -36,6 +36,7 @@ from CharAgent.agent.utils.types import (
 )
 from CharAgent.checkpoint import InMemoryCheckpointSaver
 from CharAgent.db.conversation import TranscriptLine
+from CharAgent.db.cost import CostGap, PriceTable
 from CharAgent.db.entities import MessageRole, RunStatus, ThreadStatus
 from CharAgent.db.errors import DataStoreError
 from CharAgent.db.recorder import (
@@ -992,6 +993,100 @@ async def test_a_segment_that_leaves_the_run_row_alone() -> None:
     messages = database.rows_of("charagent_messages")
     assert [row["role"] for row in messages] == ["user", "assistant"]
     assert {row["run_id"] for row in messages} == {run_id}, "这一段的消息仍属于那次运行"
+
+
+def _priced_recorder(database: Any) -> ConversationRecorder:
+    """绑在玩具属主上、价目表给死的记录员 (两家模型各有一档价)."""
+    return ConversationRecorder(
+        database=database,
+        tenant_id="toy",
+        user_id="u-9f3a",
+        prices=PriceTable.from_json(
+            '{"models": {'
+            '"deepseek-flash": {"cache_miss": 2, "cache_hit": 0.5, "output": 8}, '
+            '"gpt-6-luna": {"cache_miss": 1, "cache_hit": 0.1, "output": 5}}}'
+        ),
+    )
+
+
+async def test_a_run_served_by_two_models_is_recorded_as_both_names() -> None:
+    """一趟运行的两段落在一家不同的模型上: 记组合名, 金额随之留空.
+
+    什么时候会发生: HITL 的续跑段 (挂起 -> 人确认 -> 接着跑) 可能落在另一家模型上
+    —— 模型层熔断切到了备份 (difficulties #14). 后一段直接覆盖前一段的话, 行上写着
+    一个名字、金额却按**它**的单价算了整趟的 token (含前一家答的那些): 一笔对不上
+    的账. 合出来的组合名在价目表里查不到, 于是金额留空并写明原因 —— 报不出钱, 也
+    不报错钱.
+    """
+    database = FakeRecordDatabase()
+    rec = _priced_recorder(database)
+    run_id = await rec.begin(thread_id=THREAD_ID, title="订单到哪了")
+    usage = {"input_tokens": 100, "cache_miss_tokens": 100, "output_tokens": 10}
+
+    await rec.record(
+        thread_id=THREAD_ID,
+        run_id=run_id,
+        result=result(**usage),
+        model="deepseek-flash",
+    )
+    [run] = database.rows_of("charagent_runs")
+    assert run["model"] == "deepseek-flash"
+    assert run["total_cost"] is not None, "单模型那一段本来算得出来"
+
+    await rec.record(
+        thread_id=THREAD_ID, run_id=run_id, result=result(**usage), model="gpt-6-luna"
+    )
+
+    [run] = database.rows_of("charagent_runs")
+    assert run["model"] == "deepseek-flash+gpt-6-luna", "两段两家的名字合起来"
+    assert run["total_cost"] is None, "组合名查不到价 -> 不留一个按错单价算的数"
+    assert run["total_cost_detail"]["reason"] == CostGap.NO_PRICE.value
+    assert run["total_cost_detail"]["model"] == "deepseek-flash+gpt-6-luna"
+
+
+async def test_two_segments_on_the_same_model_keep_one_name() -> None:
+    """两段落在同一家: 名字不该因为「写了两遍」而叠起来, 金额照算."""
+    database = FakeRecordDatabase()
+    rec = _priced_recorder(database)
+    run_id = await rec.begin(thread_id=THREAD_ID, title="订单到哪了")
+    usage = {"input_tokens": 100, "cache_miss_tokens": 100, "output_tokens": 10}
+
+    for _ in range(2):
+        await rec.record(
+            thread_id=THREAD_ID,
+            run_id=run_id,
+            result=result(**usage),
+            model="deepseek-flash",
+        )
+
+    [run] = database.rows_of("charagent_runs")
+    assert run["model"] == "deepseek-flash"
+    assert run["total_cost"] is not None
+
+
+async def test_a_name_already_joined_by_the_session_is_not_joined_again() -> None:
+    """会话那边的台账可能已经拼过一次 (`主+备`): 再合一次不该叠字.
+
+    两条路都会拼: 一趟之内切过家 -> 服务台账拼 (retry/serving.py); 一趟分两段 ->
+    这里拼. 同一次收尾可能两条都碰上, 所以合并必须**按分隔符拆开再合** —— 否则
+    记出来的是 `主+备+备` 这种谁也读不懂的名字.
+    """
+    database = FakeRecordDatabase()
+    rec = _priced_recorder(database)
+    run_id = await rec.begin(thread_id=THREAD_ID, title="订单到哪了")
+
+    await rec.record(
+        thread_id=THREAD_ID, run_id=run_id, result=result(), model="deepseek-flash"
+    )
+    await rec.record(
+        thread_id=THREAD_ID,
+        run_id=run_id,
+        result=result(),
+        model="deepseek-flash+gpt-6-luna",
+    )
+
+    [run] = database.rows_of("charagent_runs")
+    assert run["model"] == "deepseek-flash+gpt-6-luna"
 
 
 async def test_a_failed_segment_without_a_question_writes_only_the_notice() -> None:

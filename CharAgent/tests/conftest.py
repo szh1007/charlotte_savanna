@@ -28,6 +28,7 @@ import psycopg
 import pytest
 import pytest_asyncio
 from dotenv import load_dotenv
+from doubles import no_backup_endpoint as no_backup_endpoint
 from helpers import API_KEY, BASE_URL
 from sqlalchemy import create_engine, pool, text
 

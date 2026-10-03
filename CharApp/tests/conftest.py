@@ -23,6 +23,7 @@ from collections.abc import AsyncIterator, Iterator
 import pytest
 import respx
 
+from CharAgent.tests.doubles import no_backup_endpoint as no_backup_endpoint
 from CharApp.eval.fixtures import (
     ADDRESSES,
     AGENT_BASE_URL,

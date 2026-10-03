@@ -128,6 +128,7 @@ class RunsRepository(PgRepository):
         last_checkpoint_id: str | None = None,
         total_cost: Decimal | None = None,
         total_cost_detail: Mapping[str, Any] | None = None,
+        void_cost: bool = False,
         moment: datetime | None = None,
     ) -> bool:
         """把这一段运行的**结局**写到 `add` 建的那一行上 (账目一起写上).
@@ -166,7 +167,7 @@ class RunsRepository(PgRepository):
             last_checkpoint_id: 这一段运行落的最后一帧快照; None = 这一列不动
                 (没配快照存储 / 一帧都没落成).
             total_cost / total_cost_detail: 本次运行的花费与它的来路 (由记录员在
-                收尾那一刻算好). 两条规矩 (ticket 28):
+                收尾那一刻算好). 三条规矩 (ticket 28 + #14 的补丁):
                 ① **给 None = 这一次没算出来** —— 金额那一列一个字节都不动: 既不写
                 0, 也不把已有的金额清掉 (明细也只在金额还空着时才写原因, 于是两列
                 永远自洽);
@@ -175,6 +176,10 @@ class RunsRepository(PgRepository):
                 「重算」不是「累加」: 累加会把前面那段算两次.
                 挂起那一段照样算钱: 钱确实花了 (那一轮真问过模型), 恢复那一段收尾时
                 会按累计用量重算一遍, 两笔都对得上.
+                ③ **`void_cost=True` = 把已有的金额作废** (金额置 NULL, 明细换成这次
+                给的原因). 只在**定价基础变了**时用: 同一趟运行的两段落在了不同的
+                模型上 (模型层熔断切家, difficulties #14) —— 前一段那笔是**另一套
+                单价**算的, 留着比没有更糟 (它看起来像个能对账的数).
             moment: 显式时刻 (测试用); None 则取当下 (UTC) —— 更新与结束两个时刻
                 取同一个值: 这是一次落定, 不是两个真实时刻.
 
@@ -219,10 +224,15 @@ class RunsRepository(PgRepository):
             # 算得出来: 金额与明细**一起**写 (明细说的是这笔钱怎么来的)
             values["total_cost"] = total_cost
             values["total_cost_detail"] = total_cost_detail
+        elif void_cost:
+            # 定价基础变了 (见 Args 的 ③): 旧金额是另一套单价算的, 明确清掉 ——
+            # 金额与明细一起换, 下面那一笔补上「为什么没有」
+            values["total_cost"] = None
+            values["total_cost_detail"] = total_cost_detail
         statement = update(runs).where(runs.c.run_id == run_id).values(**values)
         async with self._session() as session:
             rowcount = session.execute(statement).rowcount
-            if total_cost is None and total_cost_detail is not None:
+            if total_cost is None and total_cost_detail is not None and not void_cost:
                 # 没算出来: 补一句「为什么没有」, 但**只在金额还空着的时候** ——
                 # 已经有金额的行不该被改成「没有」(金额与账单绑定, 只写一次).
                 # 这一条与上面那条合起来保证: 两列永远自洽 (有金额就有算式,

@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from doubles import FakeRedisClient
+from doubles import FakeRedisClient, RecordingSleep
 from mock_llm import MockLLM, make_tool_call, text_response, tool_call_response
 
 from CharAgent.agent import Approval, LoopOutcome, TrimAndSummarize
@@ -44,8 +44,15 @@ from CharAgent.checkpoint import (
 )
 from CharAgent.client.session import DEMO_TOOLS, ChatSession
 from CharAgent.hooks import Decision, HookPoint, HookRegistry
+from CharAgent.model.utils.errors import ModelStatusError
 from CharAgent.model.utils.types import ModelMessage, ModelResponse
 from CharAgent.prompt import PromptError, load_prompt, prompt_ref
+from CharAgent.retry import (
+    CircuitPolicy,
+    FailoverChatModel,
+    RetryingChatModel,
+    RetryPolicy,
+)
 from CharAgent.stream.utils.types import EventType
 from CharAgent.tool import Tool, tool
 
@@ -1059,6 +1066,83 @@ async def test_the_session_tells_the_recorder_which_model_ran() -> None:
     await session.ask("第一问")
 
     assert seen == ["cli-model"], "交的必须与会话实际生效的那个名字一致"
+
+
+async def test_a_failed_over_run_tells_the_recorder_the_model_that_answered() -> None:
+    """熔断切到备份的那一趟: 交给记录员的是**实际答话**的那个模型名 (#14).
+
+    为什么不能记配置里那个: 运行行那一列是**价目表的键** —— 主模型被熔断、备份
+    答了话, 却按主模型的单价算钱, 就是一笔与账单对不上的假账 (ADR-0025). 判断
+    「谁答的话」的机制见 retry/serving.py: 模型层往这一趟的台账里记, 会话收尾时
+    读它 —— 台账挂在作用域上而不是模型对象上, 于是下一句问话从头开始记.
+    """
+    seen: list[str | None] = []
+
+    class Recorder:
+        """只关心 model 那一个参数的记录员."""
+
+        async def begin(self, *, thread_id: str, title: str = "") -> str | None:
+            """开账那一拍 (ticket 22): 交一个固定编号."""
+            return "run-1"
+
+        async def record(
+            self,
+            *,
+            thread_id: str,
+            result: Any,
+            run_id: str | None = None,
+            since: int = 0,
+            summary: str | None = None,
+            model: str | None = None,
+            finish_run: bool = True,
+        ) -> bool:
+            seen.append(model)
+            return True
+
+        async def record_unfinished(
+            self,
+            *,
+            thread_id: str,
+            question: str,
+            status: Any,
+            run_id: str | None = None,
+            since: int = 0,
+            model: str | None = None,
+            finish_run: bool = True,
+        ) -> bool:
+            seen.append(model)
+            return True
+
+    class Down:
+        """一调用就抛瞬态错误的模型 (5xx: 算熔断账的那一族)."""
+
+        async def generate(self, *args: Any, **kwargs: Any) -> Any:
+            raise ModelStatusError(503, "上游挂了")
+
+        async def aclose(self) -> None:
+            """关闭连接 (替身没有连接可关)."""
+
+    model = RetryingChatModel(
+        FailoverChatModel(
+            Down(),
+            MockLLM.fixed(text_response("备份答的")),
+            backup_name="gpt-6-luna",
+            policy=CircuitPolicy(failure_threshold=2),
+        ),
+        policy=RetryPolicy(
+            max_attempts=3, initial_delay=0.0, jitter=0.0, sleep=RecordingSleep()
+        ),
+    )
+    session = make_session(
+        model,
+        thread_id="rec-failover",
+        model_name="deepseek-flash",
+        recorder=Recorder(),
+    )
+
+    await session.ask("第一问")
+
+    assert seen == ["gpt-6-luna"], "这一趟真答话的是备份, 就记它 (价目表按名查)"
 
 
 async def test_an_interrupted_run_is_recorded_as_unfinished() -> None:

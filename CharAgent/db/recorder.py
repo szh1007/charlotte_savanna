@@ -118,7 +118,7 @@ from CharAgent.db.cost import (
     ensure_pricing_ready,
     load_pricing,
 )
-from CharAgent.db.entities import RunStatus, ToolCallStatus
+from CharAgent.db.entities import Run, RunStatus, ToolCallStatus
 from CharAgent.db.errors import DbError
 from CharAgent.db.repositories.base import Database
 from CharAgent.db.repositories.messages import (
@@ -132,6 +132,7 @@ from CharAgent.db.repositories.tool_calls import (
     build_tool_call,
 )
 from CharAgent.db.state import run_status_for_outcome, tool_call_status_for_outcome
+from CharAgent.model.utils.config import join_model_names
 from CharAgent.model.utils.types import ModelMessage
 from CharAgent.prompt import ref_name
 from CharAgent.structured_logging import get_logger
@@ -235,12 +236,18 @@ class RunSettlement:
         cost: 这一趟的钱 (算好的算式, 或算不出来的原因).
         last_checkpoint_id: 本段落下的最后一帧; None = 这一段没落帧 (或调用方没给)
             —— 它是「顺 parent_id 往回走 = 本次运行落的每一帧」的起点.
+        void_cost: 把行上已有的金额**作废** (置 NULL, 明细换成 `cost` 里那个原因).
+            只在「这一行的定价基础变了」时用: 同一趟运行的两段落在了不同模型上
+            (模型层熔断切家, difficulties #14) —— 前一段那笔是另一套单价算的, 留着
+            比没有更糟 (它看起来像个能对账的数). 作废时这一次本来就算不出来
+            (`cost.known` 为假).
     """
 
     status: RunStatus
     facts: RunFacts
     cost: RunCost
     last_checkpoint_id: str | None = None
+    void_cost: bool = False
 
 
 class RunRecorder(Protocol):
@@ -513,15 +520,25 @@ class ConversationRecorder:
         # 都不写, 也不去算钱 —— 算了也没地方放 (见 RunSettlement)
         settlement: RunSettlement | None = None
         if finish_run:
-            facts = RunFacts.of(result, model=model)
+            # 那一行上已经记着的模型名 (HITL 的第二段拿到的是**同一行**) 与这一段
+            # 报上来的名字合起来: 两段可能落在**不同的模型**上 (模型层熔断切了家),
+            # 后一段直接覆盖的话, 行上写着一个名字、金额却按它的单价算了**整趟**的
+            # token (含前一家答的那些) —— 一笔对不上的账. 合出来的组合名 (如 `主+备`)
+            # 价目表查不到, 于是金额留空并写明原因: 报不出钱, 也不报错钱
+            run = await self._run_row(run_id)
+            recorded = join_model_names(run.model if run is not None else None, model)
+            facts = RunFacts.of(result, model=recorded)
             settlement = RunSettlement(
                 status=run_status_for_outcome(result.outcome),
                 facts=facts,
                 # 只有真的开了账 (`begin` 建出那一行) 才算钱: 没有那一行就没有开始
                 # 时刻, 也就判不了峰谷 —— `_write` 会按「没账目」整轮不写
-                cost=await self._cost_of(facts, run_id)
-                if run_id is not None
-                else RunCost(gap=CostGap.NO_MOMENT, model=model),
+                cost=self._cost_of(facts, run),
+                # 名字被合过 (两段落在不同模型上) 而那一行上已经有一笔金额: 那笔是
+                # **另一套单价**算的, 得作废 —— 否则行上留下一个看起来能对账的数
+                void_cost=(
+                    run is not None and run.total_cost is not None and recorded != model
+                ),
                 # 本段落的最后一帧: 有了它, 「这次花了多少」与「当时它看到了什么」就
                 # 对到同一件事上 (顺 parent_id 往回走 = 本次运行落的每一帧)
                 last_checkpoint_id=result.last_checkpoint_id,
@@ -572,17 +589,22 @@ class ConversationRecorder:
         # 但模型名照样带上: 它是跑之前就定下的配置事实, 不是跑出来的账目.
         # 不结账 (续跑段) 时连这一笔都不给 —— 那一行横跨挂起等待期, 该写什么由
         # 收尾的那一段说
-        settlement = (
-            RunSettlement(
+        settlement: RunSettlement | None = None
+        if finish_run:
+            run = await self._run_row(run_id)
+            recorded = join_model_names(run.model if run is not None else None, model)
+            settlement = RunSettlement(
                 status=status,
-                facts=RunFacts(model=model),
+                facts=RunFacts(model=recorded),
                 # 没跑完那一轮没有账目 (五列全是 None), 也就没有金额 —— 明细里
                 # 如实写一句原因, 而不是让那一列空着不解释
-                cost=RunCost(gap=CostGap.UNFINISHED, model=model),
+                cost=RunCost(gap=CostGap.UNFINISHED, model=recorded),
+                # 与 `record` 同一条: 名字被合过而那一行上已有金额 -> 那笔是另一套
+                # 单价算的 (见 RunSettlement.void_cost)
+                void_cost=(
+                    run is not None and run.total_cost is not None and recorded != model
+                ),
             )
-            if finish_run
-            else None
-        )
         return await self._write(
             thread_id=thread_id,
             lines=lines,
@@ -667,22 +689,46 @@ class ConversationRecorder:
             ],
         )
 
-    async def _cost_of(self, facts: RunFacts, run_id: str) -> RunCost:
+    async def _run_row(self, run_id: str | None) -> Run | None:
+        """读运行行 (没开账 / 读不到 -> None).
+
+        两个用途都要它: 判峰谷要 `created_at`, 合模型名要行上已经记着的那个. 读不
+        到**不当成错**: 这一段的收尾紧接着就要写同一个库, 真连不上时那一步会如实
+        报 (进 `_missed` + 日志), 这里再抛一次只是把一次故障报两遍. 而两种用途都
+        容忍 None: 份额度判不了 (`NO_MOMENT`), 模型名合不了 (就记这一段自己报的).
+
+        Raises:
+            (不抛: DbError 在这里被吞掉, 由写那一步负责报)
+        """
+        if run_id is None:
+            return None
+        try:
+            return await self._runs.get(run_id)
+        except DbError as exc:
+            logger.warning(
+                "读运行行 %s 失败 (这一段的账照记, 只是判不了峰谷 / 合不了模型名): %s",
+                run_id,
+                exc,
+                exc_info=True,
+            )
+            return None
+
+    def _cost_of(self, facts: RunFacts, run: Run | None) -> RunCost:
         """这一次运行花了多少钱 (按这一版价目表 + 它的开始时刻算).
 
-        开始时刻**从运行行里读** (`created_at`) —— 不放在内存里: 判峰谷看的是那
-        一刻, 而「哪一行、什么时候开始的」本来就记在库里. 记在内存里会多出一个
-        说不清的依赖: 同一行被**另一个记录员实例**收尾时 (挂起补做 / 对账补齐 /
-        换了个进程), 内存里那份是空的, 峰谷部署下金额就会静默留空.
+        开始时刻**从运行行里读** (`created_at`, 由调用方读好递进来) —— 不放在内存
+        里: 判峰谷看的是那一刻, 而「哪一行、什么时候开始的」本来就记在库里. 记在
+        内存里会多出一个说不清的依赖: 同一行被**另一个记录员实例**收尾时 (挂起补做
+        / 对账补齐 / 换了个进程), 内存里那份是空的, 峰谷部署下金额就会静默留空.
 
         Args:
-            facts: 这一次运行的账目 (五列用量 + 模型名).
-            run_id: 哪一行 (开始时刻与它绑在一起).
+            facts: 这一次运行的账目 (五列用量 + 模型名, 模型名已经合过 —— 见
+                `_merged_model`).
+            run: 那一行的内容; None (没开账 / 读不到) 判不了峰谷 -> `NO_MOMENT`.
 
         Returns:
-            RunCost: 金额与算式, 或者算不出来的原因 (读不到那一行 -> `NO_MOMENT`).
+            RunCost: 金额与算式, 或者算不出来的原因.
         """
-        run = await self._runs.get(run_id)
         return cost_of(
             model=facts.model,
             table=self._prices,
@@ -784,6 +830,7 @@ class ConversationRecorder:
                     # 清掉. 明细两种情形都写: 它是「这笔钱怎么来的」或「为什么没有」
                     total_cost=settlement.cost.total if settlement.cost.known else None,
                     total_cost_detail=settlement.cost.to_detail(),
+                    void_cost=settlement.void_cost,
                 )
             # 消息行带上 run_id: 它们确实属于这次执行 —— 审计时「这几条是哪一次
             # 问答产生的」靠它 (列注释: NULL 表示不是 agent 跑出来的)
