@@ -220,6 +220,36 @@ def test_a_phone_number_in_the_message_is_masked(log_stream: io.StringIO) -> Non
     assert PHONE not in log_stream.getvalue()
 
 
+def test_uvicorns_color_message_never_becomes_a_field(log_stream: io.StringIO) -> None:
+    """uvicorn 塞的 `color_message` 不进结构化字段 (两边都不进).
+
+    它是 uvicorn 给自己那行**彩色**输出用的模板串, 正文与我们写出去那句逐字同义 ——
+    留着的唯一后果是启动时满屏一个重复字段 (2026-10-05 用户报的). 排它的地方只有一处
+    (`record.IGNORED_EXTRAS`: 「哪些键算字段」的权威), 于是 JSON 与纯文本两档一起干净.
+    """
+    get_logger("tests.noise").info(
+        "Uvicorn running on http://127.0.0.1:8011",
+        extra={"color_message": "Uvicorn running on \u001b[1m%s\u001b[0m"},
+    )
+
+    written = lines_of(log_stream)[0]
+
+    assert "color_message" not in written
+    assert written["msg"].startswith("Uvicorn running on")
+
+
+def test_the_same_record_stays_clean_in_plain_text() -> None:
+    """纯文本那一档同样不带噪音键 (两档是「看的方式不同」, 不是「记的内容不同」)."""
+    stream = io.StringIO()
+    with logging_to(stream, redactor=REDACTOR, json=False):
+        get_logger("tests.noise").info("起服务了", extra={"color_message": "x"})
+
+    written = stream.getvalue()
+
+    assert "color_message" not in written
+    assert "起服务了" in written
+
+
 def test_a_declared_extra_field_is_masked(log_stream: io.StringIO) -> None:
     """落点二: `extra=` 传进来的结构字段**按声明**打 (主手段)."""
     get_logger("tests.redact").info(

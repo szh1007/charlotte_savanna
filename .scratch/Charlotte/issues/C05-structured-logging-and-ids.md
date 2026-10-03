@@ -56,6 +56,19 @@ class RedactFilter(logging.Filter):        # 顺序是关键
 
 对照：`project/rag_text2sql` 里 `main.py:19` 把 `request_id` **写死成 `"charlotte"`**，于是 HTTP 链路上所有请求是同一个 id，"链路追踪"是空的 —— 那正是本片要避免的形态。
 
+## 三·补：uvicorn 的 `color_message` 排掉（2026-10-05）
+
+用户报的：启动 charapp 时每行 uvicorn 日志多一个 `color_message` 字段。它是 uvicorn
+给自己那行**彩色**输出用的模板串，正文与写出去那句 `msg` 逐字同义 —— 在我们的 JSON 里
+只是一份重复。
+
+排它的地方只有一处：`structured_logging/record.py` 的 `IGNORED_EXTRAS`（「哪些键算
+结构化字段」的权威，JSON 与纯文本两档共用那条判定）。进那张表要满足两条：不是那条消息
+本身、我们没有任何地方读它 —— 宁可多看一个字段，也不凭感觉把真信息丢掉。
+
+真机复验：起一个实例，启动那几行里 `color_message` 出现 **0** 次，而
+`msg: "Uvicorn running on http://127.0.0.1:8012 (Press CTRL+C to quit)"` 一字不少 ✓。
+
 ## 四、验收
 
 - [x] 构造一条**含手机号的框架异常**（不是业务异常），落盘日志里搜不到原文，但能搜到打码后的形状
