@@ -68,7 +68,7 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, time
 from decimal import ROUND_HALF_UP, Decimal
@@ -255,6 +255,28 @@ def _is_workday(day: Any) -> bool | CostGap:
 
 
 @dataclass(frozen=True, slots=True)
+class ModelUsage:
+    """一个模型在一趟运行里产出的用量 (difficulties #14 拆账那一路的输入).
+
+    为什么单独一个类型 (而不是把四个数摊成参数): 它回答的是「这一份用量是**谁**产出的」
+    —— 模型名与那几列永远一起走, 拆开就失去了意义. 字段与 `cost_of` 要的那几列同名,
+    于是峰谷判定、缺档推导那几条规矩一个不差地复用 (见 `_cost_of_one`).
+
+    attributes:
+        model: 哪个模型 (价目表的键).
+        input_tokens: 输入总量; 只用来补算缺的那一档缓存分量.
+        output_tokens / cache_hit_tokens / cache_miss_tokens: 三档用量; None =
+            上游一次都没上报过这一档 (与 0 是两回事).
+    """
+
+    model: str
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_hit_tokens: int | None = None
+    cache_miss_tokens: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class CostLine:
     """某一档的用量与金额 (单价随行, 好让展示层把算式原样写出来).
 
@@ -263,12 +285,20 @@ class CostLine:
         tokens: 这一档的 token 数.
         price: 每百万 token 的单价.
         amount: `tokens x price / 百万`, 已量化到 6 位小数.
+        model: 这一档是哪个模型产出的; None = 这一趟只用一个模型 (运行行上写着它).
+            一趟里换过家 (difficulties #14) 时每一行都带着归属 —— 明细里因此看得出
+            「这笔钱是两家各花各的」.
+        derived: 这一档的用量是**用输入总量减出来的** (上游没报这一档, 见
+            `_fill_missing_tier`). 按行记而不是只记在那份整体口径里: 拆账之后两家
+            可能只有一家需要推导, 而「推出来的」这件事必须落在具体那一行上.
     """
 
     tier: str
     tokens: int
     price: Decimal
     amount: Decimal
+    model: str | None = None
+    derived: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -309,7 +339,11 @@ class RunCost:
 
     @property
     def line_of(self) -> Mapping[str, CostLine]:
-        """按档名取明细 (展示层按档名找)."""
+        """按档名取明细 (单模型那条路的展示层按档名找).
+
+        一趟用过不止一个模型时, 同一个档名会出现多行 (每家一行) —— 这个映射只留
+        **最后一行**. 那种情形请直接读 `lines` (每行带着 `model`), 见 `cost_of_split`.
+        """
         return {line.tier: line for line in self.lines}
 
     def to_detail(self) -> dict[str, Any]:
@@ -342,12 +376,16 @@ class RunCost:
             "tier": self.tier,
             "total": str(self.total),
             "derived": list(self.derived),
+            # 每行只写**有值**的那两个新键 (model / derived): 一串 false 与 null 会让
+            # 读的人分不清「没有」与「没记」, 而单模型那些行的形状因此一字未变
             "lines": [
                 {
                     "tier": line.tier,
                     "tokens": line.tokens,
                     "price": str(line.price),
                     "amount": str(line.amount),
+                    **({"model": line.model} if line.model else {}),
+                    **({"derived": True} if line.derived else {}),
                 }
                 for line in self.lines
             ],
@@ -375,16 +413,28 @@ class RunCost:
             return RunCost(gap=CostGap.UNKNOWN_DETAIL)
         try:
             if detail.get("kind") == "cost":
+                derived_columns = tuple(detail.get("derived") or ())
                 return cls(
                     tier=detail.get("tier"),
                     total=Decimal(str(detail["total"])),
-                    derived=tuple(detail.get("derived") or ()),
+                    derived=derived_columns,
                     lines=tuple(
                         CostLine(
                             tier=str(item["tier"]),
                             tokens=int(item["tokens"]),
                             price=Decimal(str(item["price"])),
                             amount=Decimal(str(item["amount"])),
+                            # 两个新键都是后加的 (difficulties #14): 老行里没有 ——
+                            # `model` 缺了本来就是 None (单模型那趟它就该是 None);
+                            # `derived` 缺了则回退到那一行整体的口径 (从前只有它),
+                            # 于是老行读出来的样子与当年屏幕上的一模一样
+                            model=item.get("model"),
+                            derived=(
+                                bool(item["derived"])
+                                if "derived" in item
+                                else _COMPONENT_OF_TIER[str(item["tier"])]
+                                in tuple(derived_columns)
+                            ),
                         )
                         for item in detail.get("lines") or ()
                     ),
@@ -529,6 +579,43 @@ def cost_of(
 ) -> RunCost:
     """一次运行的用量 + 开始时刻 + 模型名 -> 金额 (含「为什么算不出来」).
 
+    一趟只用了一个模型时走这里 (常见情形); 一趟里换过家 (`主+备`) 走
+    `cost_of_split` —— 那条路按名各算各的再相加, 见它的说明.
+
+    内核是 `_cost_of_one`; 这一层只多一件事: **存不下的金额如实报「存不下」**
+    (三档都小于 1e-6 那个最小刻度时, 写进去的 0 会被读成「真的没花钱」).
+    """
+    cost = _cost_of_one(
+        model,
+        table=table,
+        moment=moment,
+        input_tokens=input_tokens,
+        cache_miss_tokens=cache_miss_tokens,
+        cache_hit_tokens=cache_hit_tokens,
+        output_tokens=output_tokens,
+    )
+    if cost.known and _too_small(cost.lines):
+        return RunCost(gap=CostGap.TOO_SMALL, model=model, tier=cost.tier)
+    return cost
+
+
+def _cost_of_one(
+    model: str | None,
+    *,
+    table: PriceTable,
+    moment: datetime | None,
+    input_tokens: int | None,
+    cache_miss_tokens: int | None,
+    cache_hit_tokens: int | None,
+    output_tokens: int | None,
+) -> RunCost:
+    """**一个**模型的用量 + 开始时刻 + 名字 -> 金额 (含「为什么算不出来」).
+
+    单模型那条路 (`cost_of`) 与拆账那条路 (`cost_of_split`) 共用的内核: 查价、判峰谷、
+    推缺档、逐档算钱 —— 两条路的分歧只在「一份用量」还是「几份用量相加」, 那点差异
+    留给调用方, 免得同一套规矩写两遍.
+
+
     **收 `input_tokens` 却不拿它定价**: 定价只看三档, 但输入总量是拆分的一份佐证
     —— 上游没报「未命中」那一档时 (OpenAI 系只给 `prompt_tokens_details.cached_tokens`,
     不给未命中数), 未命中 = 输入总量 - 命中. 两个数都是上游报的, 减出来的那一档
@@ -585,8 +672,8 @@ def cost_of(
     if missing:
         return RunCost(gap=CostGap.NO_TOKENS, missing=missing, model=model, tier=tier)
 
-    lines = tuple(_line(name, tokens[name], getattr(prices, name)) for name in _TIERS)
-    # 哪几档是减出来的 (原来那一列是空的) —— 展示层要据此标明来路
+    # 哪几档是减出来的 (原来那一列是空的) —— 展示层要据此标明来路; 按行记一份
+    # (拆账时两家可能只有一家要推导), 另按整体记一份 (老读者读的那份口径)
     derived = tuple(
         name
         for name, reported, filled in (
@@ -595,24 +682,102 @@ def cost_of(
         )
         if reported is None and filled is not None
     )
-    total = sum((line.amount for line in lines), Decimal(0))
-    if total == 0:
-        # 三档的**原始**金额加起来还是正数, 但每档都小于 1e-6 (这一列的最小刻度):
-        # 写进去就是 0.000000 —— 而 0 在这一列里的意思是「真的没花钱」, 那是撒谎.
-        # 金额小到这种程度的运行现实中不会出现 (几个 token 也值 1e-7 以上), 但
-        # 「算不出来」与「算出来是零」必须分得开, 所以这里如实报「存不下」
-        raw = sum(
-            (Decimal(tokens[name]) * getattr(prices, name) for name in _TIERS),
-            Decimal(0),
+    lines = tuple(
+        _line(
+            name,
+            tokens[name],
+            getattr(prices, name),
+            model=model,
+            derived=_COMPONENT_OF_TIER[name] in derived,
         )
-        if raw > 0:
-            return RunCost(gap=CostGap.TOO_SMALL, model=model, tier=tier)
+        for name in _TIERS
+    )
     return RunCost(
         tier=tier,
         lines=lines,
-        total=total,
+        total=sum((line.amount for line in lines), Decimal(0)),
         derived=derived,
         model=model,
+    )
+
+
+def _too_small(lines: Sequence[CostLine]) -> bool:
+    """三档都小于 1e-6 这一列的最小刻度吗 (量化后合计为零、原始值却是正的).
+
+    「算不出来」与「算出来是零」必须分得开: 写进去的 0 在那列里的意思是「真的没花
+    钱」, 而这里是「存不下」. 金额小到这种程度的运行现实中不会出现 (几个 token 也值
+    1e-7 以上), 但两件事不该因为少见就混成一个值. 单模型与拆账两条路共用这一条判据
+    (拆账那条判的是**合计**, 某一家自己小到存不下但合计存得下 —— 那就照存).
+    """
+    if sum((line.amount for line in lines), Decimal(0)) != 0:
+        return False
+    raw = sum((Decimal(line.tokens) * line.price for line in lines), Decimal(0))
+    return raw > 0
+
+
+def cost_of_split(
+    usages: Sequence[ModelUsage],
+    *,
+    table: PriceTable,
+    moment: datetime | None,
+    name: str | None = None,
+) -> RunCost:
+    """一趟运行用过不止一个模型: 按名各算各的, 再相加 (difficulties #14).
+
+    「谁服务谁记」在一趟里换过家时的**完整版**: 光记一个组合名 (`主+备`) 是事实,
+    但它算不出钱 —— 按任何一家的单价乘整趟用量都是错数. 这里按「每一次响应是哪家
+    答的」把用量拆开 (调用方给的这几份, 见 `ModelUsage`), 各查各的价、各算各的,
+    最后相加: 金额是几笔之和, 明细里每一行都带着它属于谁.
+
+    两处与单模型那条路刻意保持一致: **峰谷按运行开始那一刻判** (那是运行的属性,
+    与哪一家无关); **缺档推导按各家自己的输入总量推** (上游报什么各家不可能一样).
+
+    Args:
+        usages: 逐模型的用量 (至少两份 —— 只有一份就别走这条路, 直接 `cost_of`).
+        table: 价目表.
+        moment: 这次运行的开始时刻 (判峰谷的输入).
+        name: 运行行上记的那个名字 (组合名); 算得出来时跟着结果一起记, 算不出来时
+            跟着原因一起记 —— 明细里因此看得到「这一趟是几家一起跑的」.
+
+    Returns:
+        RunCost: 算得出来 -> 金额 = 各家之和, 明细逐行带模型; 任何**一家**算不出来
+        就整趟算不出来, 报的是那一家与它的原因 (报一半的钱比报不出来更糟).
+    """
+    parts = [
+        _cost_of_one(
+            usage.model,
+            table=table,
+            moment=moment,
+            input_tokens=usage.input_tokens,
+            cache_miss_tokens=usage.cache_miss_tokens,
+            cache_hit_tokens=usage.cache_hit_tokens,
+            output_tokens=usage.output_tokens,
+        )
+        for usage in usages
+    ]
+    for part in parts:
+        if not part.known:
+            # 报那一家的原因 (明细里那个 `model` 就是它) —— 定位到「谁的价没配」
+            # 比笼统说一句「这一趟算不出来」有用得多
+            return part
+
+    lines = tuple(line for part in parts for line in part.lines)
+    tiers = {part.tier for part in parts}
+    tier = tiers.pop() if len(tiers) == 1 else None
+    if _too_small(lines):
+        return RunCost(gap=CostGap.TOO_SMALL, model=name, tier=tier)
+    return RunCost(
+        tier=tier,
+        lines=lines,
+        total=sum((line.amount for line in lines), Decimal(0)),
+        # 整体口径: 只要**有一家**的这一档是推出来的就标上 (展示层按行读的那份
+        # 更细, 这个只给老读者)
+        derived=tuple(
+            _COMPONENT_OF_TIER[item]
+            for item in _TIERS
+            if any(line.derived for line in lines if line.tier == item)
+        ),
+        model=name,
     )
 
 
@@ -684,7 +849,10 @@ def _fill_missing_tier(
 ) -> int | None:
     """补齐输入侧缺的那一档缓存分量 (`wanted = total - other`), 补不出来给 None.
 
-    只在**真的缺**的时候补, 且只在两个减数都拿得到的时候补:
+    只在**真的缺**的时候补, 且只在两个减数都拿得到的时候补. 顺带一提: **新响应
+    在解析层就已经补好了** (`model/parse.py` 的 `_derive_cache_miss`, 2026-10-05 起) ——
+    这里的推导是**老数据与非常规来源的兜底** (迁移之前落的行 / 别人塞进来的 Usage),
+    两条路对同一份数据给出同一个数:
 
     - 上游报了 `input_tokens` 与另一档缓存分量时, 这一档就是它们的差 —— 上游自己
       的数字就满足这条 (实测五组样本都是 `命中 + 未命中 = 输入`).
@@ -701,16 +869,30 @@ def _fill_missing_tier(
     return derived if derived >= 0 else None
 
 
-def _line(tier: str, tokens: int, price: Decimal) -> CostLine:
+def _line(
+    tier: str,
+    tokens: int,
+    price: Decimal,
+    *,
+    model: str | None = None,
+    derived: bool = False,
+) -> CostLine:
     """一档的用量与单价 -> 金额 (量化到 6 位, 与那一列同标度).
 
     Returns:
-        CostLine: 这一档的用量 / 单价 / 金额.
+        CostLine: 这一档的用量 / 单价 / 金额 (+ 它属于谁、是不是推出来的).
     """
     amount = (Decimal(tokens) * price / TOKENS_PER_PRICE_UNIT).quantize(
         _AMOUNT_SCALE, rounding=ROUND_HALF_UP
     )
-    return CostLine(tier=tier, tokens=tokens, price=price, amount=amount)
+    return CostLine(
+        tier=tier,
+        tokens=tokens,
+        price=price,
+        amount=amount,
+        model=model,
+        derived=derived,
+    )
 
 
 # ---------------------------------------------------------------------------

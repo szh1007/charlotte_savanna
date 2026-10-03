@@ -12,7 +12,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -90,6 +90,9 @@ class RunsRepository(PgRepository):
             # 还要按当时那版价目表算) —— 建行时写 0 会把「还没算」说成「没花钱」
             total_cost=None,
             total_cost_detail=None,
+            # 逐模型用量同理: 建行时一次模型调用都还没发生 (NULL = 没有可归因的,
+            # 与「空列表 = 确认过一家都没产出」不是一回事)
+            usage_by_model=None,
             turn_count=0,
             error=None,
             last_checkpoint_id=last_checkpoint_id,
@@ -129,6 +132,7 @@ class RunsRepository(PgRepository):
         total_cost: Decimal | None = None,
         total_cost_detail: Mapping[str, Any] | None = None,
         void_cost: bool = False,
+        usage_by_model: Sequence[Mapping[str, Any]] | None = None,
         moment: datetime | None = None,
     ) -> bool:
         """把这一段运行的**结局**写到 `add` 建的那一行上 (账目一起写上).
@@ -174,6 +178,11 @@ class RunsRepository(PgRepository):
                 ② 给了值就按**当前列重算并覆盖** —— 用量那五列是累计值, 重算出来
                 的就是那一刻的总额 (比如挂起补做之后接着跑, 金额跟着新用量涨).
                 「重算」不是「累加」: 累加会把前面那段算两次.
+            usage_by_model: 逐模型用量 (difficulties #14 的拆账依据, 见 db/schema.py
+                那一列的注释). 口径与金额那两列**不同**, 别混: 它是**整份覆盖** ——
+                记录员把「列上那份 + 本段那份」合并好之后整份交进来, 给了就写.
+                给 None = 这一列不动 (与金额 ① 同一条规矩). 只在归并结果与运行行那
+                几列**对得上**时才给: 写一半进去会让下一段在脏数据上继续合.
                 挂起那一段照样算钱: 钱确实花了 (那一轮真问过模型), 恢复那一段收尾时
                 会按累计用量重算一遍, 两笔都对得上.
                 ③ **`void_cost=True` = 把已有的金额作废** (金额置 NULL, 明细换成这次
@@ -220,6 +229,9 @@ class RunsRepository(PgRepository):
             values["finished_at"] = stamp
         if last_checkpoint_id is not None:
             values["last_checkpoint_id"] = last_checkpoint_id
+        if usage_by_model is not None:
+            # 整份覆盖 (见 Args): 记录员交进来的是合并后的完整快照, 不是本段增量
+            values["usage_by_model"] = list(usage_by_model)
         if total_cost is not None:
             # 算得出来: 金额与明细**一起**写 (明细说的是这笔钱怎么来的)
             values["total_cost"] = total_cost
@@ -359,6 +371,7 @@ class RunsRepository(PgRepository):
             "cache_miss_tokens": run.cache_miss_tokens,
             "total_cost": run.total_cost,
             "total_cost_detail": run.total_cost_detail,
+            "usage_by_model": run.usage_by_model,
             "turn_count": run.turn_count,
             "error": run.error,
             "last_checkpoint_id": run.last_checkpoint_id,

@@ -100,6 +100,19 @@ def parse_usage(data: Mapping[str, Any] | None) -> Usage | None:
     completion_tokens_details 下 (顶层无该字段); 缓存命中优先取顶层
     prompt_cache_hit_tokens, 缺失时回退 prompt_tokens_details.cached_tokens
     (官方声明两者同值).
+
+    **未命中那一档在源头补齐** (2026-10-05 真机发现): OpenAI 系只报命中
+    (`prompt_tokens_details.cached_tokens`), 不报未命中数 —— 拿上游给的两个数做一次
+    减法就有了 (`未命中 = 输入总量 - 命中`). 补在**这里**而不是等到算钱那一步, 是为了
+    让下游只看得到一份完整的账: 逐轮累加 (`accumulate_usage` -> 运行行那五列)、
+    `runs.usage_by_model`、金额折算三处本来都要各自面对「这一档缺了怎么办」, 而历史上
+    只有金额那一步会推 —— 推完钱是对的, 入库的数字却少了这一档, 于是真机上出现了
+    「输入 7468 / 未命中 1000 / 命中 6233」(1000 + 6233 != 7468) 这种行: 金额按 1235
+    收费, 账上只记了一半. 一份数据一处补齐, 后面谁都不必再猜.
+
+    **推不出来就不补** (缺输入总量 / 缺命中 / 差是负数): None 仍是「上游没报」的意思,
+    与 0 (报过、值就是零) 是两回事. 算钱那一步 (`db/cost.py` 的 `_fill_missing_tier`)
+    保留同样的推导, 作为**老数据与非常规来源的兜底** —— 两条路对同一份数据给出同一个数.
     """
     if not data:
         return None
@@ -107,14 +120,30 @@ def parse_usage(data: Mapping[str, Any] | None) -> Usage | None:
     cache_hit = data.get("prompt_cache_hit_tokens")
     if cache_hit is None:
         cache_hit = _as_mapping(data.get("prompt_tokens_details")).get("cached_tokens")
+    miss = data.get("prompt_cache_miss_tokens")
+    if miss is None:
+        miss = _derive_cache_miss(data.get("prompt_tokens"), cache_hit)
     return Usage(
         input_tokens=data.get("prompt_tokens"),
         output_tokens=data.get("completion_tokens"),
         total_tokens=data.get("total_tokens"),
         reasoning_tokens=completion_details.get("reasoning_tokens"),
         cache_hit_tokens=cache_hit,
-        cache_miss_tokens=data.get("prompt_cache_miss_tokens"),
+        cache_miss_tokens=miss,
     )
+
+
+def _derive_cache_miss(input_tokens: object, cache_hit: object) -> int | None:
+    """未命中 = 输入总量 - 命中; 两个数都是整数且差不负才补 (补不出来给 None).
+
+    类型也在这里挡一下: 这两个值来自上游 JSON, 拿字符串做减法会抛 `TypeError` ——
+    解析层不该因为一个畸形的 usage 就炸掉整次响应 (同 `_as_mapping` 那条态度).
+    """
+    for value in (input_tokens, cache_hit):
+        if isinstance(value, bool) or not isinstance(value, int):
+            return None
+    derived = input_tokens - cache_hit
+    return derived if derived >= 0 else None
 
 
 def parse_tool_calls(items: Any) -> list[ModelToolCall]:

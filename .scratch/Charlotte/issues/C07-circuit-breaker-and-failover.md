@@ -65,7 +65,7 @@
 - [x] 探测成功 → 关闭；探测失败 → 回打开
       —— `test_a_successful_probe_hands_the_traffic_back_to_the_primary` / `test_a_failed_probe_reopens_the_breaker_and_switches_again`
 - [x] failover：主模型打开后，后续调用走备份模型；`runs` 里记的是**实际模型**与对应的单价
-      —— `client/session.py` 每段运行开一本服务台账，收尾写 `runs.model`（`test_a_failed_over_run_tells_the_recorder_the_model_that_answered`）；价目表按模型名查，于是金额自动按备份的单价算。一趟里两家都用过（含 HITL 两段分属两家）记组合名、金额留空并作废旧金额（`test_a_run_served_by_two_models_is_recorded_as_both_names` 等三条）
+      —— `client/session.py` 每段运行开一本服务台账，收尾写 `runs.model`（`test_a_failed_over_run_tells_the_recorder_the_model_that_answered`）；价目表按模型名查，于是金额自动按备份的单价算。一趟里两家都用过记组合名（C23 起段内那趟**按各家分别算再相加**，见那张票；只有 HITL 跨段那一路仍金额留空并作废旧金额）
 - [x] 时间源可注入 → 测试零真实等待
       —— `time_source` 注入缝（`FakeClock`），与 #13 同一套惯例
 - [x] `agent/loop.py` **零改动**（与 L1a 的同款纪律：加一层能力不需要动循环核心）

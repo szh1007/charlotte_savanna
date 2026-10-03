@@ -493,6 +493,50 @@ async def test_the_switch_is_announced(log_stream) -> None:
     assert BACKUP in written
 
 
+async def test_the_response_says_which_model_answered() -> None:
+    """谁答的话盖在响应上 (difficulties #14 拆账的依据).
+
+    记录员拿到的只有 `LoopResult`, 而逐轮记录里就是这份响应 —— 一趟里换过家时, 它
+    按这个字段把每一轮的用量归到各家头上. 盖的是**我们配的那家** (价目表的键),
+    不是上游回显的那个: 回显说的是上游自己是谁 (还可能带版本号).
+    """
+    primary = _FakeModel(PRIMARY)
+    backup = _FakeModel(BACKUP)
+    model = _failover(FakeClock(), primary, backup)
+
+    assert (await model.generate(MESSAGES)).model == PRIMARY
+
+    switched = _failover(FakeClock(), _FakeModel(PRIMARY, then=_boom()), backup)
+    await _fails(switched)
+    await _fails(switched)
+
+    assert (await switched.generate(MESSAGES)).model == BACKUP, "跳闸那一跳是备份答的"
+
+
+async def test_the_stamp_is_our_name_not_the_upstream_echo() -> None:
+    """上游回显一个别的名字 (代理常带版本号): 盖上去的仍是我们配的那个."""
+
+    class _EchoingModel:
+        """回显与配置不同的模型名的适配器替身."""
+
+        def __init__(self) -> None:
+            self.model = "gpt-6-luna"  # 我们配的 (价目表的键)
+
+        async def generate(self, *args: object, **kwargs: object) -> ModelResponse:
+            return ModelResponse(
+                content="好的",
+                finish_reason=FinishReason.STOP,
+                model="gpt-6-luna-2026-09-01",  # 上游说的那个
+            )
+
+        async def aclose(self) -> None:
+            """关闭连接 (替身没有连接可关)."""
+
+    model = FailoverChatModel(_EchoingModel())
+
+    assert (await model.generate(MESSAGES)).model == "gpt-6-luna"
+
+
 async def test_the_parameters_are_passed_through_unchanged() -> None:
     """包装不吞不改任何采样参数 (#68): 主备哪一侧收到的都是同一份."""
     clock = FakeClock()

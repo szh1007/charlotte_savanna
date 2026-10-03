@@ -283,6 +283,89 @@ def test_amount_line_shows_the_total_and_its_three_tier_math():
     )
 
 
+def test_a_run_that_switched_models_prints_one_formula_per_model():
+    """一趟用过两家: 算式**每家一行** (difficulties #14) —— 不然后面那家的用量会被
+    人按前面那家的单价验算, 得出一个与金额不同的数.
+
+    金额仍是合计 (两家之和), 明细里每一行记着它属于谁.
+    """
+    text = render(
+        run=make_run(
+            model="deepseek-flash+gpt-6-luna",
+            total_cost=Decimal("0.008110"),
+            total_cost_detail={
+                "kind": "cost",
+                "tier": None,
+                "total": "0.008110",
+                "derived": [],
+                "lines": [
+                    {
+                        "tier": "cache_miss",
+                        "tokens": 1000,
+                        "price": "2",
+                        "amount": "0.002000",
+                        "model": "deepseek-flash",
+                    },
+                    {
+                        "tier": "output",
+                        "tokens": 200,
+                        "price": "8",
+                        "amount": "0.001600",
+                        "model": "deepseek-flash",
+                    },
+                    {
+                        "tier": "cache_miss",
+                        "tokens": 2000,
+                        "price": "1",
+                        "amount": "0.002000",
+                        "model": "gpt-6-luna",
+                    },
+                    {
+                        "tier": "output",
+                        "tokens": 500,
+                        "price": "5",
+                        "amount": "0.002500",
+                        "model": "gpt-6-luna",
+                    },
+                ],
+            },
+        )
+    )
+
+    # 金额那一位按数值显示 (末尾的 0 不留), 断言的是「没有档位后缀」这件事
+    assert line_of(text, "金额") == "  金额 ¥0.00811", "两家档位不同 -> 顶栏不写档位"
+    assert "    └ deepseek-flash: cache_miss 1000 x ¥2/M + output 200 x ¥8/M" in text
+    assert "      gpt-6-luna: cache_miss 2000 x ¥1/M + output 500 x ¥5/M" in text
+
+
+def test_a_derived_tier_is_marked_on_its_own_line():
+    """「推出来的那一档」标在**那一行**上 (拆账之后两家可能只有一家要推)."""
+    text = render(
+        run=make_run(
+            total_cost=Decimal("0.001"),
+            total_cost_detail={
+                "kind": "cost",
+                "tier": None,
+                "total": "0.001",
+                "derived": ["cache_miss_tokens"],
+                "lines": [
+                    # 老行没有 per-line 的 derived: 回退到那一行整体口径
+                    {
+                        "tier": "cache_miss",
+                        "tokens": 400,
+                        "price": "2",
+                        "amount": "0.0008",
+                    },
+                    {"tier": "output", "tokens": 20, "price": "8", "amount": "0.00016"},
+                ],
+            },
+        )
+    )
+
+    assert "cache_miss 400 x ¥2/M (推自 input)" in text
+    assert "output 20 x ¥8/M (推自 input)" not in text
+
+
 def test_the_amount_comes_from_the_row_not_a_recomputation():
     """金额取库里那一列, **不按用量重算** —— 这条是本片改判的正面证据.
 

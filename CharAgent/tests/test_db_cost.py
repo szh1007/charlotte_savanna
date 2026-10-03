@@ -31,10 +31,12 @@ import pytest
 from CharAgent.db.cost import (
     ENV_MODEL_PRICES,
     CostGap,
+    ModelUsage,
     PeakRule,
     PriceTable,
     RunCost,
     cost_of,
+    cost_of_split,
     ensure_pricing_ready,
 )
 from CharAgent.db.errors import DataConfigError, PricingNotReadyError
@@ -99,6 +101,28 @@ def flat() -> PriceTable:
 def split() -> PriceTable:
     """峰谷两套那张表."""
     return PriceTable.from_json(SPLIT_JSON)
+
+
+# 两家都在表里的一张价目表 (difficulties #14 的拆账那一路用): 主 `m` 沿用峰谷两套
+# (峰 2 / 0.04 / 8), 备 `b` 是另一家 —— 全天一价 1 / 0.1 / 5
+TWO_MODEL_JSON = json.dumps(
+    {
+        "timezone": "Asia/Shanghai",
+        "peak_windows": [["09:00", "12:00"], ["14:00", "18:00"]],
+        "models": {
+            "m": {
+                "peak": {"cache_miss": 2, "cache_hit": 0.04, "output": 8},
+                "valley": {"cache_miss": 1, "cache_hit": 0.02, "output": 4},
+            },
+            "b": {"cache_miss": 1, "cache_hit": 0.1, "output": 5},
+        },
+    }
+)
+
+
+def two_model_table() -> PriceTable:
+    """两家都在表里那张 (主 `m` 分峰谷, 备 `b` 全天一价)."""
+    return PriceTable.from_json(TWO_MODEL_JSON)
 
 
 # ---------------------------------------------------------------------------
@@ -867,3 +891,142 @@ def test_timezone_aware_naive_comparison_does_not_explode():
     aware = datetime(2026, 9, 21, 10, 0, tzinfo=timezone(timedelta(hours=8)))
 
     assert split().rule.tier_at(aware).tier == "peak"
+
+
+# ---------------------------------------------------------------------------
+# 一趟用过不止一个模型: 按名各算各的, 再相加 (difficulties #14)
+# ---------------------------------------------------------------------------
+
+
+def test_a_split_run_is_priced_per_model_and_summed():
+    """两家各乘各的单价, 合计是两笔之和 —— 而明细里每一行都带着归属."""
+    cost = cost_of_split(
+        [
+            ModelUsage(
+                model="m",
+                input_tokens=1000,
+                cache_miss_tokens=1000,
+                cache_hit_tokens=0,
+                output_tokens=200,
+            ),
+            ModelUsage(
+                model="b",
+                input_tokens=2100,
+                cache_miss_tokens=2000,
+                cache_hit_tokens=100,
+                output_tokens=500,
+            ),
+        ],
+        table=two_model_table(),
+        moment=bj("2026-09-21 10:00"),  # 周一 10:00 = 峰: 主按峰价, 备不分峰谷
+        name="m+b",
+    )
+
+    # 主 (峰): 1000 x 2 + 0 x 0.04 + 200 x 8 = 0.0036; 备: 2000 x 1 + 100 x 0.1
+    # + 500 x 5 = 0.00451 —— 拿整趟用量乘任何一家的单价都不是这个数
+    assert cost.total == Decimal("0.008110")
+    assert [(line.model, line.tier, str(line.amount)) for line in cost.lines] == [
+        ("m", "cache_miss", "0.002000"),
+        ("m", "cache_hit", "0.000000"),
+        ("m", "output", "0.001600"),
+        ("b", "cache_miss", "0.002000"),
+        ("b", "cache_hit", "0.000010"),
+        ("b", "output", "0.002500"),
+    ]
+    assert cost.model == "m+b", "运行行那个组合名跟着结果一起记"
+    assert cost.tier is None, "两家档位不同 (一家分峰谷一家不分) -> 顶栏不硬写一个"
+
+
+def test_one_unpriced_model_makes_the_whole_run_unpriced():
+    """有一家没配价: 整趟算不出来, 报的是**那一家** (定位到「谁的价没配」)."""
+    cost = cost_of_split(
+        [
+            ModelUsage(
+                model="m", input_tokens=1000, cache_miss_tokens=1000, output_tokens=200
+            ),
+            ModelUsage(
+                model="没配价的",
+                input_tokens=100,
+                cache_miss_tokens=100,
+                output_tokens=10,
+            ),
+        ],
+        table=two_model_table(),
+        moment=bj("2026-09-21 10:00"),
+        name="m+没配价的",
+    )
+
+    assert cost.gap is CostGap.NO_PRICE
+    assert cost.model == "没配价的", "报的是那一家, 不是整趟的组合名"
+    assert cost.total is None, "报一半的钱比报不出来更糟"
+
+
+def test_a_split_uses_each_models_own_input_total_for_the_missing_tier():
+    """缺档推导按各家自己的输入总量推 (上游报什么, 各家不可能一样)."""
+    cost = cost_of_split(
+        [
+            # 主: 上游只报了输入总量与命中 (未命中靠减)
+            ModelUsage(
+                model="m", input_tokens=1000, cache_hit_tokens=400, output_tokens=100
+            ),
+            # 备: 未命中直接报了, 命中靠减
+            ModelUsage(
+                model="b", input_tokens=800, cache_miss_tokens=800, output_tokens=100
+            ),
+        ],
+        table=two_model_table(),
+        moment=bj("2026-09-21 10:00"),
+        name="m+b",
+    )
+
+    by_model_and_tier = {(line.model, line.tier): line for line in cost.lines}
+    assert by_model_and_tier[("m", "cache_miss")].tokens == 600
+    assert by_model_and_tier[("m", "cache_miss")].derived is True, (
+        "减出来的那一档按行标上"
+    )
+    assert by_model_and_tier[("m", "cache_hit")].derived is False
+    assert by_model_and_tier[("b", "cache_hit")].tokens == 0
+    assert by_model_and_tier[("b", "cache_hit")].derived is True
+
+
+def test_a_split_too_small_to_store_is_reported_as_such():
+    """两家各自小到存不下, 合计也存不下 —— 与单模型那条路同一个判据 (报不出 ≠ 报 0)."""
+    # 每家就 1 个命中 token: 命中最便宜 (0.1 与 0.04 每百万), 两家加起来仍小于
+    # 1e-6 (那一位的最小刻度) —— 合计存不下
+    cost = cost_of_split(
+        [
+            ModelUsage(model="m", input_tokens=1, cache_hit_tokens=1, output_tokens=0),
+            ModelUsage(model="b", input_tokens=1, cache_hit_tokens=1, output_tokens=0),
+        ],
+        table=two_model_table(),
+        moment=bj("2026-09-21 10:00"),
+        name="m+b",
+    )
+
+    assert cost.gap is CostGap.TOO_SMALL
+    assert cost.total is None
+
+
+def test_the_split_detail_round_trips_with_the_per_model_keys():
+    """落库的形状与读回来的形状是一对 (带 model / derived 两个新键)."""
+    cost = cost_of_split(
+        [
+            ModelUsage(
+                model="m", input_tokens=1000, cache_miss_tokens=1000, output_tokens=200
+            ),
+            ModelUsage(
+                model="b", input_tokens=1000, cache_miss_tokens=1000, output_tokens=200
+            ),
+        ],
+        table=two_model_table(),
+        moment=bj("2026-09-21 10:00"),
+        name="m+b",
+    )
+
+    back = RunCost.from_detail(cost.to_detail())
+
+    assert back.total == cost.total
+    assert [line.model for line in back.lines] == [line.model for line in cost.lines]
+    assert [line.derived for line in back.lines] == [
+        line.derived for line in cost.lines
+    ]

@@ -93,7 +93,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import Protocol
@@ -112,9 +112,11 @@ from CharAgent.db.conversation import (
 )
 from CharAgent.db.cost import (
     CostGap,
+    ModelUsage,
     PriceTable,
     RunCost,
     cost_of,
+    cost_of_split,
     ensure_pricing_ready,
     load_pricing,
 )
@@ -133,7 +135,7 @@ from CharAgent.db.repositories.tool_calls import (
 )
 from CharAgent.db.state import run_status_for_outcome, tool_call_status_for_outcome
 from CharAgent.model.utils.config import join_model_names
-from CharAgent.model.utils.types import ModelMessage
+from CharAgent.model.utils.types import ModelMessage, Usage
 from CharAgent.prompt import ref_name
 from CharAgent.structured_logging import get_logger
 
@@ -241,6 +243,9 @@ class RunSettlement:
             (模型层熔断切家, difficulties #14) —— 前一段那笔是另一套单价算的, 留着
             比没有更糟 (它看起来像个能对账的数). 作废时这一次本来就算不出来
             (`cost.known` 为假).
+        usage_by_model: 整趟运行的逐模型用量 (**整份覆盖**, 与金额那两列的口径不同);
+            None = 这一列不动. 记录员只在「行上那份 + 本段那份, 合并之后与运行行那
+            几列对得上」时才给 —— 写一半进去会让下一段在脏数据上继续合.
     """
 
     status: RunStatus
@@ -248,6 +253,7 @@ class RunSettlement:
     cost: RunCost
     last_checkpoint_id: str | None = None
     void_cost: bool = False
+    usage_by_model: tuple[ModelUsage, ...] | None = None
 
 
 class RunRecorder(Protocol):
@@ -524,21 +530,39 @@ class ConversationRecorder:
             # 报上来的名字合起来: 两段可能落在**不同的模型**上 (模型层熔断切了家),
             # 后一段直接覆盖的话, 行上写着一个名字、金额却按它的单价算了**整趟**的
             # token (含前一家答的那些) —— 一笔对不上的账. 合出来的组合名 (如 `主+备`)
+            # 是**事实**, 金额则由 `_cost_of` 按逐轮归属分头算 (段内拆得开);
+            # 拆不开那一路 (这一段的轮凑不齐整趟用量) 才留空并作废旧金额
             # 价目表查不到, 于是金额留空并写明原因: 报不出钱, 也不报错钱
             run = await self._run_row(run_id)
             recorded = join_model_names(run.model if run is not None else None, model)
             facts = RunFacts.of(result, model=recorded)
+            # 整趟的逐模型用量 = 行上那一列 (前面几段) + 本段每一轮 —— HITL 续跑的第二段
+            # 手里没有第一段的轮, 于是两半只能在这里合 (difficulties #14).
+            # **合完要对得上运行行那几列才算数**: 对不上说明有一半是缺的 (老行没有
+            # 那一列 / 一段的轮不全), 那就既不算钱也不写回去 —— 写一半进库会让下一段
+            # 在脏数据上继续合, 而那比「这一趟没有金额」糟得多
+            usage = _merged_usage(
+                _usage_from_column(run.usage_by_model if run is not None else None),
+                _usage_by_model(result),
+            )
+            verified = bool(usage) and _matches_run_totals(result, usage)
+            # 只有真的开了账 (`begin` 建出那一行) 才算钱: 没有那一行就没有开始时刻,
+            # 也就判不了峰谷 —— `_write` 会按「没账目」整轮不写
+            cost = self._cost_of(facts, run, usage=usage if verified else ())
             settlement = RunSettlement(
                 status=run_status_for_outcome(result.outcome),
                 facts=facts,
-                # 只有真的开了账 (`begin` 建出那一行) 才算钱: 没有那一行就没有开始
-                # 时刻, 也就判不了峰谷 —— `_write` 会按「没账目」整轮不写
-                cost=self._cost_of(facts, run),
+                cost=cost,
                 # 名字被合过 (两段落在不同模型上) 而那一行上已经有一笔金额: 那笔是
                 # **另一套单价**算的, 得作废 —— 否则行上留下一个看起来能对账的数
                 void_cost=(
-                    run is not None and run.total_cost is not None and recorded != model
+                    run is not None
+                    and run.total_cost is not None
+                    and recorded != model
+                    and not cost.known
                 ),
+                # 验证过的那一份才写 (见上面那段注释)
+                usage_by_model=usage if verified else None,
                 # 本段落的最后一帧: 有了它, 「这次花了多少」与「当时它看到了什么」就
                 # 对到同一件事上 (顺 parent_id 往回走 = 本次运行落的每一帧)
                 last_checkpoint_id=result.last_checkpoint_id,
@@ -713,7 +737,9 @@ class ConversationRecorder:
             )
             return None
 
-    def _cost_of(self, facts: RunFacts, run: Run | None) -> RunCost:
+    def _cost_of(
+        self, facts: RunFacts, run: Run | None, *, usage: Sequence[ModelUsage]
+    ) -> RunCost:
         """这一次运行花了多少钱 (按这一版价目表 + 它的开始时刻算).
 
         开始时刻**从运行行里读** (`created_at`, 由调用方读好递进来) —— 不放在内存
@@ -725,14 +751,26 @@ class ConversationRecorder:
             facts: 这一次运行的账目 (五列用量 + 模型名, 模型名已经合过 —— 见
                 `_merged_model`).
             run: 那一行的内容; None (没开账 / 读不到) 判不了峰谷 -> `NO_MOMENT`.
+            usage: 整趟的逐模型用量 (拆账依据, 见 `_merged_usage`); 空元组 =
+                拆不开 —— 那就按 `facts.model` 那一个名字算.
 
         Returns:
             RunCost: 金额与算式, 或者算不出来的原因.
         """
+        moment = run.created_at if run is not None else None
+        if len(usage) >= 2:
+            # 一趟里换过家: 按各家的用量分别算钱再相加 —— 运行行那五列是累计值,
+            # 拿它乘任何一家的单价都是错数 (difficulties #14 的「谁服务谁记」).
+            # 判据是**两家以上**而不是「有拆账」: 只有一家时按 `facts.model` 那个
+            # 名字算 —— 那是装配处解析出来的规范名 (价目表的键), 而逐轮那个名字
+            # 对普通适配器来说是上游回显, 可能带版本号 (老行为一字不变)
+            return cost_of_split(
+                usage, table=self._prices, moment=moment, name=facts.model
+            )
         return cost_of(
             model=facts.model,
             table=self._prices,
-            moment=run.created_at if run is not None else None,
+            moment=moment,
             input_tokens=facts.input_tokens,
             cache_miss_tokens=facts.cache_miss_tokens,
             cache_hit_tokens=facts.cache_hit_tokens,
@@ -831,6 +869,11 @@ class ConversationRecorder:
                     total_cost=settlement.cost.total if settlement.cost.known else None,
                     total_cost_detail=settlement.cost.to_detail(),
                     void_cost=settlement.void_cost,
+                    usage_by_model=(
+                        None
+                        if settlement.usage_by_model is None
+                        else _usage_rows(settlement.usage_by_model)
+                    ),
                 )
             # 消息行带上 run_id: 它们确实属于这次执行 —— 审计时「这几条是哪一次
             # 问答产生的」靠它 (列注释: NULL 表示不是 agent 跑出来的)
@@ -1010,6 +1053,181 @@ class ConversationRecorder:
             TranscriptLine(role="system", content=MISSED_TURN_TEXT, reasoning=None),
             *lines,
         ]
+
+
+def _usage_by_model(result: LoopResult) -> tuple[ModelUsage, ...]:
+    """本段每一轮的用量, 按**服务方**归并 (拆账的两半之一; 另一半在行上那一列).
+
+    数据来源是每轮记录里的那份响应 (`TurnRecord.response`): 它带着 usage, 而服务方的
+    名字由模型层盖在上面 (`response.model`, 见 retry/failover.py).
+
+    这里**不判**「够不够拆」—— 那只在合并之后才说得清 (本段可能只覆盖整趟的一部分,
+    见 `_merged_usage` 与 `_matches_run_totals`). 本函数只回答一件事: 这一段里,
+    谁产出了多少.
+
+    Returns:
+        tuple[ModelUsage, ...]: 按首次出场排序; 空元组 = 这一段没有可归因的轮
+        (一次模型调用都没有 / 响应没带 usage).
+    """
+    seen: dict[str, list[Usage]] = {}
+    for turn in result.turns:
+        if turn.response.model and turn.response.usage is not None:
+            seen.setdefault(turn.response.model, []).append(turn.response.usage)
+    return tuple(
+        ModelUsage(
+            model=name,
+            input_tokens=_sum_field(items, "input_tokens"),
+            output_tokens=_sum_field(items, "output_tokens"),
+            cache_hit_tokens=_sum_field(items, "cache_hit_tokens"),
+            cache_miss_tokens=_sum_field(items, "cache_miss_tokens"),
+        )
+        for name, items in seen.items()
+    )
+
+
+def _merged_usage(
+    previous: Sequence[ModelUsage], current: Sequence[ModelUsage]
+) -> tuple[ModelUsage, ...]:
+    """行上那一列 (前面几段) + 本段 -> 整趟的逐模型用量 (按模型名相加).
+
+    为什么是**相加**而不是「本段覆盖」: 这一列记的是**整趟运行**的拆账, 而每一段只拿
+    得到自己那一段的轮 —— HITL 续跑的第二段手里没有第一段的用量 (快照只存消息与
+    计数器, 见 `CheckpointState`), 于是两半只能在这里合.
+
+    **同名相加, 分量的 None 语义照旧** (有一边没报这一档 -> 整体报「没报」): 与运行行
+    那五列同一条规矩 —— 把「没报」当 0 加进去会让金额偏低而看起来完全正常.
+
+    Returns:
+        tuple[ModelUsage, ...]: 合并后的那一份 (按首次出场排序); 两边都空 -> 空元组.
+    """
+    merged: dict[str, list[ModelUsage]] = {}
+    for source in (previous, current):
+        for item in source:
+            merged.setdefault(item.model, []).append(item)
+    return tuple(
+        ModelUsage(
+            model=name,
+            input_tokens=_sum_option(items, "input_tokens"),
+            output_tokens=_sum_option(items, "output_tokens"),
+            cache_hit_tokens=_sum_option(items, "cache_hit_tokens"),
+            cache_miss_tokens=_sum_option(items, "cache_miss_tokens"),
+        )
+        for name, items in merged.items()
+    )
+
+
+def _sum_option(items: Sequence[ModelUsage], field: str) -> int | None:
+    """同一家的几份 (可能来自不同段) 相加; 有一份没报这一档就整体报「没报」."""
+    total = 0
+    for item in items:
+        value = getattr(item, field)
+        if value is None:
+            return None
+        total += value
+    return total
+
+
+def _usage_from_column(value: object) -> tuple[ModelUsage, ...]:
+    """那一列 (JSON) -> 逐模型用量; 读不懂就**当没有** (不抛).
+
+    这不是一条常规路径 (那一列只由本框架写、形状固定, 正常读到的一定是那份形状), 而是
+    一道兜底: 形状将来变了、或者有人手改过这一列时, 读不懂就当没有 —— 理由与
+    `RunCost.from_detail` 对坏数据的态度同一条: **收尾这条路上少一笔金额, 比让整轮
+    记不上账轻得多**. 而它不可能造成错的钱: 归并结果还要过 `_matches_run_totals` 那道
+    闸, 对不上就不算钱.
+    """
+    if not isinstance(value, list):
+        return ()
+    parsed: list[ModelUsage] = []
+    for item in value:
+        if not isinstance(item, Mapping) or not item.get("model"):
+            continue
+        parsed.append(
+            ModelUsage(
+                model=str(item["model"]),
+                input_tokens=_optional_int(item.get("input_tokens")),
+                output_tokens=_optional_int(item.get("output_tokens")),
+                cache_hit_tokens=_optional_int(item.get("cache_hit_tokens")),
+                cache_miss_tokens=_optional_int(item.get("cache_miss_tokens")),
+            )
+        )
+    return tuple(parsed)
+
+
+def _usage_rows(usages: Sequence[ModelUsage]) -> list[dict[str, object]]:
+    """逐模型用量 -> 落库的形状.
+
+    缺的分量**不写键**: 一串 null 会让读的人分不清「没有」与「没记」 (与
+    `RunCost.to_detail` 同一条规矩).
+    """
+    rows: list[dict[str, object]] = []
+    for usage in usages:
+        row: dict[str, object] = {"model": usage.model}
+        for field in (
+            "input_tokens",
+            "cache_miss_tokens",
+            "cache_hit_tokens",
+            "output_tokens",
+        ):
+            value = getattr(usage, field)
+            if value is not None:
+                row[field] = value
+        rows.append(row)
+    return rows
+
+
+def _optional_int(value: object) -> int | None:
+    """JSON 里的一个分量 -> int 或 None (不是数/是布尔一律当没报)."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _sum_field(items: Sequence[Usage], field: str) -> int | None:
+    """同一家的几份 usage 相加; 只要有一份没报这一档, 整体就报「没报」(None).
+
+    为什么不是「缺的那份按 0 算」: 0 是「报过、值就是零」, None 是「没报」—— 与运行
+    行那五列同一条纪律. 混着加会把「没报」洗成「零」, 于是金额偏低而看起来完全正常.
+    """
+    total = 0
+    for item in items:
+        value = getattr(item, field)
+        if value is None:
+            return None
+        total += value
+    return total
+
+
+def _matches_run_totals(result: LoopResult, usages: Sequence[ModelUsage]) -> bool:
+    """逐模型那几列加总 == 运行行那几列吗 (对不上说明只拆到一部分轮).
+
+    **只比输入与输出这两个分量**, 不比缓存命中 / 未命中 —— 后者是**各家上报口径不同**
+    的地方 (DeepSeek 两档都给, OpenAI 兼容那家只给命中), 拿它当闸的话, 真机上「一家
+    报一家不报」的组合永远验不过, 而那恰恰是这一列要服务的场景 (2026-10-05 真机实测
+    发现的). 那一档由解析层按各家自己的 `input - hit` 在**源头**补好
+    (`model/parse.py`, 同一天改的), 于是下游三处 (累加 / 这一列 / 金额) 看到的是同一份
+    完整的账; 定价那一步留着的同样的推导只作老数据兜底.
+
+    为什么「少了一段」仍然拦得住: 任何缺失的那一段都会让**输入**变小 (真实的模型调用
+    不可能只有输出没有输入), 而这两列是严格比对的 (None 与 None 算相等 —— 都没有就是
+    都「没报」).
+
+    **一处已知的不覆盖**: 跑过上下文压缩的运行, 摘要那一次调用的用量也计进了运行行那
+    几列, 却**不属于任何一轮** (它不出现在 `LoopResult.turns` 里) —— 于是拆出来的和
+    比运行行小, 这道闸会拒 (金额留空)。取舍见 ADR-0025 的边界一节.
+    """
+    for field in ("input_tokens", "output_tokens"):
+        parts = [getattr(usage, field) for usage in usages]
+        if all(part is None for part in parts):
+            summed: int | None = None
+        elif any(part is None for part in parts):
+            # 有一家报了、另一家没报: 加不出一个诚实的数 (见 `_sum_field`) ->「对不上」
+            return False
+        else:
+            summed = sum(part for part in parts if part is not None)
+        if summed != getattr(result, field):
+            return False
+    return True
 
 
 def normalize_title(text: str) -> str:

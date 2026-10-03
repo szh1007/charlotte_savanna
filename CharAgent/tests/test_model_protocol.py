@@ -244,7 +244,12 @@ def test_parse_usage_reads_cache_hit_and_miss_tokens() -> None:
 
 
 def test_parse_usage_falls_back_to_cached_tokens() -> None:
-    """顶层命中字段缺失时回退 prompt_tokens_details.cached_tokens (官方声明同值)."""
+    """顶层命中字段缺失时回退 prompt_tokens_details.cached_tokens (官方声明同值).
+
+    顺带断言**未命中在源头补上了** (2026-10-05 真机发现): OpenAI 系不报这一档,
+    而下游三处 (逐轮累加 / `runs.usage_by_model` / 金额折算) 都要用它 —— 补在这里
+    才不会有「金额按推出来的数收费、账上只记了一半」这种行.
+    """
     usage = parse_usage(
         {
             "prompt_tokens": 89,
@@ -255,6 +260,46 @@ def test_parse_usage_falls_back_to_cached_tokens() -> None:
     )
     assert usage is not None
     assert usage.cache_hit_tokens == 32
+    assert usage.cache_miss_tokens == 57, "89 - 32: 未命中由输入总量与命中推出来"
+    assert usage.cache_hit_tokens + usage.cache_miss_tokens == usage.input_tokens
+
+
+def test_parse_usage_keeps_the_reported_cache_miss() -> None:
+    """上游自己报了未命中就不动它 (DeepSeek 两档都给, 推出来的与它同值也该以它为准)."""
+    usage = parse_usage(
+        {
+            "prompt_tokens": 89,
+            "completion_tokens": 12,
+            "total_tokens": 101,
+            "prompt_cache_hit_tokens": 32,
+            "prompt_cache_miss_tokens": 57,
+        }
+    )
+
+    assert usage is not None
+    assert (usage.cache_hit_tokens, usage.cache_miss_tokens) == (32, 57)
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        {
+            "prompt_tokens": 89,
+            "prompt_cache_hit_tokens": 200,
+        },  # 命中比输入还多 (上游数据不对)
+        {"prompt_tokens": "89", "prompt_cache_hit_tokens": 32},  # 类型畸形 (别让减法炸)
+        {"prompt_cache_hit_tokens": 32},  # 缺输入总量, 减不出来
+        {"prompt_tokens": 89},  # 缺命中 (两个减数少一个)
+    ],
+)
+def test_parse_usage_leaves_the_missing_tier_alone_when_it_cannot_derive(
+    malformed: dict,
+) -> None:
+    """推不出来就不补: None 仍是「上游没报」, 与「就是零」分得开."""
+    usage = parse_usage(malformed)
+
+    assert usage is not None
+    assert usage.cache_miss_tokens is None
 
 
 @pytest.mark.parametrize("malformed", [{"completion_tokens_details": None}, "legacy"])

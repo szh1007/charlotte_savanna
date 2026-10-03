@@ -183,6 +183,11 @@ class Run(Base):
             按当时的价目表算好写入 (`db/cost.py`), 之后不再改写. 金额可空: NULL 表示
             那一刻没算出来 (原因在明细里: 没配价 / 缺哪一档 / 日历过期), 与 0 (真的
             花了 0 元) 是相反的结论; 峰谷价按本次运行的**开始时刻**判定 (ticket 28).
+        usage_by_model: 这一趟**按模型拆开**的用量 (difficulties #14 的拆账依据):
+            `[{"model": ..., "input_tokens": ..., "cache_miss_tokens": ...}]`, 按
+            模型名去重; 一趟里换过家时金额靠它按各家分别算. NULL = 没有可归因的
+            逐模型用量 (老行 / 一段里一次模型调用都没有 / 归并不齐) —— 与「空列表」
+            不是一回事.
         input_tokens / output_tokens / reasoning_tokens / cache_hit_tokens /
         cache_miss_tokens: total_tokens 的**归因拆解** (#34). 五列都可空 —— NULL
             表示上游一次都没上报过这个分量, 与 0 (报过、值就是零) 是两回事. 要算

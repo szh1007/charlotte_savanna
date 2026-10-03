@@ -22,9 +22,11 @@
 也熔断着) 时同样以 CircuitOpenError 收场 —— 它是**闸开了**这件事本身, 重试层据此
 立刻放弃, 原始失败挂在异常链上 (`from`).
 
-**账目**: 每次**成功的响应**往当前运行的服务台账里记一笔 (`retry/serving.py`),
-于是运行行记的是实际在服务的模型名 (切换过就按备份记; 两个都用过记组合名, 金额
-留空并写明原因 —— 见 `ServingRecord.model_name`).
+**账目**: 每次**成功的响应**做两件事 —— ①`note_serving(slot.name)` 往当前运行的
+服务台账里记一笔 (`retry/serving.py`), 于是运行行记的是实际在服务的模型名 (切换过
+就按备份记; 两个都用过记组合名); ②把服务方的名字**盖在响应上** (`response.model`),
+于是「这一轮的用量是谁产出的」随着结果一路走到记录员那里 —— 用过不止一个模型的那趟
+按各家分别算钱再相加 (见 `CharApp/docs/adr/0025`).
 
 **状态是进程内的**: 两个闸跟着本对象走 (进程级共享 = 熔断状态在多次运行之间累积,
 正是它该有的样子); 但**多实例部署下各进程各有一份闸** (跨进程共享闸状态属 #21).
@@ -181,6 +183,11 @@ class FailoverChatModel:
                 slot = following
                 continue
             slot.breaker.record_success()
+            # 谁答的话**写进响应本身**: `ModelResponse.model` 本来就叫「模型名」, 此前
+            # 装的是上游回显的那个 (回显是上游自己说的), 而这一层知道的是**我们配的
+            # 那家** —— 价目表的键. 拆账要的正是后者: 一趟里换过家时, 记录员按它把
+            # 每一轮的用量归到各家头上 (见 db/recorder.py 的 `_usage_by_model`)
+            response.model = slot.name
             # 只有真答了话的模型才算服务过 (失败的那几次产出 0 个 token, 不上账)
             note_serving(slot.name)
             return response

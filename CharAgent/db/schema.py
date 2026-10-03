@@ -155,6 +155,14 @@ threads = Table(
     comment="会话: 一段对话的容器, 也是数据隔离的单位 (所有东西都挂在它下面)",
 )
 
+# 逐模型用量那一列的注释 (与 alembic 的 0006 迁移里那份**逐字一致**: 改一处改两处)
+_USAGE_BY_MODEL_COMMENT = (
+    "逐模型用量 (difficulties #14 的拆账依据): 形如 "
+    "[{model, input_tokens, cache_miss_tokens, cache_hit_tokens, output_tokens}], "
+    "按模型名去重、按首次出场排序; 每一段收尾时把自己那一段并进来 (同名的相加). "
+    "NULL = 没有可归因的逐模型用量 (老行 / 一段里一次模型调用都没有 / 归并不齐)"
+)
+
 runs = Table(
     "charagent_runs",
     metadata,
@@ -263,6 +271,19 @@ runs = Table(
         "(peak / valley) + 三个单价 + 三档用量; 算不出来时记原因 (没配价 / 缺哪个"
         "分量 / 日历过期). 只留一个数字的话事后没人能验算, 连「这是峰价还是谷价"
         "算的」都看不出来 (ticket 28)",
+    ),
+    # 逐模型用量 (difficulties #14): 一趟里换过家时, 光记一个组合名 (`主+备`) 算不出钱
+    # —— 按任何一家的单价乘整趟用量都是错数. 这一列让「哪一家产出了多少」**跨段**也
+    # 留得住: 每一段收尾时把自己那一段的逐模型用量并进来 (按模型名相加), 于是 HITL 续跑
+    # 的第二段拿到的是整趟的拆账, 金额能按各家分别算再相加.
+    #
+    # **可空**: NULL = 没有可归因的逐模型用量 (老行 / 那一段一次模型调用都没有 /
+    # 归并不齐). 与「空列表」不是一回事 —— 后者是「确认过: 一家都没产出」.
+    Column(
+        "usage_by_model",
+        JSONB,
+        nullable=True,
+        comment=_USAGE_BY_MODEL_COMMENT,
     ),
     Column(
         "turn_count",

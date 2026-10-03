@@ -48,7 +48,7 @@ from sqlalchemy import select
 from CharAgent.checkpoint.utils.history import display_width
 from CharAgent.client.app import load_root_env, use_utf8_stdio
 from CharAgent.db import Database, PgDatabase
-from CharAgent.db.cost import CostGap, RunCost
+from CharAgent.db.cost import CostGap, CostLine, RunCost
 from CharAgent.db.entities import Run, Thread, ToolCall, ToolCallStatus
 from CharAgent.db.errors import DbError
 from CharAgent.db.repositories.runs import RunsRepository
@@ -261,7 +261,7 @@ def _amount_block(run: Run) -> list[str]:
     if not cost.known:
         # 金额在、算式读不出来 (老格式 / 坏数据): 金额是主, 别把它藏起来
         return [head, f"    └ (算式读不出来: {cost.gap.value if cost.gap else '-'})"]
-    return [head, f"    └ {_formula(cost)}"]
+    return [head, *_formula_lines(cost)]
 
 
 def _gap_text(cost: RunCost, model: str | None) -> str:
@@ -303,24 +303,43 @@ def _gap_text(cost: RunCost, model: str | None) -> str:
     return "算不出来 (库里那份明细读不懂: 老格式或坏数据)"
 
 
-def _formula(cost: RunCost) -> str:
-    """三档算式 (每档: 用量 x 单价/M), 顺序与用量那行一致.
+def _formula_lines(cost: RunCost) -> list[str]:
+    """算式那几行: 一个模型一行 (只用一个模型时就是从前那样的单行).
+
+    为什么拆账那几趟要分行写 (difficulties #14): 一趟里换过家时金额是**两家之和**,
+    而屏幕上要能验算 —— 把主模型那几档用量按备份的单价乘, 读的人会得出一个与金额
+    不同的数. 分行之后每行都自洽 (这一家: 用量 x **它自己的**单价), 加起来就是上面
+    那个数.
+    """
+    by_model: dict[str, list[CostLine]] = {}
+    for line in cost.lines:
+        by_model.setdefault(line.model or "", []).append(line)
+    if len(by_model) <= 1:
+        # 只有一家 (或老行没有归属): 保持从前的样子 —— 一个 `└` 挂一行算式
+        return [f"    └ {_one_formula(cost.lines)}"]
+    rendered = []
+    for index, (name, lines) in enumerate(by_model.items()):
+        # 第一行挂树枝, 后面几行对齐着排 (姓名后面才是算式)
+        branch = "└" if index == 0 else " "
+        rendered.append(f"    {branch} {name}: {_one_formula(lines)}")
+    return rendered
+
+
+def _one_formula(lines: Sequence[CostLine]) -> str:
+    """一个模型的三档算式 (每档: 用量 x 单价/M), 顺序与用量那行一致.
 
     用输入总量减出来的那一档要标明来路: 用量那行的同一个位置写着 `-` (那一列上游
     确实没报), 不标的话屏幕上会冒出一个「用量是 -, 算式里却有数」的档.
     """
     parts = []
-    for label, line, column in (
-        ("cache_miss", cost.line_of.get("cache_miss"), "cache_miss_tokens"),
-        ("cache_hit", cost.line_of.get("cache_hit"), "cache_hit_tokens"),
-        ("output", cost.line_of.get("output"), "output_tokens"),
-    ):
+    for label in ("cache_miss", "cache_hit", "output"):
+        line = next((item for item in lines if item.tier == label), None)
         if line is None:
             continue
         # 乘号用 ASCII 的 `x` 而不是全角乘号: ruff 的 RUF001 把后者算作歧义字符
         # (与字母 x 混淆), 本仓的 lint 口径是全仓一致地避开它.
         # 单价后面的 `/M` 是「每百万 token」—— 与 db/cost.py 的单价单位同一个意思
-        note = " (推自 input)" if column in cost.derived else ""
+        note = " (推自 input)" if line.derived else ""
         parts.append(f"{label} {line.tokens} x ¥{_number(line.price)}/M{note}")
     return " + ".join(parts)
 

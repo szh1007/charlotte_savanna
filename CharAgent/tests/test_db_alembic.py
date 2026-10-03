@@ -182,7 +182,7 @@ def test_alembic_version_records_the_head_revision(migrated, _engine):
             {"name": f"{ALEMBIC_SCHEMA}.{VERSION_TABLE}"},
         ).scalar()
 
-    assert version == "0005_tool_call_approval_columns"
+    assert version == "0006_run_usage_by_model"
     assert test_schema_version, (
         "版本表没落在测试 schema 里 (version_table_schema 没生效)"
     )
@@ -200,7 +200,7 @@ def test_upgrade_head_is_idempotent(migrated, _engine):
             text(f"SELECT version_num FROM {ALEMBIC_SCHEMA}.{VERSION_TABLE}")
         ).scalar()
 
-    assert version == "0005_tool_call_approval_columns"
+    assert version == "0006_run_usage_by_model"
 
 
 def test_the_version_row_records_the_step_that_just_ran(migrated, _engine):
@@ -223,7 +223,9 @@ def test_the_version_row_records_the_step_that_just_ran(migrated, _engine):
     执行两遍」这件事有地方挡 (HITL 的挂起-恢复跨进程, 进程内 dict 挡不住).
     还是同一天, 第五条 (issue 34 的 0005) —— 给工具调用表补两列 (挂起时给用户看
     的那句话与还缺什么), 于是刷新页面之后确认卡重建得出来.
-    五步走完, 那条设计照旧成立: 迁移是**库该长成什么样**的历史, 每一版都算数.
+    第六条 (difficulties #14 的 0006) —— 给运行行加一列逐模型用量 (一趟里换过家时
+    金额才拆得开). 六步走完, 那条设计照旧成立: 迁移是**库该长成什么样**的历史,
+    每一版都算数.
     """
     with _engine.connect() as connection:
         row = connection.execute(
@@ -237,12 +239,14 @@ def test_the_version_row_records_the_step_that_just_ran(migrated, _engine):
             )
         ).one()
 
-    assert row.version_num == "0005_tool_call_approval_columns"
-    assert row.name == "挂起态补两列: 给用户看的那句话与还缺什么", (
+    assert row.version_num == "0006_run_usage_by_model"
+    assert row.name == "逐模型用量列: 一趟里换过家时, 金额才拆得开", (
         "标题取的是脚本 docstring 的**首段** (alembic 的 `Script.doc` 就是这么切的)"
     )
-    assert row.versions == 5, "空库到 head 走了五步 (0001 → ... → 0005)"
-    assert row.from_rev == "0004_idempotency_keys", "当前这一版是从 0004 上来的"
+    assert row.versions == 6, "空库到 head 走了六步 (0001 → ... → 0006)"
+    assert row.from_rev == "0005_tool_call_approval_columns", (
+        "当前这一版是从 0005 上来的"
+    )
     assert row.at and row.by, "时刻与执行者都该是真值 (钩子写在同一步的事务里)"
 
 

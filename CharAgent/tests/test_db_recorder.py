@@ -16,10 +16,16 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from decimal import Decimal
 from typing import Any
 
 import pytest
-from doubles import BrokenRecordDatabase, FakeRecordDatabase, record_thread
+from doubles import (
+    BrokenRecordDatabase,
+    FakeRecordDatabase,
+    RecordingSleep,
+    record_thread,
+)
 from mock_llm import (
     MockLLM,
     make_tool_call,
@@ -48,7 +54,14 @@ from CharAgent.db.recorder import (
 )
 from CharAgent.db.repositories.tool_calls import ToolCallsRepository
 from CharAgent.model import FinishReason
-from CharAgent.model.utils.types import ModelResponse
+from CharAgent.model.utils.errors import ModelStatusError
+from CharAgent.model.utils.types import ModelResponse, Usage
+from CharAgent.retry import (
+    CircuitPolicy,
+    FailoverChatModel,
+    RetryingChatModel,
+    RetryPolicy,
+)
 from CharAgent.tool import ToolActionableError, tool
 
 THREAD_ID = "toy:u-9f3a:chat-1"
@@ -1042,6 +1055,422 @@ async def test_a_run_served_by_two_models_is_recorded_as_both_names() -> None:
     assert run["total_cost"] is None, "组合名查不到价 -> 不留一个按错单价算的数"
     assert run["total_cost_detail"]["reason"] == CostGap.NO_PRICE.value
     assert run["total_cost_detail"]["model"] == "deepseek-flash+gpt-6-luna"
+
+
+def _turn(turn: int, *, model: str, usage: Usage, tokens: int) -> TurnRecord:
+    """一轮记录 (只填拆账用得上的那几样: 响应带 usage 与服务方, 轮内 tokens)."""
+    return TurnRecord(
+        turn=turn,
+        response=ModelResponse(
+            content="答好了",
+            finish_reason=FinishReason.STOP,
+            usage=usage,
+            model=model,
+        ),
+        messages=[],
+        tokens=tokens,
+        elapsed_ms=0.0,
+    )
+
+
+def _usage(*, miss: int, hit: int, out: int) -> Usage:
+    return Usage(
+        input_tokens=miss + hit,
+        output_tokens=out,
+        total_tokens=miss + hit + out,
+        cache_miss_tokens=miss,
+        cache_hit_tokens=hit,
+    )
+
+
+async def test_a_run_that_switched_models_is_priced_per_model() -> None:
+    """一趟里换过家 (difficulties #14): 金额按各家分别算再相加.
+
+    这一条是那一族里**唯一算得出钱**的形态: 运行行那五列是累计值, 拆不出「谁产出的」,
+    而逐轮记录里每一次响应都盖着服务方的名字 (模型层盖的, 见 retry/failover.py) ——
+    于是记录员把用量归到各家头上, 各查各的价.
+
+    账上那个名字仍是组合名 (「这一趟两家都用过」是事实), 而它现在有了对应的金额:
+    0.0036 (主: 1000 miss x 2 + 200 out x 8, 每百万) + 0.00451 (备: 2000 miss x 1
+    + 100 hit x 0.1 + 500 out x 5) = 0.00811.
+    """
+    database = FakeRecordDatabase()
+    rec = _priced_recorder(database)
+    run_id = await rec.begin(thread_id=THREAD_ID, title="订单到哪了")
+    primary = _usage(miss=1000, hit=0, out=200)
+    backup = _usage(miss=2000, hit=100, out=500)
+
+    await rec.record(
+        thread_id=THREAD_ID,
+        run_id=run_id,
+        result=result(
+            input_tokens=3100,
+            output_tokens=700,
+            cache_miss_tokens=3000,
+            cache_hit_tokens=100,
+            turns=[
+                _turn(1, model="deepseek-flash", usage=primary, tokens=1200),
+                _turn(2, model="gpt-6-luna", usage=backup, tokens=2600),
+            ],
+        ),
+        model="deepseek-flash+gpt-6-luna",
+    )
+
+    [run] = database.rows_of("charagent_runs")
+    assert run["model"] == "deepseek-flash+gpt-6-luna", "名字仍是事实"
+    assert run["total_cost"] == Decimal("0.008110"), "金额 = 两家各算各的再相加"
+    lines = run["total_cost_detail"]["lines"]
+    assert [(item["model"], item["tier"], item["amount"]) for item in lines] == [
+        ("deepseek-flash", "cache_miss", "0.002000"),
+        ("deepseek-flash", "cache_hit", "0.000000"),
+        ("deepseek-flash", "output", "0.001600"),
+        ("gpt-6-luna", "cache_miss", "0.002000"),
+        ("gpt-6-luna", "cache_hit", "0.000010"),
+        ("gpt-6-luna", "output", "0.002500"),
+    ], "明细逐行带归属 —— 读的人能按行验算"
+
+
+class _Scripted:
+    """按脚本答话的模型 (脚本用尽后照 `then` 抛/答) —— 端到端那条用例的两个角色."""
+
+    def __init__(
+        self, name: str, script: list[ModelResponse], *, then: Exception | None = None
+    ) -> None:
+        self.model = name
+        self._script = list(script)
+        self._then = then
+
+    async def generate(self, *args: Any, **kwargs: Any) -> ModelResponse:
+        if self._script:
+            return self._script.pop(0)
+        if self._then is not None:
+            raise self._then
+        return text_response("还答得动")
+
+    async def aclose(self) -> None:
+        """关闭连接 (替身没有连接可关)."""
+
+
+async def test_a_real_run_that_switched_between_models_is_priced_per_model() -> None:
+    """端到端: 真跑一遍循环 (主模型答一轮 -> 跳闸 -> 备份答完), 记录员按两家分别算钱.
+
+    与上面那条 (手搓的轮) 的分工: 这一条跑**真的**循环与真的模型层包装, 于是它验的是
+    那条缝 —— 模型层盖在响应上的服务方, 真的随 `LoopResult.turns` 走到了记录员手里.
+
+    账: 主 (1000 miss x 2 + 100 out x 8, 每百万) 0.0028 + 备 (2000 miss x 1 +
+    100 hit x 0.1 + 500 out x 5) 0.00451 = 0.00731.
+    """
+    database = FakeRecordDatabase()
+    rec = _priced_recorder(database)
+    run_id = await rec.begin(thread_id=THREAD_ID, title="订单到哪了")
+    primary = _Scripted(
+        "deepseek-flash",
+        [
+            tool_call_response(
+                make_tool_call("query_order", ORDER_CALL, call_id="call_0"),
+                usage=_usage(miss=1000, hit=0, out=100),
+            )
+        ],
+        then=ModelStatusError(503, "boom"),
+    )
+    backup = _Scripted(
+        "gpt-6-luna",
+        [text_response("已发货", usage=_usage(miss=2000, hit=100, out=500))],
+    )
+    loop = AgentLoop(
+        RetryingChatModel(
+            FailoverChatModel(
+                primary, backup, policy=CircuitPolicy(failure_threshold=2)
+            ),
+            policy=RetryPolicy(
+                max_attempts=2, initial_delay=0.0, jitter=0.0, sleep=RecordingSleep()
+            ),
+        ),
+        tools=[query_order_tool],
+        saver=InMemoryCheckpointSaver(),
+        thread_id=THREAD_ID,
+        trace_sink=rec,
+    )
+
+    outcome = await loop.run([{"role": "user", "content": "订单到哪了"}], run_id=run_id)
+    assert [turn.response.model for turn in outcome.turns] == [
+        "deepseek-flash",
+        "gpt-6-luna",
+    ], "每一轮的响应上写着谁答的话 (拆账的依据)"
+
+    # 会话收尾时给的就是服务台账算出来的那个组合名 (见 retry/serving.py)
+    assert await rec.record(
+        thread_id=THREAD_ID,
+        run_id=run_id,
+        result=outcome,
+        model="deepseek-flash+gpt-6-luna",
+    )
+
+    [run] = database.rows_of("charagent_runs")
+    assert run["model"] == "deepseek-flash+gpt-6-luna"
+    assert run["total_cost"] == Decimal("0.007310"), "两家各算各的再相加"
+    assert {item["model"] for item in run["total_cost_detail"]["lines"]} == {
+        "deepseek-flash",
+        "gpt-6-luna",
+    }
+
+
+async def test_a_mixed_segment_leaves_its_per_model_usage_on_the_row() -> None:
+    """段内混过家的一趟: 逐模型用量**写进那一列** (下一段要拿它接着合)."""
+    database = FakeRecordDatabase()
+    rec = _priced_recorder(database)
+    run_id = await rec.begin(thread_id=THREAD_ID, title="订单到哪了")
+
+    await rec.record(
+        thread_id=THREAD_ID,
+        run_id=run_id,
+        result=result(
+            input_tokens=3100,
+            output_tokens=600,
+            cache_miss_tokens=3000,
+            cache_hit_tokens=100,
+            turns=[
+                _turn(
+                    1,
+                    model="deepseek-flash",
+                    usage=_usage(miss=1000, hit=0, out=100),
+                    tokens=1100,
+                ),
+                _turn(
+                    2,
+                    model="gpt-6-luna",
+                    usage=_usage(miss=2000, hit=100, out=500),
+                    tokens=2600,
+                ),
+            ],
+        ),
+        model="deepseek-flash+gpt-6-luna",
+    )
+
+    [run] = database.rows_of("charagent_runs")
+    assert run["usage_by_model"] == [
+        {
+            "model": "deepseek-flash",
+            "input_tokens": 1000,
+            "cache_miss_tokens": 1000,
+            "cache_hit_tokens": 0,
+            "output_tokens": 100,
+        },
+        {
+            "model": "gpt-6-luna",
+            "input_tokens": 2100,
+            "cache_miss_tokens": 2000,
+            "cache_hit_tokens": 100,
+            "output_tokens": 500,
+        },
+    ], "按首次出场排序, 分量一个不少"
+    assert run["total_cost"] == Decimal("0.007310")
+
+
+async def test_a_resumed_segment_merges_with_the_column_and_prices_both() -> None:
+    """HITL 跨段 (difficulties #14 最后一块): 第二段把列上那份 + 本段那份合起来算钱.
+
+    这是「段 1 自己也混过家」的情形 —— 只靠减法推不出来 (组合名分不了比例), 靠的
+    就是段 1 收尾时留在行上的那一列. 两段合起来: 主 (段1 1000 miss + 段2 1000 miss
+    + 两段各 100 out) 与备 (段1 那些), 金额 = 0.0056 + 0.00451 = 0.01011.
+    """
+    database = FakeRecordDatabase()
+    rec = _priced_recorder(database)
+    run_id = await rec.begin(thread_id=THREAD_ID, title="订单到哪了")
+    segment_one = result(
+        input_tokens=3100,
+        output_tokens=600,
+        cache_miss_tokens=3000,
+        cache_hit_tokens=100,
+        turns=[
+            _turn(
+                1,
+                model="deepseek-flash",
+                usage=_usage(miss=1000, hit=0, out=100),
+                tokens=1100,
+            ),
+            _turn(
+                2,
+                model="gpt-6-luna",
+                usage=_usage(miss=2000, hit=100, out=500),
+                tokens=2600,
+            ),
+        ],
+    )
+    await rec.record(
+        thread_id=THREAD_ID,
+        run_id=run_id,
+        result=segment_one,
+        model="deepseek-flash+gpt-6-luna",
+    )
+    assert database.rows_of("charagent_runs")[0]["usage_by_model"] is not None
+
+    # 第二段 (人确认之后接着跑): 这一段的轮由主模型答, 而账目是**整趟累计**
+    await rec.record(
+        thread_id=THREAD_ID,
+        run_id=run_id,
+        result=result(
+            input_tokens=4100,
+            output_tokens=700,
+            cache_miss_tokens=4000,
+            cache_hit_tokens=100,
+            turns=[
+                _turn(
+                    3,
+                    model="deepseek-flash",
+                    usage=_usage(miss=1000, hit=0, out=100),
+                    tokens=1100,
+                )
+            ],
+        ),
+        model="deepseek-flash",
+    )
+
+    [run] = database.rows_of("charagent_runs")
+    assert run["model"] == "deepseek-flash+gpt-6-luna", "名字仍是整趟的事实"
+    assert run["total_cost"] == Decimal("0.010110"), "两段合起来之后按各家分别算"
+    assert run["usage_by_model"][0] == {
+        "model": "deepseek-flash",
+        "input_tokens": 2000,
+        "cache_miss_tokens": 2000,
+        "cache_hit_tokens": 0,
+        "output_tokens": 200,
+    }, "同名的两段相加 (段 1 的 1000 + 段 2 的 1000)"
+    assert run["usage_by_model"][1]["model"] == "gpt-6-luna"
+
+
+async def test_a_column_that_does_not_add_up_is_neither_priced_nor_rewritten() -> None:
+    """列上那份与本段那份合不齐 (老行没有那一列): 不算钱, 也不把半份写回去."""
+    database = FakeRecordDatabase()
+    rec = _priced_recorder(database)
+    run_id = await rec.begin(thread_id=THREAD_ID, title="订单到哪了")
+    await rec.record(
+        thread_id=THREAD_ID, run_id=run_id, result=result(), model="deepseek-flash"
+    )
+
+    await rec.record(
+        thread_id=THREAD_ID,
+        run_id=run_id,
+        result=result(
+            input_tokens=4100,
+            output_tokens=700,
+            cache_miss_tokens=4000,
+            cache_hit_tokens=100,
+            turns=[
+                _turn(
+                    1,
+                    model="gpt-6-luna",
+                    usage=_usage(miss=2000, hit=100, out=500),
+                    tokens=2600,
+                )
+            ],
+        ),
+        model="gpt-6-luna",
+    )
+
+    [run] = database.rows_of("charagent_runs")
+    assert run["model"] == "deepseek-flash+gpt-6-luna"
+    assert run["total_cost"] is None, "合不齐 -> 不拆 (拆一半比不拆更糟)"
+    assert run["usage_by_model"] is None, "半份不写回去, 免得下一段在脏数据上继续合"
+
+
+async def test_a_vendor_that_does_not_report_cache_miss_still_prices() -> None:
+    """一家报未命中、另一家不报 (真机那两家的口径): 照样拆得开、算得出钱.
+
+    2026-10-05 真机实测: DeepSeek 两档都给, OpenAI 兼容那家只给命中 —— 判据若去比
+    未命中, 这种组合永远验不过 (而那正是这一列要服务的场景). 缺的那一档由定价那一步
+    按各家自己的 `input - hit` 推出来.
+    """
+    database = FakeRecordDatabase()
+    rec = _priced_recorder(database)
+    run_id = await rec.begin(thread_id=THREAD_ID, title="订单到哪了")
+    # 主: 两档都有; 备: 只有命中 (未命中要推)
+    primary = Usage(
+        input_tokens=1000,
+        output_tokens=100,
+        total_tokens=1100,
+        cache_miss_tokens=1000,
+        cache_hit_tokens=0,
+    )
+    backup = Usage(
+        input_tokens=2100, output_tokens=500, total_tokens=2600, cache_hit_tokens=100
+    )
+
+    await rec.record(
+        thread_id=THREAD_ID,
+        run_id=run_id,
+        result=result(
+            input_tokens=3100,
+            output_tokens=600,
+            cache_miss_tokens=1000,  # 只有主报过 -> 运行行记的是「已上报部分的和」
+            cache_hit_tokens=100,
+            turns=[
+                _turn(1, model="deepseek-flash", usage=primary, tokens=1100),
+                _turn(2, model="gpt-6-luna", usage=backup, tokens=2600),
+            ],
+        ),
+        model="deepseek-flash+gpt-6-luna",
+    )
+
+    [run] = database.rows_of("charagent_runs")
+    assert run["total_cost"] is not None, "口径不同不该挡住拆账"
+    lines = {
+        item["tier"]: item
+        for item in run["total_cost_detail"]["lines"]
+        if item["model"] == "gpt-6-luna"
+    }
+    assert lines["cache_miss"]["derived"] is True
+    assert lines["cache_miss"]["tokens"] == 2000, "2100 - 100, 按它自己的输入总量推"
+
+
+async def test_a_partial_split_is_not_priced() -> None:
+    """逐轮那几份只覆盖了一部分 (HITL 续跑的第二段): 整趟不拆, 按组合名报「算不出来」.
+
+    为什么宁可算不出来: 第二段的计数器从快照接着数, 而它的轮里没有上一段的用量 ——
+    硬拆出来的账会漏掉前一段, 那比没有金额更糟 (它看起来像个能对账的数).
+    """
+    database = FakeRecordDatabase()
+    rec = _priced_recorder(database)
+    run_id = await rec.begin(thread_id=THREAD_ID, title="订单到哪了")
+    await rec.record(
+        thread_id=THREAD_ID,
+        run_id=run_id,
+        result=result(
+            input_tokens=1000,
+            output_tokens=200,
+            cache_miss_tokens=1000,
+            cache_hit_tokens=0,
+        ),
+        model="deepseek-flash",
+    )
+    [before] = database.rows_of("charagent_runs")
+    assert before["total_cost"] is not None
+
+    # 第二段: 累计用量 (3100/700/3000/100) 大于这一段轮里那一家那一点
+    await rec.record(
+        thread_id=THREAD_ID,
+        run_id=run_id,
+        result=result(
+            input_tokens=3100,
+            output_tokens=700,
+            cache_miss_tokens=3000,
+            cache_hit_tokens=100,
+            turns=[
+                _turn(
+                    1,
+                    model="gpt-6-luna",
+                    usage=_usage(miss=2000, hit=100, out=500),
+                    tokens=2600,
+                )
+            ],
+        ),
+        model="gpt-6-luna",
+    )
+
+    [run] = database.rows_of("charagent_runs")
+    assert run["model"] == "deepseek-flash+gpt-6-luna"
+    assert run["total_cost"] is None, "拆一部分比不拆更糟"
+    assert run["total_cost_detail"]["reason"] == CostGap.NO_PRICE.value
 
 
 async def test_two_segments_on_the_same_model_keep_one_name() -> None:
