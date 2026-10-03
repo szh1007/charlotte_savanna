@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import httpx
 import pytest
 
 from CharAgent.model import (
@@ -735,6 +736,17 @@ def test_chat_model_from_env_strips_langchain_prefix() -> None:
     )
     assert model.model == "deepseek-flash"
     assert model.base_url == "https://api.deepseek.com"  # 未配置时用官方默认
+
+
+def test_chat_model_from_env_keeps_the_model_layer_timeout() -> None:
+    """工厂那条路也拿 60 秒 —— 分层超时的 model 层在上游装配处没被改小 (#15).
+
+    与 `test_model_client_httpx` 里那条分工不同: 那条钉「构造参数真的装进了客户端」,
+    这条钉「**从环境变量装配的那条生产路径**没有第二个地方改它」
+    (业务侧 `client/app.py` 的 `build_model` 就是从这里取的模型).
+    """
+    model = chat_model_from_env({"DEEPSEEK_API_KEY": "sk-test"})
+    assert model._client.timeout == httpx.Timeout(60.0)
 
 
 def test_chat_model_from_env_explicit_overrides_win() -> None:

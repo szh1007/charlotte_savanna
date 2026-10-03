@@ -675,6 +675,30 @@ class BffFailureTest(BffTestBase):
         self.assertIn("换个问法", payload["error"]["message"])
         self.assertEqual(payload["seq"], 1, "帧的其它字段不动")
 
+    def test_a_tool_timeout_interruption_gets_its_own_copy(self):
+        """工具超时中断 (#15) 的话术与「连接断了」分开: 一个能重问, 一个先别急着重试.
+
+        框架那句事实说明说的是「结果未知」; 用户要看到的是「先核实, 再继续」——
+        若塌成 server_interrupted 的「请再问一次」, 就把用户引向重复提交了.
+        """
+        with respx.mock:
+            self.mock_agent(
+                _frame(
+                    1,
+                    "error",
+                    error={
+                        "code": "interrupted",
+                        "message": "一个工具调用超时且结果未知, 本次运行已中断",
+                    },
+                )
+            )
+            body = self.ask()
+
+        payload = _payload(body, "error")
+        self.assertEqual(payload["error"]["code"], "interrupted", "码原样保留")
+        self.assertIn("核对", payload["error"]["message"])
+        self.assertNotIn("请再问一次", payload["error"]["message"])
+
     def test_an_unknown_error_code_still_gets_a_sentence(self):
         """没见过的 code (框架以后新增的) → 兜底话术, 不是空白."""
         with respx.mock:

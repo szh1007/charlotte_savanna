@@ -47,6 +47,23 @@ def test_api_key_required_at_construction() -> None:
         OpenAIChatModel(api_key="")
 
 
+async def test_the_request_timeout_is_the_configured_one() -> None:
+    """单请求超时同样装进 SDK 客户端 —— 两个适配器的 model 层是同一个值 (#15)."""
+    model = OpenAIChatModel(api_key=API_KEY, base_url=BASE_URL, model="deepseek-flash")
+    try:
+        assert model._client.timeout == 60.0
+    finally:
+        await model.aclose()
+
+    tight = OpenAIChatModel(
+        api_key=API_KEY, base_url=BASE_URL, model="deepseek-flash", timeout=5.0
+    )
+    try:
+        assert tight._client.timeout == 5.0, "构造参数优先于缺省值"
+    finally:
+        await tight.aclose()
+
+
 # ---------------------------------------------------------------------------
 # 非流式: SDK 全链路解析 (传输 / 反序列化由 SDK, 字段语义解析走公共层)
 # ---------------------------------------------------------------------------

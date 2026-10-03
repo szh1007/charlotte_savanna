@@ -442,6 +442,7 @@ def test_terminal_error_text_covers_every_outcome() -> None:
         LoopOutcome.TIME_LIMIT.value,
         LoopOutcome.TRUNCATION_LIMIT.value,
         LoopOutcome.SERVER_INTERRUPTED.value,
+        LoopOutcome.INTERRUPTED.value,
         "content_filter",  # FINISHED 分支里唯一走 error 的 finish_reason
     }
     assert set(TERMINAL_ERROR_TEXT) == expected

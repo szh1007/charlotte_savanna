@@ -26,7 +26,7 @@
 | `COMPLETED` | 模型给出了最终答复 (自然收尾) | 算 |
 | `TRUNCATED` | 轮数 / token / 时长用尽, 或反复截断放弃 —— 没答完 | 不算 |
 | `SUSPENDED` | 停在挂起点等人给结论 (#25 HITL) | 不算 |
-| `BROKEN` | 上游把生成打断了, 或这一跑直接抛了错 | 不算 |
+| `BROKEN` | 上游把生成打断了, 工具超时中断 (#15), 或这一跑直接抛了错 | 不算 |
 
 第四类 (`BROKEN`) 是本包相对票据多出的一档, 理由: 上游抖一下与判据里那个「截断」
 是**两回事**, 混在一起会让「裁剪之后截断少了多少」这个数字被上游抖动污染; 而
@@ -199,6 +199,9 @@ RUN_OUTCOME_FOR_LOOP: dict[LoopOutcome, RunOutcome] = {
     LoopOutcome.TRUNCATION_LIMIT: RunOutcome.TRUNCATED,
     LoopOutcome.SUSPENDED: RunOutcome.SUSPENDED,
     LoopOutcome.SERVER_INTERRUPTED: RunOutcome.BROKEN,
+    # 工具超时中断 (#15): 也没答完, 而且是「结果未知」那一类 —— 与上游中断同归
+    # BROKEN (`.get` 的兜底本来就是它, 写出来是为了让这张表读得出全部成因)
+    LoopOutcome.INTERRUPTED: RunOutcome.BROKEN,
 }
 
 

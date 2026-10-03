@@ -134,6 +134,15 @@ def test_server_interruption_counts_as_failed():
     assert run_status_for_outcome(LoopOutcome.SERVER_INTERRUPTED) is RunStatus.FAILED
 
 
+def test_a_timed_out_tool_interruption_counts_as_failed():
+    """工具超时中断 (#15) 也归 failed: 那次调用的结果未知, 需要人跟进核实.
+
+    它不是「按规则主动停下」那一族 (没人按停, 是框架为防重复副作用中断的),
+    记 finished 会让失败率漏掉最该被看见的那一类.
+    """
+    assert run_status_for_outcome(LoopOutcome.INTERRUPTED) is RunStatus.FAILED
+
+
 def test_retrying_is_not_an_outcome():
     """`retrying` 不在「结束原因 → 状态」的映射里 (它是过程状态).
 

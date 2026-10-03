@@ -15,6 +15,8 @@
 | | | | • failover：熔断时自动切换到备份模型，保证服务整体可用 | |
 | 15 | 工具超时 + 取消 | • 分层超时：模型调用约 60s、单个工具执行 10-30s、整个 run 一个总超时，各层独立控制 | P1 |
 | | | | • 工具卡死（无限等待外部响应）时要能主动取消，而不是让任务无限挂起 | |
+| | | | • 落地（2026-10-03）：工具那一层在 `tool/executor.py` 的 `_invoke_with_timeout`（缺省 30 秒，`tool/utils/config.py`；单工具 `@tool(timeout=...)` 覆盖，keyword-only）。**异步与同步两条路的取消语义不同**：协程到点被 cancel（真停），**同步工具跑在线程池里取消不掉** —— 只放弃等待，日志如实记 `thread_still_running`，副作用可能仍发生（`CharApp/docs/adr/0023`）。模型层 60 秒在 `model/client_httpx.py` / `client_sdk.py` 的构造参数上（有用例钉着），run 层在 `agent/guard.py`（业务配置，语义是「这一轮结束后才判」）；`CancelledError` 与工具自己抛的 `TimeoutError` 都不被这道闸吞 | |
+| | | | • 落地（2026-10-04 改判，`CharApp/docs/adr/0024`）：超时**不再回填给模型自己决定** —— 结果未知（可能已生效），于是 loop 直接中断本次运行（`outcome=interrupted`，终局事件 `error(code="interrupted")`，前端显示已中断）；tool 消息仍回填（wire 必须配对），但要人批的兄弟调用一条都不挂（中断优先于挂起），恢复段补做时超时同样就地中断 | |
 | 16 | 运行状态机 | • 状态集合：created（已创建）/ running（运行中）/ waiting_tool（等待工具执行完）/ waiting_user（等待用户输入，如 HITL 审批）/ retrying（重试中）/ failed / finished / cancelled | P1 |
 | | | | • 核心原则：模型只「建议」下一步动作，真正推进状态的是执行层（runtime），这样多轮之间状态才一致、可控 | |
 | 17 | 幂等 + Saga 补偿 | • 真实副作用动作（下单、退款、发通知）重复执行会有实际后果，必须防止重复 | P1 |

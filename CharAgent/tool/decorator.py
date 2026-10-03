@@ -68,6 +68,10 @@ class Tool:
             before_tool_execute 载荷带着本对象), 由插件去认. 与 RunContext.payload
             同一条纪律: 框架一旦认了某个键名, 换个业务就得改框架. 也**不进**
             to_spec() —— 模型的视角里没有这一层.
+        timeout: 单次调用的超时秒数 (#15); None 表示取框架缺省
+            (`tool/utils/config.py` 的 DEFAULT_TOOL_TIMEOUT_SECONDS). 到点框架
+            不再等它返回, 回填可操作错误 (**两条路的取消语义不同**, 见 executor
+            的 `_invoke_with_timeout`). 只按关键字给 (既有构造签名不动).
     """
 
     name: str
@@ -77,6 +81,7 @@ class Tool:
     parameter_model: type[BaseModel] | None = None
     single_param_name: str | None = None
     annotations: Mapping[str, Any] = field(default_factory=dict)
+    timeout: float | None = field(default=None, kw_only=True)
 
     def to_spec(self) -> ToolSpec:
         """产出 /chat/completions tools 参数的 wire 结构 (OpenAI 兼容)."""
@@ -90,6 +95,24 @@ class Tool:
         }
 
 
+def _validate_timeout(tool_name: str, timeout: float | None) -> None:
+    """超时配置的形状与值域校验 (注册期报错, 不留到运行时).
+
+    必须是**正数秒**: 0 与负数会让 `asyncio.timeout` 立刻开火或直接报错 (那是
+    另一个错, 报出来也看不懂), 字符串则连到都到不了那里.
+    """
+    if timeout is None:
+        return
+    if isinstance(timeout, bool) or not isinstance(timeout, int | float):
+        raise ToolConfigError(
+            f"工具 {tool_name} 的 timeout 应为秒数 (int / float), 实际: {timeout!r}"
+        )
+    if timeout <= 0:
+        raise ToolConfigError(
+            f"工具 {tool_name} 的 timeout 必须 > 0 秒, 实际: {timeout}"
+        )
+
+
 def _make_tool(
     fn: Callable[..., Any],
     *,
@@ -97,6 +120,7 @@ def _make_tool(
     description: str | None,
     schema_engine: str,
     annotations: Mapping[str, Any] | None,
+    timeout: float | None,
 ) -> Tool:
     """函数 → Tool: 生成 schema + 校验模型 (注册期配置错误抛 ToolConfigError)."""
     engine = _ENGINES.get(schema_engine)
@@ -117,6 +141,7 @@ def _make_tool(
             f"工具 {tool_name} 的 annotations 应为键值映射 (dict), 实际: "
             f"{type(annotations).__name__}"
         )
+    _validate_timeout(tool_name, timeout)
     tool_description = description or first_paragraph(fn) or tool_name
     info = engine(fn)
     return Tool(
@@ -127,6 +152,7 @@ def _make_tool(
         parameter_model=info.parameter_model,
         single_param_name=info.single_param_name,
         annotations=dict(annotations) if annotations else {},
+        timeout=timeout,
     )
 
 
@@ -137,6 +163,7 @@ def tool(
     description: str | None = None,
     schema: str = "pydantic",
     annotations: Mapping[str, Any] | None = None,
+    timeout: float | None = None,
 ) -> Tool | Callable[[Callable[..., Any]], Tool]:
     """把函数注册为 Tool (裸 @tool 或 @tool(name=..., description=...) 均可).
 
@@ -147,12 +174,15 @@ def tool(
         schema: schema 引擎, "pydantic" (默认, SOTA) / "manual" (教学对照).
         annotations: 给这个工具打的标记 (键值含义由业务自己定, 框架不解释也不
             进模型可见的 schema; 见 Tool.annotations).
+        timeout: 单次调用的超时秒数 (#15), 必须 > 0; None (缺省) 表示取框架的
+            全局值 (见 Tool.timeout).
 
     Returns:
         裸 @tool 返回 Tool; @tool(...) 返回装饰器, 应用到函数后返回 Tool.
 
     Raises:
-        ToolConfigError: 参数形态 / 类型注解 / 引擎名 / annotations 形状不合法.
+        ToolConfigError: 参数形态 / 类型注解 / 引擎名 / annotations 形状 /
+            timeout 取值不合法.
     """
     if fn is not None:
         if not callable(fn):
@@ -163,6 +193,7 @@ def tool(
             description=description,
             schema_engine=schema,
             annotations=annotations,
+            timeout=timeout,
         )
 
     def decorator(target: Callable[..., Any]) -> Tool:
@@ -172,6 +203,7 @@ def tool(
             description=description,
             schema_engine=schema,
             annotations=annotations,
+            timeout=timeout,
         )
 
     return decorator

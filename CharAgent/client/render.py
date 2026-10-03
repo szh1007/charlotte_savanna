@@ -267,6 +267,7 @@ _OUTCOME_TEXT: dict[LoopOutcome, str] = {
     LoopOutcome.TIME_LIMIT: "达到时间上限, 被迫停下",
     LoopOutcome.TRUNCATION_LIMIT: "反复截断, 未能在重试上限内写完",
     LoopOutcome.SERVER_INTERRUPTED: "上游中断了本次生成",
+    LoopOutcome.INTERRUPTED: "工具超时且结果未知, 本次运行已中断",
     # 挂起不是「答完了」也不是「出问题了」: 它是停在那儿等人 (命令行这条路上
     # 到不了 —— 挂起只由业务侧的审批规则产生, 见 CharApp 的客服页)
     LoopOutcome.SUSPENDED: "有一个操作等你确认, 停在这里了",

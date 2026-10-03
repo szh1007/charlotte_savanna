@@ -27,7 +27,7 @@
        快照 (供 checkpoint 落盘).
 - turn_count  整个 run 里模型决策了几次 = 几次 generate 调用.
 
-循环怎么停 (四种停法, 区别很重要):
+循环怎么停 (五种停法, 区别很重要):
 1. 模型自己停: 读完历史后决定不再调工具, 直接给出最终答复
    (finish_reason=stop) -> 正常结束, outcome=FINISHED, content=最终答复
    例外: 模型没答完就被截断 (finish_reason=length), 内容不完整不能当答案
@@ -44,15 +44,21 @@
    半截, 不能当最终答复返回, outcome=SERVER_INTERRUPTED. 资源不足属瞬态,
    官方指引稍后重试 —— 但**重试不归本层** (归重试层), 本层只如实上报,
    由调用方决定是否重放
-4. 挂起等人停 (#25 HITL): 模型要调一个**需要用户本人确认**的工具 (裁决点回了
+4. 结果未知停 (#15): 一次工具调用超时 (框架放弃等待, `ToolExecution.timed_out`)
+   —— 这次调用的结果未知, 写操作可能已经生效, 继续问模型就有「同一动作做两遍」
+   的风险, 于是这一批跑完直接收场 (outcome=INTERRUPTED). 与第 3 种的区别: 那是
+   **上游**打断了生成, 这是**框架自己**为防重复副作用主动停下; 取舍见 ADR-0024
+5. 挂起等人停 (#25 HITL): 模型要调一个**需要用户本人确认**的工具 (裁决点回了
    requires_approval), 于是那条调用**不执行**、整次运行停在半路 —— outcome=
    SUSPENDED, 那条调用在历史里欠着结果, 人给了结论再从存档点接着跑
-   (AgentLoop.resume 的 approval). 它与上面三种的根本区别: 上面三种都是「这一段
+   (AgentLoop.resume 的 approval). 它与上面四种的根本区别: 上面四种都是「这一段
    跑完了」, 它只是**停住**, 所以下游不收尾、不写终态
 
 本文件其他要点:
 - 错误自纠错 (#2): 工具失败不终止 —— 失败原因以 tool 消息回填给模型
-  (execute_tool 的可操作错误文本), 模型看懂后下一轮自己换参数重试
+  (execute_tool 的可操作错误文本), 模型看懂后下一轮自己换参数重试.
+  **一个例外**: 工具超时 (第 4 种停法) —— 那不是「工具说不行」, 是「结果未知」,
+  决定权不再交回模型
 - 消息历史是 OpenAI 兼容 wire dict, 直通 /chat/completions, 无中间模型
 - 循环本体在本文件; 刹车 (LoopGuard) 在 guard.py; 类型/错误/消息构造/事件
   载荷等静态零件在 utils/; 公共 API 由 CharAgent/agent/__init__.py 门面导出
@@ -148,6 +154,7 @@ from CharAgent.agent.utils.events import (
 )
 from CharAgent.agent.utils.messages import (
     APPROVAL_ALREADY_PENDING_TEXT,
+    RUN_INTERRUPTED_TEXT,
     TRUNCATION_CONDENSE_TEXT,
     TRUNCATION_CONTINUE_TEXT,
     accumulate_usage,
@@ -1029,6 +1036,14 @@ class AgentLoop:
         「一次确认配一份一次性载荷」要求载荷归属无歧义, 而两张确认卡同时弹出来,
         用户输的那个密码到底给了哪一条就成了说不清的事.
 
+        **工具超时 = 中断本次运行** (#15 / ADR-0024): 这一批里只要有一条
+        `timed_out` (框架放弃等待, 结果未知), 整批跑完就收场 (outcome=
+        INTERRUPTED), 不再问模型 —— 它可能换参数重发, 把同一个动作做两遍.
+        中断优先于挂起: 那一批里要人批的调用**一条都不执行** (结果没弄清前,
+        确认卡没有意义), 按失败回填. 中断那一批的每条调用照旧补 tool 消息 +
+        tool_result 事件 (连没执行的那条也要): 未闭合的 tool_call 会让终局事件
+        发不出去 (stream/bus.py 的状态机), 也会在落库那边留下 PENDING 孤儿.
+
         Returns:
             list[ToolCallFact]: 本轮那几条调用的事实 (含结果与耗时) —— 交给调用方
             随这一轮的记录一起落库 (见 `_record_turn`).
@@ -1070,19 +1085,31 @@ class AgentLoop:
         state.flushed = index + 1
 
         held = await self._execute_parallel(response.tool_calls, turn=state.turn_count)
-        suspended = next(
-            (item for item in held if isinstance(item, ApprovalRequest)), None
+        # 工具超时 (结果未知): 不再把决定权交给模型, 这一批跑完就收场 (#15).
+        # 它优先于挂起 —— 那次超时的结果没弄清前, 确认卡没有意义
+        interrupted = any(
+            isinstance(item, ToolExecution) and item.timed_out for item in held
         )
+        suspended = None
+        if not interrupted:
+            suspended = next(
+                (item for item in held if isinstance(item, ApprovalRequest)), None
+            )
         results: list[ToolExecution | ApprovalRequest] = []
         for call, result in zip(response.tool_calls, held, strict=True):
             if isinstance(result, ApprovalRequest):
                 if result is not suspended:
-                    # 同一批里第二条要批的: 不挂起它, 按普通工具失败回填 (理由见
-                    # 方法 docstring 的「一次挂起只挂一条」)
+                    # 不挂起它, 按普通工具失败回填. 两种来路: 同批里第二条要批的
+                    # (理由见 docstring 的「一次挂起只挂一条」); 或这一批正因超时
+                    # 中断 —— 那时**所有**要批的都在这里, 一条都不执行
                     result = ToolExecution(
                         tool_name=call.name,
                         ok=False,
-                        error=APPROVAL_ALREADY_PENDING_TEXT,
+                        error=(
+                            RUN_INTERRUPTED_TEXT
+                            if interrupted
+                            else APPROVAL_ALREADY_PENDING_TEXT
+                        ),
                     )
                 else:
                     results.append(result)
@@ -1103,7 +1130,13 @@ class AgentLoop:
                 call=call,
                 execution=result,
             )
-        if suspended is not None:
+        if interrupted:
+            # 这一轮到此为止: 有一条调用超时 (结果未知), 框架不再问模型 —— 历史已
+            # 全部回填 (上面每条都配了 tool 消息), 快照落的是这一批之后的状态,
+            # 终局事件由 emit_terminal 发成 error(code=interrupted)
+            state.outcome = LoopOutcome.INTERRUPTED
+            state.done = True
+        elif suspended is not None:
             # 这一轮到此为止: 上面那条调用欠着结果, 进度与「欠着谁」一起落进这一帧
             # (见 _save_checkpoint), 终局事件也换成 approval_required
             state.approval = suspended
@@ -1366,6 +1399,11 @@ class AgentLoop:
         那条回填通道 (模型的自纠错路径), 于是它可以说「好的, 那我不付了, 你可以
         自己到订单页付」—— 而这次运行照常收尾.
 
+        **补做的那条超时就另说** (#15 / ADR-0024): 人批过的调用 (多半正是付款)
+        补做时超时, 结果同样未知 —— 这一段的结局就是中断 (outcome=INTERRUPTED),
+        不再问模型. 判定必须在本方法内当场落定, 否则 `_run` 的 `while` 会接着问
+        下一轮, 把「中断」悄悄变成「继续」.
+
         为什么能还原出 ModelResponse: wire 历史里那条 assistant 消息就是模型当初
         说的话 (正文与 tool_calls 原样存在里面), 这里只是把它变回对象交给
         TurnRecord —— 不是编造新响应. 那一轮的 token 在挂起前那次 run 里已经记过
@@ -1427,6 +1465,15 @@ class AgentLoop:
                 call=call,
                 execution=result,
             )
+
+        if any(
+            isinstance(result, ToolExecution) and result.timed_out for result in results
+        ):
+            # 补做的那条超时 (结果未知): 这一段的结局是中断, 不再问模型. 判定落在
+            # 这里而不是返回后 —— 这一帧照旧按 SUSPENSION 落盘 (它说的正是「欠的
+            # 调用补做完了」这件事), 而 metadata 里的 outcome 记 interrupted
+            state.outcome = LoopOutcome.INTERRUPTED
+            state.done = True
 
         state.turn_count = turn
         return (

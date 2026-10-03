@@ -8,8 +8,10 @@
 | | 终局事件是 approval_required |
 | 挂起帧 | 来源是 `approval`、`state.suspension` 记着欠谁、事实里那条是 needs_approval |
 | 同一批里两条要批 | 只挂第一条, 第二条按普通工具失败回填 |
+| 同一批里「要人批」+ 超时 | 中断优先 (#15): 一条都不挂, 按失败回填 |
 | 恢复 (批准 / 拒绝) | 批准才执行; 拒绝把原因当工具结果回填, |
 | | 模型据此继续答 |
+| 恢复补做的那条超时 | 第二段就地中断 (结果未知), 不再问模型 |
 | 恢复时的护栏 | 「需人工确认」被人的结论抵消, 但**拒绝类护栏照常生效** |
 | 没有结论 | 当场报错, 那条调用一次都不跑 (绝不自动执行) |
 
@@ -20,15 +22,20 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
+from doubles import hang_forever
 from helpers import make_checkpoint, make_metadata, make_state
 from mock_llm import MockLLM, make_tool_call, text_response, tool_call_response
 
 from CharAgent.agent import AgentLoop, Approval, LoopOutcome
 from CharAgent.agent.utils.errors import LoopConfigError
-from CharAgent.agent.utils.messages import APPROVAL_ALREADY_PENDING_TEXT
+from CharAgent.agent.utils.messages import (
+    APPROVAL_ALREADY_PENDING_TEXT,
+    RUN_INTERRUPTED_TEXT,
+)
 from CharAgent.checkpoint import InMemoryCheckpointSaver
 from CharAgent.checkpoint.utils.types import (
     SUSPENSION_REASON_APPROVAL,
@@ -413,3 +420,92 @@ async def test_the_suspension_does_not_leak_into_the_next_segment():
     assert finished.state.suspension is None
     assert finished.metadata.source is CheckpointSource.LOOP
     assert finished.metadata.outcome == LoopOutcome.FINISHED.value
+
+
+# ---------------------------------------------------------------------------
+# 工具超时 = 中断本次运行 (#15 / ADR-0024): 优先于挂起, 恢复段同样生效
+# ---------------------------------------------------------------------------
+
+
+async def test_a_timeout_beats_a_suspension_in_the_same_batch():
+    """同一批里「要人批」与「工具超时」同时发生: 中断优先, 一条都不挂.
+
+    结果未知的那次调用没弄清前, 确认卡没有意义 —— 要批的那条**不执行**、按失败
+    回填 (而且不是「请先处理前一条」那句: 那张卡根本不存在), 整次运行以
+    interrupted 收场, 库里也不留下等人处理的东西.
+    """
+    saver = InMemoryCheckpointSaver()
+    hanging = tool(hang_forever, name="hang_forever", timeout=0.05)
+    hooks = HookRegistry()
+    hooks.register(HookPoint.BEFORE_TOOL_EXECUTE, Gate())
+    loop = AgentLoop(
+        MockLLM.scripted(
+            [
+                tool_call_response(
+                    make_tool_call("pay_order", '{"order_no": "A1"}', call_id="call_0"),
+                    make_tool_call("hang_forever", "{}", call_id="call_1"),
+                )
+            ]
+        ),
+        [pay_order, hanging],
+        hooks=hooks,
+        saver=saver,
+        thread_id="t-hitl",
+    )
+
+    result = await loop.run([USER_MSG])
+
+    assert result.outcome is LoopOutcome.INTERRUPTED
+    assert result.approval is None, "结果没弄清前, 不弹确认卡"
+    assert [m["role"] for m in result.messages] == ["user", "assistant", "tool", "tool"]
+    assert result.messages[2] == {
+        "role": "tool",
+        "tool_call_id": "call_0",
+        "content": RUN_INTERRUPTED_TEXT,
+    }, "要批那条一次都没执行, 按失败回填"
+    assert "执行超过 0.05 秒" in result.messages[3]["content"]
+
+    frame = (await saver.list_history("t-hitl"))[-1]
+    assert frame.state.suspension is None, "这一帧不欠任何人的结论"
+    assert frame.metadata.source is CheckpointSource.LOOP
+    assert frame.metadata.outcome == LoopOutcome.INTERRUPTED.value
+
+
+async def test_an_approved_call_that_times_out_interrupts_the_resume():
+    """恢复补做的那条超时 (结果未知): 第二段就地中断, 模型一次都没被问.
+
+    挂起等人批的调用多半正是「付款」—— 批了之后它超时, 结论与普通工具轮一样:
+    结果未知, 不再问模型 (ADR-0024). 那一刻的判定必须当场落定, 不然循环会接着
+    问下一轮, 把「中断」悄悄变成「继续」.
+    """
+    saver = InMemoryCheckpointSaver()
+    await suspend_once(saver)
+    frame = (await saver.list_history("t-hitl"))[-1]
+
+    async def hanging_pay(order_no: str) -> str:
+        """卡住的付款载体 (同名接管挂起帧里欠的那一条)."""
+        await asyncio.Event().wait()
+        return "太晚了"
+
+    model = MockLLM.scripted([text_response("这一轮不该发生")])
+    loop = AgentLoop(
+        model,
+        [tool(hanging_pay, name="pay_order", timeout=0.05)],
+        saver=saver,
+        thread_id="t-hitl",
+    )
+
+    result = await loop.resume(frame, approval=Approval.approve())
+
+    assert result.outcome is LoopOutcome.INTERRUPTED
+    assert result.approval is None
+    assert model.calls == [], "中断之后不再问模型"
+    assert [m["role"] for m in result.messages] == ["user", "assistant", "tool"]
+    assert "执行超过 0.05 秒" in result.messages[-1]["content"]
+
+    interrupted = (await saver.list_history("t-hitl"))[-1]
+    assert interrupted.metadata.source is CheckpointSource.SUSPENSION, (
+        "这一帧说的仍是「欠的调用补做完了」—— 只是补做的结果是中断"
+    )
+    assert interrupted.metadata.outcome == LoopOutcome.INTERRUPTED.value
+    assert interrupted.state.suspension is None

@@ -4,7 +4,8 @@
 RecordingSleep / FixedRandom 服务 #61 的确定性 (时间与随机性可注入) ·
 FakeRedisClient 服务 checkpoint 的 Redis 实现 · EventCollector 服务事件流断言与
 快照 (#4/#63) · PendingAwareDatabase 服务挂起-恢复那条路 (#25: 在假库之上补一条
-「按未决筛」的语义, 框架与业务两边的用例共用).
+「按未决筛」的语义, 框架与业务两边的用例共用) · `hang_forever` 服务超时那条路
+(#15: 永不返回的协程载体, 执行层与 loop 层两条用例共用).
 
 **假库本体 (`FakeRecordSession` / `FakeRecordDatabase` 与两个造行的) 自 issue 41 起
 住在 `CharAgent/db/testing.py`** —— 业务侧的离线跑分器也要一份记录层, 而它不该去
@@ -38,6 +39,7 @@ import 框架的测试结构. 本文件把它们原样转发 (老用例的 `from
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -65,6 +67,7 @@ __all__ = [
     "PendingAwareDatabase",
     "PendingAwareSession",
     "RecordingSleep",
+    "hang_forever",
     "record_message",
     "record_thread",
 ]
@@ -370,3 +373,14 @@ class PendingAwareDatabase(FakeRecordDatabase):
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self.session = PendingAwareSession(self)
+
+
+async def hang_forever() -> str:
+    """永不返回的协程载体 (#15): 等一个永远没人 set 的事件.
+
+    「工具卡住」的最小形态 —— 只有超时能把它收掉, 所以执行层 (execute_tool) 与
+    loop 层 (整轮会不会被拖死) 两条用例都用它. 两处各抄一份的话, 「永不返回」
+    这件事就有了两个要同步的实现 (与 EventCollector 同一个理由).
+    """
+    await asyncio.Event().wait()
+    return "到不了这里"

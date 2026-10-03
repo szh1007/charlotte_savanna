@@ -108,7 +108,12 @@ SETTLEABLE_RUN_STATUSES: frozenset[RunStatus] = TERMINAL_RUN_STATUSES | {
 # 映射的原则: **「跑完了但没给出答案」不算失败**. guard 刹车 (轮数 / token /
 # 超时) 与截断放弃都是「按规则主动停下的」, 属于正常收尾 —— 它们的降级话术由
 # 上层决定 (模板回复 / 转人工), 数据层只如实记一个 finished.
-# 真正算 failed 的只有「上游把这次生成打断了」: 内容可能只有半截, 不能当答案.
+# 算 failed 的有两种, 共同点是「这次运行出了事, 没有可用的答复」:
+# - 上游把生成打断了: 内容可能只有半截, 不能当答案
+# - 工具超时中断 (#15): 那次调用的结果未知 (可能已生效), 需要人跟进核实 ——
+#   它不是「按规则主动停下」那一族 (没人按停, 框架自己为防重复副作用中断),
+#   记 finished 会让「失败率」这个指标漏掉最该被看见的那一类
+# 被取消 (cancelled) 也不在这张表里: 那是**人按停**的另一种走法.
 #
 # 另一个可能让人意外的点: 重试 (RETRYING) **不在这张表里**. 因为它是**过程状态**
 # 而不是结束原因 —— 重试要么成功接着跑 (回到 running), 要么耗尽后以别的 outcome
@@ -120,6 +125,8 @@ RUN_STATUS_FOR_OUTCOME: dict[LoopOutcome, RunStatus] = {
     LoopOutcome.TIME_LIMIT: RunStatus.FINISHED,
     LoopOutcome.TRUNCATION_LIMIT: RunStatus.FINISHED,
     LoopOutcome.SERVER_INTERRUPTED: RunStatus.FAILED,
+    # 工具超时中断 (#15): 结果未知, 需要人跟进核实 (是不是已经生效) —— 理由见上
+    LoopOutcome.INTERRUPTED: RunStatus.FAILED,
     # 挂起等人 (#25 HITL): 不是失败也不是完成 —— 这一段的结局就是「停在这儿等人」,
     # 那一次运行还开着 (恢复沿用同一个 run_id, 见 CONTEXT.md 的「运行」词条)
     LoopOutcome.SUSPENDED: RunStatus.WAITING_USER,

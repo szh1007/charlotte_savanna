@@ -39,10 +39,11 @@ from CharAgent.model.utils.types import (
 
 class LoopOutcome(StrEnum):
     """Loop 结束原因全集 (循环与 guard 共享): 自然完成 / 软限制 / 截断放弃 /
-    上游中断 / 挂起等人.
+    上游中断 / 工具超时中断 / 挂起等人.
 
-    FINISHED / TRUNCATION_LIMIT / SERVER_INTERRUPTED / SUSPENDED 由 AgentLoop
-    判定; MAX_TURNS / TOKEN_BUDGET / TIME_LIMIT 由 LoopGuard.check_after_turn 判定.
+    FINISHED / TRUNCATION_LIMIT / SERVER_INTERRUPTED / INTERRUPTED / SUSPENDED
+    由 AgentLoop 判定; MAX_TURNS / TOKEN_BUDGET / TIME_LIMIT 由
+    LoopGuard.check_after_turn 判定.
     """
 
     FINISHED = "finished"  # 模型给出最终答案 (finish_reason=stop), 正常结束
@@ -54,6 +55,11 @@ class LoopOutcome(StrEnum):
     # 可能只是半截, 故不作最终答复返回. 资源不足属瞬态, 重放决策留给调用方
     # (框架重试归重试层)
     SERVER_INTERRUPTED = "server_interrupted"
+    # 工具超时 (框架那道闸放弃等待, #15): 这次调用的**结果未知** —— 它可能已经
+    # 生效. 把决定权交回模型, 它可能换参数再发一次 (同一动作执行两遍), 于是框架
+    # 不再问下一轮, 直接收场 (取舍见 ADR-0024). 与上面那条的区别: 那个是**上游**
+    # 打断了生成, 这个是**框架自己**为防重复副作用主动停下
+    INTERRUPTED = "interrupted"
     # 挂起等人给结论 (#25 HITL): 模型这一轮要调一个需要用户本人确认的工具, 于是
     # **不执行它**, 把进度连同那条欠着的调用一起存档等人. 它**不是**结束 —— 人给
     # 了结论就从存档点接着跑 (同一次运行的下一段), 所以下游要能把它与「这一轮答完

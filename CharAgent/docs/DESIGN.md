@@ -150,12 +150,14 @@
 - **#13 重试放哪一层**：包在**模型调用层**（`RetryingChatModel` 组合包装 ChatModel，SPI 用法），loop 与 model 零改动 —— 这是「在哪切一刀」的典型判断。
 - **#16 是全框架的主心骨**：模型只「建议」下一步动作，真正推进状态的是执行层（runtime）—— 这样多轮之间状态才一致、可控。状态集合：`created` / `running` / `waiting_tool` / `waiting_user` / `retrying` / `failed` / `finished` / `cancelled`。
 - **#17 #18 副作用与取消是一对**：幂等键（`request_id` / `task_id` / `operation_id`）标识一次操作；Saga 正向依次执行、任一步失败**逆序补偿**；取消时要连带释放协程与连接，已执行的副作用关联幂等键走补偿，不留半截状态。
-- **#17 的调用方定了：HITL 挂起-恢复（2026-09-24 改判）**。它挡的是「**同一个动作被执行两次**」，而框架里此前**不存在这条路径** —— 重试只包模型调用（见上一条「重试放哪一层」），工具执行是「跑一次 → 失败文本回填 → **模型自己决定要不要再发一次**」（`tool/executor.py` 的 `execute_tool` 永不抛异常、无循环、无超时），而模型重发**是一次新的调用**，不是同一个动作的重放。
+- **#17 的调用方定了：HITL 挂起-恢复（2026-09-24 改判）**。它挡的是「**同一个动作被执行两次**」，而框架里此前**不存在这条路径** —— 重试只包模型调用（见上一条「重试放哪一层」），工具执行是「跑一次 → 失败文本回填 → **模型自己决定要不要再发一次**」（`tool/executor.py` 的 `execute_tool` 永不抛异常、无循环、**当时也没有超时** —— 超时那一层 2026-10-03 补上，见下面 #15 那一条），而模型重发**是一次新的调用**，不是同一个动作的重放。
   **2026-09-22 曾记过「两个都还没做，所以 #15 与 #17 要么一起做、要么都不做」—— 那条判断 2026-09-24 改判。** 原文给的理由是「超时造成『结果未知』，而『结果未知』必须先靠幂等解决」，这说的是 **#15 依赖 #17**，从头到尾没说 #17 依赖 #15：依赖方向是单向的，所以可以拆。而 #17 缺的从来不是"超时"这个调用方，是**任何**调用方 —— HITL 的挂起-恢复**正是原文自己点名的两条之一**，且恢复被触发两次不是理论风险（`POST /runs/{run_id}/resume` 是 HTTP 端点，双击、重发、重试都会产生第二次，而重放的是"给这一单付款"）。于是：**L3 做 #17，#15 继续推后**（分级超时那套设计原样留在上文，等真机上一次工具卡住时再取用）。
   重放的键是 `(run_id, message_id, tool_call_id)` —— 三列，不是两列（上游每轮从 `call_0` 重新编号，少了 `message_id` 在多轮之间会撞，见 `db/schema.py` 那段注释）。存储要**连持久化一起补**：P0 这个进程内 dict 记不住跨进程的重放，而两次恢复**跨进程**（`db/README.md` 已规划 `idempotency_keys` 表）。同一段话也写在 `retry/idempotency.py` 的模块 docstring 里。
 - **#20 #21 #22 是同一问题的三个尺度**：进程内 asyncio 队列（单实例）→ 分布式锁（跨进程互斥，进程内锁失效）→ 限流算法（固定窗口 / 滑动窗口 / 令牌桶 / 漏桶）。P0 形态是进程内幂等 store，Redis + TTL + Saga 属后续阶段。
+- **#15 缺的只是中间那一层，而两条路的取消语义不同（2026-10-03 落地）**。三层里**模型层（60 秒）与 run 层（业务配的墙钟预算）本来就在**，空的只有工具层 —— 于是在 `tool/executor.py` 的调用那一步套一层 `asyncio.timeout`（缺省 30 秒，见 `tool/utils/config.py`；单工具可 `@tool(timeout=...)` 覆盖）。**难点不在超时本身，在「掐掉的是什么」**：协程工具到点被 cancel，真的停了；**同步工具跑在线程池里，超时掐不掉线程** —— 只能不再等它，线程会跑到函数自己返回，于是那条日志如实记一句（`thread_still_running`），对有副作用的工具这意味着**副作用仍可能发生**。两条边界一并钉住：**工具自己抛的 `TimeoutError` 不算框架超时**（`guard.expired()` 认自己那一次），**`CancelledError` 照旧不被吞**（kill switch 优先于超时那道闸）。
+  **2026-10-04 改判（`CharApp/docs/adr/0024`）**：超时之后不再「回填文案让模型自己决定」—— 结果未知（可能已生效），把决定权交回模型就有重复写操作的风险，于是**任何工具超时都中断本次运行**（`outcome=interrupted`，终局事件 `error(code="interrupted")`，前端显示已中断）。tool 消息仍回填（wire 必须配对），但文案只陈述事实（结果未知 / 不要直接重试 / 先核实），**不再是「给模型的下一步」**；同一批里未执行的兄弟调用也一律回填，中断优先于人工确认挂起。`0023` 第 3 条就此被改判，其余各条（分层取值 / 同步工具「不再等它」 / `CancelledError` 不吞）原样保留。
 
-**落地**：`retry/policy.py`（退避与上限）、`retry/chat_model.py`（组合包装）、`retry/idempotency.py`（`IdempotencyKey` + 进程内 `IdempotencyStore`，claim / complete / release）、`retry/executor.py`。
+**落地**：`retry/policy.py`（退避与上限）、`retry/chat_model.py`（组合包装）、`retry/idempotency.py`（`IdempotencyKey` + 进程内 `IdempotencyStore`，claim / complete / release）、`retry/executor.py`；#15 见上（`tool/executor.py` 的 `_invoke_with_timeout` + `tool/utils/config.py`；**超时中断的判定在 `agent/loop.py`**，映射三处见 `CharApp/docs/adr/0024`）。
 
 ### ③ 安全（#23-30）
 

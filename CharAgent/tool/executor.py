@@ -6,10 +6,20 @@
 ok/content/error 回填 tool_result 消息.
 
 职责边界 (拆分后):
-- 面向模型的文案生成 (ValidationError 映射 / 内部错误文案) 在 utils/messages.py
-- 异常语义 (ToolActionableError / ToolConfigError) 在 utils/errors.py
+- 面向模型的文案生成 (ValidationError 映射 / 内部错误 / 超时文案) 在 utils/messages.py
+- 异常语义 (ToolActionableError / ToolTimeoutError / ToolConfigError) 在 utils/errors.py
+- 超时的缺省值在 utils/config.py
 - 本模块只留执行链: 解析 → 校验 (pydantic 引擎 model_validate / manual 引擎
-  形状检查兜底) → 调用 (sync 进线程池) → 结果文本化 → ToolExecution
+  形状检查兜底) → 调用 (sync 进线程池, 带超时) → 结果文本化 → ToolExecution
+
+**超时这一段的取消语义分两条路** (#15, 本模块最要紧的一条):
+- 协程工具: `asyncio.timeout` 在到点那一下 cancel 掉那个协程 —— 它真的停了.
+- 同步工具: 跑在 `asyncio.to_thread` 的线程池里, 超时**掐不掉线程** —— 只能
+  放弃等待, 线程会一直跑到函数自己返回. 这条边界在日志里如实记一条
+  (`thread_still_running`), 取舍与代价见 ADR-0023.
+- 两条路共同的后果: 结果未知. 于是超时的那条结果带上 `timed_out=True`, loop
+  据此**中断本次运行** (不把决定权交回模型, 免得同一动作被执行两遍) —— 取舍
+  见 ADR-0024.
 """
 
 from __future__ import annotations
@@ -24,9 +34,17 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
+from CharAgent.structured_logging import get_logger
 from CharAgent.tool.decorator import Tool
-from CharAgent.tool.utils.errors import ToolActionableError
-from CharAgent.tool.utils.messages import INTERNAL_ERROR_TEXT, validation_error_text
+from CharAgent.tool.utils.config import DEFAULT_TOOL_TIMEOUT_SECONDS
+from CharAgent.tool.utils.errors import ToolActionableError, ToolTimeoutError
+from CharAgent.tool.utils.messages import (
+    INTERNAL_ERROR_TEXT,
+    timeout_error_text,
+    validation_error_text,
+)
+
+logger = get_logger("tool")
 
 
 @dataclass(slots=True)
@@ -41,6 +59,9 @@ class ToolExecution:
         exception: 失败根因 (ToolActionableError 或意外异常; 仅日志/审计用,
             不回填模型).
         duration_ms: 执行耗时 (含校验), 供事件/metrics.
+        timed_out: 这次失败是**框架那道超时闸**放弃等待造成的 (#15; 工具自己
+            抛的 TimeoutError 不算 —— 那是它报的故障). 于是这次调用的结果未知,
+            loop 据此中断本次运行, 不把决定权交回模型 (ADR-0024).
     """
 
     tool_name: str
@@ -49,6 +70,7 @@ class ToolExecution:
     error: str | None = None
     exception: BaseException | None = None
     duration_ms: float = 0.0
+    timed_out: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +193,47 @@ async def _invoke(tool: Tool, call_kwargs: dict[str, Any]) -> Any:
     return await asyncio.to_thread(fn, **call_kwargs)
 
 
+async def _invoke_with_timeout(tool: Tool, call_kwargs: dict[str, Any]) -> Any:
+    """按超时调用工具 (#15): 到点不再等它返回, 抛 ToolTimeoutError (可操作文本).
+
+    **两条路的取消语义不同** (本片的核心, 不是实现细节):
+    - 协程函数: 到点那一下把协程 cancel 掉 —— 它是真的停了.
+    - 同步函数: 只**放弃等待**, 线程照跑到函数自己返回; 于是这里记一条日志
+      (`thread_still_running`) —— 对有副作用的工具, 这意味着**副作用仍可能发生**.
+
+    工具自己抛的 `TimeoutError` (如 socket / 连接池超时) **不算**框架超时: 用
+    `Timeout.expired()` 认自己那一次, 其余原样上抛, 走意外异常那条路回填 ——
+    否则会把它谎报成「框架等够 N 秒放弃了」.
+
+    抛出的 `ToolTimeoutError` 会让 `execute_tool` 把结果标成 `timed_out`,
+    于是 loop 中断本次运行 (结果未知, 不许模型接着决策, ADR-0024) —— 本函数
+    只负责「到点不再等」, 收场是循环层的事.
+    """
+    limit = tool.timeout if tool.timeout is not None else DEFAULT_TOOL_TIMEOUT_SECONDS
+    # 名字带 timeout 前缀: 仓里的 `guard` 一律指 LoopGuard (run 层的墙钟刹车),
+    # 这个是超时那道闸, 两回事
+    timeout_guard = asyncio.timeout(limit)
+    try:
+        async with timeout_guard:
+            return await _invoke(tool, call_kwargs)
+    except TimeoutError as exc:
+        if not timeout_guard.expired():
+            raise
+        if not inspect.iscoroutinefunction(tool.fn):
+            logger.warning(
+                "工具 %s 超时 (%.3g 秒): 它是同步函数, 取消不掉 —— 线程仍在后台"
+                "运行到函数自己返回, 副作用可能仍然发生",
+                tool.name,
+                limit,
+                extra={
+                    "tool": tool.name,
+                    "timeout_seconds": limit,
+                    "thread_still_running": True,
+                },
+            )
+        raise ToolTimeoutError(timeout_error_text(tool.name, limit)) from exc
+
+
 # ---------------------------------------------------------------------------
 # 对外入口
 # ---------------------------------------------------------------------------
@@ -178,6 +241,13 @@ async def _invoke(tool: Tool, call_kwargs: dict[str, Any]) -> Any:
 
 async def execute_tool(tool: Tool, *, arguments: str) -> ToolExecution:
     """执行一次工具调用 (解析 → 校验 → 调用 → 规范化), 永不抛异常.
+
+    调用那一步**带超时** (#15): 到点不再等它返回, 回填可操作错误 —— 超时也是
+    「失败也回填可操作文本」这一条契约的一部分, 不许伪装成「工具返回了空结果」.
+    超时那条结果另带 `timed_out=True`: 它的结果未知 (可能已生效), 由 loop 据此
+    **中断本次运行** (ADR-0024) —— 本函数不替它做收场决定.
+    唯一**不**被这里接住的异常是 `CancelledError` (kill switch, #3): 它属
+    BaseException, 直接向上传播, 超时那道闸不许把它吞成普通失败.
 
     Args:
         tool: 注册的 Tool 对象.
@@ -187,7 +257,8 @@ async def execute_tool(tool: Tool, *, arguments: str) -> ToolExecution:
     Returns:
         ToolExecution: ok=True 时 content 为回填文本; ok=False 时 error 为
         可操作错误文本, exception 保留失败根因 (仅日志, 不回填模型).
-        duration_ms 恒记录执行耗时.
+        duration_ms 恒记录执行耗时 (超时那次 = 放弃等待的那一刻);
+        timed_out 只对框架自己掐的那次超时为 True.
     """
     started = time.perf_counter()
     execution = ToolExecution(tool_name=tool.name, ok=False)
@@ -203,12 +274,16 @@ async def execute_tool(tool: Tool, *, arguments: str) -> ToolExecution:
             execution.error = error
         else:
             try:
-                # 执行工具
-                result = await _invoke(tool, call_kwargs)
+                # 执行工具 (带超时; 超时本身抛 ToolTimeoutError, 走下面第一条支路)
+                result = await _invoke_with_timeout(tool, call_kwargs)
             except ToolActionableError as exc:
-                # 可操作错误直接原文透传
+                # 可操作错误直接原文透传 (超时那条也在这里 —— 它是它的子类)
                 execution.error = str(exc)
                 execution.exception = exc
+                # 框架那道闸掐的超时: 结果未知, loop 会据这个标记中断本次运行.
+                # 类型即声明 —— 工具作者自己抛 ToolTimeoutError 也算 (他说的是
+                # 同一件事); 内置 TimeoutError 走上一条 except, 不置位
+                execution.timed_out = isinstance(exc, ToolTimeoutError)
             except Exception as exc:
                 # 意外异常统一包装, 不外泄 traceback
                 execution.error = INTERNAL_ERROR_TEXT

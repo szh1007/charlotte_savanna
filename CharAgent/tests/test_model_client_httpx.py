@@ -13,6 +13,7 @@ import pytest
 import respx
 from helpers import (
     API_KEY,
+    BASE_URL,
     CHAT_URL,
     TOOL_SCHEMA,
     sse_chunk,
@@ -552,3 +553,23 @@ async def test_timeout_maps_to_transient(
 def test_api_key_required_at_construction() -> None:
     with pytest.raises(ModelConfigError, match="api_key"):
         HttpXChatModel(api_key="")
+
+
+async def test_the_request_timeout_is_the_configured_one(
+    chat_model: HttpXChatModel,
+) -> None:
+    """单请求超时 (缺省 60 秒) 真的装进了 httpx 客户端 —— 分层超时的 model 层 (#15).
+
+    「核实」而不是「新功能」: 60 秒从最初就在构造参数上, 但此前没有用例钉着它 ——
+    谁把 `timeout=` 从 `httpx.AsyncClient` 那一行拿掉、或改成别的数, 都没人拦,
+    而分层超时里模型那一层正是靠它成立 (工具层 30 秒 < 模型层 60 秒).
+    """
+    assert chat_model._client.timeout == httpx.Timeout(60.0)
+
+    tight = HttpXChatModel(
+        api_key=API_KEY, base_url=BASE_URL, model="deepseek-flash", timeout=5.0
+    )
+    try:
+        assert tight._client.timeout == httpx.Timeout(5.0), "构造参数优先于缺省值"
+    finally:
+        await tight.aclose()

@@ -258,6 +258,8 @@ def test_a_loop_outcome_maps_to_whether_this_run_counts() -> None:
     assert run_outcome_of(LoopOutcome.TRUNCATION_LIMIT) is RunOutcome.TRUNCATED
     assert run_outcome_of(LoopOutcome.SUSPENDED) is RunOutcome.SUSPENDED
     assert run_outcome_of(LoopOutcome.SERVER_INTERRUPTED) is RunOutcome.BROKEN
+    # 工具超时中断 (#15): 没答完, 而且是「结果未知」那一类 —— 不算数 (BROKEN)
+    assert run_outcome_of(LoopOutcome.INTERRUPTED) is RunOutcome.BROKEN
 
 
 def test_a_metric_without_a_denominator_has_no_rate() -> None:

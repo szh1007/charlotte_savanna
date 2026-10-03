@@ -6,19 +6,31 @@
 - 作者 raise ToolActionableError: 原文透传
 - 意外异常: 通用内部错误文案 (不外泄 traceback), 根因保留 exception
 - 畸形 JSON / 非对象 arguments 的可操作提示
+- **工具级超时 (#15)**: 协程卡住 → 到点中止 + 可操作文本; 同步卡住 → 只放弃
+  等待 (线程照跑, 日志如实记一条); 缺省值取全局配置; 取消 (kill switch) 不被
+  超时那道闸吞掉
 
 载体工具就地定义 (Seam 3); 类型需模块顶层可见.
 """
 
 from __future__ import annotations
 
+import asyncio
+import json
+import time
 from enum import StrEnum
 from typing import Annotated, Literal
 
+import pytest
+from doubles import hang_forever
 from pydantic import BaseModel, Field
 
+import CharAgent.tool.executor as executor_module
 from CharAgent.tool import (
+    Tool,
     ToolActionableError,
+    ToolConfigError,
+    ToolTimeoutError,
     execute_tool,
     tool,
 )
@@ -140,6 +152,18 @@ def _pick_color(
     return f"picked {color.value}"
 
 
+async def _raise_its_own_timeout() -> str:
+    """工具自己抛 TimeoutError 的载体 (如 socket / 连接池超时, 不是框架掐的)."""
+
+    raise TimeoutError("socket timed out")
+
+
+async def _raise_the_timeout_type() -> str:
+    """工具自己抛 ToolTimeoutError 的载体 (按同一语义声明「结果未知」)."""
+
+    raise ToolTimeoutError("下游连接读超时, 结果未知")
+
+
 # 模块级注册 (供用例复用)
 ECHO = tool(_echo_sync)
 ECHO_ASYNC = tool(_echo_async)
@@ -151,6 +175,11 @@ NONE_TOOL = tool(_returns_none)
 SINGLE = tool(_single_model_fn)
 PICK_COLOR = tool(_pick_color)
 MANUAL_ECHO = tool(_manual_echo, schema="manual")
+# 超时载体: 0.05 秒够短 (用例不必真等), 又远大于「函数调用本身」的开销
+HANG_ASYNC = tool(hang_forever, name="hang_async", timeout=0.05)
+HANG_ASYNC_BY_DEFAULT = tool(hang_forever, name="hang_async_by_default")
+SELF_TIMEOUT = tool(_raise_its_own_timeout, name="self_timeout")
+DECLARED_TIMEOUT = tool(_raise_the_timeout_type, name="declared_timeout")
 
 
 # ---------------------------------------------------------------------------
@@ -369,3 +398,150 @@ async def test_int_from_float_reports_integer_hint():
     assert not execution.ok
     assert "类型错误: 期望 整数 (int)" in execution.error
     assert "实际: 2.5" in execution.error
+
+
+# ---------------------------------------------------------------------------
+# 工具级超时 (#15): 到点不再等, 但如实说清「等的是什么」
+# ---------------------------------------------------------------------------
+
+
+async def test_async_tool_timeout_backfills_actionable_text():
+    """协程工具永不返回: 到点中止, 回填「发生了什么 + 结果未知」而不是空结果."""
+    started = time.perf_counter()
+    execution = await execute_tool(HANG_ASYNC, arguments="{}")
+    elapsed = time.perf_counter() - started
+
+    assert not execution.ok
+    assert execution.content == "", "超时不许伪装成「工具返回了空结果」"
+    assert "内部错误" not in execution.error, "超时不是意外故障, 有自己的文案"
+    assert "执行超过 0.05 秒" in execution.error
+    assert "结果未知" in execution.error, "结果可能已生效, 这层如实要说"
+    assert "不要直接重试" in execution.error, "有副作用的工具可能已经生效, 要当场提醒"
+    assert isinstance(execution.exception, ToolTimeoutError)
+    assert execution.timed_out is True, "框架那道闸掐的: loop 据它中断本次运行"
+    assert elapsed < 1, f"它是「到点就回」的, 实测等了 {elapsed:.2f} 秒"
+
+
+async def test_sync_tool_timeout_leaves_its_thread_running(log_stream):
+    """同步工具超时只能「不再等它」: 线程照跑到函数自己返回, 日志如实记一条."""
+    finished: list[str] = []
+
+    def blocking(
+        seconds: Annotated[float, Field(description="占住线程的秒数")],
+    ) -> str:
+        """同步阻塞载体 (跑在线程池里, 超时掐不掉)."""
+        time.sleep(seconds)
+        finished.append("done")
+        return "醒了"
+
+    blocking_tool = tool(blocking, name="blocking_tool", timeout=0.05)
+
+    execution = await execute_tool(blocking_tool, arguments='{"seconds": 0.5}')
+
+    assert not execution.ok and "执行超过 0.05 秒" in execution.error
+    assert execution.timed_out is True, "同步那条也是框架掐的 (线程还跑着不代表没超时)"
+    assert finished == [], "已经放弃等待了 —— 函数这时还没跑完"
+
+    records = [json.loads(line) for line in log_stream.getvalue().splitlines()]
+    record = next(item for item in records if item.get("tool") == "blocking_tool")
+    assert record["thread_still_running"] is True, "这条边界要如实记下来"
+    assert "线程" in record["msg"]
+
+    await asyncio.sleep(0.7)
+    assert finished == ["done"], (
+        "线程没停 —— 它一直跑到函数自己返回 (日志说的正是这件事)"
+    )
+
+
+async def test_tool_without_timeout_uses_the_global_default(monkeypatch):
+    """没写 timeout 的工具取全局配置 —— 工具级缺省 → 全局默认这条链真的通."""
+    monkeypatch.setattr(executor_module, "DEFAULT_TOOL_TIMEOUT_SECONDS", 0.05)
+
+    execution = await execute_tool(HANG_ASYNC_BY_DEFAULT, arguments="{}")
+
+    assert not execution.ok and "执行超过 0.05 秒" in execution.error
+
+
+async def test_a_tools_own_timeout_error_is_not_reported_as_a_tool_timeout():
+    """工具自己抛的 TimeoutError 不是框架掐的: 走意外异常那条路, 不谎报超时."""
+    execution = await execute_tool(SELF_TIMEOUT, arguments="{}")
+
+    assert not execution.ok
+    assert "执行超过" not in execution.error
+    assert "内部错误" in execution.error
+    assert isinstance(execution.exception, TimeoutError)
+    assert execution.timed_out is False, "工具报的故障不等于「框架放弃等待」"
+
+
+async def test_a_tool_raising_the_timeout_type_is_an_unknown_outcome():
+    """工具作者按同一语义抛 `ToolTimeoutError`: 类型即声明 —— 同样算结果未知.
+
+    与上一条的分界: 内置 `TimeoutError` 是「它报了一个故障」(走意外异常文案,
+    运行照旧), 而 `ToolTimeoutError` 是「这次调用的结果不知道」—— 工具自己抛它
+    时说的是同一件事, 于是 loop 同样中断本次运行 (ADR-0024).
+    """
+    execution = await execute_tool(DECLARED_TIMEOUT, arguments="{}")
+
+    assert not execution.ok
+    assert execution.error == "下游连接读超时, 结果未知", "作者的话原样透传"
+    assert execution.timed_out is True
+
+
+async def test_the_timeout_guard_does_not_swallow_the_kill_switch():
+    """工具执行中按停: CancelledError 原样传出, 工具不重跑 (#3) —— 超时闸不吞它."""
+    entered = asyncio.Event()
+    runs: list[str] = []
+
+    async def slow_tool() -> str:
+        """慢慢返回的载体 (取消必须从这里打断它)."""
+        runs.append("started")
+        entered.set()
+        await asyncio.sleep(10)
+        return "太晚了"
+
+    slow = tool(slow_tool, name="slow_tool", timeout=30)
+    task = asyncio.create_task(execute_tool(slow, arguments="{}"))
+
+    await entered.wait()  # 工具已经开跑, 取消要打断的正是它
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert runs == ["started"], "取消不是重试的触发点: 工具从头到尾只被调过一次"
+    pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    assert pending == [], "取消传播干净, 没有留下后台任务"
+
+
+# ---------------------------------------------------------------------------
+# timeout 是工具级配置 (注册期校验)
+# ---------------------------------------------------------------------------
+
+
+def test_timeout_is_configured_per_tool():
+    """timeout 按工具给: 显式给了用它, 没给是 None (缺省 → 全局配置)."""
+    assert tool(_echo_sync, timeout=2.5).timeout == 2.5
+    assert tool(_echo_sync).timeout is None
+
+
+def test_timeout_does_not_change_the_existing_tool_signature():
+    """既有构造签名一个字没动: 前七个字段照旧, timeout 只能按关键字给."""
+    built = Tool(
+        _echo_sync.__name__,
+        "说明",
+        _echo_sync,
+        {"type": "object"},
+        None,
+        None,
+        {"writes": True},
+    )
+    assert built.timeout is None, "老写法不写 timeout 也能构造 (取全局默认)"
+
+    with pytest.raises(TypeError):
+        Tool(_echo_sync.__name__, "说明", _echo_sync, {}, None, None, {}, 1.0)
+
+
+@pytest.mark.parametrize("bad", [0, -1, "30"])
+def test_a_bad_timeout_is_a_registration_error(bad):
+    """超时必须是正数秒 —— 配置错误在注册期当场报, 不留到运行时才现形."""
+    with pytest.raises(ToolConfigError):
+        tool(_echo_sync, timeout=bad)

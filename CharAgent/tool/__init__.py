@@ -10,14 +10,16 @@
 
 结构总览 (顶层 = 行为模块; 对齐 model 包「顶层行为 + utils 支撑」惯例):
 - decorator.py      @tool 装饰器 + Tool 数据类 (name/description/schema/校验模型)
-- executor.py       execute_tool 执行主流程: JSON 解析 → 校验 → 调用 → 规范化
+- executor.py       execute_tool 执行主流程: JSON 解析 → 校验 → 调用 (带超时,
+                    #15) → 规范化
 - tools_demo.py     演示工具集: 5 pydantic SOTA + 1 manual 对照 (业务无关,
                     供 agent loop / CLI 复用; 业务工具属业务 demo 层)
 - schema/           子包: 双引擎分开 —— engine_pydantic (SOTA 主路径) /
                     engine_manual (教学对照) + 共享支撑 signature (签名/docstring
                     内省) / types (产出类型)
 - utils/            支撑子包: errors (异常语义) / messages (面向模型的可操作
-                    文案生成, executor 拆出的独立纯函数)
+                    文案生成, executor 拆出的独立纯函数) / config (工具级超时的
+                    缺省值, #15)
 
 模块内部 import 走具体模块路径 (utils/errors, schema.signature 等), 不绕
 包门面, 避免隐式循环依赖; 对外公共 API 统一由本文件与 schema/__init__ 导出.
@@ -36,6 +38,7 @@ from CharAgent.tool.utils.errors import (
     ToolActionableError,
     ToolConfigError,
     ToolError,
+    ToolTimeoutError,
 )
 
 __all__ = [
@@ -45,6 +48,7 @@ __all__ = [
     "ToolError",
     "ToolExecution",
     "ToolSchemaInfo",
+    "ToolTimeoutError",
     "build_manual_schema",
     "build_pydantic_schema",
     "execute_tool",
