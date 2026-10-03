@@ -459,12 +459,7 @@ def main() -> int:
         logger.error("启动失败: %s: %s", type(exc).__name__, exc)
         return 1
 
-    logger.info(
-        "客服服务启动中: http://%s:%d (七条路: 问一句 / 停一次 / 读历史 / 列会话 / "
-        "改名 / 置顶 / 删除)",
-        config.host,
-        config.port,
-    )
+    logger.info("CharApp server running on http://%s:%d", config.host, config.port)
     try:
         asyncio.run(_serve(create_minimall_app(service, config), service, config))
     except KeyboardInterrupt:
