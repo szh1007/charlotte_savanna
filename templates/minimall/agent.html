@@ -159,10 +159,42 @@
   .agent-approval-note { font-size: 12px; color: #868e96; line-height: 1.7; }
   .agent-approval-note:not(:empty) { margin-top: 8px; }
   .agent-approval-note.agent-error { color: #e03131; }
+  /* 逐句引用 (L5-c): 答复里那个 [n] 与它点开的来源卡.
+     标记做成一枚小圆角块 —— 它嵌在正文行里, 太显眼会打断阅读; 打开中的那一枚反色,
+     好让用户知道卡片说的是哪一句. 卡片沿用确认卡那套「白底 + 圆角 + 浅边」的版式:
+     两者都是「服务端给的结构化东西」, 长成一个样子用户才好认. */
+  .agent-cite { display: inline-block; margin: 0 1px; padding: 0 5px; background: #f1f3f5; color: #868e96; border: 1px solid #e9ecef; border-radius: 6px; font-size: 11px; line-height: 1.6; cursor: pointer; vertical-align: 1px; font-family: inherit; transition: all .15s; }
+  .agent-cite:hover { border-color: #ff6b6b; color: #ff6b6b; }
+  .agent-cite.agent-cite-open { background: #ff6b6b; border-color: #ff6b6b; color: #fff; }
+  .agent-source { margin: 10px 0; padding: 12px 14px; background: #fff; border: 1.5px solid #e9ecef; border-radius: 10px; max-width: 520px; }
+  .agent-source-title { font-size: 13px; font-weight: 600; color: #495057; line-height: 1.7; }
+  .agent-source-title::before { content: '📄 '; }
+  .agent-source-snippet { margin-top: 6px; font-size: 13px; color: #868e96; line-height: 1.8; word-break: break-word; }
+  /* 答复与引文的 markdown 版式 (L5-展示): 只覆盖渲染器真会产出的那几个类.
+     字号按"聊天里的一小段话"来定 —— 标题比正文大一点点就够, 不摆 h1 的架子
+     (所以渲染出来的是 div 而不是 h1~h6: 那会顶进文档大纲, 而这只隔着一句话). */
+  .agent-md-h { margin: 8px 0 4px; font-weight: 600; color: #343a40; line-height: 1.6; }
+  .agent-md-h1 { font-size: 17px; }
+  .agent-md-h2 { font-size: 16px; }
+  .agent-md-h3 { font-size: 15px; }
+  .agent-md-h4, .agent-md-h5, .agent-md-h6 { font-size: 14px; }
+  .agent-md-p { margin: 6px 0; }
+  .agent-md-list { margin: 6px 0; padding-left: 22px; }
+  .agent-md-list li { margin: 2px 0; }
+  .agent-md-quote { margin: 6px 0; padding: 2px 12px; border-left: 3px solid #e9ecef; color: #868e96; }
+  .agent-md-pre { margin: 8px 0; padding: 10px 12px; background: #f8f9fa; border: 1px solid #f0f2f5; border-radius: 8px; font-size: 13px; line-height: 1.6; overflow-x: auto; }
+  .agent-md-code { padding: 1px 5px; background: #f1f3f5; border-radius: 5px; font-size: 13px; }
+  .agent-md-hr { margin: 10px 0; border: none; border-top: 1px solid #f0f2f5; }
+  .agent-md-link { color: #ff6b6b; }
+  /* 块自己带上下边距, 首尾两个不再往外顶 (否则答复与上方的过程行之间会空一格) */
+  .agent-body > :first-child, .agent-source-snippet > :first-child { margin-top: 0; }
+  .agent-body > :last-child, .agent-source-snippet > :last-child { margin-bottom: 0; }
   .agent-reasoning { margin: 8px 0; font-size: 13px; color: #868e96; }
   .agent-reasoning summary { cursor: pointer; color: #adb5bd; outline: none; }
   .agent-reasoning-text { white-space: pre-wrap; padding: 8px 0 0 4px; line-height: 1.7; }
-  .agent-body { white-space: pre-wrap; word-break: break-word; }
+  /* 正文由渲染器摆成块 (段落 / 列表 / 标题…), 换行由 `<br>` 显式表达 —— 不再是
+     `white-space: pre-wrap` 里那堆裸露的换行符 (markdown 化之后那样会双重生效) */
+  .agent-body { word-break: break-word; }
   .agent-waiting { color: #adb5bd; font-size: 14px; }
   .agent-input { display: flex; gap: 12px; padding: 16px 24px; border-top: 1px solid #f0f2f5; background: #fff; }
   .agent-input input { flex: 1; padding: 12px 16px; border: 1.5px solid #d0d5dd; border-radius: 10px; font-size: 15px; outline: none; transition: all .2s; font-family: inherit; }
@@ -208,9 +240,8 @@
     <div class="agent-chat" id="chat">
       <div class="agent-hint" id="hint">
         试试这样问：<br>
-        <button type="button" class="agent-example">我最近的订单到哪了</button>
-        <button type="button" class="agent-example">有什么 2000 块以下的手机推荐吗</button>
-        <button type="button" class="agent-example">我余额还有多少</button>
+        <button type="button" class="agent-example">我最近的订单状态</button>
+        <button type="button" class="agent-example">有哪些推荐的商品</button>
       </div>
     </div>
 
@@ -495,9 +526,258 @@ function openReasoningBox() {
   }
 }
 
-function finish(content) {
+// 答复正文的渲染 (markdown + 逐句引用). 两件事写在同一个函数里, 因为它们是**同一遍
+// 扫描**: 引用标记要落在段落的正确位置上, 分成两趟做等于把正文切两遍.
+//
+// 一、逐句引用 (L5-c): 正文里那个 [n] 与**服务端给的引用数组**对得上才渲染成标记:
+// 对不上的一律原样当文本 (模型编了一个不存在的号 —— 页面不崩, 也不猜它指什么).
+//
+// 二、markdown (L5-展示): 模型答话时会写 `**加粗**`、`## 小节`、`- 列表`, 逐字显示
+// 出来是一堆符号. 认的语法**只这一小撮**: 标题 / 粗体 / 斜体 / 行内代码 / 围栏代码块 /
+// 无序有序列表 / 引用 / 分隔线 / 链接. **认不出的原样当文本显示** —— 与上面那条编号
+// 纪律同一句话 (表格 / 脚注 / 任务列表都不认; 认一半比不认更糟: 会渲染出半截结构).
+//
+// 为什么自己写而不引一个 markdown 库: 这一页是零依赖的模板 (没有打包器), 从 CDN 引
+// 一份等于给演示加个外部依赖; 而真正要小心的那件事 —— 模型吐的 HTML 不能当场执行 ——
+// 手写这版天然做对: **全程 createElement + textContent, 一个 innerHTML 都没有**
+// (与 el() 同一条).
+//
+// 三条刻意的取舍:
+//   - **段内单换行 = 换行** (CommonMark 会并成一个空格): 聊天回复里模型常用单换行
+//     分行, 并成一行反而丢了版式.
+//   - **链接只认 http/https** (且带 rel="noopener noreferrer"): 模型编出来的地址不该
+//     成为页面上的可点目标, `javascript:` 之类更是碰都不碰.
+//   - **`_下划线_` 的斜体收紧**: 只在右侧不是词字符时认, 免得 `snake_case_name` 被
+//     当斜体吃掉 (答复里写变量名的场景比写斜体多).
+function indexCitations(citations) {
+  const byNumber = new Map();
+  (Array.isArray(citations) ? citations : []).forEach(function (item) {
+    if (item && typeof item.n === 'number') byNumber.set(item.n, item);
+  });
+  return byNumber;
+}
+
+// 一行之内的东西: 链接 / 引用标记 / 行内代码 / 粗体 / 斜体, 其余按文本. 粗斜体递归
+// 进这个函数, 于是 `**[1]**` 里的编号照样点得开.
+function renderInline(host, text, byNumber) {
+  let buffer = '';
+  function flush() {
+    if (buffer) {
+      host.appendChild(document.createTextNode(buffer));
+      buffer = '';
+    }
+  }
+  let i = 0;
+  while (i < text.length) {
+    const rest = text.slice(i);
+    let m;
+    // 链接先认: `[1](https://…)` 是个链接, 不该被当成引用标记
+    m = /^\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/.exec(rest);
+    if (m) {
+      flush();
+      const link = el('a', 'agent-md-link', m[1]);
+      link.href = m[2];
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      host.appendChild(link);
+      i += m[0].length;
+      continue;
+    }
+    // 引用标记: 账上有这个号才渲染 (见上面第一条)
+    m = /^\[(\d+)\]/.exec(rest);
+    if (m && byNumber.has(Number(m[1]))) {
+      flush();
+      const citation = byNumber.get(Number(m[1]));
+      const marker = el('button', 'agent-cite', m[0]);
+      // 与确认卡那两颗按钮同一条: 页面里那个 form 是提问用的, 别让它顺手提交空问句
+      marker.type = 'button';
+      marker.addEventListener('click', function () {
+        toggleSource(host, marker, citation);
+      });
+      host.appendChild(marker);
+      i += m[0].length;
+      continue;
+    }
+    m = /^`([^`\n]+)`/.exec(rest);
+    if (m) {
+      flush();
+      host.appendChild(el('code', 'agent-md-code', m[1]));
+      i += m[0].length;
+      continue;
+    }
+    // 粗体排在斜体前面: `**` 比 `*` 长, 反过来认会把 `**` 当成两个空斜体
+    m = /^\*\*([^\n]+?)\*\*/.exec(rest);
+    if (m) {
+      flush();
+      const strong = el('strong');
+      renderInline(strong, m[1], byNumber);
+      host.appendChild(strong);
+      i += m[0].length;
+      continue;
+    }
+    m = /^\*([^*\n]+)\*/.exec(rest) || /^_([^_\n]+)_(?![\w])/.exec(rest);
+    if (m) {
+      flush();
+      const em = el('em');
+      renderInline(em, m[1], byNumber);
+      host.appendChild(em);
+      i += m[0].length;
+      continue;
+    }
+    buffer += text[i];
+    i += 1;
+  }
+  flush();
+}
+
+// 一个块里的几行: 行与行之间插 <br> (段内单换行 = 换行, 见上面第三条取舍)
+function renderLines(host, lines, byNumber) {
+  lines.forEach(function (line, index) {
+    if (index) host.appendChild(document.createElement('br'));
+    renderInline(host, line, byNumber);
+  });
+}
+
+// 按行看块级结构. 认得出的是标题 / 围栏代码 / 列表 / 引用 / 分隔线, 其余攒成段落.
+function renderAnswer(host, text, citations) {
+  const byNumber = indexCitations(citations);
+  const lines = String(text || '').split('\n');
+  const bullet = /^\s*([-*+])\s+(.*)$/;
+  const numbered = /^\s*(\d+)[.)]\s+(.*)$/;
+  const quote = /^\s*>\s?/;
+  const rule = /^\s*([-*_])\1{2,}\s*$/;
+  const fence = /^\s*```/;
+  const heading = /^(#{1,6})\s+(.*)$/;
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (!line.trim()) {
+      i += 1;
+      continue;
+    }
+    // 围栏代码块: 吃到闭合那行; 没有闭合就吃到结尾 —— 截断的答复别把剩下的吞掉
+    if (fence.test(line)) {
+      const code = [];
+      i += 1;
+      while (i < lines.length && !fence.test(lines[i])) {
+        code.push(lines[i]);
+        i += 1;
+      }
+      if (i < lines.length) i += 1;
+      host.appendChild(el('pre', 'agent-md-pre', code.join('\n')));
+      continue;
+    }
+    let m = heading.exec(line);
+    if (m) {
+      const node = el('div', 'agent-md-h agent-md-h' + Math.min(m[1].length, 6));
+      renderInline(node, m[2].trim(), byNumber);
+      host.appendChild(node);
+      i += 1;
+      continue;
+    }
+    if (rule.test(line)) {
+      host.appendChild(el('hr', 'agent-md-hr'));
+      i += 1;
+      continue;
+    }
+    if (quote.test(line)) {
+      const block = el('blockquote', 'agent-md-quote');
+      const body = [];
+      while (i < lines.length && quote.test(lines[i])) {
+        body.push(lines[i].replace(quote, ''));
+        i += 1;
+      }
+      renderLines(block, body, byNumber);
+      host.appendChild(block);
+      continue;
+    }
+    if (bullet.test(line) || numbered.test(line)) {
+      const ordered = !bullet.test(line);
+      const item = ordered ? numbered : bullet;
+      const list = el(ordered ? 'ol' : 'ul', 'agent-md-list');
+      while (i < lines.length && item.test(lines[i])) {
+        const parts = [item.exec(lines[i])[2]];
+        i += 1;
+        // 续行: 后面那些有缩进、又不是新一条的并进上一条 (模型常把一条写成两三行)
+        while (
+          i < lines.length &&
+          /^\s+\S/.test(lines[i]) &&
+          !bullet.test(lines[i]) &&
+          !numbered.test(lines[i])
+        ) {
+          parts.push(lines[i].trim());
+          i += 1;
+        }
+        const li = el('li');
+        renderLines(li, parts, byNumber);
+        list.appendChild(li);
+      }
+      host.appendChild(list);
+      continue;
+    }
+    // 段落: 攒到空行 / 下一个块级语法为止
+    const body = [];
+    while (
+      i < lines.length &&
+      lines[i].trim() &&
+      !fence.test(lines[i]) &&
+      !heading.test(lines[i]) &&
+      !rule.test(lines[i]) &&
+      !quote.test(lines[i]) &&
+      !bullet.test(lines[i]) &&
+      !numbered.test(lines[i])
+    ) {
+      body.push(lines[i]);
+      i += 1;
+    }
+    const p = el('p', 'agent-md-p');
+    renderLines(p, body, byNumber);
+    host.appendChild(p);
+  }
+}
+
+// 来源卡: 同一时刻只开一张 (与确认卡同一条规矩 —— 它是运行状态的渲染, 不是记录),
+// 再点同一枚标记就收起. 卡片挂在**这一轮答复**里 (host 的 .agent-a 祖先), 于是它
+// 出在那一条答复底下, 而不是页面末尾.
+let openSourceCard = null;
+let openSourceMarker = null;
+
+function toggleSource(host, marker, citation) {
+  const answer = host.closest('.agent-a') || host;
+  const wasOpen = openSourceMarker === marker;
+  if (openSourceCard) {
+    openSourceCard.remove();
+    openSourceCard = null;
+  }
+  if (openSourceMarker) {
+    openSourceMarker.classList.remove('agent-cite-open');
+    openSourceMarker = null;
+  }
+  if (wasOpen) return;   // 再点一下: 只收起
+
+  const card = el('div', 'agent-source');
+  card.appendChild(el('div', 'agent-source-title', citation.title || '来源'));
+  // 引文照 markdown 渲染 (语料本来就是 Markdown: `## 小节` / `- 列表` 原样显示的话,
+  // 卡片上是一堆井号). 引用数组**不传**: 引文里的 `[n]` 是原文自带的号码, 点它没有
+  // 意义 —— 与"账上没有的号原样当文本"同一条.
+  const snippet = el('div', 'agent-source-snippet');
+  renderAnswer(snippet, citation.snippet || '', null);
+  card.appendChild(snippet);
+  answer.appendChild(card);
+  marker.classList.add('agent-cite-open');
+  openSourceCard = card;
+  openSourceMarker = marker;
+  toBottom();
+}
+
+function finish(content, citations) {
   const text = (content || '').trim();
-  turn.body.textContent = text || '(这次没有拿到答复)';
+  turn.body.textContent = '';
+  if (!text) {
+    turn.body.textContent = '(这次没有拿到答复)';
+    return;
+  }
+  renderAnswer(turn.body, text, citations);
 }
 
 function failAnswer(message) {
@@ -613,7 +893,8 @@ const RENDERERS = {
   },
   final: function (data) {
     turn.waiting.remove();
-    finish(data && data.content);
+    // 引用随终局答复一起来; 缺省或为空就是「这次没有引用」, 页面什么都不显示
+    finish(data && data.content, data && data.citations);
   },
   error: function (data) {
     const message = (data && data.error && data.error.message) || '客服这边出了点问题.';
@@ -767,12 +1048,15 @@ function restoreTurn(question) {
   return handle;
 }
 
-function appendAnswer(handle, text) {
-  // 同一问之下模型可能说过好几段 (中间轮那句「我先查一下」也在), 用空行接起来
+function appendAnswer(handle, text, citations) {
+  // 同一问之下模型可能说过好几段 (中间轮那句「我先查一下」也在). 段与段之间的分隔
+  // **不用再手工插**: 渲染出来的是块 (段落 / 列表…), 块自己就分得开 —— markdown 化
+  // 之前这里插一个 '\n\n' 文本节点, 而那个换行是给 white-space: pre-wrap 看的, 现在
+  // 它只剩两个会被折叠成空白的字符.
   const chunk = (text || '').trim();
   if (!chunk) return;
-  const already = handle.body.textContent.trim();
-  handle.body.textContent = already ? already + '\n\n' + chunk : chunk;
+  // 与直播那一路**同一个渲染函数**: 两处各写一遍的话, 刷新前有引用、刷新后就没了
+  renderAnswer(handle.body, chunk, citations);
 }
 
 function renderHistory(messages) {
@@ -781,7 +1065,7 @@ function renderHistory(messages) {
     if (message.role === 'user') {
       handle = restoreTurn(message.content);
     } else if (message.role === 'assistant' && handle) {
-      appendAnswer(handle, message.content);
+      appendAnswer(handle, message.content, message.citations);
     }
   });
   toBottom();

@@ -33,12 +33,14 @@
 
 from __future__ import annotations
 
-from typing import Protocol
+from collections.abc import Mapping, Sequence
+from typing import Any, Protocol
 
 from starlette.requests import Request
 
 from CharAgent.agent import RunContext
 from CharAgent.client.session import ChatSession
+from CharAgent.db.entities import Message
 from CharAgent.stream import EventSink
 
 # ---------------------------------------------------------------------------
@@ -116,6 +118,44 @@ class ContextProvider(Protocol):
         Raises:
             ServerAuthError: 认证 / 解析失败 (框架翻成 401, 或业务指定的状态码).
             ServerConfigError: 业务自己没配好 (例如令牌根本没设), 翻成 503.
+        """
+        ...
+
+
+class MessageExtras(Protocol):
+    """SPI (可选): 业务给「读历史」的每一条消息补自己的字段.
+
+    一句话理解: 框架往外搬的记录只留 `role` / `content` (白名单, 见
+    `server/history.py`), 而业务可能还有话要说 —— 比如某一条答复引用了哪些资料.
+    本插座让业务**按行下标**交出那些字段, 框架做一次浅合并: 它不认识、也不需要
+    认识那些字段的含义.
+
+    **只有读记录表那条路会调它**: 内存那份历史没有"行" (也就没有下标可对) ——
+    与 `GET /history` 的来源二选一那条纪律一致 (见 history.py).
+
+    形状是结构化协议 (有 `provide` 就算, 不继承基类) —— 与另两个插座同款.
+    """
+
+    async def provide(
+        self, thread_id: str, rows: Sequence[Message]
+    ) -> Mapping[int, Mapping[str, Any]]:
+        """按行序给出每条消息该补的字段.
+
+        Args:
+            thread_id: 这次读的是哪段会话.
+            rows: 框架即将投影出去的那些记录行 (已按 `hidden` 滤过, 早的在前).
+                **下标就是返回值里的键**, 而这条契约成立的前提是框架那边的
+                投影**逐条同序同长** (今天如此: `conversation_messages` 一行一条,
+                不丢不排) —— 哪天投影开始丢行/重排, 这里必须一起改 (并加一条
+                用例), 否则业务补上去的字段会静默错位.
+
+        Returns:
+            Mapping[int, Mapping[str, Any]]: 下标 → 要并进那一条的字段; 缺的不并,
+            空映射表示"这一页没什么要说的".
+
+        Note:
+            异常不在这里翻译: 这是业务自己的读口, 出错就该被看见 (与另两个插座的
+            其它异常同一条 —— 认证/配置那两类自带状态码的除外).
         """
         ...
 

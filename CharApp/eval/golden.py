@@ -33,6 +33,9 @@ import yaml
 
 from CharAgent.eval import EvalCase, EvalConfigError
 from CharApp.minimall.client import DEFAULT_BASE_URL, MinimallClient
+from CharApp.minimall.config import KnowledgeConfig
+from CharApp.minimall.knowledge.citations import Citations
+from CharApp.minimall.knowledge.retriever import KnowledgeRetriever
 from CharApp.minimall.tools import build_tools
 
 # 题集目录 (一页一个场景, 见各文件自己的文件头)
@@ -61,7 +64,7 @@ def load_cases(directory: Path | None = None) -> tuple[EvalCase, ...]:
     Raises:
         EvalConfigError: 题写坏了 —— YAML 读不出来 / 顶层不是一串题 / 必填字段缺 /
             场景不在白名单 / 题号重复 / `expect_tools` 不是列表 (或里面写重了) /
-            期望工具名不是真有的那 18 个之一 / `expect_params` 不是映射 (或它的键
+            期望工具名不是真有的那些之一 / `expect_params` 不是映射 (或它的键
             不是工具名) / `expect_suspend` 不是布尔 / `meta` 里那两个已知键写错.
             **一次把所有问题说完**, 不是报一条改一条.
     """
@@ -248,7 +251,13 @@ def _real_tool_names() -> frozenset[str]:
     写错的名字才存在的.
     """
     client = MinimallClient(base_url=DEFAULT_BASE_URL, token="")
-    return frozenset(tool.name for tool in build_tools(client, 0))
+    # 检索器在这一层只是占位: 构造期不连 Milvus 也不加载模型 (都是惰性单例),
+    # 这里要的只是**工具名那份清单** (L5-b 起知识检索也在里面)
+    retriever = KnowledgeRetriever(KnowledgeConfig())
+    return frozenset(
+        tool.name
+        for tool in build_tools(client, 0, retriever=retriever, citations=Citations())
+    )
 
 
 __all__ = ["CASES_DIR", "SCENES", "load_cases"]

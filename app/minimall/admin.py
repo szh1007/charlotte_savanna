@@ -10,6 +10,7 @@ from mptt.admin import MPTTModelAdmin
 
 from .models import (
     Category,
+    KnowledgeArticle,
     Order,
     OrderItem,
     Product,
@@ -150,6 +151,38 @@ class CategoryAdmin(BatchDeleteMixin, MPTTModelAdmin):
 class ProductImageInline(admin.TabularInline):
     model = ProductImage
     extra = 3
+
+
+@admin.register(KnowledgeArticle)
+class KnowledgeArticleAdmin(BatchDeleteMixin, admin.ModelAdmin):
+    """政策知识文章的编辑入口 (L5 知识库的语料).
+
+    保存之后**要重跑索引**才会被检索到 —— 这条链路是手工的 (一张票只做一件小事),
+    所以把关的那个动作放在这里: 每次保存都提示一遍, 免得「改完以为生效了」.
+    下架 (`is_active=False`) 也一样, 重跑索引才物理剔除.
+    """
+
+    list_display = [
+        "title",
+        "slug",
+        "category",
+        "is_active",
+        "sort_order",
+        "updated_at",
+    ]
+    list_editable = ["sort_order"]
+    list_filter = ["category", "is_active"]
+    search_fields = ["title", "slug", "content"]
+    readonly_fields = ["created_at", "updated_at"]
+    ordering = ["sort_order", "id"]
+
+    def save_model(self, request, obj, form, change):
+        super().save_model(request, obj, form, change)
+        self.message_user(
+            request,
+            "别忘了重跑索引, 否则助手检索到的还是旧正文: "
+            "python -m CharApp.minimall.knowledge.index",
+        )
 
 
 @admin.register(Product)

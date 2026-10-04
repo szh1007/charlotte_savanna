@@ -38,6 +38,7 @@ from conftest import (
     PAYMENT_PASSWORD,
     PROFILE,
     TOKEN,
+    TOOL_NAMES,
     agent_url,
     mock_all,
 )
@@ -65,6 +66,7 @@ from CharApp.minimall.config import (
     DEFAULT_CONTEXT_SUMMARY,
     DEFAULT_CONTEXT_TOOL_LIMIT,
     DEFAULT_CONTEXT_WATERMARK,
+    DEFAULT_MILVUS_URL,
     DEFAULT_SERVER_HOST,
     DEFAULT_SERVER_PORT,
     ENV_BASE_URL,
@@ -79,6 +81,7 @@ from CharApp.minimall.config import (
     ENV_THINKING,
     ENV_TOKEN,
     ContextConfig,
+    KnowledgeConfig,
     MinimallConfigError,
     ServerConfig,
     context_config_from_env,
@@ -98,6 +101,9 @@ from CharApp.minimall.server import (
 )
 from CharApp.minimall.service import TENANT_WEB, MinimallService, build_context
 from CharApp.minimall.tools import PAYMENT_PASSWORD_FIELD
+
+# 知识库那条线的地址 (用例里一个在别处不会出现的怪值): 断「预热吃的是零件上那份」
+MILVUS_URL = DEFAULT_MILVUS_URL.replace("localhost", "milvus.test")
 
 # 测试里给这个服务起的名字: respx 放行这个 host 上的请求 (交给 ASGI app),
 # 其余照旧拦给假商城
@@ -875,6 +881,7 @@ async def test_closing_the_service_closes_the_process_level_parts(mall, client) 
         client=client,
         model=MockLLM.fixed(text_response("好的")),
         saver=InMemoryCheckpointSaver(),
+        knowledge=KnowledgeConfig(milvus_url=MILVUS_URL),
     )
 
     await service.aclose()
@@ -921,6 +928,7 @@ def test_build_service_wires_the_process_level_parts(
     """
     monkeypatch.setenv(ENV_THINKING, "no")  # 顺手断「思考模式开关也接上了」
     monkeypatch.setenv(ENV_CONTEXT_KEEP_TURNS, "4")  # 顺手断「压缩旋钮也接上了」
+    monkeypatch.setenv("CHARAPP_MODELSCOPE_ROOT", "D:/fake/modelscope")  # 知识库那条线
     service = build_service(writer=logger.info)
 
     context = build_context(BUYER_ID, "web", tenant_id=TENANT_WEB)
@@ -930,11 +938,70 @@ def test_build_service_wires_the_process_level_parts(
 
     assert isinstance(service.client, MinimallClient)
     assert session.thread_id == context.thread_id
-    assert len(session.tool_names) == 18, "零件接全了: 工具从上下文里装了出来"
+    # 与 TOOL_NAMES (那份唯一权威) 逐个对上, 而不是写死一个数: 工具增减时该改的
+    # 只有那份清单 (L5-b 起多了知识检索)
+    assert tuple(session.tool_names) == TOOL_NAMES, "零件接全了: 工具从上下文里装了出来"
     assert service.thinking is False, "env 里的思考模式开关没接到零件上"
     assert service.compaction is not None, "压缩旋钮没接到零件上 (env → ContextConfig)"
     assert service.compaction.keep_turns == 4, "接到零件上的还是默认值, 不是 env 那个"
+    assert service.knowledge.modelscope_root == "D:/fake/modelscope", (
+        "知识库那条线没接上 (env → KnowledgeConfig): 不接的话检索工具会拿默认路径去"
+        "找本地模型, 而症状要到第一次查政策才出现"
+    )
     asyncio.run(service.aclose())
+
+
+def test_the_service_warms_the_knowledge_models_in_the_background(
+    client, monkeypatch
+) -> None:
+    """启动时派一个后台预热任务, 停机时收掉它 —— 而服务本身不等它.
+
+    为什么要这一条: 预热那几行是 `_serve` 里的**接线**, 别的用例一条都覆盖不到它
+    (上面所有用例都是把 app 建好直接问的). 忘了派任务的症状是"演示时第一问卡十几秒",
+    那是真机才看得见的问题; 而它一旦被写成"前台 await 预热", 服务启动又会卡住 ——
+    两头都断在这条用例里: 起来之前不会等它, 起来之后它确实在跑, 停机时被取消.
+    """
+    from CharApp.minimall import server as server_module
+
+    started: list[str] = []
+    cancelled: list[bool] = []
+
+    async def fake_prewarm(config) -> None:
+        started.append(config.milvus_url)
+        try:
+            await asyncio.sleep(30)  # 真预热要跑十几秒; 这里只需要它活到被取消
+        except asyncio.CancelledError:
+            cancelled.append(True)
+            raise
+
+    class FakeServer:
+        """替掉 uvicorn.Server: `serve` 让出一个 tick 就返回 (= 服务被停)."""
+
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def serve(self) -> None:
+            await asyncio.sleep(0)
+
+    monkeypatch.setattr(server_module, "prewarm", fake_prewarm)
+    monkeypatch.setattr(server_module.uvicorn, "Server", FakeServer)
+    service = MinimallService(
+        client=client,
+        model=MockLLM.fixed(text_response("好的")),
+        saver=InMemoryCheckpointSaver(),
+        knowledge=KnowledgeConfig(milvus_url=MILVUS_URL),
+    )
+
+    asyncio.run(
+        server_module._serve(
+            FastAPI(),
+            service,
+            ServerConfig(host="127.0.0.1", port=1007, token=TOKEN),
+        )
+    )
+
+    assert started == [MILVUS_URL], "预热吃的不是零件上那份配置"
+    assert cancelled == [True], "停机时预热任务没被收掉"
 
 
 def test_the_process_reports_a_missing_token_in_one_line(monkeypatch, capsys) -> None:

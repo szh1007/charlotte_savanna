@@ -45,15 +45,19 @@ from CharAgent.checkpoint import CheckpointError, CheckpointSaver
 from CharAgent.client import ChatSession, CliOptions, build_model
 from CharAgent.db import ConversationRecorder, PgDatabase, load_pricing
 from CharAgent.db.errors import PricingNotReadyError
-from CharAgent.hooks import HookRegistry
+from CharAgent.hooks import HookPoint, HookRegistry
 from CharAgent.model import ModelError
 from CharAgent.model.protocol import ChatModel
 from CharAgent.prompt import PromptError
 from CharAgent.stream import EventSink
 from CharAgent.tool import Tool
 from CharApp.minimall.client import MinimallClient
-from CharApp.minimall.config import ContextConfig, MinimallConfigError
+from CharApp.minimall.config import ContextConfig, KnowledgeConfig, MinimallConfigError
 from CharApp.minimall.guardrail import WriteGuardrail
+from CharApp.minimall.history_citations import search_result_texts
+from CharApp.minimall.injection import audit_sink
+from CharApp.minimall.knowledge.citations import Citations, citation_sink
+from CharApp.minimall.knowledge.retriever import KnowledgeRetriever
 from CharApp.minimall.provider import (
     PAYLOAD_USER_ID,
     MinimallToolProvider,
@@ -79,6 +83,15 @@ TENANT_CLI = f"{CONVERSATION_PREFIX}-cli"
 # 一次运行最多几轮模型决策 (LoopGuard) —— 两个入口的默认值同源, 免得一边改了
 # 另一边还是老数字. CLI 的 `--max-turns` 缺省值也读它.
 DEFAULT_MAX_TURNS = 10
+
+# 没传知识库配置时用的那一份 (L5-b).
+#
+# `KnowledgeConfig` 是 frozen 的 (不可变), 所以"所有实例共用一份默认值"是安全的
+# —— 生产两个入口都会传自己那份 (从 `CHARAPP_*` 读出来的), 而用例 / 跑分不传时
+# 拿到的是同一套默认值 (本机 Milvus + modelscope 默认路径). 放一个模块常量而不是
+# `field(default_factory=...)` 是因为 ruff 的 RUF009 把 dataclass 默认值里的函数
+# 调用一并拦下, 而这里没有"可变对象被共享"的风险可讲.
+DEFAULT_KNOWLEDGE_CONFIG = KnowledgeConfig()
 
 # 一次运行的另外两道刹车 (框架的 LoopGuard 支持, 之前只配了轮数):
 #
@@ -312,6 +325,9 @@ class MinimallService:
             —— 会话照常问答, 只是每一轮都把全量历史重发一遍 (与从前逐字一样).
             生产两个入口都从 `CHARAPP_CONTEXT_*` 读出来给它, 于是默认那套值也是
             显式的配置, 而不是"没人配就没有".
+        knowledge: 知识库那条线的配置 (`config.KnowledgeConfig`): 向量库地址 / 两个
+            本地模型 / 两个 K. 装配时会按它给每个会话造一个检索器, 知识检索工具
+            因此总是那套工具里的一员 (见字段上的那段说明).
         prompt_version: 这一次装配用哪一版提示词; None = 读清单 (生产那条). 跑分要
             指定版本时由跑分环境传 (issue 45 的 prompt A/B), 传了就不读清单 ——
             实验组与对照组都**不该**随清单里那一行改动而变.
@@ -334,6 +350,15 @@ class MinimallService:
     # 两者并存时「self.context」与「context」指的是两样东西 (CLI 那边已经被迫改过
     # 一次局部变量名) —— 而「压缩」正是框架对这个能力的叫法 (agent/compaction.py).
     compaction: ContextConfig | None = None
+    # 知识库那条线 (L5-b): 检索器要的配置 (向量库地址 / 两个本地模型 / 两个 K).
+    #
+    # **默认给一份 `KnowledgeConfig()` 而不是 None**: 知识检索工具是助手的一项
+    # 能力, 工具集该只有一种形状 —— "这个进程有没有知识库" 不该让模型看见的工具
+    # 数量变来变去 (那会让每一处"工具有几个"的推理都要先问一句是哪种装配). 默认值
+    # 就是 `config.py` 里那套 (本机 Milvus + modelscope 默认路径), 生产两个入口都
+    # 从 `CHARAPP_*` 读出来传进来; 不传的场合 (用例 / 跑分) 拿到的是同一个形状,
+    # 只是没人去调那个工具时察觉不到区别.
+    knowledge: KnowledgeConfig = DEFAULT_KNOWLEDGE_CONFIG
     # 这一次装配用哪一版提示词 (issue 45 的 prompt A/B); None = 读清单, **两个生产
     # 入口都不传**. 跑分要跑指定的两版时由跑分环境传进来.
     #
@@ -405,7 +430,22 @@ class MinimallService:
         Raises:
             MinimallConfigError: 载荷里没有买家身份 (装配时忘了放).
         """
-        tools: Sequence[Tool] = await MinimallToolProvider(self.client).provide(context)
+        # 检索器**每个会话现造一个**: 它自己很轻 (只拿着配置与一个模型引用),
+        # 重的东西 (向量库连接 / 两个本地模型) 是 `knowledge/` 里的惰性单例.
+        # 传的是**服务手上那个模型** (进程级共享): 查询改写走它, 于是重试 /
+        # 熔断那条链也在它身上 (改写失败另有降级, 见 query_rewrite.py).
+        retriever = KnowledgeRetriever(self.knowledge, model=self.model)
+        # 引用账 (L5-c) 也是每会话一份, 而且**恢复旧会话时先把旧的垫进去**:
+        # 不垫的话, 进程重启后接着聊的这段会从 [1] 重数 —— 同一段对话里出现
+        # 两个 [1], 引用就回指不明白了. 没配库时不垫 (直播那份引用只是一段会话里
+        # 的事); 配了库而**读它失败**照抛 —— 那是真故障, 不该被一句"垫个空的"
+        # 盖过去 (与 account 那两条来源不互相兜底同一条纪律).
+        citations = Citations()
+        if self.database is not None:
+            citations.seed(await search_result_texts(self.database, context.thread_id))
+        tools: Sequence[Tool] = await MinimallToolProvider(
+            self.client, retriever, citations
+        ).provide(context)
         # 护栏挂在这**唯一一处装配**上: 命令行与 HTTP 两个入口因此都装上, 不会有
         # 「网页版忘了挂」这种半边生效 (05 立过的旗). 注册表一次会话一份, 里面
         # 那条插件的账本按**运行**归零 (挂哪个点由它自己决定, 见 guardrail.install).
@@ -417,6 +457,9 @@ class MinimallService:
             # 「这一单超了 5000」. 见 scoping.py 的那张组合表.
             scope.install(hooks)
         WriteGuardrail(client=self.client, user_id=buyer_id(context)).install(hooks)
+        # 收了引用的原料 (每次检索的返回原文): 与护栏同挂一处装配, 两个入口
+        # 一起覆盖. 观察类钩子 (fire), 返回值没人看, 坏了也不影响这一跑.
+        hooks.register(HookPoint.ON_TOOL_EXECUTED, citations.record)
         # 压缩**每会话一份估算器**, 所以在这里造 (理由见 build_compaction_for):
         # 没配就是不压缩 —— 这条会话每一轮把全量历史原样发出去
         compactor, counter = (
@@ -430,9 +473,16 @@ class MinimallService:
             tools=tools,
             thread_id=context.thread_id,
             model_name=self.model_name,
-            # 出口在这里裹一层脱敏 (由入口显式指名, 见上面的 `redact`): 与护栏、
-            # 记录员同一条理由 —— 挂在这唯一一处装配上, 两个入口一起覆盖
-            event_sink=redacting_sink(event_sink) if redact else event_sink,
+            # 出口在这里裹三层, 各管一件事: 审计 (L5-d 的第 4 层: 答复里有没有
+            # 不该出现的东西 —— 两个入口都要, 与引用同一个理由) 在最外, 引用
+            # (每个出口都要 —— 命令行那份 final 与网页长得一样) 居中, 脱敏
+            # (只对浏览器那一侧) 在内. 脱敏那条由入口显式指名 (见上面的 `redact`),
+            # 与护栏、记录员同一条理由: 挂在这唯一一处装配上, 两个入口一起覆盖.
+            event_sink=audit_sink(
+                citation_sink(
+                    redacting_sink(event_sink) if redact else event_sink, citations
+                )
+            ),
             # 三道刹车一起上: 轮数 / token / 墙钟 —— 只配轮数拦不住"某一轮本身
             # 就很贵"那种跑飞 (见上面两个常量的注释)
             guard=LoopGuard(
@@ -496,6 +546,7 @@ class MinimallService:
 
 __all__ = [
     "CONVERSATION_PREFIX",
+    "DEFAULT_KNOWLEDGE_CONFIG",
     "DEFAULT_MAX_DURATION_SECONDS",
     "DEFAULT_MAX_TOTAL_TOKENS",
     "DEFAULT_MAX_TURNS",

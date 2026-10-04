@@ -44,6 +44,7 @@ AGENT_URLS = [
     ("product_detail", {"slug": "whatever"}, "get"),
     ("category_tree", {}, "get"),
     ("featured_products", {}, "get"),
+    ("knowledge_articles", {}, "get"),
     ("cart", {}, "get"),
     ("order_list", {}, "get"),
     ("order_detail", {"order_no": "whatever"}, "get"),

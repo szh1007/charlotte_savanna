@@ -15,6 +15,11 @@
 上下文压缩的五个旋钮 (`CHARAPP_CONTEXT_*`, ticket 18) 同理: 它们是**运行期**的
 账目口径 (多大起压 / 留几轮 / 摘要开不开), 与前面几组都不是一件事 —— 但同样是
 「业务读 env」, 同样只该有一处翻译。
+
+知识库那条线 (L5) 也在这里读 (`CHARAPP_MILVUS_URL` / `CHARAPP_MODELSCOPE_ROOT` /
+`CHARAPP_EMBEDDING_*` / `CHARAPP_RERANKER_*` / 两个 K / `CHARAPP_QUERY_REWRITE`):
+向量库地址与两个本地模型的位置是**部署期**配置, 与前面几组同属「业务读 env」这一个
+翻译层 —— 它是这一页的最后一段, 不是另一页纸。
 """
 
 from __future__ import annotations
@@ -22,6 +27,7 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from CharApp.minimall.client import DEFAULT_BASE_URL, MinimallClient
 
@@ -321,6 +327,174 @@ def server_config_from_env(env: Mapping[str, str] | None = None) -> ServerConfig
     )
 
 
+# 知识库那条线 (L5) 的变量: 向量库地址 / 本地模型的根目录与名字 / 检索的两个 K /
+# rewrite 开关. 与 charplot 的 CHARPLOT_* 是同一批概念, 命名跟这边的前缀走 ——
+# 两个子项目可能同时活着, 变量名撞在一起时谁配谁不配就成了玄学.
+ENV_MILVUS_URL = "CHARAPP_MILVUS_URL"
+ENV_MODELSCOPE_ROOT = "CHARAPP_MODELSCOPE_ROOT"
+ENV_EMBEDDING_MODEL = "CHARAPP_EMBEDDING_MODEL"
+ENV_EMBEDDING_MODEL_NAME = "CHARAPP_EMBEDDING_MODEL_NAME"
+ENV_EMBEDDING_DEVICE = "CHARAPP_EMBEDDING_DEVICE"
+ENV_EMBEDDING_FP16 = "CHARAPP_EMBEDDING_FP16"
+ENV_EMBEDDING_DIM = "CHARAPP_EMBEDDING_DIM"
+ENV_RERANKER_MODEL = "CHARAPP_RERANKER_MODEL"
+ENV_RERANKER_DEVICE = "CHARAPP_RERANKER_DEVICE"
+ENV_RERANKER_FP16 = "CHARAPP_RERANKER_FP16"
+ENV_RETRIEVE_TOP_K = "CHARAPP_RETRIEVE_TOP_K"
+ENV_RERANK_TOP_K = "CHARAPP_RERANK_TOP_K"
+ENV_QUERY_REWRITE = "CHARAPP_QUERY_REWRITE"
+
+# 知识库那条线的默认值.
+#
+# **默认路径指到本机 modelscope 的下载目录** (与 charplot 那份同一个根): 本地模型是
+# 这个仓库的演示前提之一, 而它的默认位置跟着下载工具的平铺布局走. 换机器就在 .env
+# 里改 CHARAPP_MODELSCOPE_ROOT —— 模型缺失时 embedding 报错并给出下载命令, 不会
+# 静默从 HuggingFace 拉一份 (~2GB, 且下载是主动行为).
+DEFAULT_MILVUS_URL = "http://localhost:19530"
+DEFAULT_MODELSCOPE_ROOT = r"D:/__WorkSpace__/modelscope"
+DEFAULT_EMBEDDING_MODEL = "bge-m3"
+DEFAULT_EMBEDDING_MODEL_NAME = "BAAI/bge-m3"
+DEFAULT_EMBEDDING_DEVICE = "cpu"
+DEFAULT_EMBEDDING_FP16 = False
+DEFAULT_EMBEDDING_DIM = 1024
+DEFAULT_RERANKER_MODEL = "BAAI/bge-reranker-v2-m3"
+DEFAULT_RERANKER_DEVICE = "cpu"
+DEFAULT_RERANKER_FP16 = False
+
+# 检索的两个 K: 混合召回量 (精排前的候选) 与精排后真正回给模型的片段数.
+#
+# **这两个数是被当前语料的规模钉住的** (2026-10-04 改判): 现在库里是 6 篇文章、
+# 7 条 chunk, 召回 5 条就已经覆盖了大半个库 —— 再往上召回的是"同一篇里的另一段",
+# 而精排在 CPU 上是**逐对**前向 (实测 bge-reranker-v2-m3 约 1.1 秒/对, 8 线程),
+# 多一条候选就多一秒多的等待, 换来的排序质量在这么小的库上看不出差别.
+#
+# 精排后给 3 条: 一个政策问题通常落在一两段里, 3 段够答且不白烧 token —— 库里
+# 一共 7 条, 给 5 条等于把半个库塞进上下文.
+#
+# **语料涨上去时这两个数要一起往上调** (几百篇文档时召回 5 条就太窄了), 而那一
+# 天该重新看的还有 rerank 本身的延迟 (逐对前向是线性成本).
+DEFAULT_RETRIEVE_TOP_K = 5
+DEFAULT_RERANK_TOP_K = 3
+
+# Query rewriting 开关: 关掉 = 检索直接用原查询 (省一次模型调用, 也去掉一个
+# 失败点); 开着时改写失败自动降级原查询 (见 knowledge/query_rewrite.py).
+DEFAULT_QUERY_REWRITE = True
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeConfig:
+    """知识库那条线的配置 (环境变量 → 一份只读配置).
+
+    与 `ContextConfig` 同一个形状: 它是**纯数据** —— 读 env 归 `config.py`, 把这
+    些值翻成模型 / 向量库零件归 `knowledge/` 包, 两边的失败方式因此不会混在一起.
+
+    attributes:
+        milvus_url: Milvus 地址 (与别的子项目共用实例也没关系: collection 名是
+            本业务专用的 `ca_knowledge`).
+        modelscope_root: 本地模型的根目录 (modelscope 平铺布局 `{root}/models/
+            {org}/{name}`); `resolve_local_model_path` 按它解析 `org/name` 引用.
+        embedding_model: Embedder 注册名 (工厂的键, 默认 `bge-m3`).
+        embedding_model_name: 模型的本地引用 —— 一个已存在的目录, 或 `BAAI/bge-m3`
+            这样的 `org/name` (按 modelscope_root 解析). **不会触发自动下载**:
+            解析不到就报错, 报错里带着可照抄的下载命令.
+        embedding_device: `cpu` / `cuda:0` (与 torch 的说法一致).
+        embedding_fp16: 半精度开关. CPU 上一般关着 (bge-m3 在 CPU 上 fp16 反而更慢).
+        embedding_dim: 稠密向量维度 (bge-m3 = 1024); 建 collection 时用它, 与
+            embedding 模型必须对得上 —— 换模型要重建索引.
+        reranker_model: 精排模型引用 (同样的解析规则); **缺失时降级不精排**
+            (warning 明示), 不像 embedding 那样报错 —— 精排是增强, 不是链路前提.
+        reranker_device: 精排模型设备.
+        reranker_fp16: 精排半精度开关.
+        retrieve_top_k: 混合检索召回几条候选 (精排前).
+        rerank_top_k: 精排后交回几条片段.
+        query_rewrite: 检索前是否用 LLM 改写查询 (写进知识库那条链路的唯一开关).
+    """
+
+    milvus_url: str = DEFAULT_MILVUS_URL
+    modelscope_root: str = DEFAULT_MODELSCOPE_ROOT
+    embedding_model: str = DEFAULT_EMBEDDING_MODEL
+    embedding_model_name: str = DEFAULT_EMBEDDING_MODEL_NAME
+    embedding_device: str = DEFAULT_EMBEDDING_DEVICE
+    embedding_fp16: bool = DEFAULT_EMBEDDING_FP16
+    embedding_dim: int = DEFAULT_EMBEDDING_DIM
+    reranker_model: str = DEFAULT_RERANKER_MODEL
+    reranker_device: str = DEFAULT_RERANKER_DEVICE
+    reranker_fp16: bool = DEFAULT_RERANKER_FP16
+    retrieve_top_k: int = DEFAULT_RETRIEVE_TOP_K
+    rerank_top_k: int = DEFAULT_RERANK_TOP_K
+    query_rewrite: bool = DEFAULT_QUERY_REWRITE
+
+    def local_model_dir(self, model_ref: str) -> Path:
+        """模型引用 → 它**该在**的本地目录 (不看存不存在).
+
+        规则只有这一处 (与 charplot 那份同一套, 于是两边的 .env 写法可以互相照抄):
+
+        1. 引用本身即路径 → 就是它
+        2. `org/name` 风格引用 → `{modelscope_root}/models/{org}/{name}` 平铺布局
+
+        不判断存在性是为了让**报错信息**能用同一个规则说"期望在哪儿" ——
+        `resolve_local_model_path` 与缺失时那句下载命令都从本方法取路径, 布局
+        变一次只改这里.
+        """
+        ref = Path(model_ref.strip())
+        if len(ref.parts) == 2 and not Path(ref.parts[0]).is_absolute():
+            return Path(self.modelscope_root) / "models" / ref.parts[0] / ref.parts[1]
+        return ref
+
+    def resolve_local_model_path(self, model_ref: str) -> str | None:
+        """把模型引用解析为**已存在**的本地目录 (含 config.json), 否则 None.
+
+        存在性由本方法判 (目录 + `config.json`); 路径怎么算见 `local_model_dir`.
+
+        返回 None 表示本地没有 → 调用方据此报错 (embedding) 或降级 (rerank),
+        **不触发任何库级自动下载**: 下模型是几百 MB 起步的主动行为, 不该藏在
+        一次「启动服务」或「跑一次索引」里.
+        """
+        candidate = self.local_model_dir(model_ref)
+        if candidate.is_dir() and (candidate / "config.json").is_file():
+            return str(candidate)
+        return None
+
+
+def knowledge_config_from_env(env: Mapping[str, str] | None = None) -> KnowledgeConfig:
+    """读知识库那条线的配置 (**每个值都有默认, 不填也能跑**).
+
+    Args:
+        env: 环境变量映射; None 表示读 `os.environ` (测试传一个字典来钉死配置).
+
+    Returns:
+        KnowledgeConfig: 一份具体的配置 (缺的填默认值).
+
+    Raises:
+        MinimallConfigError: 端口式的数字旋钮不是正整数, 或开关写了看不懂的值
+            (与 `context_config_from_env` 同一条: 启动期就说清, 别等第一次检索).
+    """
+    values = os.environ if env is None else env
+    return KnowledgeConfig(
+        milvus_url=(values.get(ENV_MILVUS_URL) or "").strip() or DEFAULT_MILVUS_URL,
+        modelscope_root=(values.get(ENV_MODELSCOPE_ROOT) or "").strip()
+        or DEFAULT_MODELSCOPE_ROOT,
+        embedding_model=(values.get(ENV_EMBEDDING_MODEL) or "").strip()
+        or DEFAULT_EMBEDDING_MODEL,
+        embedding_model_name=(values.get(ENV_EMBEDDING_MODEL_NAME) or "").strip()
+        or DEFAULT_EMBEDDING_MODEL_NAME,
+        embedding_device=(values.get(ENV_EMBEDDING_DEVICE) or "").strip()
+        or DEFAULT_EMBEDDING_DEVICE,
+        embedding_fp16=_context_bool(
+            values, ENV_EMBEDDING_FP16, DEFAULT_EMBEDDING_FP16
+        ),
+        embedding_dim=_context_int(values, ENV_EMBEDDING_DIM, DEFAULT_EMBEDDING_DIM),
+        reranker_model=(values.get(ENV_RERANKER_MODEL) or "").strip()
+        or DEFAULT_RERANKER_MODEL,
+        reranker_device=(values.get(ENV_RERANKER_DEVICE) or "").strip()
+        or DEFAULT_RERANKER_DEVICE,
+        reranker_fp16=_context_bool(values, ENV_RERANKER_FP16, DEFAULT_RERANKER_FP16),
+        retrieve_top_k=_context_int(values, ENV_RETRIEVE_TOP_K, DEFAULT_RETRIEVE_TOP_K),
+        rerank_top_k=_context_int(values, ENV_RERANK_TOP_K, DEFAULT_RERANK_TOP_K),
+        query_rewrite=_context_bool(values, ENV_QUERY_REWRITE, DEFAULT_QUERY_REWRITE),
+    )
+
+
 def eval_payment_password(env: Mapping[str, str] | None = None) -> str | None:
     """读跑分模拟买家确认时要注入的那次支付密码 (issue 43); 没配给 None.
 
@@ -345,6 +519,19 @@ __all__ = [
     "DEFAULT_CONTEXT_SUMMARY",
     "DEFAULT_CONTEXT_TOOL_LIMIT",
     "DEFAULT_CONTEXT_WATERMARK",
+    "DEFAULT_EMBEDDING_DEVICE",
+    "DEFAULT_EMBEDDING_DIM",
+    "DEFAULT_EMBEDDING_FP16",
+    "DEFAULT_EMBEDDING_MODEL",
+    "DEFAULT_EMBEDDING_MODEL_NAME",
+    "DEFAULT_MILVUS_URL",
+    "DEFAULT_MODELSCOPE_ROOT",
+    "DEFAULT_QUERY_REWRITE",
+    "DEFAULT_RERANKER_DEVICE",
+    "DEFAULT_RERANKER_FP16",
+    "DEFAULT_RERANKER_MODEL",
+    "DEFAULT_RERANK_TOP_K",
+    "DEFAULT_RETRIEVE_TOP_K",
     "DEFAULT_SERVER_HOST",
     "DEFAULT_SERVER_PORT",
     "ENV_BASE_URL",
@@ -353,17 +540,32 @@ __all__ = [
     "ENV_CONTEXT_SUMMARY",
     "ENV_CONTEXT_TOOL_LIMIT",
     "ENV_CONTEXT_WATERMARK",
+    "ENV_EMBEDDING_DEVICE",
+    "ENV_EMBEDDING_DIM",
+    "ENV_EMBEDDING_FP16",
+    "ENV_EMBEDDING_MODEL",
+    "ENV_EMBEDDING_MODEL_NAME",
     "ENV_EVAL_PAYMENT_PASSWORD",
+    "ENV_MILVUS_URL",
+    "ENV_MODELSCOPE_ROOT",
+    "ENV_QUERY_REWRITE",
+    "ENV_RERANKER_DEVICE",
+    "ENV_RERANKER_FP16",
+    "ENV_RERANKER_MODEL",
+    "ENV_RERANK_TOP_K",
+    "ENV_RETRIEVE_TOP_K",
     "ENV_SERVER_HOST",
     "ENV_SERVER_PORT",
     "ENV_THINKING",
     "ENV_TOKEN",
     "ContextConfig",
+    "KnowledgeConfig",
     "MinimallConfigError",
     "ServerConfig",
     "client_from_env",
     "context_config_from_env",
     "eval_payment_password",
+    "knowledge_config_from_env",
     "server_config_from_env",
     "thinking_from_env",
     "token_from_env",

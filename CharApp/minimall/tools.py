@@ -15,7 +15,8 @@
    / `list_my_refunds` / `pay_my_order`. 这既是给模型的语言提示 (「这个工具查的是
    当前对话者自己的东西」), 也是给评审者的信号 —— 名字里的 my 就是「身份不可
    指定」那句话. (购物车那四个写工具没带 my: 它们操作的对象是**车里的东西**而不是
-   「我的档案」, 名字按动作本身叫更准 —— 见下面那一节的说明.)
+   「我的档案」, 名字按动作本身叫更准 —— 见下面那一节的说明. `search_knowledge`
+   不带 my 是另一回事: 政策知识库**没有归属**, 它对谁都是同一份 —— 见知识库那一节.)
 3. **全部是 `async def`** (PRD §4.4). 框架把同步工具函数扔进线程池
    (`tool/executor.py` 的 `_invoke`), 同步工具会互相排队; 写成协程才真的并发.
    有一条测试专门遍历这些函数断言这一点.
@@ -54,6 +55,9 @@ from CharApp.minimall.client import (
     Ordering,
     PageSize,
 )
+from CharApp.minimall.knowledge.citations import Citations
+from CharApp.minimall.knowledge.formatting import format_chunks
+from CharApp.minimall.knowledge.retriever import KnowledgeRetriever
 
 # 写操作的标记键 (打在写工具的 annotations 上, 护栏插件靠它认人)
 WRITE_ANNOTATION_KEY = "writes"
@@ -726,6 +730,59 @@ def _pay_my_order(
 
 
 # ---------------------------------------------------------------------------
+# 知识库 (L5-b): 唯一一个**不属于商城数据**的工具 —— 政策是另一份语料
+# ---------------------------------------------------------------------------
+# 这条破例要说清, 免得后来的人以为漏了 `my`: 上面那两节的判据是「这次查的是**谁**
+# 的数据」—— 带 `my` 的是买家自己的, 不带的是商城的商品与分类; 而政策知识库**哪一样
+# 都不是**: 它是商城的另一份语料, 不查买家、也不改任何东西. 所以它既不带 `my` 前缀,
+# 也不打 `writes` 注解 (它不占买家的写预算).
+#
+# 它也是唯一一个需要**额外零件**的工具: 检索器 (`knowledge/retriever.py`, 里面装着
+# 向量库与两个本地模型). `_BUILDERS` 那张表的形状是 `(client, user_id) -> Tool`,
+# 装不下它 —— 与代付 (多一份一次性凭据) 同一个理由, 于是它也在 `build_tools` 里
+# 单独接, 接在**最后** (与"加工具是往后接"同一条).
+
+
+def _search_knowledge(retriever: KnowledgeRetriever, citations: Citations) -> Tool:
+    """政策知识库检索工具 (只读; 语义检索 + 精排, 见 `knowledge/retriever.py`).
+
+    `citations` 是**这段对话的引用账** (L5-c): 每次检索从它那儿领一段连续编号
+    (`take`), 于是同一段对话里 `[n]` 只指一段 —— 逐句引用能无歧义回指的前提.
+    """
+
+    @tool
+    async def search_knowledge(
+        query: Annotated[
+            str,
+            Field(
+                description="检索词: 按买家问的那件事组织, 可以补上同义词, "
+                "例如「退款 退货 多久到账」; 不要只填一个孤零零的词",
+                min_length=1,
+                examples=["退款要多久到账", "运费谁承担"],
+            ),
+        ],
+    ) -> str:
+        """查商城的政策与规则文档: 退款与退货、运费与配送、售后时效、支付与余额、
+        订单状态的含义、商品与库存的说明。买家问的是「规定是什么」—— 几天能退、
+        运费谁出、超时怎么办、某个状态什么意思 —— 时使用, 并且**按查到的内容答**。
+        返回的每一段都带编号 (`[1] [2] …`); 一段都没有时, 返回里会写清该怎么
+        如实告诉买家。**两类问题不要用本工具**: 买家自己的单据 (订单、余额、地址)
+        用 `*_my_*` 那几个工具; 商品本身 (价格、库存) 用 search_products ——
+        它们不是政策。
+        """
+        # 检索失败 (向量库连不上 / 本地模型缺失) **不在这里吞**: 让它走框架那套
+        # 统一的内部错误文案 (「服务暂时不可用, 别用相同参数重试」), 与商城故障
+        # 同一条路 —— 吞掉就容易变成一句编出来的政策.
+        chunks = await retriever.search(query)
+        # 先领号再编排: 编到一半出错也不回滚 —— 空出来的号只意味着答复里不会
+        # 出现它, 而编号连续这条不变量还在 (跳号比回滚好推)
+        start = citations.take(len(chunks))
+        return format_chunks(chunks, start=start)
+
+    return search_knowledge
+
+
+# ---------------------------------------------------------------------------
 # 装配
 # ---------------------------------------------------------------------------
 
@@ -757,16 +814,19 @@ def build_tools(
     user_id: int,
     *,
     one_shot: Mapping[str, str] | None = None,
+    retriever: KnowledgeRetriever,
+    citations: Citations,
 ) -> tuple[Tool, ...]:
-    """把整套工具装到「这个客户端 + 这个买家 + 这一次的凭据」上.
+    """把整套工具装到「这个客户端 + 这个买家 + 这一次的凭据 + 这个知识库」上.
 
     身份 (`user_id`) 与一次性凭据 (`one_shot`) 都在这里被写进闭包 —— 这是它们
     **唯一**进入工具的地方, 也因此永远不会出现在任何一个工具的 schema 里
     (PRD §4.2 与 ADR-0015 各管一半: 一个防"查别人的", 一个防"编一个密码填进去").
 
-    代付那个工厂**多收一个参数**, 于是它没有进上面那张 `_BUILDERS` 表 (那张表的
-    形状是 `(client, user_id) -> Tool`): 为了形状整齐把另外 17 个的签名都改一遍,
-    换来的只是好看, 而这一行的代价是"装配顺序"这件事在代码里要读两处 —— 值.
+    两个"多收一个参数"的工厂没进上面那张 `_BUILDERS` 表 (那张表的形状是
+    `(client, user_id) -> Tool`): 代付多一份一次性凭据, 知识检索多一个检索器.
+    为了形状整齐把另外那些的签名都改一遍, 换来的只是好看, 而代价是"装配顺序"
+    这件事要读两处 —— 值. 两个都**接在最后** (与"加工具是往后接而不是插队"同一条).
 
     Args:
         client: 商城客户端 (连接池与令牌在它手里)。
@@ -774,6 +834,12 @@ def build_tools(
             请求头 —— 换的只是「从哪取」那一小段, 本函数一行不改。
         one_shot: 这一次运行拿到的一次性凭据 (键名见 `ONE_SHOT_FIELDS`); None 表示
             没有 —— 普通提问走的就是这一支 (挂起恢复那一次才带得动它).
+        retriever: 知识库检索器 (`knowledge/retriever.py`)。**必填 keyword, 不给
+            默认值**: 知识库工具是助手的一项能力, "忘了传"该在装配处就报错, 而不是
+            静默地少一个工具 —— 少一个工具不会让任何既有用例变红, 只会让买家问到
+            政策时得到一句"我查不到".
+        citations: 这段对话的引用账 (`knowledge/citations.py`); 检索工具从它那儿
+            领编号, 收尾时它再把引用挂到 `final` 上.
 
     Returns:
         tuple[Tool, ...]: 整套工具 (只读的 + 打 `writes` 注解的).
@@ -781,6 +847,8 @@ def build_tools(
     tools = [builder(client, user_id) for builder in _BUILDERS]
     # 代付**接在最后** (与上面那条"加工具是往后接而不是插队"同一条)
     tools.append(_pay_my_order(client, user_id, one_shot))
+    # 知识检索再往后接一位: 它既不需要身份也不需要凭据, 只要那个检索器
+    tools.append(_search_knowledge(retriever, citations))
     return tuple(tools)
 
 

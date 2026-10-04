@@ -20,7 +20,12 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from conftest import BUYER_ID, WRITE_TOOL_NAMES
+from conftest import (
+    BUYER_ID,
+    WRITE_TOOL_NAMES,
+    citations_for_tests,
+    retriever_for_tests,
+)
 
 from CharAgent.hooks import Decision, HookPoint, HookRegistry
 from CharAgent.hooks.utils.types import Verdict
@@ -66,7 +71,13 @@ class FakeCart:
 
 def tools_of(mall: FakeCart) -> dict[str, Tool]:
     """**真的**工具集 (带真的 annotations) —— 护栏靠它认人, 替身工具就没意义了."""
-    return {item.name: item for item in build_tools(mall, BUYER_ID)}  # type: ignore[arg-type]
+    tools = build_tools(  # type: ignore[arg-type]
+        mall,
+        BUYER_ID,
+        retriever=retriever_for_tests(),
+        citations=citations_for_tests(),
+    )
+    return {item.name: item for item in tools}
 
 
 async def verdict(

@@ -49,10 +49,13 @@ from CharApp.eval.fixtures import (
     mock_all,
 )
 from CharApp.minimall.client import MinimallClient
+from CharApp.minimall.config import KnowledgeConfig
+from CharApp.minimall.knowledge.citations import Citations
+from CharApp.minimall.knowledge.retriever import KnowledgeRetriever
 
 # 全部工具的名字 (顺序即注册顺序: 只读的在前, 会改数据的与那个读退款的接在后面,
-# 代付收尾) —— **这是这份名单的唯一权威**: 工具的契约用例与提供者用例都比对它,
-# 数量变了改这里.
+# 代付、知识检索收尾) —— **这是这份名单的唯一权威**: 工具的契约用例与提供者用例
+# 都比对它, 数量变了改这里.
 TOOL_NAMES = (
     "search_products",
     "get_product_detail",
@@ -72,6 +75,8 @@ TOOL_NAMES = (
     "request_refund",
     "list_my_refunds",
     "pay_my_order",
+    # L5-b 的知识检索 (装在最后一位, 与 build_tools 的装配顺序一致)
+    "search_knowledge",
 )
 
 # **会改数据**的那 8 个 (护栏的判据是注解, 而注解的含义就是"会改数据").
@@ -120,10 +125,32 @@ __all__ = [
     "WRITE_TOOL_NAMES",
     "agent_url",
     "build_mall",
+    "citations_for_tests",
     "client",
     "mall",
     "mock_all",
+    "retriever_for_tests",
 ]
+
+
+def retriever_for_tests() -> KnowledgeRetriever:
+    """装配工具要的那个检索器 (默认配置的**空壳**, 构造期不连任何东西).
+
+    绝大多数用例只是要看「工具集长什么样」(名字 / schema / 注解) —— 检索器在这一层
+    是个占位: `KnowledgeRetriever` 构造期既不连 Milvus 也不加载模型 (那些都是
+    `knowledge/` 里的惰性单例). 真正会去检索的用例自己注入替身 (见 test_tools 的
+    知识库那一段), 不会碰这个.
+    """
+    return KnowledgeRetriever(KnowledgeConfig())
+
+
+def citations_for_tests() -> Citations:
+    """装配工具要的引用账 (空的一份) —— 与 `retriever_for_tests` 同一个理由.
+
+    真跑起来时它由 `service.session_for` 每会话造一份 (还会把旧会话的检索结果
+    垫进去); 这里只求"装配得起来".
+    """
+    return Citations()
 
 
 @pytest.fixture

@@ -19,7 +19,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from conftest import TOOL_NAMES
+from conftest import TOOL_NAMES, citations_for_tests, retriever_for_tests
 
 from CharAgent.db.entities import ToolCall, ToolCallStatus
 from CharAgent.eval import EvalCase, RunFacts, RunOutcome
@@ -63,7 +63,7 @@ BUYER = 3
 
 
 def test_the_grouping_table_covers_every_tool_exactly_once() -> None:
-    """五组正好盖满全部工具: 不多 (拼错的名字)、不少 (忘了归组的)、也不重.
+    """六组正好盖满全部工具: 不多 (拼错的名字)、不少 (忘了归组的)、也不重.
 
     归组是这个模块的全部依据 —— 一个工具没归组, 它那一组就永远开不到它, 而症状是
     「裁剪组的召回率低」这种看着像模型问题的数字. 清单的权威在 `TOOL_NAMES`
@@ -92,7 +92,11 @@ CLASSIFY_CASES: list[tuple[str, tuple[str, ...]]] = [
     ("我车里攒了不少, 帮我一起下单", ("cart", "order")),
     ("订单 202609191230450000031234 我要退款", ("order", "refund")),
     ("我默认的收货地址是哪一个", ("account",)),
-    ("你们一般几点发货", FALLBACK_GROUPS),
+    # L5-b 起政策问题有自己的一组: 「几天 / 发货 / 运费」这类问的是**条文**,
+    # 与"我的单据"不是一回事 (跨组那种: 一句里既有退款又有天数, 两组都要开)
+    ("你们一般几点发货", ("knowledge",)),
+    ("退款要几天才能到账", ("refund", "knowledge")),
+    ("你们几点上班", FALLBACK_GROUPS),
 ]
 
 
@@ -153,7 +157,13 @@ def all_tools() -> dict[str, Tool]:
     这些用例要的是**真的那批 Tool 对象** (名字与注解都是权威), 不是一次真调用.
     """
     client = MinimallClient(base_url=DEFAULT_BASE_URL, token="")
-    return {item.name: item for item in build_tools(client, BUYER)}
+    tools = build_tools(
+        client,
+        BUYER,
+        retriever=retriever_for_tests(),
+        citations=citations_for_tests(),
+    )
+    return {item.name: item for item in tools}
 
 
 def specs_of() -> list[ToolSpec]:

@@ -187,7 +187,7 @@ dep_hint() {
     esac
 }
 
-step "1/6 前置检查 (MySQL / Redis / Postgres)"
+step "1/7 前置检查 (MySQL / Redis / Postgres)"
 DEP_OUTPUT="$(check_dependencies)"
 DEP_FAILED=()
 while IFS=$'\t' read -r dep_name dep_status dep_detail; do
@@ -216,7 +216,7 @@ fi
 #    (幂等: 已经在 head 上再跑一次什么都不做)
 # ---------------------------------------------------------------------------
 
-step "2/6 建表检查 (CharAgent 迁移)"
+step "2/7 建表检查 (CharAgent 迁移)"
 if MIGRATE_OUTPUT="$("$PY" -m alembic -c CharAgent/alembic.ini upgrade head 2>&1)"; then
     info "✓ 表结构已在 head (alembic upgrade head 无待跑迁移)"
 else
@@ -281,7 +281,7 @@ wait_http() {
     return 1
 }
 
-step "3/6 起服务 (Django $DJANGO_PORT / 客服服务 $CHARAPP_PORT)"
+step "3/7 起服务 (Django $DJANGO_PORT / 客服服务 $CHARAPP_PORT)"
 mkdir -p "$LOG_DIR"
 
 DJANGO_PID="$(start_service "Django 业务端" "$DJANGO_HOST" "$DJANGO_PORT" "$DJANGO_LOG" \
@@ -292,7 +292,7 @@ DJANGO_PID="$(start_service "Django 业务端" "$DJANGO_HOST" "$DJANGO_PORT" "$D
 SERVER_PID="$(start_service "客服服务" "$CHARAPP_HOST" "$CHARAPP_PORT" "$SERVER_LOG" \
     "$PY" -m CharApp.minimall.server)"
 
-step "4/6 健康检查"
+step "4/7 健康检查"
 wait_http "Django 业务端" "http://$(probe_host "$DJANGO_HOST"):$DJANGO_PORT/minimall/agent/" \
     "$DJANGO_PID" "$DJANGO_LOG" "$HEALTH_TIMEOUT" \
     "表结构没建过就先 python manage.py migrate; 其余看日志: $DJANGO_LOG"
@@ -303,10 +303,30 @@ wait_http "客服服务" "http://$(probe_host "$CHARAPP_HOST"):$CHARAPP_PORT/ope
 READY_TS="$(date +%s)"
 
 # ---------------------------------------------------------------------------
-# 5. 演示数据准备 (幂等: 每次开演前都跑, 上一轮付掉的单在这儿补回来)
+# 5. 知识库索引 (L5-c: 政策问答的语料; 全量重建, 幂等)
+# ---------------------------------------------------------------------------
+# 为什么每次开演前重跑: 索引是**全量重建** (drop + create, 二十秒上下), 于是"演示机上
+# 的索引与知识表一致"这件事不需要人记 —— 而改过文章忘了重跑, 现场就会照着旧条文答.
+# 跑不成 (Milvus 没起 / 本地模型不在) **不拦演示**: 打一句警告, 政策那一段跳过.
+step "5/7 知识库语料 + 索引 (幂等; Milvus 不在会跳过)"
+# 两步都要跑: seed 把仓库里那几篇文章装进知识表 (默认只补缺的, 不动 Admin 里
+# 改过的), index 再全量重建向量库. 少了第一步, 干净库上 index 会对着空表
+# 「成功」地建一个空索引 —— 而装置会报「就绪」, 现场却答不出任何政策.
+#
+# `--demo-poison` 多装那篇**故意投毒**的文档: 第七节那一场演示要靠它 (问「现在有什么
+# 活动」会命中它). 它只进演示环境 —— 别的场合跑 seed 不带这个 flag (见命令的 docstring).
+if "$PY" manage.py seed_knowledge --demo-poison >&2 \
+    && "$PY" -m CharApp.minimall.knowledge.index >&2; then
+    info "政策知识库就绪 (演示可从「退货政策是什么」问起; 投毒那一段问「现在有什么活动」)"
+else
+    info "语料 / 索引没跑成 (Milvus 没起 / 本地模型不在?) —— 政策问答那一段本轮跳过"
+fi
+
+# ---------------------------------------------------------------------------
+# 6. 演示数据准备 (幂等: 每次开演前都跑, 上一轮付掉的单在这儿补回来)
 # ---------------------------------------------------------------------------
 
-step "5/6 演示数据准备 (幂等)"
+step "6/7 演示数据准备 (幂等)"
 # 它的输出也走 stderr: 这个脚本的 stdout 只留给结构化数据 (上面那条约定)
 "$PY" manage.py demo_prepare --user-id "$DEMO_USER_ID" >&2
 
@@ -316,7 +336,7 @@ step "5/6 演示数据准备 (幂等)"
 
 PAGE_URL="http://$DJANGO_HOST:$DJANGO_PORT/minimall/agent/"
 
-step "6/6 打开客服页"
+step "7/7 打开客服页"
 if [ "$OPEN_BROWSER" = "1" ]; then
     # cmd //c start: Git Bash 里开默认浏览器的那一跳 (双斜杠是防路径转换)
     if cmd.exe //c start "" "$PAGE_URL" >/dev/null 2>&1; then

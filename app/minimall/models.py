@@ -448,3 +448,68 @@ class RefundRequest(models.Model):
 
     def __str__(self):
         return f"{self.order.order_no} - {self.get_status_display()}"
+
+
+class KnowledgeArticle(models.Model):
+    """政策知识文章 —— 助手知识库 (L5) 的语料载体, 管理员手写 Markdown.
+
+    为什么是**一张轻表**而不是「知识库 + 文档」两张 (charplot 的形): L5 的定位是
+    最小可演示, 政策是短文, 一张表就够; 「上传文件 → 解析 → 索引」那条链路在
+    charplot 与 rag_knowledge 里已经证明过两次, 第三次不加分.
+
+    **边界** (ADR-0026): 这张表装的是**可查的政策事实** (几天内能申请、审批要多久、
+    运费谁承担); 系统的**硬规则** (取消与退款的区别、库存回滚以发货为界) 留在
+    提示词的术语节里 —— 那几条必须 100% 遵守, 不交给概率检索.
+
+    正文是 Markdown, 由 `python -m CharApp.minimall.knowledge.index` 切分后进
+    Milvus; `slug` 进 chunk 主键 (`{slug}-{序号}`), 检索结果据此反解来源.
+    改完内容要重跑索引, 否则检索到的还是旧正文 (管理员的保存提示里写着这一条).
+    """
+
+    class Category(models.TextChoices):
+        POLICY = "policy", "政策"
+        SHIPPING = "shipping", "配送"
+        AFTERSALE = "aftersale", "售后"
+        PAYMENT = "payment", "支付"
+        ORDER = "order", "订单"
+        PRODUCT = "product", "商品说明"
+
+    title = models.CharField(max_length=200, verbose_name="标题")
+    # 60 不是随手取的: chunk 主键 `{slug}-{序号}` 要进 Milvus 的 VARCHAR(64) 主键列
+    # (见 CharApp/minimall/knowledge/milvus.py 的 schema) —— slug 留 60 字, 序号
+    # 三位以内, 合起来不超 64. 在**这一层**卡住 (而不是等索引脚本写库时才炸):
+    # 管理员填一个超长 slug 时当场看见错, 而不是"跑索引失败"。
+    slug = models.SlugField(
+        max_length=60,
+        unique=True,
+        verbose_name="稳定标识",
+        help_text="chunk 主键用它拼 ({slug}-{序号}), 写英文短标识",
+    )
+    category = models.CharField(
+        max_length=20,
+        choices=Category.choices,
+        default=Category.POLICY,
+        verbose_name="分类标签",
+        help_text="给后续过滤留的口; 会随 chunk 一起进索引的 metadata",
+    )
+    content = models.TextField(
+        verbose_name="正文(Markdown)",
+        help_text="索引按 Markdown 结构切分; 不用写一级标题",
+    )
+    is_active = models.BooleanField(
+        default=True,
+        verbose_name="是否启用",
+        help_text="下架即不进索引 (重跑一次索引脚本会被物理剔除)",
+    )
+    sort_order = models.PositiveIntegerField(default=0, verbose_name="排序(越小越靠前)")
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
+    updated_at = models.DateTimeField(auto_now=True, verbose_name="更新时间")
+
+    class Meta:
+        db_table = "minimall_knowledge_article"
+        verbose_name = "知识文章"
+        verbose_name_plural = verbose_name
+        ordering = ["sort_order", "id"]
+
+    def __str__(self):
+        return self.title

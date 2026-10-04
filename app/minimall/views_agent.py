@@ -1,5 +1,5 @@
 """Agent 内部端点 (CharApp 助手专用): 只读 9 个 (issue 02) + 写 8 个 (issue 11)
-+ 代付 1 个 (issue 35), 共 18 条.
++ 代付 1 个 (issue 35) + 知识库 1 个 (L5-a), 共 19 条.
 
 前缀 /api/minimall/agent/, 认证 = X-Internal-Token (未配置即全拒, fail closed);
 需要买家身份的端点再带 X-User-Id, 身份由调用方声明 (信任模型与生产化路径
@@ -29,6 +29,7 @@ from .models import (
     Cart,
     CartItem,
     Category,
+    KnowledgeArticle,
     Order,
     Product,
     RefundRequest,
@@ -40,6 +41,7 @@ from .serializers_agent import (
     AgentCartItemAddSerializer,
     AgentCartItemUpdateSerializer,
     AgentCategoryTreeSerializer,
+    AgentKnowledgeArticleSerializer,
     AgentOrderCancelSerializer,
     AgentOrderCreateSerializer,
     AgentOrderDetailSerializer,
@@ -300,6 +302,31 @@ class AgentFeaturedProductListView(AgentEndpointView):
             "category"
         )
         return Response(AgentProductListSerializer(qs, many=True).data)
+
+
+# ---------------------------------------------------------------------------
+# 知识库 (L5-a): 助手侧的索引脚本读它
+# ---------------------------------------------------------------------------
+
+
+class AgentKnowledgeArticleListView(AgentEndpointView):
+    """政策知识文章列表: 全部 `is_active` 的文章, **不分页、不缓存**.
+
+    消费方是 `python -m CharApp.minimall.knowledge.index` (索引脚本), 不是模型 ——
+    所以这里没有买家身份, 也没有分页: 语料是几篇短文, 索引本来就要全量.
+
+    两条沿用既有规矩:
+
+    - **直查数据库, 不走 Redis**: L1a 定下的那条在这里同样成立 —— 检索答出来的
+      必须是**当下事实**. 缓存里躺着一篇十分钟前被改过的旧政策, 助手就会照着它
+      回答, 而页面上已经是新内容.
+    - **不返回 `id` / `is_active`**: 见 `AgentKnowledgeArticleSerializer` —— 端点
+      已经滤掉下架文章, 而落进 Milvus 的标识是 `slug`.
+    """
+
+    def get(self, request):
+        articles = KnowledgeArticle.objects.filter(is_active=True)
+        return Response(AgentKnowledgeArticleSerializer(articles, many=True).data)
 
 
 # ---------------------------------------------------------------------------

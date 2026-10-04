@@ -516,3 +516,114 @@ async def test_the_reader_only_hands_out_the_visible_rows(db: Any) -> None:
     assert payload[MESSAGES_FIELD] == [
         {"role": "user", "content": "看得见的问题"},
     ]
+
+
+# ---------------------------------------------------------------------------
+# 第三个插座 (可选): 业务给每条消息补自己的字段 (`message_extras`)
+# ---------------------------------------------------------------------------
+# 这一组守的是那条接缝的三件事: 补在**对的那一条**上 (按行下标)、只在**读记录表**
+# 那条路上补、以及插件出错时**不吞** (那是业务自己的读口).
+
+
+class ToyExtras:
+    """玩具业务自己的一份"附加字段": 记下被问过几次、拿到的行有几个."""
+
+    def __init__(self, extras: dict[int, dict[str, Any]] | None = None) -> None:
+        self.calls: list[tuple[str, int]] = []
+        self._extras = extras or {}
+
+    async def provide(self, thread_id: str, rows: Any) -> dict[int, dict[str, Any]]:
+        self.calls.append((thread_id, len(rows)))
+        return {index: dict(value) for index, value in self._extras.items()}
+
+
+class BlowingExtras:
+    """每次都被问就炸的插件 (框架不该替它兜底)."""
+
+    async def provide(self, thread_id: str, rows: Any) -> dict[int, dict[str, Any]]:
+        raise RuntimeError("业务那边读附加字段失败了")
+
+
+def build_with_extras(
+    records: FakeRecordDatabase, model: ChatModel, extras: Any
+) -> Any:
+    """起一个接了额外字段插座的玩具服务 (与 `build_on_records` 只差那一项)."""
+    return create_app(
+        context_provider=ToyContexts(),
+        session_provider=ToySessions(model=model),
+        database=records,
+        message_extras=extras,
+    )
+
+
+async def test_message_extras_are_merged_into_the_matching_rows() -> None:
+    """按下标并进去: 只补给了的那几条, 键名原样 (框架不认识它们的含义)."""
+    extras = ToyExtras({1: {"citations": [{"n": 1, "title": "玩具来源"}]}})
+    app = build_with_extras(
+        FakeRecordDatabase(
+            messages=[
+                record_message("user", "问题"),
+                record_message("assistant", "答复"),
+            ]
+        ),
+        MockLLM.scripted(ONE_QUESTION),
+        extras,
+    )
+
+    payload = (await history(app)).json()
+
+    assert payload[MESSAGES_FIELD] == [
+        {"role": "user", "content": "问题"},
+        {
+            "role": "assistant",
+            "content": "答复",
+            "citations": [{"n": 1, "title": "玩具来源"}],
+        },
+    ]
+    assert extras.calls == [(payload[THREAD_ID_FIELD], 2)], "问的是这段会话、这些行"
+
+
+async def test_message_extras_are_not_consulted_on_the_memory_source() -> None:
+    """没给库时读的是会话内存 (没有"行"可对): 插座**一次都不该被问**.
+
+    与「两个来源不互相兜底」是同一件事的另一面 —— 内存那份没有下标, 硬补就会补到
+    不相干的一条上.
+    """
+    extras = ToyExtras({0: {"citations": []}})
+    app = create_app(
+        context_provider=ToyContexts(),
+        session_provider=ToySessions(model=MockLLM.scripted(ONE_QUESTION)),
+        message_extras=extras,
+    )
+    await talk(app, "问题")
+
+    payload = (await history(app)).json()
+
+    assert extras.calls == []
+    assert all("citations" not in message for message in payload[MESSAGES_FIELD])
+
+
+async def test_a_broken_extras_provider_is_not_swallowed() -> None:
+    """插件炸了就炸了 (不翻译成"没有附加字段"): 那是业务自己的读口出的故障."""
+    app = build_with_extras(
+        FakeRecordDatabase(messages=[record_message("assistant", "答复")]),
+        MockLLM.scripted(ONE_QUESTION),
+        BlowingExtras(),
+    )
+
+    with pytest.raises(RuntimeError, match="附加字段"):
+        await history(app)
+
+
+async def test_other_routes_do_not_consult_the_extras() -> None:
+    """只有读历史那条路问它 (列会话 / 跑一次问答都不问)."""
+    extras = ToyExtras({0: {"citations": []}})
+    app = build_with_extras(
+        FakeRecordDatabase(messages=[record_message("assistant", "答复")]),
+        MockLLM.scripted(ONE_QUESTION),
+        extras,
+    )
+
+    await talk(app, "问题")
+
+    assert extras.calls == [], "只有 GET /history 该问它"

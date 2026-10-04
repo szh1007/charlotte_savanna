@@ -8,6 +8,7 @@ from .views_agent import (
     AgentCartView,
     AgentCategoryTreeView,
     AgentFeaturedProductListView,
+    AgentKnowledgeArticleListView,
     AgentOrderCancelView,
     AgentOrderDetailView,
     AgentOrderListView,
@@ -32,6 +33,12 @@ urlpatterns = [
         "featured-products/",
         AgentFeaturedProductListView.as_view(),
         name="featured_products",
+    ),
+    # 知识库 (L5-a): 索引脚本读它, 与商品一样是公共数据 (不带 X-User-Id)
+    path(
+        "knowledge/articles/",
+        AgentKnowledgeArticleListView.as_view(),
+        name="knowledge_articles",
     ),
     path("cart/", AgentCartView.as_view(), name="cart"),
     path("orders/", AgentOrderListView.as_view(), name="order_list"),

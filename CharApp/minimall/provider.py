@@ -22,6 +22,18 @@
 如今由 Django 从 session 里取出、经请求头转发过来, 变的只是「谁往 payload 里放
 这个值」, 而那一段是 `service.build_context` 的**参数**: 命令行传 argv, 服务进程
 传请求头 (PRD §4.2 的最后一段) —— 两个入口各自取身份, 互不取代。
+
+**第三个进闭包的东西不走载荷, 走构造参数** (L5-b): 知识检索器
+(`knowledge/retriever.py`)。它既不是买家身份也不是一次性凭据 —— 它是一个轻对象
+(配置 + 会话那个模型), 真正重的零件 (向量库连接 / 两个本地模型) 在它内部按惰性
+单例拿. 政策对谁都是同一份, 所以它不随运行重建、也不进载荷, 由装配处直接交给
+提供者. 于是知识检索那个工具的闭包里装着它, 而它的参数表里只有 `query`
+(与身份同一条纪律的两个不同来源: 一个怕被伪造, 一个压根与买家无关).
+
+**第四个进闭包的东西是引用账** (`knowledge/citations.py`, L5-c): 与检索器同一条
+通道 (构造参数), 但它记得的是**这段对话**的事 —— 检索工具每次从它那儿领一段
+连续编号, 收尾时它再把引用挂到 `final` 上. 装配处造它一次、交给工具与钩子两处
+用, 于是「哪几段被引用了」只有一份账.
 """
 
 from __future__ import annotations
@@ -32,6 +44,8 @@ from CharAgent.agent import RunContext
 from CharAgent.tool import Tool
 from CharApp.minimall.client import MinimallClient
 from CharApp.minimall.config import MinimallConfigError
+from CharApp.minimall.knowledge.citations import Citations
+from CharApp.minimall.knowledge.retriever import KnowledgeRetriever
 from CharApp.minimall.tools import ONE_SHOT_FIELDS, build_tools
 
 # 运行上下文里放买家身份的那个键. 框架**不认识**它 (payload 是「框架不解释的
@@ -99,13 +113,24 @@ class MinimallToolProvider:
         client: 商城客户端 (连接池与令牌)。**由调用方持有并负责关闭** ——
             提供者只是每次运行时把买家身份接到它上面, 不接管它的生命周期
             (同一个客户端服务同一进程里的所有买家)。
+        retriever: 知识库检索器 (L5-b)。由装配处**每个会话现造一个** (对象本身
+            很轻: 只拿着配置与会话那个模型), 而它用到的重零件 —— 向量库连接与
+            两个本地模型 —— 是 `knowledge/` 里的惰性单例, 一个进程一份。与身份
+            不同, 它**不带买家**: 政策对谁都是同一份。
 
     attributes:
         (无公开属性; 工具集每次现装 —— 装配是纯函数, 不做缓存)
     """
 
-    def __init__(self, client: MinimallClient) -> None:
+    def __init__(
+        self,
+        client: MinimallClient,
+        retriever: KnowledgeRetriever,
+        citations: Citations,
+    ) -> None:
         self._client = client
+        self._retriever = retriever
+        self._citations = citations
 
     async def provide(self, context: RunContext) -> Sequence[Tool]:
         """按上下文里的买家身份装出这次运行的那套工具。
@@ -115,14 +140,18 @@ class MinimallToolProvider:
                 那一次还会有一份一次性凭据)。
 
         Returns:
-            Sequence[Tool]: 那套工具 (只读的 + 打 `writes` 注解的), 身份与凭据都已裹进
-            各自的闭包。
+            Sequence[Tool]: 那套工具 (只读的 + 打 `writes` 注解的 + 知识检索),
+            身份与凭据都已裹进各自的闭包。
 
         Raises:
             MinimallConfigError: 载荷里没有买家身份 (见 `buyer_id`)。
         """
         return build_tools(
-            self._client, buyer_id(context), one_shot=one_shot_payload(context)
+            self._client,
+            buyer_id(context),
+            one_shot=one_shot_payload(context),
+            retriever=self._retriever,
+            citations=self._citations,
         )
 
 

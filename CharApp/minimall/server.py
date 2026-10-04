@@ -50,6 +50,12 @@ Starlette 读出来是按 latin-1 解码的 str —— 中文令牌 / 中文买�
 所以这里不关会话: `ChatSession.aclose()` 会把模型与存储一起关掉, 关一个会话等于
 顺手关了别人的 (框架的 `server/sessions.py` 明文写着它从不调它).
 
+**启动预热 (L5-D3)**: 起服务的同时派一个后台任务把知识库的两个本地模型 (bge-m3
+与 reranker) 加载进内存 (`knowledge/prewarm.py`) —— 共享桌面演示时"第一问卡 30 秒"
+是致命的, 而这段等待完全可以挪到"服务刚起来、还没人提问"的那几十秒里. 它在
+`_serve` 那同一个事件循环里派、在同一个 finally 里收, 理由写在 `_serve` 的 docstring
+(框架的 `create_app` 返回裸 `FastAPI()`, 没有 lifespan 可挂).
+
 **不做的事**: 不写面向用户的文案 (框架只转发事实 —— 错误码 + message, 降级话术
 归 Django 那侧, 见框架 `docs/DESIGN.md`); 不做前端 (issue 06).
 
@@ -92,9 +98,12 @@ from CharApp.minimall.config import (
     ServerConfig,
     client_from_env,
     context_config_from_env,
+    knowledge_config_from_env,
     server_config_from_env,
     thinking_from_env,
 )
+from CharApp.minimall.history_citations import HistoryCitations
+from CharApp.minimall.knowledge.prewarm import prewarm
 from CharApp.minimall.log_redaction import build_redactor, redacting_writer
 from CharApp.minimall.service import (
     STARTUP_ERRORS,
@@ -307,6 +316,9 @@ def build_service(writer: Callable[[str], Any]) -> MinimallService:
         # 与上面几项同一个性质: 读坏了 (比如水位线写成 1.5) 就该让进程起不来,
         # 而不是等某个买家聊长了才发现 (MinimallConfigError 在 STARTUP_ERRORS 里).
         compaction=context_config_from_env(),
+        # 知识库那条线 (L5-b): 向量库地址与两个本地模型的位置。同一份配置还喂给
+        # 启动预热 (`main` 里从 service 上取, 见 `_serve`) —— 读一处, 用两处.
+        knowledge=knowledge_config_from_env(),
     )
 
 
@@ -320,6 +332,9 @@ def create_minimall_app(
 
     怎么跑 (uvicorn / 测试里的 ASGI transport / 别的) 由调用方决定 —— 与框架同一条
     纪律: 这里只交出 app, 不起服务.
+
+    第三条插座 (可选, L5-c): 给 `/history` 的每条消息补**引用** (点开看来源那件
+    事的历史那一半). 只有记账的进程才装它 —— 判据与 `database` 同一个.
 
     Args:
         service: 进程级零件与装配.
@@ -351,6 +366,13 @@ def create_minimall_app(
         # 各自退回「没有记录层」的样子 (见 create_app 的说明).
         database=service.database,
         idempotency=idempotency,
+        # 引用那一半的历史 (L5-c): 刷新页面时按行回读当时的检索结果, 与直播里的
+        # 编号逐字一致 (同一段文本、同一个解析函数, 见 knowledge/citations.py).
+        # **没配库时不给**: 那条路读的是内存里的历史, 没有"行"可对 —— 这与
+        # /history 两个来源二选一是同一条纪律.
+        message_extras=(
+            None if service.database is None else HistoryCitations(service.database)
+        ),
     )
 
 
@@ -393,14 +415,33 @@ async def _serve(app: FastAPI, service: MinimallService, config: ServerConfig) -
     另一个循环」的连接. 于是这里自己持有循环: 起服务、等它结束、关资源, 三件事
     按顺序发生.
 
+    **知识库模型预热在这同一段循环里派出去** (L5-D3): `prewarm` 是一个后台任务
+    (两个本地模型各丢线程池、**串行**加载, 见 `knowledge/prewarm.py` 里那条实测),
+    服务照常量级启动, 等第一个买家提问时模型大概率已经就位 —— 共享桌面演示时
+    "第一问卡 30 秒"是致命的. 它吃的是**零件上那份**知识库配置
+    (`service.knowledge`), 不是另外读一遍 env —— 读一处用两处.
+
+    为什么不是 FastAPI 的 lifespan: 框架的 `create_app` 返回的是一个裸 `FastAPI()`
+    (它没有 lifespan 参数), 而进程循环本来就是业务这一层的 —— 预热任务的生死跟着
+    这个循环走, 与别的进程级资源 (商城连接池 / 模型 / 快照) 同一处建、同一处收.
+
     Note:
         Ctrl-C 停机时 uvicorn 收完尾会**把信号重新抛出来** (它的 `capture_signals`
         如此设计), 所以这里看到的不是一条干净返回 —— 由 `main` 接住.
+
+        停机时预热任务被取消: 正在加载模型的那个线程没法被打断 (`to_thread` 取消
+        不了已经在跑的函数), 但它跟着进程一起结束 —— 反正是最后一步了.
     """
     server = uvicorn.Server(uvicorn_config(app, config))
+    prewarming = asyncio.create_task(
+        prewarm(service.knowledge), name="knowledge-prewarm"
+    )
     try:
         await server.serve()
     finally:
+        prewarming.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await prewarming
         # 关不掉也别让收尾的异常盖住真正的停机原因 (比如那一下 Ctrl-C)
         with contextlib.suppress(Exception):
             await service.aclose()
@@ -452,6 +493,8 @@ def main() -> int:
     use_utf8_stdio()
     try:
         config = server_config_from_env()
+        # 知识库那条线的配置 (L5) 由 build_service 从 env 读 —— 写坏了 (数字旋钮
+        # 不是正整数 / 开关认不出) 同样在这里被翻成一句人话 (MinimallConfigError).
         service = build_service(writer=log_writer())
     except STARTUP_ERRORS as exc:
         # 配置类错误 (令牌没配 / API Key 没配 / 快照后端不认识): 报一句人话就退出,

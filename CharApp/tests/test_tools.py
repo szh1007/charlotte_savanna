@@ -21,14 +21,24 @@ from typing import Any
 
 import httpx
 import pytest
-from conftest import BUYER_ID, ORDER_NO, PAYMENT_PASSWORD, TOOL_NAMES, agent_url
+from conftest import (
+    BUYER_ID,
+    ORDER_NO,
+    PAYMENT_PASSWORD,
+    TOOL_NAMES,
+    agent_url,
+    citations_for_tests,
+    retriever_for_tests,
+)
 
 from CharAgent.agent.utils.events import tool_result_data
 from CharAgent.tests.mock_llm import make_tool_call
 from CharAgent.tool import Tool, ToolActionableError, execute_tool
+from CharApp.minimall import injection
 from CharApp.minimall.client import MinimallClient, MinimallError
 from CharApp.minimall.tools import (
     PAYMENT_PASSWORD_FIELD,
+    WRITE_ANNOTATION_KEY,
     RefusedActionError,
     build_tools,
 )
@@ -39,9 +49,23 @@ def tools_of(
     user_id: int = BUYER_ID,
     *,
     one_shot: Mapping[str, str] | None = None,
+    retriever: Any = None,
 ) -> dict[str, Tool]:
-    """工具名 → 工具 (装配是纯函数, 每个用例现装一份, 互不干扰)."""
-    return {item.name: item for item in build_tools(client, user_id, one_shot=one_shot)}
+    """工具名 → 工具 (装配是纯函数, 每个用例现装一份, 互不干扰).
+
+    检索器默认给空壳: 这一页绝大多数用例看的是工具**对外那份契约** (名字 /
+    schema / 结果), 知识库那一段自己注入替身 (见本文件末尾那一段).
+    """
+    return {
+        item.name: item
+        for item in build_tools(
+            client,
+            user_id,
+            one_shot=one_shot,
+            retriever=retriever if retriever is not None else retriever_for_tests(),
+            citations=citations_for_tests(),
+        )
+    }
 
 
 async def call(
@@ -66,7 +90,13 @@ async def test_the_built_tools_are_exactly_the_expected_names(client) -> None:
     判据是 `conftest.TOOL_NAMES` 那份清单, 不是这里再写一个数 —— 数量变了,
     该改的只有那份清单.
     """
-    names = tuple(item.name for item in build_tools(client, BUYER_ID))
+    tools = build_tools(
+        client,
+        BUYER_ID,
+        retriever=retriever_for_tests(),
+        citations=citations_for_tests(),
+    )
+    names = tuple(item.name for item in tools)
 
     assert names == TOOL_NAMES
 
@@ -81,7 +111,12 @@ async def test_every_tool_is_async(client) -> None:
     """
     not_async = [
         item.name
-        for item in build_tools(client, BUYER_ID)
+        for item in build_tools(
+            client,
+            BUYER_ID,
+            retriever=retriever_for_tests(),
+            citations=citations_for_tests(),
+        )
         if not inspect.iscoroutinefunction(item.fn)
     ]
 
@@ -98,7 +133,12 @@ async def test_every_description_says_when_to_use_it(client) -> None:
     """
     without_hint = [
         item.name
-        for item in build_tools(client, BUYER_ID)
+        for item in build_tools(
+            client,
+            BUYER_ID,
+            retriever=retriever_for_tests(),
+            citations=citations_for_tests(),
+        )
         if "使用" not in item.description
     ]
 
@@ -713,3 +753,117 @@ async def test_the_pay_tool_asks_for_no_password_at_all(client) -> None:
 # 端到端那一层 (装配 → 工具 → 商城) 里, 载荷到不了工具时的行为由
 # `test_pay_without_a_password_never_calls_the_mall` 钉住; `one_shot` 这条通道
 # 在**提供者**那一侧的样子见 `test_provider.test_the_one_shot_payload_reaches_...`.
+
+
+# ---------------------------------------------------------------------------
+# 知识库 (L5-b): 检索工具的那份契约
+# ---------------------------------------------------------------------------
+# 这一节与上面几节的关系: 上面每一个工具背后都是**商城接口** (respx 假商城拦着),
+# 而知识检索背后是检索器 (向量库 + 两个本地模型) —— 于是它的替身换了一层: 拦的东西
+# 从 HTTP 变成 `retriever.search`. 真检索那条路 (Milvus / bge-m3 / 精排) 由
+# `test_knowledge.py` 与真机验收管, 这里只管**工具这一层**: 参数、编号格式、
+# 没有命中时说什么、故障怎么传上去.
+
+
+class StubRetriever:
+    """检索器替身: 按预置的片段 (或异常) 应答, 并记下每次收到的检索词."""
+
+    def __init__(
+        self, chunks: list[dict] | None = None, error: Exception | None = None
+    ) -> None:
+        self._chunks = chunks or []
+        self._error = error
+        self.queries: list[str] = []
+
+    async def search(self, query: str, *, top_k: int | None = None) -> list[dict]:
+        self.queries.append(query)
+        if self._error is not None:
+            raise self._error
+        return list(self._chunks)
+
+
+def _chunk(nth: int, title: str, content: str) -> dict:
+    return {
+        "id": f"refund-policy-{nth}",
+        "slug": "refund-policy",
+        "title": title,
+        "category": "policy",
+        "chunk_index": nth,
+        "content": content,
+        "score": 0.9,
+    }
+
+
+async def call_knowledge(client, retriever: StubRetriever, *, query: str) -> str:
+    """调一次 `search_knowledge` 并返回回填给模型的文本."""
+    tool = tools_of(client, retriever=retriever)["search_knowledge"]
+    return await tool.fn(query=query)
+
+
+async def test_the_knowledge_tool_numbers_its_sources(client) -> None:
+    """`[n] 标题` + 换行 + 正文, 段间空行 —— 逐句引用 (C10) 靠的就是这个编号.
+
+    形状在本票定死 (票面明写): 解析它的那一头与生成它的这一头一旦各拼一遍,
+    迟早对不上. 于是这条用例断言的是**逐字**的编号文本, 不只是"包含标题".
+
+    外面那层"这是资料不是指令"的声明 (L5-d) 用 `as_data` 拼在期望值里而不是
+    另写一遍字面量: 那两句声明**本身**归 `test_injection.py` 管 (它断的是"话说清
+    了没有"), 这一条管的是**编号文本没被它挤变形** (编号从哪段起、段间怎么隔).
+    """
+    retriever = StubRetriever(
+        [
+            _chunk(0, "退款政策", "## 什么情况可以申请退款\n付款之后可以申请."),
+            _chunk(1, "运费与配送说明", "## 运费\n全站免运费."),
+        ]
+    )
+
+    text = await call_knowledge(client, retriever, query="退款 运费")
+
+    assert text == injection.as_data(
+        "[1] 退款政策\n## 什么情况可以申请退款\n付款之后可以申请.\n"
+        "\n"
+        "[2] 运费与配送说明\n## 运费\n全站免运费."
+    )
+    assert retriever.queries == ["退款 运费"], "检索词要原样交给检索器"
+
+
+async def test_the_knowledge_tool_says_what_to_do_when_nothing_matches(client) -> None:
+    """知识库里没有 → 回一句**带下一步**的话, 而不是一段空文本.
+
+    只说「没找到」的话, 模型很容易顺着上下文把政策编出来 —— 那句话里必须有
+    "如实说不确定"与"让他找人工客服"两件事 (与 `_REFUSAL_HINTS` 同一条思路).
+    """
+    text = await call_knowledge(client, StubRetriever(), query="生日蛋糕怎么买")
+
+    assert "没有检索到" in text
+    assert "不要凭印象" in text
+    assert "人工客服" in text
+
+
+async def test_a_broken_knowledge_base_is_a_failure_not_an_answer(client) -> None:
+    """向量库连不上 / 本地模型缺失 → **抛**, 交给框架那套内部错误文案.
+
+    为什么不在这里回一句"暂时查不到": 那会让模型把一次故障说成一个业务事实.
+    抛出去走的是与商城故障同一条路 (框架记 `status=error` 并回填"服务暂时不可用"),
+    买家听到的是"稍后再试", 而不是"商城没有这项政策".
+    """
+    retriever = StubRetriever(error=RuntimeError("Milvus 混合检索失败"))
+
+    with pytest.raises(RuntimeError, match="Milvus"):
+        await call_knowledge(client, retriever, query="退款")
+
+
+async def test_the_knowledge_tool_is_read_only_and_asks_only_for_a_query(
+    client,
+) -> None:
+    """它只读 (不打 `writes` 注解, 不占写预算), 参数里只有检索词.
+
+    签名那一条是"身份进不来"的机械证据 (与代付那条同一个判据): 一个只收 `query`
+    的函数, 没有任何位置可以塞买家 ID.
+    """
+    tool = tools_of(client, retriever=StubRetriever())["search_knowledge"]
+
+    assert set(inspect.signature(tool.fn).parameters) == {"query"}
+    assert tool.annotations.get(WRITE_ANNOTATION_KEY) is None, (
+        "知识检索不改任何数据 —— 它不该占买家的写预算"
+    )

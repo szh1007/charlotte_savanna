@@ -18,6 +18,7 @@ from rest_framework import serializers
 from .models import (
     CartItem,
     Category,
+    KnowledgeArticle,
     Order,
     OrderItem,
     Product,
@@ -75,6 +76,32 @@ class AgentCategoryTreeSerializer(serializers.ModelSerializer):
         if qs.exists():
             return AgentCategoryTreeSerializer(qs, many=True).data
         return []
+
+
+# ---------------------------------------------------------------------------
+# 知识文章 (L5-a: 助手侧的索引脚本读它; 不面向买家, 不是给模型的工具返回体)
+# ---------------------------------------------------------------------------
+
+
+class AgentKnowledgeArticleSerializer(serializers.ModelSerializer):
+    """一篇政策文章: 索引脚本需要的字段, 一个不多.
+
+    为什么不给 `id` / `is_active`: 消费方是**索引脚本**, 而它只拿启用文章 (端点在
+    查询里已经滤过), 落进 Milvus 的来源标识是 `slug` (chunk 主键由它拼), 主键对
+    检索链路没有任何用处. 少一个字段就少一处「两边对不齐」的可能.
+
+    `updated_at` 留着 (虽然索引脚本自己不用它 —— `documents.py` 里写着为什么):
+    它是这条 wire 上唯一的「这份内容什么时候改的」, 排查"检索到的还是旧正文"时
+    抓一眼接口就知道库里的内容新不新, 不必登进 Admin.
+
+    `category` 给的是 **code** (`policy` / `shipping` / …) 而不是中文 label: 它随
+    chunk 进 Milvus 的 metadata, 将来按类过滤时用的是这个稳定的机器值; 要给人看的
+    中文名由前端 / 提示词按需翻译, 不该焊死在索引数据里.
+    """
+
+    class Meta:
+        model = KnowledgeArticle
+        fields = ["slug", "title", "category", "content", "updated_at"]
 
 
 # ---------------------------------------------------------------------------

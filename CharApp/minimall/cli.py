@@ -59,10 +59,13 @@ from CharAgent.model import ModelError
 from CharAgent.model.protocol import ChatModel
 from CharApp.minimall.config import (
     ContextConfig,
+    KnowledgeConfig,
     client_from_env,
     context_config_from_env,
+    knowledge_config_from_env,
 )
 from CharApp.minimall.service import (
+    DEFAULT_KNOWLEDGE_CONFIG,
     DEFAULT_MAX_TURNS,
     STARTUP_ERRORS,
     TENANT_CLI,
@@ -256,6 +259,7 @@ def service_for(
     *,
     database: PgDatabase | None = None,
     compaction: ContextConfig | None = None,
+    knowledge: KnowledgeConfig | None = None,
 ) -> MinimallService:
     """命令行选项 → 一份装配好的零件 (进程级那三件 + 运行时开关).
 
@@ -266,9 +270,10 @@ def service_for(
     为什么 `thinking` / `max_turns` 要逐个显式传: 它们**不是**模型工厂的参数
     (`build_model` 只管模型名与重试), 而是会话运行时的参数 —— 漏掉一个的表现是
     「命令行开关解析了、存下了、但没生效」, 这种静默失效最难发现 (`thinking` 就是
-    这么漏过一次, 由代码评审抓出来的). `compaction` 同理 (ticket 18): 它由调用方
-    从 `CHARAPP_CONTEXT_*` 读出来传进来, 而不是在这里读 env —— 下面那条链上的每一
-    环因此都只做翻译, 一行 I/O 都没有 (用例可以直接给它一份参数, 不必改环境).
+    这么漏过一次, 由代码评审抓出来的). `compaction` 同理 (ticket 18) 与 `knowledge`
+    (L5-b): 它们由调用方从 `CHARAPP_*` 读出来传进来, 而不是在这里读 env —— 下面
+    那条链上的每一环因此都只做翻译, 一行 I/O 都没有 (用例可以直接给它一份参数,
+    不必改环境).
     """
     return MinimallService(
         client=client,
@@ -279,6 +284,10 @@ def service_for(
         thinking=options.thinking,
         max_turns=options.max_turns,
         compaction=compaction,
+        # 知识库那条线 (L5-b): 与压缩同一套做法 —— 由入口从 `CHARAPP_*` 读出来
+        # 传进来; 不传时用 `service` 那份**同一个**默认值 (别在这儿再造一份:
+        # 两处默认值迟早会漂)
+        knowledge=knowledge if knowledge is not None else DEFAULT_KNOWLEDGE_CONFIG,
     )
 
 
@@ -290,6 +299,7 @@ async def build_session(
     *,
     database: PgDatabase | None = None,
     compaction: ContextConfig | None = None,
+    knowledge: KnowledgeConfig | None = None,
 ) -> ChatSession:
     """把零件装成一台能问答的机器 (装配本身在 `service.py`, 这里只补 CLI 特有的几项).
 
@@ -303,7 +313,12 @@ async def build_session(
         options.user_id, options.conversation_id, tenant_id=TENANT_CLI
     )
     service = service_for(
-        options, model, client, database=database, compaction=compaction
+        options,
+        model,
+        client,
+        database=database,
+        compaction=compaction,
+        knowledge=knowledge,
     )
     return await service.session_for(
         context,
@@ -453,6 +468,9 @@ def main(
                 printer,
                 database=database,
                 compaction=context_config_from_env(),
+                # 知识库那条线两个入口同源 (都读 CHARAPP_*): 命令行问政策时
+                # 走的是同一个知识库、同一套本地模型
+                knowledge=knowledge_config_from_env(),
             )
         )
         return _dispatch(runner, session, options, reader or input, writer)

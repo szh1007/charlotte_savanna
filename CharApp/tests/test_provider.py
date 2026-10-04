@@ -22,7 +22,15 @@ from typing import Any
 
 import httpx
 import pytest
-from conftest import BUYER_ID, ORDER_NO, PAYMENT_PASSWORD, TOOL_NAMES, agent_url
+from conftest import (
+    BUYER_ID,
+    ORDER_NO,
+    PAYMENT_PASSWORD,
+    TOOL_NAMES,
+    agent_url,
+    citations_for_tests,
+    retriever_for_tests,
+)
 
 from CharAgent.agent import RunContext
 from CharAgent.tests.mock_llm import make_tool_call
@@ -67,6 +75,8 @@ EXPECTED_PARAMS: dict[str, set[str]] = {
     "list_my_refunds": set(),
     # --- 代付 (L3b, issue 35) ---
     "pay_my_order": {"order_no"},
+    # --- 知识库 (L5-b): 一个参数, 而且是**检索词**不是身份 ---
+    "search_knowledge": {"query"},
 }
 
 # 任何形态的身份字段都不许出现在参数表里 (中英文写法都列上)
@@ -104,11 +114,24 @@ def context_for(
     )
 
 
+def provider_for(client: MinimallClient, retriever: Any = None) -> MinimallToolProvider:
+    """装一套工具用的提供者.
+
+    `retriever` 默认给一个**空壳** (构造期不连 Milvus 也不加载模型, 见 conftest 的
+    `retriever_for_tests`) —— 要看「传给工具的是不是这一个」的用例自己传替身.
+    """
+    return MinimallToolProvider(
+        client,
+        retriever if retriever is not None else retriever_for_tests(),
+        citations_for_tests(),
+    )
+
+
 async def test_a_provider_returns_the_expected_names_in_order(
     client: MinimallClient,
 ) -> None:
     """给定买家, 交出的就是那份期望名单 (名字与顺序都对)."""
-    tools = await MinimallToolProvider(client).provide(context_for())
+    tools = await provider_for(client).provide(context_for())
 
     assert tuple(item.name for item in tools) == TOOL_NAMES
 
@@ -121,7 +144,7 @@ async def test_a_provider_is_anything_with_the_right_shape(
     这条不是重复上面的断言, 而是钉住「业务不 import 框架基类」这件事 ——
     框架与业务之间只有形状约定, 没有继承关系.
     """
-    provider = MinimallToolProvider(client)
+    provider = provider_for(client)
 
     assert type(provider).__mro__ == (MinimallToolProvider, object), (
         "提供者不该继承框架的基类: 协议是结构化的, 有 provide 就算"
@@ -143,7 +166,7 @@ async def _assert_nothing_leaks(
     层兜住「名字对不上但值漏了」(说明里带一句 / 默认值里塞一个) —— 而模型的视角
     正是这段文本.
     """
-    tools = await MinimallToolProvider(client).provide(context)
+    tools = await provider_for(client).provide(context)
 
     for item in tools:
         schema = json.dumps(
@@ -168,7 +191,7 @@ async def test_identity_never_appears_in_any_tool_schema(
     schema 序列化成文本搜一遍买家 ID —— 后者兜住「参数名不叫 user_id 但值漏了」
     这类形态.
     """
-    tools = await MinimallToolProvider(client).provide(context_for(GUARD_BUYER_ID))
+    tools = await provider_for(client).provide(context_for(GUARD_BUYER_ID))
 
     actual = {item.name: set(item.parameters.get("properties", {})) for item in tools}
     assert actual == EXPECTED_PARAMS
@@ -220,7 +243,7 @@ async def test_the_one_shot_payload_reaches_the_tool_but_not_the_schema(
         payload={PAYMENT_PASSWORD_FIELD: GUARD_PASSWORD, "language": "zh"}
     )
 
-    tools = await MinimallToolProvider(client).provide(context)
+    tools = await provider_for(client).provide(context)
     pay = next(item for item in tools if item.name == "pay_my_order")
     await pay.fn(order_no=ORDER_NO)
 
@@ -240,7 +263,7 @@ async def test_the_credential_list_matches_what_the_guardrail_asks_for(
     所以这条**真的去问一次护栏** (拿它自己那条裁决的 `needs` 比对), 而不是在同一个
     模块里自证: 自证只能证明「常量等于它自己」, 护栏那边换个字面量它照样绿.
     """
-    tools = await MinimallToolProvider(client).provide(context_for())
+    tools = await provider_for(client).provide(context_for())
     pay = next(item for item in tools if item.name == "pay_my_order")
     guardrail = WriteGuardrail(client=client, user_id=BUYER_ID)
 
@@ -279,7 +302,7 @@ async def test_the_identity_only_tools_take_no_arguments_at_all(
     顺带钉住 `required`: 空参数表不该声明任何必填项 (否则模型会收到「缺少必填
     参数」的怪错).
     """
-    tools = await MinimallToolProvider(client).provide(context_for())
+    tools = await provider_for(client).provide(context_for())
     no_argument = [item for item in tools if EXPECTED_PARAMS[item.name] == set()]
 
     # 5 个只读 (分类/精选/购物车/余额/地址) + 2 个写 (清空购物车/看我的退款)
@@ -304,7 +327,7 @@ async def test_the_context_identity_reaches_the_request(
     route = mall.get(agent_url("profile/")).mock(
         return_value=httpx.Response(200, json={})
     )
-    tools = await MinimallToolProvider(client).provide(context_for(9921))
+    tools = await provider_for(client).provide(context_for(9921))
     profile = next(item for item in tools if item.name == "get_my_profile")
 
     await profile.fn()
@@ -320,7 +343,7 @@ async def test_a_context_without_an_identity_fails_loudly(
     这是**装配代码**的错误 (忘了往 payload 里放身份). 报错信息要指得出这一点 ——
     否则它会伪装成「商城没数据」, 排查时从最远的地方开始找.
     """
-    provider = MinimallToolProvider(client)
+    provider = provider_for(client)
     context = RunContext(
         thread_id="minimall:?:cli", tenant_id="minimall", user_id="?", payload={}
     )
@@ -341,3 +364,49 @@ async def test_a_non_integer_identity_is_rejected(
     """
     with pytest.raises(MinimallConfigError):
         buyer_id(context_for(bad))
+
+
+# ---------------------------------------------------------------------------
+# 第三个进闭包的东西: 知识检索器 (L5-b)
+# ---------------------------------------------------------------------------
+
+
+class _StubRetriever:
+    """只记下收到的检索词的替身 (这一页只关心"接上了没有", 不管检索结果).
+
+    回的片段照 `retriever.search` 的契约带 `slug` (L5-d 起工具文档里那条要求更严了:
+    可疑内容要能追到是哪一篇, 而"来源"那一格写的就是 slug) —— 替身比契约宽松的话,
+    真实链路上的 KeyError 会跑到用例够不着的地方.
+    """
+
+    def __init__(self) -> None:
+        self.queries: list[str] = []
+
+    async def search(self, query: str, *, top_k: int | None = None) -> list[dict]:
+        self.queries.append(query)
+        return [
+            {
+                "slug": "refund-policy",
+                "title": "退款政策",
+                "content": "## 什么情况可以申请退款\n付款之后.",
+            }
+        ]
+
+
+async def test_the_knowledge_retriever_reaches_the_tool(client: MinimallClient) -> None:
+    """检索器在**构造期**交给提供者, 调工具时落点就是它 (而不是现场另造一个).
+
+    判据与身份 / 凭据那两条一样 (调用落到了哪个对象上), 但通道不同: 那两个随运行
+    进来 (载荷 → 闭包), 这一个随装配进来 (构造参数 → 闭包) —— 政策对谁都是同一份,
+    没有「这次是谁」可言, 也就不该走载荷.
+    """
+    stub = _StubRetriever()
+    tools = {
+        item.name: item
+        for item in await provider_for(client, stub).provide(context_for())
+    }
+
+    text = await tools["search_knowledge"].fn(query="退款")
+
+    assert stub.queries == ["退款"], "检索词没落到传进来的那个检索器上"
+    assert "[1] 退款政策" in text

@@ -196,23 +196,47 @@ class MinimallClient:
         self,
         path: str,
         *,
-        user_id: int,
+        user_id: int | None,
         params: dict[str, Any] | None = None,
         by_identifier: bool = False,
     ) -> Any:
-        """打一个 GET 并把 JSON 解出来; 失败翻成本模块的两个异常.
+        """打一个 GET 并把 JSON 解出来 (身份可选, 语义见 `_read_get`).
 
         Args:
             path: 内部端点路径 (相对 base_url)。
-            user_id: 这次查询代表谁 (逐个请求带上)。
+            user_id: 这次查询代表谁 (逐个请求带上); **None = 不带身份头** ——
+                只有公共数据端点 (知识库文章) 会这么调, 见 `_get_shared`。
             params: 查询参数; None 表示不带。
             by_identifier: 这个端点是不是「按标识符要**某一个**资源」(商品 slug /
-                订单号)。**决定了 404 的含义**, 见下面的 Note。
+                订单号)。**决定了 404 的含义**, 见 `_read_get` 的 Note。
 
         Raises:
             MinimallNotFoundError: 按标识符查的东西不存在 (只有 by_identifier 才可能)。
             MinimallError: 连不上 / 超时 / 其余非 2xx / 404 但端点不该那样答 /
                 响应不是 JSON。
+        """
+        response = await self._send("GET", path, user_id=user_id, params=params)
+        return self._read_get(response, path, by_identifier=by_identifier)
+
+    async def _get_shared(self, path: str) -> Any:
+        """打一个 GET, **不带身份头** (`_get` 的无身份版).
+
+        为什么需要它: 内部端点里有一类**不属于任何买家**的公共数据 (知识库文章),
+        而身份头的每一处出现都在说「这次请求代表谁」—— 给它随便塞一个 user_id
+        (0 / 调用者的 id) 会让读代码的人以为这份数据与买家有关. 少发一个头,
+        比发一个假的诚实.
+
+        Note:
+            404 的语义与 `_get` 里不带 `by_identifier` 的那一支相同 (集合类端点
+            用 200 + 空数组表示「空」, 404 只可能是故障).
+        """
+        response = await self._send("GET", path)
+        return self._read_get(response, path, by_identifier=False)
+
+    def _read_get(
+        self, response: httpx.Response, path: str, *, by_identifier: bool
+    ) -> Any:
+        """解读一个 GET 的响应 (两个入口共用: 带身份的那条与不带身份的那条).
 
         Note:
             **404 不总是「没有这个东西」** —— 这是本方法唯一需要解释的分支。
@@ -227,8 +251,6 @@ class MinimallClient:
             2. 响应的 `Content-Type` 不是 JSON。DRF 的 404 体是 `{"detail": ...}`;
                打错地方时拿到的是 Django 那张 HTML 404 页。
         """
-        response = await self._send("GET", path, user_id=user_id, params=params)
-
         if response.status_code == 404:
             if not by_identifier:
                 raise MinimallError(
@@ -288,7 +310,7 @@ class MinimallClient:
         method: str,
         path: str,
         *,
-        user_id: int,
+        user_id: int | None = None,
         params: dict[str, Any] | None = None,
         body: dict[str, Any] | None = None,
     ) -> httpx.Response:
@@ -296,14 +318,14 @@ class MinimallClient:
 
         状态码的解释留给调用方: 同一个 404 在只读端点是答案, 在写端点是故障,
         那是**端点语义**而不是传输层的事 (见 `_get` 与 `_write`).
+
+        `user_id` 为 None 时**不发身份头** (公共数据端点专用, 见 `_get_shared`);
+        私有端点一律显式给出 —— 少了头, 商城那边会当成身份无效拒掉.
         """
+        headers = {} if user_id is None else {HEADER_USER_ID: str(user_id)}
         try:
             return await self._http.request(
-                method,
-                path,
-                params=params,
-                json=body,
-                headers={HEADER_USER_ID: str(user_id)},
+                method, path, params=params, json=body, headers=headers
             )
         except httpx.HTTPError as exc:
             raise MinimallError(
@@ -370,6 +392,15 @@ class MinimallClient:
     async def list_featured_products(self, *, user_id: int) -> list:
         """管理员标记为精选的在售商品 (集合量小, 商城侧不分页)。"""
         return await self._get("featured-products/", user_id=user_id)
+
+    async def list_knowledge_articles(self) -> list:
+        """知识库文章 (L5 索引脚本读它): 全部启用文章, 裸数组, 不分页.
+
+        **这一条没有 `user_id`**, 是本类唯一一处不带身份的调用 —— 端点返回的是
+        全站的政策文章, 与"代表谁问"无关 (商城侧也不查买家). 硬塞一个身份头
+        只会让人以为这份数据与买家有关, 见 `_get_shared`.
+        """
+        return await self._get_shared("knowledge/articles/")
 
     # ------------------------------------------------------------------
     # 买家私有数据 (user_id 决定看到谁的数据)

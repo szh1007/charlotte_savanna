@@ -202,6 +202,7 @@ from CharAgent.server.utils.types import (
     RUN_ID_HEADER,
     SSE_MEDIA_TYPE,
     ContextProvider,
+    MessageExtras,
     SessionProvider,
 )
 from CharAgent.structured_logging import get_logger, log_context
@@ -235,6 +236,7 @@ def create_app(
     session_provider: SessionProvider,
     database: Database | None = None,
     idempotency: IdempotencyStore | None = None,
+    message_extras: MessageExtras | None = None,
 ) -> FastAPI:
     """装配一个 agent 服务应用 (业务拿到 app 自己决定怎么跑).
 
@@ -260,6 +262,11 @@ def create_app(
             (默认) 表示「有库就用 `PgIdempotencyStore`」—— 那次恢复补做的可能是
             「给这一单付款」, 而两次恢复会跨进程 (关掉浏览器隔天再点), 所以默认
             落在库里而不是进程内. 传进来是给**测试**用的 (进程内实现零依赖).
+        message_extras: **可选的第三个插座**: 给「读历史」的每一条消息补业务自己的
+            字段 (按行下标, 框架只做一次浅合并 —— 它不认识那些字段的含义). 只有
+            读**记录表**那条路会调它 (内存那份历史没有行可对); 没给库时它没用
+            (那条路本来就不存在). None (默认) 表示这次装配没有这回事 —— 历史响应
+            与从前逐字一样.
 
     Returns:
         FastAPI: 装好的应用. 业务可以再往上加自己的路由与中间件 (框架占
@@ -581,6 +588,13 @@ def create_app(
             # 有记录层: 只读记录表 (已经按 hidden 过滤过), 读不到也不退回内存
             rows = await messages_repo.list_conversation(context.thread_id)
             messages = conversation_messages(rows)
+            # 业务自己的附加字段 (第三个插座, 可选): 按行下标合并 —— 框架只搬运,
+            # 不解释 (见 MessageExtras). 异常不吞: 那是业务读口自己的故障, 与
+            # 上面那次读表同一个性质 (读不到就没有历史可给).
+            if message_extras is not None and rows:
+                extras = await message_extras.provide(context.thread_id, rows)
+                for index, message in enumerate(messages):
+                    message.update(extras.get(index, {}))
             # 挂起那一块也来自库 (与「这段会话还在等着人批吗」同一个查询)
             pending = pending_approval_row(
                 await calls_repo.list_pending_approvals(context.thread_id)
