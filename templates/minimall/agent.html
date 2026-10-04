@@ -37,7 +37,7 @@
 
   帧解析**不手写**: 交给 `eventsource-parser` 的 `EventSourceParserStream` —— 那是
   一段有细节的活 (按空行切帧、跨 chunk 的半个帧、**一个汉字被 TCP 切成两半**时的
-  增量解码), 别人已经写对并维护着了. 页面这边只剩胶水: 发什么样的请求, 把八类事件
+  增量解码), 别人已经写对并维护着了. 页面这边只剩胶水: 发什么样的请求, 把九类事件
   画成什么样子. 这个项目的重点在后端流式 (框架的 SSE 层 + BFF 的透传), 前端不值得
   自己造一遍解析器.
 
@@ -189,6 +189,11 @@
   /* 块自己带上下边距, 首尾两个不再往外顶 (否则答复与上方的过程行之间会空一格) */
   .agent-body > :first-child, .agent-source-snippet > :first-child { margin-top: 0; }
   .agent-body > :last-child, .agent-source-snippet > :last-child { margin-bottom: 0; }
+  /* 增量预览的临时容器 (#66): 它是个还没长完的壳, 版式上要当它不存在 —— 里面那些
+     块与 final 重画出来的排法一致 (含上面那两条"首尾不往外顶", 否则答复会在 final
+     那一下整体跳 6px) */
+  .agent-delta > :first-child { margin-top: 0; }
+  .agent-delta > :last-child { margin-bottom: 0; }
   .agent-reasoning { margin: 8px 0; font-size: 13px; color: #868e96; }
   .agent-reasoning summary { cursor: pointer; color: #adb5bd; outline: none; }
   .agent-reasoning-text { white-space: pre-wrap; padding: 8px 0 0 4px; line-height: 1.7; }
@@ -475,6 +480,8 @@ function startTurn(question) {
   answer.appendChild(body);
   root.appendChild(answer);
   chat.appendChild(root);
+  // 新的一轮: 增量预览那块临时容器 (上一轮的) 不该跨轮留着 —— 它的内容属于上一问
+  resetDraft();
   toBottom();
   // 往步骤区加一行 (thinking / tool_call / tool_result / 错误都走它)
   function addStep(label, text, className) {
@@ -508,7 +515,8 @@ function startTurn(question) {
     body: body,
     // 过程区那一块 (确认卡要插在里面: 它拦下的那次调用就在上面几行, 见 mountApprovalCard)
     steps: steps,
-    // 思考过程按轮次收: 同一轮再来一条就覆盖 (事件里带的是那一轮的全文, 不是增量)
+    // 思考过程按轮次收: 同一轮会来**多条增量** (框架 #66 起, 事件里的 `delta`
+    // 就是一块), 逐条往那一轮上摞; 轮与轮之间空一行 (见 RENDERERS.reasoning)
     reasoning: new Map(),
     calls: new Map(),
     waiting: waiting,
@@ -737,6 +745,106 @@ function renderAnswer(host, text, citations) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// 增量预览 (#66): 答复正文边收边画
+// ---------------------------------------------------------------------------
+//
+// 事件流里的 `answer_delta` 是**预览**: `final.content` 才是权威值 (截断续写 /
+// 精简那条路上, 增量里可能有已经作废的内容, 见 DESIGN #4). 所以这里画的每一笔都
+// 不追求精确, 只追求**快** —— 用户看着字往上长, `final` 一到整段按权威值重画.
+//
+// 两档 (判据一句话: **最后一个 `\n` 之前算写完, 之后算没写完**):
+//   - 这一帧里没有换行 (绝大多数帧): 只往「尾巴」那个文本节点上续几个字 ——
+//     一次 appendData, 不解析也不碰已经画好的块
+//   - 出现了换行: 把「最后一个 `\n` 之前」那截用与 final 同一个渲染器画成块;
+//     尾巴 (含半截 `**` / 半截围栏 / 刚打个 `- ` 还没写内容的) **永远是纯文本**
+//
+// 没写完的那截不进块, 是渲染器那条「认不出的原样显示」的延伸: 半截语法不是
+// 「不认识」, 是「还没长完」—— 给它排版只会画出半截结构.
+//
+// 每轮换一块新容器 (事件载荷里的 `turn` 一变就开新的): 工具轮那段话归过程叙述
+// (thinking 一到就搬走, 见 moveDraftToStep), 截断续写的下一段会重新长 —— 两种收尾
+// 都不该把上一轮的临时块留在这儿.
+let draft = emptyDraft();
+
+function emptyDraft() {
+  return { turnNo: 0, host: null, tail: null, text: '' };
+}
+
+// 开一块新的临时容器: 上一块先结清 (尾巴也当写完), 这一块从零开始长.
+function openDraft(turnNo) {
+  settleDraft();
+  const host = el('div', 'agent-delta');
+  const tail = document.createTextNode('');
+  host.appendChild(tail);
+  turn.body.appendChild(host);
+  draft = { turnNo: turnNo, host: host, tail: tail, text: '' };
+}
+
+// 一帧 answer_delta: 先认轮次 (换轮就换容器), 再按「这一帧有没有换行」走快慢两档.
+function answerDelta(turnNo, delta) {
+  if (!delta) return;
+  if (!draft.host || draft.turnNo !== turnNo) openDraft(turnNo);
+  draft.text += delta;
+  if (delta.indexOf('\n') === -1) {
+    draft.tail.appendData(delta);   // 快档: 尾巴上多几个字, 已经画好的块一个字不动
+  } else {
+    renderDraftBlocks();
+  }
+  toBottom();
+}
+
+// 慢档: 「最后一个 \n 之前」重画一遍块, 尾巴留在末尾当纯文本.
+//
+// 重画的是**整段已写完的部分**, 而不是只画新写完的那几行 —— 逐行画的话, 一个三条
+// 的列表会先出三个各自独立的 <ul> (到 final 才并成一个), 段落也会被拆成好几块,
+// 「逐字」的观感反而比不画更晃眼. 每次换行重画一次, 代价是 O(已写完的字数).
+function renderDraftBlocks() {
+  const cut = draft.text.lastIndexOf('\n');
+  const finished = draft.text.slice(0, cut + 1);
+  const tailText = draft.text.slice(cut + 1);
+  Array.from(draft.host.childNodes).forEach(function (node) {
+    if (node !== draft.tail) draft.host.removeChild(node);   // 块清掉, 尾巴留着
+  });
+  renderAnswer(draft.host, finished, null);   // 引用数组随 final 才到 —— 这里没有
+  draft.host.appendChild(draft.tail);          // appendChild 会把尾巴挪到块后面
+  draft.tail.textContent = tailText;
+}
+
+// 结清这一块: 尾巴也当写完, 整段按块画一遍 (换轮时对上一块做这件事).
+function settleDraft() {
+  if (!draft.host) return;
+  if (draft.text) repaintAnswer(draft.host, draft.text, null);
+  draft = emptyDraft();
+}
+
+// 把这一块的文本**取走** (工具轮的正文要搬进过程区): 还回那段字, 并移除这块 DOM.
+// 轮次对不上 / 没有块时还回空串 —— 调用方照旧用事件载荷里那一整段 (没有增量时那条路).
+function takeDraftText(turnNo) {
+  if (!draft.host || draft.turnNo !== turnNo) return '';
+  const text = draft.text;
+  draft.host.remove();
+  draft = emptyDraft();
+  return text;
+}
+
+// 工具轮的正文: 增量先到 (它已经在答复区画过一遍), `thinking` 一到才说明这段字
+// 属于过程叙述 —— 于是**搬**过去 (每个字只出现一次), 而不是在那行里再写一遍.
+function moveDraftToStep(turnNo, fallback) {
+  turn.addStep('思路', takeDraftText(turnNo) || fallback);
+}
+
+// 用权威值重画一遍 (`final` 那一下): 先把增量期画的东西清掉, 再整段渲染.
+// 「清空 + 重画」是**覆盖**这一步本身, 与「在末尾再追加一段」是两回事.
+function repaintAnswer(host, text, citations) {
+  host.textContent = '';
+  renderAnswer(host, text, citations);
+}
+
+function resetDraft() {
+  draft = emptyDraft();
+}
+
 // 来源卡: 同一时刻只开一张 (与确认卡同一条规矩 —— 它是运行状态的渲染, 不是记录),
 // 再点同一枚标记就收起. 卡片挂在**这一轮答复**里 (host 的 .agent-a 祖先), 于是它
 // 出在那一条答复底下, 而不是页面末尾.
@@ -773,12 +881,14 @@ function toggleSource(host, marker, citation) {
 
 function finish(content, citations) {
   const text = (content || '').trim();
-  turn.body.textContent = '';
+  // 增量期画的那一切随下面这次「清空 + 重画」一起作废 (那是 `final` 的语义:
+  // 权威值覆盖预览, 见 DESIGN #4); 这里只是把临时容器的账也清掉
+  resetDraft();
   if (!text) {
     turn.body.textContent = '(这次没有拿到答复)';
     return;
   }
-  renderAnswer(turn.body, text, citations);
+  repaintAnswer(turn.body, text, citations);
 }
 
 function failAnswer(message) {
@@ -844,7 +954,7 @@ async function stopAsking() {
   stop.textContent = '停止';
 }
 
-// 八类事件各怎么渲染. 左边那些名字是**跨进程契约** (框架 `EventType` 全集),
+// 九类事件各怎么渲染. 左边那些名字是**跨进程契约** (框架 `EventType` 全集),
 // 少写一个的表现是「那种事件静默消失」; 服务端以后新增类型也不会把这里搞崩
 // (认不出来的类型直接忽略).
 //
@@ -854,7 +964,15 @@ async function stopAsking() {
 // 注释互相指认 (改一处时记得看另两处).
 const RENDERERS = {
   thinking: function (data) {
-    turn.addStep('思路', data.message);
+    // 工具轮的正文归过程叙述. 增量先到 —— 它可能已经在答复区画过一遍了, 这里把
+    // 那段字**搬**进过程行 (每个字只出现一次); 没有增量时就是从前那条路.
+    moveDraftToStep(data.turn, data.message);
+  },
+  answer_delta: function (data) {
+    // 第九类事件 (框架 #66): 答复正文的增量预览. 它**不是**权威值 —— final 一到
+    // 整段覆盖 (见 DESIGN #4 与上面「增量预览」那一节); 工具轮里的正文同样先按
+    // 这条通道画出来, 等 thinking 到了再搬进过程区.
+    answerDelta(data.turn, data.delta || '');
   },
   tool_call: function (data) {
     // 记下来, 结果回来时原地补全这一行 (工具名与顺序都看得见).
@@ -872,9 +990,14 @@ const RENDERERS = {
     }
   },
   reasoning: function (data) {
-    // 心理活动 ≠ 答复正文: 收在一个默认折叠的框里, 想看的人自己展开
+    // 心理活动 ≠ 答复正文: 收在一个默认折叠的框里, 想看的人自己展开.
+    // 同一轮会来**多条** (框架 #66 起 `delta` 是增量, 不再是整段): 往那一轮上
+    // 接着摞 —— 覆盖的话框里只剩最后一块, 前面的思维链凭空消失.
     openReasoningBox();
-    turn.reasoning.set(data.turn, data.delta || '');
+    turn.reasoning.set(
+      data.turn,
+      (turn.reasoning.get(data.turn) || '') + (data.delta || '')
+    );
     turn.reasoningText.textContent = Array.from(turn.reasoning.values()).join('\n\n');
     toBottom();
   },
@@ -898,6 +1021,8 @@ const RENDERERS = {
     finish(data && data.content, data && data.citations);
   },
   error: function (data) {
+    // 失败收场: 已经画出来的半截**留着** (共同定案: 保留半截 + 一行说明, 不整屏清
+    // 掉让用户刚看的字白读), 下面那行说明才是「没答完」的信号. 按「停止」也是这条路.
     const message = (data && data.error && data.error.message) || '客服这边出了点问题.';
     failAnswer(message);
   },
@@ -1050,10 +1175,15 @@ function restoreTurn(question) {
 }
 
 function appendAnswer(handle, text, citations) {
-  // 同一问之下模型可能说过好几段 (中间轮那句「我先查一下」也在). 段与段之间的分隔
-  // **不用再手工插**: 渲染出来的是块 (段落 / 列表…), 块自己就分得开 —— markdown 化
-  // 之前这里插一个 '\n\n' 文本节点, 而那个换行是给 white-space: pre-wrap 看的, 现在
-  // 它只剩两个会被折叠成空白的字符.
+  // 一段答复整段渲染 (历史**不重放**打字机: 那时拿到的本来就是整段).
+  //
+  // 这里可能连着被叫几次, 分两种来源: 记录层那条路 (/history 走 DB) 每个 run 只回
+  // **一条** assistant 行 —— 过程叙述那几行带 `hidden` 标记, 被过滤掉了; 而会话在
+  // 内存里那份兜底路径 (没有记录层时) 会把中间轮那句「我先查一下」也回上来
+  // (见 CharAgent/server/history.py 两个投影函数的差别). 段与段之间的分隔**不用再
+  // 手工插**: 渲染出来的是块 (段落 / 列表…), 块自己就分得开 —— markdown 化之前这里
+  // 插一个 '\n\n' 文本节点, 而那个换行是给 white-space: pre-wrap 看的, 现在它只剩
+  // 两个会被折叠成空白的字符.
   const chunk = (text || '').trim();
   if (!chunk) return;
   // 与直播那一路**同一个渲染函数**: 两处各写一遍的话, 刷新前有引用、刷新后就没了

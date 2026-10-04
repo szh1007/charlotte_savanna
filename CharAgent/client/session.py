@@ -149,6 +149,10 @@ class ChatSession:
         guard: 循环软限制; None 表示 LoopGuard() 默认 (max_turns=10).
         max_tokens: 单次输出上限 (透传 generate); 设小能稳定造出截断.
         thinking: 思考模式开关; None 表示不传 (上游默认开启).
+        stream: 答复是否**边收边发增量** (#66): True 时 loop 每次模型调用带
+            `stream=True` 并挂两个回调, 正文增量发成 `answer_delta`、思维链增量
+            发成 `reasoning` (事件出口因此会多出成百条事件); False (默认) 时
+            一个关键字都不多传, 事件流与从前逐字一致.
         prompt_name: 身份说明用哪份提示词; 默认 "system" (框架自己那份), 现有
             行为一字不变. 业务助手在这里填自己的客服提示词名.
         prompt_dir: 从哪个目录取那份提示词; None (默认) 表示框架的 `templates/`.
@@ -191,6 +195,7 @@ class ChatSession:
         guard: LoopGuard | None = None,
         max_tokens: int | None = None,
         thinking: bool | None = None,
+        stream: bool = False,
         prompt_name: str = "system",
         prompt_dir: str | os.PathLike[str] | None = None,
         hooks: HookRegistry | None = None,
@@ -242,6 +247,9 @@ class ChatSession:
             guard=guard,
             max_tokens=max_tokens,
             thinking=thinking,
+            # 增量渲染开关原样转交 (会话不解释它: 开着时 loop 带 stream=True +
+            # 两个增量回调调模型, 关着时一个关键字都不多传)
+            stream=stream,
             # 压缩策略原样转交 (会话不解释参数; 不配就与从前一样)
             compactor=compactor,
             counter=counter,

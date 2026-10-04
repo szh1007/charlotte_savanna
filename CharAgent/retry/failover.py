@@ -20,7 +20,9 @@
 **什么时候不切**: 不算故障的失败 (默认判据外的, 如 400 参数错) 原样上抛 —— 换个
 模型发同样的请求一样会错, 切过去只是多烧一次钱; 没有备份可切 (本来就没配, 或备份
 也熔断着) 时同样以 CircuitOpenError 收场 —— 它是**闸开了**这件事本身, 重试层据此
-立刻放弃, 原始失败挂在异常链上 (`from`).
+立刻放弃, 原始失败挂在异常链上 (`from`). **吐过字也不切** (#66): 增量回调一旦
+被调用过, 换槽 = 用备份把整条请求重发一遍, 半截收不回来 —— 与重试层「吐过字不
+重试」是同一条规矩的两面 (闸的计数照记, 只是不再把这一跳转给别人).
 
 **账目**: 每次**成功的响应**做两件事 —— ①`note_serving(slot.name)` 往当前运行的
 服务台账里记一笔 (`retry/serving.py`), 于是运行行记的是实际在服务的模型名 (切换过
@@ -47,9 +49,10 @@ import inspect
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from CharAgent.model.protocol import ChatModel
+from CharAgent.model.protocol import ChatModel, DeltaCallback
 from CharAgent.model.utils.types import ModelMessage, ModelResponse, ToolSpec
 from CharAgent.retry.circuit import CircuitBreaker, CircuitPolicy
+from CharAgent.retry.delta_gate import DeltaGate
 from CharAgent.retry.serving import note_serving
 from CharAgent.retry.utils.errors import CircuitOpenError
 from CharAgent.retry.utils.types import ModelSwitch, SwitchCallback
@@ -135,19 +138,26 @@ class FailoverChatModel:
         thinking: bool | None = None,
         reasoning_effort: str | None = None,
         stream: bool = False,
+        on_delta: DeltaCallback | None = None,
+        on_reasoning_delta: DeltaCallback | None = None,
     ) -> ModelResponse:
         """ChatModel 协议实现: 挑一个还能放行的模型, 失败时按闸的动作切.
 
-        参数语义与 ChatModel.generate 完全一致 —— 包装不吞不改任何参数 (#68).
+        参数语义与 ChatModel.generate 完全一致 —— 包装不吞不改任何参数 (#68);
+        两个增量回调原样转发, 只是顺手记下「已经吐过字」(吐过之后不再换槽, #66).
 
         Raises:
             CircuitOpenError: 这次请求没有发出去 (两家都熔断着), 或刚跳闸而没有
                 备份可切 (不可重试, 见模块说明).
-            BaseException: 模型自己的失败 (不算故障的 / 还没到阈值的) 原样上抛,
-                交给重试层与上层按既有契约处理.
+            BaseException: 模型自己的失败 (不算故障的 / 还没到阈值的 / **吐过字
+                之后的**) 原样上抛, 交给重试层与上层按既有契约处理.
             asyncio.CancelledError: 被 kill switch 打断 —— 闸只把探测位还回来,
                 不记账 (取消是调用方的决定, 不是这家的病).
         """
+        # 吐字闸: 这一跳「有没有把增量交给调用方」—— 置位之后连换槽也停 (换槽 =
+        # 用备份整条重发, 半截收不回来). 只有没吐过字才会走到下一个槽, 所以闸里
+        # 那个位是单调的, 不必每轮清零.
+        gate = DeltaGate(on_delta, on_reasoning_delta)
         slot = self._pick()
         while True:
             try:
@@ -161,12 +171,18 @@ class FailoverChatModel:
                     thinking=thinking,
                     reasoning_effort=reasoning_effort,
                     stream=stream,
+                    **gate.kwargs,
                 )
             except asyncio.CancelledError:
                 slot.breaker.record_abort()
                 raise
             except Exception as exc:
-                if not slot.breaker.record_failure(exc):
+                tripped = slot.breaker.record_failure(exc)
+                if gate.emitted:
+                    # 半截已经吐给调用方: 换槽 = 用备份整条重发, 收不回来
+                    # (闸的计数照记, 只是这一跳不再转给别人, #66)
+                    raise
+                if not tripped:
                     raise  # 不算故障 / 还没到阈值: 原样上抛 (重试层照旧可能再试)
                 following = self._other_available(slot)
                 if following is None:

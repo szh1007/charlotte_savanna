@@ -49,6 +49,7 @@ from CharAgent.checkpoint import config as checkpoint_config
 from CharAgent.model.utils.types import ModelMessage, ModelResponse, Usage
 from CharAgent.retry.idempotency import InMemoryIdempotencyStore
 from CharAgent.server import RUN_ID_HEADER
+from CharAgent.stream import EventType, StreamEvent
 from CharAgent.structured_logging.testing import restore_logging
 from CharAgent.tests.doubles import FakeRecordDatabase, PendingAwareDatabase
 from CharAgent.tests.mock_llm import (
@@ -78,6 +79,7 @@ from CharApp.minimall.config import (
     ENV_EVAL_PAYMENT_PASSWORD,
     ENV_SERVER_HOST,
     ENV_SERVER_PORT,
+    ENV_STREAM,
     ENV_THINKING,
     ENV_TOKEN,
     ContextConfig,
@@ -87,6 +89,7 @@ from CharApp.minimall.config import (
     context_config_from_env,
     eval_payment_password,
     server_config_from_env,
+    stream_from_env,
     thinking_from_env,
 )
 from CharApp.minimall.guardrail import PAY_APPROVAL_PROMPT
@@ -927,6 +930,8 @@ def test_build_service_wires_the_process_level_parts(
     那些用例一条都不会红. 这里不碰商城也不碰模型 (只建对象), 断的是「接线」.
     """
     monkeypatch.setenv(ENV_THINKING, "no")  # 顺手断「思考模式开关也接上了」
+    # 显式给「开」而不是「关」: 字段默认就是 False, 写 off 的话「没接上」也过得去
+    monkeypatch.setenv(ENV_STREAM, "on")
     monkeypatch.setenv(ENV_CONTEXT_KEEP_TURNS, "4")  # 顺手断「压缩旋钮也接上了」
     monkeypatch.setenv("CHARAPP_MODELSCOPE_ROOT", "D:/fake/modelscope")  # 知识库那条线
     service = build_service(writer=logger.info)
@@ -942,6 +947,7 @@ def test_build_service_wires_the_process_level_parts(
     # 只有那份清单 (L5-b 起多了知识检索)
     assert tuple(session.tool_names) == TOOL_NAMES, "零件接全了: 工具从上下文里装了出来"
     assert service.thinking is False, "env 里的思考模式开关没接到零件上"
+    assert service.stream is True, "env 里的增量渲染开关没接到零件上"
     assert service.compaction is not None, "压缩旋钮没接到零件上 (env → ContextConfig)"
     assert service.compaction.keep_turns == 4, "接到零件上的还是默认值, 不是 env 那个"
     assert service.knowledge.modelscope_root == "D:/fake/modelscope", (
@@ -949,6 +955,71 @@ def test_build_service_wires_the_process_level_parts(
         "找本地模型, 而症状要到第一次查政策才出现"
     )
     asyncio.run(service.aclose())
+
+
+def test_the_stream_switch_defaults_to_on(monkeypatch) -> None:
+    """增量渲染开关是**两态**: 不填 = 开 (它是产品行为), 显式写假 = 关.
+
+    与 `CHARAPP_THINKING` 的三态不同 —— 那个「不填」有第三种含义 (让上游决定),
+    这个没有: 打开就是服务入口该有的样子. 写错了当场报启动期错误: 它决定用户
+    看不看得见"逐字", 猜一个方向比报错更糟.
+    """
+    monkeypatch.delenv(ENV_STREAM, raising=False)
+    assert stream_from_env() is True, "不填 = 开"
+
+    for value in ("false", "0", "no", "off", " OFF "):
+        monkeypatch.setenv(ENV_STREAM, value)
+        assert stream_from_env() is False, f"{value!r} 应读成「关」"
+
+    for value in ("true", "1", "yes", "on", "ON"):
+        monkeypatch.setenv(ENV_STREAM, value)
+        assert stream_from_env() is True, f"{value!r} 应读成「开」"
+
+    monkeypatch.setenv(ENV_STREAM, "flase")
+    with pytest.raises(MinimallConfigError, match=ENV_STREAM):
+        stream_from_env()
+
+
+async def test_the_stream_switch_reaches_the_loop(mall, client) -> None:
+    """开关接到底: 零件上开着的装配真的会发出 `answer_delta`, 默认那份一条都没有.
+
+    断在**事件**上而不是私有属性上: 这条链有四跳 (`MinimallService.stream` →
+    `session_for` → `ChatSession` → `AgentLoop`), 哪一跳掉了, 用户看到的都是
+    "逐字没生效" —— 而事件流是唯一能一眼看出差别的那个面.
+    """
+    context = build_context(BUYER_ID, "web", tenant_id=TENANT_WEB)
+
+    events: list[StreamEvent] = []
+    talking = MinimallService(
+        client=client,
+        model=MockLLM.fixed(text_response("订单已发货")),
+        saver=InMemoryCheckpointSaver(),
+        stream=True,
+    )
+    session = await talking.session_for(context, event_sink=events.append, redact=False)
+    await session.ask("订单到哪了")
+    deltas = [e.data["delta"] for e in events if e.type is EventType.ANSWER_DELTA]
+    assert deltas, "开关开了却没有增量事件 —— 这条链里有一跳掉了"
+    final = next(e for e in events if e.type is EventType.FINAL)
+    assert "".join(deltas) == final.data["content"], (
+        "增量拼接逐字等于 final (这一批的不变量)"
+    )
+    await talking.aclose()
+
+    quiet: list[StreamEvent] = []
+    default = MinimallService(
+        client=client,
+        model=MockLLM.fixed(text_response("订单已发货")),
+        saver=InMemoryCheckpointSaver(),
+    )
+    default_session = await default.session_for(
+        context, event_sink=quiet.append, redact=False
+    )
+    await default_session.ask("订单到哪了")
+    assert [e for e in quiet if e.type is EventType.ANSWER_DELTA] == [], (
+        "默认关着: 事件流里不该有增量 (既有的事件序列断言吃的就是这份默认)"
+    )
+    await default.aclose()
 
 
 def test_the_service_warms_the_knowledge_models_in_the_background(
@@ -1229,6 +1300,7 @@ def test_the_template_lists_every_variable_the_business_reads() -> None:
         ENV_BASE_URL,
         ENV_SERVER_HOST,
         ENV_SERVER_PORT,
+        ENV_STREAM,
         ENV_THINKING,
         ENV_CONTEXT_MAX_TOKENS,
         ENV_CONTEXT_KEEP_TURNS,

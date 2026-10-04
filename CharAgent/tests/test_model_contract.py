@@ -441,6 +441,51 @@ async def test_stream_content_and_reasoning_equivalent(model_pair: ModelPair) ->
     assert via_sdk.model == "deepseek-flash"
 
 
+async def test_stream_delta_callbacks_equivalent(model_pair: ModelPair) -> None:
+    """两适配器转发给回调的增量序列相同 —— 「两个适配器都接上了」的机械证据.
+
+    两条增量通道分道, 首块 content="" 的填充块不算一块 (与 httpx 侧用例同判据);
+    旁路拼接与累积结果逐字一致 (#66 的不变量, #63 双适配器契约).
+    """
+    http_model, sdk_model = model_pair
+    body = _stream_body_text()
+    http_content: list[str] = []
+    http_reasoning: list[str] = []
+    sdk_content: list[str] = []
+    sdk_reasoning: list[str] = []
+
+    async def http_on_delta(text: str) -> None:
+        http_content.append(text)
+
+    async def http_on_reasoning(text: str) -> None:
+        http_reasoning.append(text)
+
+    async def sdk_on_delta(text: str) -> None:
+        sdk_content.append(text)
+
+    async def sdk_on_reasoning(text: str) -> None:
+        sdk_reasoning.append(text)
+
+    via_http = await _fetch(
+        http_model,
+        stream_body=body,
+        stream=True,
+        on_delta=http_on_delta,
+        on_reasoning_delta=http_on_reasoning,
+    )
+    via_sdk = await _fetch(
+        sdk_model,
+        stream_body=body,
+        stream=True,
+        on_delta=sdk_on_delta,
+        on_reasoning_delta=sdk_on_reasoning,
+    )
+    assert_same_response(via_http, via_sdk)
+    assert http_content == sdk_content == ["订单", "已发货"]
+    assert http_reasoning == sdk_reasoning == ["先核对订", "单号"]
+    assert "".join(http_content) == via_http.content
+
+
 async def test_stream_tool_calls_fragments_equivalent(model_pair: ModelPair) -> None:
     """流式 tool_calls 分片 (id / name 首块, arguments 分片增量) 双端等价."""
     http_model, sdk_model = model_pair

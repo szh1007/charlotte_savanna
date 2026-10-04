@@ -6,6 +6,7 @@ chunk 对象 (SDK 端同样调用, 故不依赖 SSE 文本格式).
 - content / reasoning_content 增量拼接 (#11)
 - tool_calls 按 index 分片累积: id / name 首 chunk 给, arguments 增量拼接 (#10)
 - 末块 usage 收尾累积 token 计量 (stream_options.include_usage)
+- 两条增量**旁路转发**给调用方回调 (forward_deltas, #66): 只转发, 不参与累积
 
 增量字段类型校验与 parse.parse_chat_completion 一致: 畸形 chunk (如多模态
 content 数组) 抛 ModelProtocolError 而非裸 TypeError.
@@ -18,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from CharAgent.model.parse import parse_finish_reason, parse_usage
+from CharAgent.model.protocol import DeltaCallback
 from CharAgent.model.utils.errors import ModelProtocolError
 from CharAgent.model.utils.types import (
     FinishReason,
@@ -144,6 +146,38 @@ def apply_sse_chunk(acc: StreamAccumulator, chunk: Mapping[str, Any]) -> None:
     finish_reason = choice.get("finish_reason")
     if finish_reason is not None:
         acc.finish_reason = parse_finish_reason(finish_reason)
+
+
+async def forward_deltas(
+    chunk: Mapping[str, Any],
+    *,
+    on_delta: DeltaCallback | None = None,
+    on_reasoning_delta: DeltaCallback | None = None,
+) -> None:
+    """把本块的两条增量旁路转发给调用方回调 (#66, 打字机的接缝).
+
+    **必须在 apply_sse_chunk 之后调用**: 畸形块在那里已经抛过错, 不会把半截增量
+    泄给调用方 (用例把顺序钉住了). 读的是与累积同一组 wire 字段, 但这里只做
+    「取不取得到、是不是字符串、空不空」的判断 —— 类型校验与累积都归那个函数;
+    于是拼接回调收到的全部增量逐字等于累积结果 (同一个不变量, 用例钉住).
+
+    没有回调 (两条都是 None) 时零开销: 不取值也不 await. 空串增量不转发 ——
+    上游会用 `content: ""` 的块做填充, 转出去只会在前端画出空帧.
+    """
+    if on_delta is None and on_reasoning_delta is None:
+        return
+    choices = chunk.get("choices") or []
+    if not choices or not isinstance(choices[0], dict):
+        return
+    delta = choices[0].get("delta")
+    if not isinstance(delta, dict):
+        return
+    content = delta.get("content")
+    if on_delta is not None and isinstance(content, str) and content:
+        await on_delta(content)
+    reasoning = delta.get("reasoning_content")
+    if on_reasoning_delta is not None and isinstance(reasoning, str) and reasoning:
+        await on_reasoning_delta(reasoning)
 
 
 def build_stream_response(acc: StreamAccumulator) -> ModelResponse:

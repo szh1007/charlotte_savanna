@@ -35,10 +35,12 @@ from CharAgent.model.parse import (
     extract_error_message,
     parse_chat_completion,
 )
+from CharAgent.model.protocol import DeltaCallback
 from CharAgent.model.stream import (
     StreamAccumulator,
     apply_sse_chunk,
     build_stream_response,
+    forward_deltas,
 )
 from CharAgent.model.utils.config import (
     DEFAULT_BASE_URL,
@@ -214,9 +216,12 @@ class OpenAIChatModel:
         thinking: bool | None = None,
         reasoning_effort: str | None = None,
         stream: bool = False,
+        on_delta: DeltaCallback | None = None,
+        on_reasoning_delta: DeltaCallback | None = None,
     ) -> ModelResponse:
         """见 ChatModel.generate. SDK 返回对象 model_dump() 回 wire 结构后,
-        走与 client_httpx.py 相同的解析纯函数 (parse_chat_completion / apply_sse_chunk).
+        走与 client_httpx.py 相同的解析纯函数 (parse_chat_completion / apply_sse_chunk);
+        两个增量回调与 httpx 适配器同语义 (只在流式路径上被调用).
         """
         kwargs = self._resolve_kwargs(
             messages,
@@ -244,19 +249,34 @@ class OpenAIChatModel:
                 # 同样按协议畸形处理, 不把裸 str 泄漏给调用方
                 raise ModelProtocolError("非流式响应不是合法 JSON 对象")
             return parse_chat_completion(completion.model_dump())
-        return await self._accumulate_stream(completion)
+        return await self._accumulate_stream(
+            completion, on_delta=on_delta, on_reasoning_delta=on_reasoning_delta
+        )
 
-    async def _accumulate_stream(self, stream: Any) -> ModelResponse:
+    async def _accumulate_stream(
+        self,
+        stream: Any,
+        *,
+        on_delta: DeltaCallback | None = None,
+        on_reasoning_delta: DeltaCallback | None = None,
+    ) -> ModelResponse:
         """SDK 流式 chunk 逐块累积 (内容 / reasoning / tool_calls 分片).
 
         chunk.model_dump() 后喂给与 client_httpx._generate_stream 相同的
         apply_sse_chunk / build_stream_response —— 同一累积状态机约束
-        双适配器流式结果一致 (契约).
+        双适配器流式结果一致 (契约); 增量回调同走 forward_deltas (同一转发点).
         """
         accumulator = StreamAccumulator()
         try:
             async for chunk in stream:
-                apply_sse_chunk(accumulator, chunk.model_dump())
+                payload = chunk.model_dump()
+                apply_sse_chunk(accumulator, payload)
+                # 旁路转发放在累积之后: 畸形块在上面已经抛错, 不会吐半截出去
+                await forward_deltas(
+                    payload,
+                    on_delta=on_delta,
+                    on_reasoning_delta=on_reasoning_delta,
+                )
         except openai.APIError as exc:
             raise _map_api_error(exc) from exc
         except json.JSONDecodeError as exc:

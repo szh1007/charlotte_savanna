@@ -9,6 +9,8 @@
 - #10: tool_calls 的 arguments 保持原始 JSON 字符串, 畸形 JSON 由工具执行层给
   可操作错误 (#2)
 - #68: temperature / top_p / seed 调用级可配置, seed 固定后同输入同输出
+- #66: 流式增量经 on_delta / on_reasoning_delta **旁路转发**给调用方
+  (不改返回值; 消费速度即背压)
 
 messages 与 tools 使用 OpenAI 兼容 wire dict 直通 /chat/completions, 不引入中间
 消息模型, SDK 适配器与 MockLLM 复用同一格式.
@@ -26,6 +28,7 @@ finish_reason 共六值、usage.reasoning_tokens 在 completion_tokens_details
                     复用同一组解析纯函数保证与 client_httpx.py 行为一致)
 - parse.py          响应解析纯函数 (非流式字段映射 + 错误体提取, 双适配器共用)
 - stream.py         流式 delta 累积状态机 (内容 / reasoning / tool_calls 分片)
+                    + 增量旁路转发 (forward_deltas)
 - utils/config.py   适配器共享配置: 默认端点 / 模型名 / provider 前缀剥离
 - utils/errors.py   异常语义: 瞬态 / 永久区分 (retryable, 供 retry 层判断)
 - utils/types.py    响应数据结构: FinishReason / ModelToolCall / Usage / ModelResponse
@@ -35,7 +38,7 @@ from __future__ import annotations
 
 from CharAgent.model.client_httpx import HttpXChatModel, chat_model_from_env
 from CharAgent.model.client_sdk import OpenAIChatModel, openai_chat_model_from_env
-from CharAgent.model.protocol import ChatModel
+from CharAgent.model.protocol import ChatModel, DeltaCallback
 from CharAgent.model.utils.errors import (
     ModelConfigError,
     ModelConnectionError,
@@ -56,6 +59,7 @@ from CharAgent.model.utils.types import (
 
 __all__ = [
     "ChatModel",
+    "DeltaCallback",
     "FinishReason",
     "HttpXChatModel",
     "ModelConfigError",

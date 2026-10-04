@@ -1,6 +1,6 @@
 """终端渲染: 把事件流与运行结果画成人能看懂的文本.
 
-一句话理解: 事件流 (stream 包产出的八类事件) 是**给机器读**的结构化数据 ——
+一句话理解: 事件流 (stream 包产出的九类事件) 是**给机器读**的结构化数据 ——
 类型 + 编号 + 载荷; 本文件负责把它翻成终端上一行行文字, 就像前端把同一份事件流
 渲染成聊天气泡. 差别只在画布: 那边是浏览器, 这边是终端.
 
@@ -15,6 +15,9 @@
 `LoopResult.content` 打印**. 理由: delta 只作渐进预览、
 `LoopResult.content` 才是权威值 (CONTINUE 截断续写时它是跨段拼合结果, 与
 消息历史里最后一条 assistant 的 content 不是一回事). 两处都印会重复一遍答案.
+`answer_delta` (#66) 是**唯一印正文的事件** —— 但它是预览 (答案正在长); 权威值
+仍在 `LoopResult.content`, 所以流式开着时同一段文本会先以增量行、后以整段出现
+两次. 命令行这一片不做逐字渲染, 那个重复是当前刻意的取舍 (见 `_line_answer_delta`).
 
 大白话版: 这是「终端上的那块屏幕」. agent 每干一件事就喊一嗓子, 本文件把那声
 喊话翻译成一行带前缀的字 —— 开始想了、要调哪个工具、工具回了什么、最后答了
@@ -31,7 +34,7 @@ from CharAgent.agent.utils.types import LoopOutcome, LoopResult
 from CharAgent.stream.utils.types import EventType, StreamEvent
 
 # ANSI 颜色码 (只在 color=True 时拼接; 关掉时文本与不加色完全一样).
-# 只列用到的: 加粗没有用武之地 (八类事件各占一色, 再分就是噪音)
+# 只列用到的: 加粗没有用武之地 (九类事件各占一色, 再分就是噪音)
 _RESET = "\033[0m"
 _DIM = "\033[2m"
 _YELLOW = "\033[33m"
@@ -50,17 +53,19 @@ _TAGS: dict[EventType, str] = {
     EventType.TOOL_CALL: "tool_call",
     EventType.TOOL_RESULT: "tool_result",
     EventType.REASONING: "reasoning",
+    EventType.ANSWER_DELTA: "answer_delta",
     EventType.CONTEXT_COMPACTED: "context_compacted",
     EventType.APPROVAL_REQUIRED: "approval_required",
     EventType.FINAL: "final",
     EventType.ERROR: "error",
 }
 
-# 每类事件的颜色 (thinking / reasoning / 压缩是过程信息, 调暗; 工具与结论分别用
-# 青 / 绿; 要人确认用黄 —— 它是唯一一类「等你动手」的事件; 出错用红)
+# 每类事件的颜色 (thinking / reasoning / 增量预览 / 压缩是过程信息, 调暗; 工具与
+# 结论分别用青 / 绿; 要人确认用黄 —— 它是唯一一类「等你动手」的事件; 出错用红)
 _COLORS: dict[EventType, str] = {
     EventType.THINKING: _DIM,
     EventType.REASONING: _DIM,
+    EventType.ANSWER_DELTA: _DIM,
     EventType.CONTEXT_COMPACTED: _DIM,
     EventType.TOOL_CALL: _CYAN,
     EventType.TOOL_RESULT: _GREEN,
@@ -104,7 +109,7 @@ class EventPrinter:
     """事件出口 (EventSink 协议): 每来一个事件就往终端画一行.
 
     注入方式与 P1 的 SSE 出口、测试里的收集器完全一样 —— 它就是一个同步回调:
-    `AgentLoop(model=..., event_sink=EventPrinter())`. 八类事件各有各的版式,
+    `AgentLoop(model=..., event_sink=EventPrinter())`. 九类事件各有各的版式,
     见 `format_event`.
 
     Args:
@@ -138,7 +143,7 @@ class EventPrinter:
     def format_event(self, event: StreamEvent) -> str:
         """一个事件 -> 一行文本 (不直接输出, 好单测).
 
-        分派用 match 而不是查表: 八类事件的版式各有各的取值, 摆在这里一眼能
+        分派用 match 而不是查表: 九类事件的版式各有各的取值, 摆在这里一眼能
         对着各自的载荷逐条核. 新增事件类型 (如 approval_required) 时忘了加
         分支会走 `case _`, 原样吐出而不是静默丢掉.
         """
@@ -152,6 +157,8 @@ class EventPrinter:
                 body = self._line_tool_result(data)
             case EventType.REASONING:
                 body = self._line_reasoning(data)
+            case EventType.ANSWER_DELTA:
+                body = self._line_answer_delta(data)
             case EventType.CONTEXT_COMPACTED:
                 body = self._line_context_compacted(data)
             case EventType.APPROVAL_REQUIRED:
@@ -200,6 +207,16 @@ class EventPrinter:
             return delta
         head = delta[:REASONING_LIMIT]
         return f"{head}... (共 {len(delta)} 字, 终端只打前 {REASONING_LIMIT} 字)"
+
+    def _line_answer_delta(self, data: dict[str, Any]) -> str:
+        """answer_delta: 正文增量 (#66) —— 原样打那一小块.
+
+        流式开着时, 答复会先以这些增量行出现, 末尾 `format_answer` 还会把权威值
+        整段打一遍: 命令行这一片**不做逐字渲染** (整段打仍是正文的唯一出口,
+        理由见模块 docstring), 于是同一段文本在终端上出现两次. 那是刻意的取舍
+        —— 真给命令行接上流式, 该改的是「末尾不再整段打」, 不是把增量藏起来.
+        """
+        return str(data.get("delta") or "")
 
     def _line_context_compacted(self, data: dict[str, Any]) -> str:
         """context_compacted: 这一轮的输入被压过 (#7) —— 压了多少 / 省了多少.

@@ -35,8 +35,10 @@ final 之后又来事件会让界面在给出答案后继续跳动. 这些顺序
 4. final / error / approval_required 是终局: 之后不得再发任何事件 (含第二个终局)
 
 reasoning 是**旁路通道** (#11): 思维链增量随时可发 (它不参与主序列, 也不
-改变状态), 但终局之后同样不再出现. context_compacted (#7) 同理: 它描述
-「这一轮的输入被压过」, 与工具配对无关, 同样受「终局之后不得再发」约束.
+改变状态), 但终局之后同样不再出现. answer_delta (#66) 同理 —— 正文增量只是
+「答案正在长」的预览 (`final.content` 才是权威值), 与工具配对无关.
+context_compacted (#7) 同理: 它描述「这一轮的输入被压过」, 与工具配对无关,
+同样受「终局之后不得再发」约束.
 主序列即:
 
     [thinking] → (tool_call → tool_result)+ → [thinking] → ... → final | error
@@ -177,5 +179,6 @@ class EventBus:
                     f" {sorted(self._open)}"
                 )
             self._closed = True
-        # thinking / reasoning / context_compacted: 无状态约束 (旁路或叙述类,
-        # 不参与工具配对; 终局之后不得再发这条约束由上面那道 _closed 判定管)
+        # thinking / reasoning / answer_delta / context_compacted: 无状态约束
+        # (旁路或叙述类, 不参与工具配对; 终局之后不得再发这条约束由上面那道
+        # _closed 判定管)

@@ -22,10 +22,12 @@ from CharAgent.model.parse import (
     extract_error_message,
     parse_chat_completion,
 )
+from CharAgent.model.protocol import DeltaCallback
 from CharAgent.model.stream import (
     StreamAccumulator,
     apply_sse_chunk,
     build_stream_response,
+    forward_deltas,
 )
 from CharAgent.model.utils.config import (
     DEFAULT_BASE_URL,
@@ -202,10 +204,13 @@ class HttpXChatModel:
         thinking: bool | None = None,
         reasoning_effort: str | None = None,
         stream: bool = False,
+        on_delta: DeltaCallback | None = None,
+        on_reasoning_delta: DeltaCallback | None = None,
     ) -> ModelResponse:
         """
         见 ChatModel.generate. stream=True 时逐行解析 SSE,
-        内部累积 delta 后返回完整响应.
+        内部累积 delta 后返回完整响应; 两个增量回调只在流式路径上被调用
+        (旁路预览, 语义见 protocol.DeltaCallback).
         """
         payload = self._resolve_payload(
             messages,
@@ -225,9 +230,17 @@ class HttpXChatModel:
             except json.JSONDecodeError as exc:
                 raise ModelProtocolError("非流式响应不是合法 JSON") from exc
             return parse_chat_completion(data)
-        return await self._generate_stream(payload)
+        return await self._generate_stream(
+            payload, on_delta=on_delta, on_reasoning_delta=on_reasoning_delta
+        )
 
-    async def _generate_stream(self, payload: dict[str, Any]) -> ModelResponse:
+    async def _generate_stream(
+        self,
+        payload: dict[str, Any],
+        *,
+        on_delta: DeltaCallback | None = None,
+        on_reasoning_delta: DeltaCallback | None = None,
+    ) -> ModelResponse:
         """
         SSE 流式: 逐行解析 data: 块, delta 累积
         (内容 / reasoning / tool_calls arguments).
@@ -251,6 +264,12 @@ class HttpXChatModel:
                         f"SSE chunk 不是合法 JSON: {data_text[:100]!r}"
                     ) from exc
                 apply_sse_chunk(accumulator, chunk)
+                # 旁路转发放在累积之后: 畸形块在上面已经抛错, 不会吐半截出去
+                await forward_deltas(
+                    chunk,
+                    on_delta=on_delta,
+                    on_reasoning_delta=on_reasoning_delta,
+                )
         except ModelProtocolError:
             raise
         except httpx.TimeoutException as exc:

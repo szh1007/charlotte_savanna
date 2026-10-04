@@ -134,6 +134,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterable, Sequence
+from typing import Any
 from uuid import uuid4
 
 from CharAgent.agent.compaction import (
@@ -188,7 +189,7 @@ from CharAgent.checkpoint.utils.types import (
 )
 from CharAgent.hooks.registry import HookRegistry
 from CharAgent.hooks.utils.types import HookPoint, ModelCallPhase, Verdict
-from CharAgent.model.protocol import ChatModel
+from CharAgent.model.protocol import ChatModel, DeltaCallback
 from CharAgent.model.utils.errors import ModelStatusError
 from CharAgent.model.utils.types import (
     FinishReason,
@@ -298,6 +299,24 @@ def _facts_of(
     return facts
 
 
+def _delta_emitter(bus: EventBus, event_type: EventType, turn: int) -> DeltaCallback:
+    """造一个增量回调: 收到一块文本就发一条事件 (载荷 `{delta, turn}`).
+
+    两条增量通道 (正文 / 思维链) **彼此同形** (`{delta, turn}`): 都是「一块文本 +
+    第几轮」, 前端一个取数法读两种事件. 别把这句推广到 thinking —— 它的正文键叫
+    `message` (与 `turn` 一起, 见 `_handle_tool_turn`), final 则只有 `content`
+    没有轮次 (见 `agent/utils/events.py`): 事件各有各的载荷, 同形的只有这两条.
+
+    事件走总线, 于是顺序天然插在「这一轮开始」与「这一轮结束」之间 (seq 连续,
+    断点续拉照旧).
+    """
+
+    async def _emit(delta: str) -> None:
+        await bus.emit(event_type, delta=delta, turn=turn)
+
+    return _emit
+
+
 class AgentLoop:
     """手写 agent loop: 模型决策 → 并行工具 → 回填 → 循环 (difficulties 核心).
 
@@ -335,9 +354,16 @@ class AgentLoop:
             counter 不给 compactor 属配置写错, 构造期报 LoopConfigError.
         event_sink: 流式事件出口 (同步或异步回调): 运行过程逐个推
             事件 (thinking / tool_call / tool_result / reasoning /
-            context_compacted / final / error), 供 SSE 推送 / CLI 打印 /
-            测试收集. 每个 run 独立编号 (seq 从 1 起), 终局事件恰好一个.
-            None 表示不接出口 (事件仍会触发 hooks 的 on_event).
+            answer_delta / context_compacted / final / error), 供 SSE 推送 /
+            CLI 打印 / 测试收集. 每个 run 独立编号 (seq 从 1 起), 终局事件
+            恰好一个. None 表示不接出口 (事件仍会触发 hooks 的 on_event).
+        stream: 是否**边收边发增量** (#66): True 时每次模型调用带
+            `stream=True` 并挂上两个增量回调, 正文增量发成 `answer_delta`,
+            思维链增量发成 `reasoning` (后者因此从「每轮一条整段」变成
+            「每轮多条」); False (默认) 时一个关键字都不多传 —— 调用形状与
+            没有这个参数时逐字一致, 只有事后那条整段 reasoning 事件.
+            **工具轮的正文增量照发**: 那一轮结束前判不出这段文本算答复还是算
+            过程叙述, 按住不发就是假流式; 归属由前端在 thinking 到达时搬运.
         hooks: hook 注册表 (扩展点), 六个触发点与载荷见
             HookRegistry docstring; 空注册零开销. None 表示无扩展点 (内部用
             空注册表, 触发点不必逐处判空).
@@ -370,6 +396,7 @@ class AgentLoop:
         compactor: CompactionPolicy | None = None,
         counter: TokenCounter | None = None,
         event_sink: EventSink | None = None,
+        stream: bool = False,
         hooks: HookRegistry | None = None,
         saver: CheckpointSaver | None = None,
         thread_id: str | None = None,
@@ -406,6 +433,7 @@ class AgentLoop:
         self._thinking = thinking
         self._reasoning_effort = reasoning_effort
         self._event_sink = event_sink
+        self._stream = stream
         self._saver = saver
         self._thread_id = thread_id
         self._trace_sink = trace_sink
@@ -889,14 +917,14 @@ class AgentLoop:
         )
         view = await self._compile_view(state, bus)
         try:
-            response = await self._generate(view, tool_specs)
+            response = await self._generate(view, tool_specs, bus=bus, turn=turn)
         except ModelStatusError as exc:
             if not exc.is_context_overflow or self._compactor is None:
                 raise
             # 上游说这份请求超了窗口 —— 紧急压一次再发. **只重发一次**: 再超就是真
             # 的压不动 (或窗口小得离谱), 如实抛给上层, 别把这一轮拖成重试循环.
             view = await self._emergency_view(state, bus)
-            response = await self._generate(view, tool_specs)
+            response = await self._generate(view, tool_specs, bus=bus, turn=turn)
         state.turn_count = turn
         # 用量记两笔: 总数给 guard 的预算 (它是账单原值, 也是唯一能跟供应商对账的
         # 那个数), 分解给成本归因 (#34). 两笔取自同一个 usage, 所以必然对得上
@@ -920,16 +948,42 @@ class AgentLoop:
             usage=response.usage,
             elapsed_ms=self._guard.elapsed_ms,
         )
-        if response.reasoning:
-            # reasoning 旁路通道 (#11): 思维链增量单独成事件 (前端折叠展示),
-            # 不混入正文; 但它同样回填 wire 历史 (模型侧上下文, 另一条通道)
+        if response.reasoning and not self._stream:
+            # reasoning 旁路通道 (#11): 思维链单独成事件 (前端折叠展示),
+            # 不混入正文; 但它同样回填 wire 历史 (模型侧上下文, 另一条通道).
+            # 流式那一路不在这里发整段 —— 增量已经边收边发 (见 _generate),
+            # 再发一条整段的会把同一段思维链推两遍 (REASONING 的语义是**增量**)
             await bus.emit(EventType.REASONING, delta=response.reasoning, turn=turn)
         return response
 
     async def _generate(
-        self, view: list[ModelMessage], tool_specs: list[ToolSpec] | None
+        self,
+        view: list[ModelMessage],
+        tool_specs: list[ToolSpec] | None,
+        *,
+        bus: EventBus,
+        turn: int,
     ) -> ModelResponse:
-        """把一份视图交给模型 (两处调用: 常规那一轮, 与超限之后的紧急重发)."""
+        """把一份视图交给模型 (两处调用: 常规那一轮, 与超限之后的紧急重发).
+
+        `stream` (构造参数) 打开时挂上两个增量回调: 正文增量发成 `answer_delta`
+        (旁路预览 —— `final.content` 仍是权威值), 思维链增量发成 `reasoning`.
+        回调把文本交回总线的时机就在这次 generate **内部**, 于是增量事件与这一轮
+        的其它事件天然按 seq 交错.
+
+        夹在中间的两层包装 (重试 / 熔断) 原样转发回调; 吐过字之后它们不再重发
+        整条请求 —— 半截收不回来 (见 retry/chat_model.py).
+
+        没开 stream 时**一个关键字都不多传** (默认就是这条): 底层模型看到的调用
+        与没有这个参数时逐字一致.
+        """
+        stream_kwargs: dict[str, Any] = {}
+        if self._stream:
+            stream_kwargs = {
+                "stream": True,
+                "on_delta": _delta_emitter(bus, EventType.ANSWER_DELTA, turn),
+                "on_reasoning_delta": _delta_emitter(bus, EventType.REASONING, turn),
+            }
         return await self._model.generate(
             view,
             tool_specs,
@@ -939,6 +993,7 @@ class AgentLoop:
             max_tokens=self._max_tokens,
             thinking=self._thinking,
             reasoning_effort=self._reasoning_effort,
+            **stream_kwargs,
         )
 
     async def _compile_view(

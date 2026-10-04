@@ -12,7 +12,7 @@
 单测里自洽.
 
 三件事在这里各有一处落地:
-1. **带工具问答端到端** —— `--question` 或交互模式, 走完整 loop + 七类事件实时打印
+1. **带工具问答端到端** —— `--question` 或交互模式, 走完整 loop + 九类事件实时打印
 2. **模型这一层的接线** —— `build_model` 里那两行: 里面套主备包装
    (`FailoverChatModel(主, 备)`, 备模型从 CLOSEAI_* 读, 没配就没有), 外面套
    `RetryingChatModel`; `--no-retry` 可关掉重试做对照. 嵌套顺序与理由见
@@ -253,6 +253,13 @@ def build_model(options: CliOptions, writer: Callable[[str], Any]) -> ChatModel:
 
     备份模型从 CLOSEAI_* 读 (另一家, 真容灾), **没配就没有** —— 那时这一层只剩
     「一个带熔断闸的模型」: 主模型连错几次之后快失败, 不再空转.
+
+    Note:
+        **录制回放 (tests/record_llm_samples.py 那条线) 必须关掉增量渲染**:
+        `RecordingChatModel` 要求响应带 `raw` 原文, 而流式路径从不设它
+        (`stream=True` 的适配器只交累积结果, 不交原文) —— 开着录会在「缺 raw」
+        那一步报错. 样本本身是非流式的 (请求体里 `"stream": false`), 所以录制
+        那趟别把 run 的 `stream` 打开 (见 `.env.example` 的 `CHARAPP_STREAM`).
 
     Args:
         options: 启动选项 (模型名 / 是否重试).

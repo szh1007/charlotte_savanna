@@ -5,14 +5,14 @@
 消费方 (P1 server SSE 层) 共享.
 
 大白话版 (本文件 = 喊话规范表):
-- 规定现场能喊哪 8 种话: 我在想 (thinking) / 我要去查 (tool_call) / 查回来了
-  (tool_result) / 我的心理活动 (reasoning) / 我把旧对话压了一下
-  (context_compacted) / **这一步要你本人确认** (approval_required) / 我答完了
-  (final) / 我出问题了 (error).
+- 规定现场能喊哪 9 种话: 我在想 (thinking) / 我要去查 (tool_call) / 查回来了
+  (tool_result) / 我的心理活动 (reasoning) / 我正在一个字一个字写答案
+  (answer_delta) / 我把旧对话压了一下 (context_compacted) / **这一步要你本人
+  确认** (approval_required) / 我答完了 (final) / 我出问题了 (error).
 - 规定每声喊话长什么样 (StreamEvent: 句式 + 编号 seq + 内容), 以及「话往哪儿
   递」的回调形状 (EventSink: 交给谁就由谁拿去显示).
 - 顺带两个小约定: reasoning 是「心理活动」—— 前端折叠起来给人看, 绝不混进
-  答案正文; 「终局」有四类 (final / error / approval_required), 一条流里恰好
+  答案正文; 「终局」有三类 (final / error / approval_required), 一条流里恰好
   一个, 之后不再有任何事件.
 - 为什么不在这里写逻辑: 表 (本文件) 与行为 (bus.py) 分开, 改契约不动实现.
 """
@@ -39,6 +39,7 @@ class EventType(StrEnum):
     TOOL_CALL = "tool_call"  # 发起工具调用 (同一轮多条即并行)
     TOOL_RESULT = "tool_result"  # 工具返回 (status ok / error, 错误须可操作 #2)
     REASONING = "reasoning"  # 思维链增量 (旁路通道, 折叠展示 #11)
+    ANSWER_DELTA = "answer_delta"  # 正文增量 (旁路预览: final.content 才是权威值 #4)
     CONTEXT_COMPACTED = "context_compacted"  # 这一轮的上下文被压缩过 (#7)
     APPROVAL_REQUIRED = "approval_required"  # 一次工具调用等人批 (#25): 流到此为止
     FINAL = "final"  # 最终答复 (content 为权威值)

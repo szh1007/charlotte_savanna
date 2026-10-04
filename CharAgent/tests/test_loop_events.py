@@ -293,6 +293,154 @@ async def test_reasoning_is_separate_channel_but_backfilled_in_history() -> None
 
 
 # ---------------------------------------------------------------------------
+# 增量事件 (#66): stream 打开时边收边发
+# ---------------------------------------------------------------------------
+
+
+async def test_stream_answer_deltas_concat_to_the_authoritative_final() -> None:
+    """这一批的不变量: 增量拼接**逐字**等于 `final.content`.
+
+    final 照旧整段发 (它是权威值 —— 截断拼合等场景下增量里可能有已作废的
+    内容, 前端收到 final 就用它覆盖); 增量只是旁路预览, 不是另一条答案.
+    这条在「一轮答完」的主路上成立; 两条例外各有专门用例 (CONTINUE 跨轮拼合
+    也成立, CONDENSE 有意不成立 —— 见本节末尾两条).
+    """
+    model = ScriptedModel([text_response("订单已发货, 预计明天到达")])
+    sink = _Collector()
+    loop = AgentLoop(model=model, event_sink=sink, stream=True)
+
+    result = await loop.run([dict(USER_MSG)])
+
+    deltas = [e.data["delta"] for e in sink.of(EventType.ANSWER_DELTA)]
+    assert len(deltas) > 1, "真边收边发: 一段答复该来好几块"
+    assert "".join(deltas) == "订单已发货, 预计明天到达"
+    assert sink.of(EventType.FINAL)[0].data["content"] == "".join(deltas)
+    assert result.content == "".join(deltas)
+    # 每块都带轮次; 增量全在 final 之前 (序即契约, 终局之后不许再发)
+    assert {e.data["turn"] for e in sink.of(EventType.ANSWER_DELTA)} == {1}
+    assert sink.types()[-1] == "final"
+
+
+async def test_stream_reasoning_arrives_as_increments() -> None:
+    """reasoning 的语义是**增量**: 流式时每轮多条, 拼接后与整段逐字一致."""
+    model = ScriptedModel([text_response("订单已发货", reasoning="先核对订单号再作答")])
+    sink = _Collector()
+    loop = AgentLoop(model=model, event_sink=sink, stream=True)
+
+    await loop.run([dict(USER_MSG)])
+
+    deltas = [e.data["delta"] for e in sink.of(EventType.REASONING)]
+    assert len(deltas) > 1, "整段一条就不是增量了"
+    assert "".join(deltas) == "先核对订单号再作答"
+    assert {e.data["turn"] for e in sink.of(EventType.REASONING)} == {1}
+
+
+async def test_stream_off_by_default_keeps_the_old_event_shape() -> None:
+    """默认 (stream=False): 一条 answer_delta 都没有, reasoning 仍是每轮一条整段.
+
+    机械证据: 事件流里没有增量, 而底层模型看到的调用里 `stream` 仍是 False ——
+    没开开关的运行与从前逐字一致 (回调不参与请求记录, 钉的就是这个生效值).
+    """
+    model = ScriptedModel([text_response("订单已发货", reasoning="先核对订单号")])
+    sink = _Collector()
+    loop = AgentLoop(model=model, event_sink=sink)
+
+    await loop.run([dict(USER_MSG)])
+
+    assert sink.of(EventType.ANSWER_DELTA) == []
+    assert [e.data["delta"] for e in sink.of(EventType.REASONING)] == ["先核对订单号"]
+    assert model.calls[0]["stream"] is False
+
+
+async def test_stream_in_a_tool_round_sends_the_narrative_on_both_channels() -> None:
+    """工具轮: 增量照发, 轮末的 thinking 也照发 —— 同一段文本到两次是设计.
+
+    服务端在那一轮结束前判不出这段文本算答复还是算过程叙述 (按住不发就是假
+    流式), 于是先按正文增量推出去、轮末再以 thinking 说明归属; 搬移是前端的
+    事 —— 判据是**两者都到, 且增量先到** (前端据此把那段字挪进过程行).
+    """
+    model = ScriptedModel(
+        [
+            tool_call_response(
+                make_tool_call("echo", '{"message": "hi"}'),
+                content="我先查一下",
+                reasoning="看看参数",
+            ),
+            text_response("回声: hi", reasoning="可以作答了"),
+        ]
+    )
+    sink = _Collector()
+    loop = AgentLoop(model=model, tools=[ECHO_TOOL], event_sink=sink, stream=True)
+
+    await loop.run([dict(USER_MSG)])
+
+    first_turn = [e for e in sink.of(EventType.ANSWER_DELTA) if e.data["turn"] == 1]
+    (thinking,) = sink.of(EventType.THINKING)
+    assert "".join(e.data["delta"] for e in first_turn) == "我先查一下"
+    assert thinking.data["message"] == "我先查一下"
+    assert max(e.seq for e in first_turn) < thinking.seq, "增量先到, 归属随后说明"
+    # 最终答复仍只在 final 里 (工具轮那段叙述没混进去), 而它的增量也到过
+    second_turn = [
+        e.data["delta"] for e in sink.of(EventType.ANSWER_DELTA) if e.data["turn"] == 2
+    ]
+    assert "".join(second_turn) == "回声: hi"
+    assert sink.of(EventType.FINAL)[0].data["content"] == "回声: hi"
+
+
+async def test_stream_deltas_concat_across_a_continue_truncation() -> None:
+    """CONTINUE 截断续写: 两轮的增量拼起来仍是 final 的权威值.
+
+    `content_parts` 按同一次序拼合各轮正文, 而增量也正是逐轮、逐块发的 ——
+    两条路读的是同一份文本, 所以跨轮这条不变量照旧成立.
+    """
+    model = ScriptedModel(
+        [
+            text_response("订单已", finish_reason=FinishReason.LENGTH),
+            text_response("发货"),
+        ]
+    )
+    sink = _Collector()
+    loop = AgentLoop(model=model, event_sink=sink, stream=True)
+
+    result = await loop.run([dict(USER_MSG)])
+
+    deltas = [e.data["delta"] for e in sink.of(EventType.ANSWER_DELTA)]
+    assert {e.data["turn"] for e in sink.of(EventType.ANSWER_DELTA)} == {1, 2}
+    assert "".join(deltas) == "订单已发货" == result.content
+    assert sink.of(EventType.FINAL)[0].data["content"] == "订单已发货"
+
+
+async def test_stream_deltas_can_be_superseded_by_final_after_a_condense() -> None:
+    """CONDENSE 丢弃截断前缀: 那条增量已经吐出去了, 但 final 不再包含它.
+
+    这一条**有意**不满足上面的不变量 —— 它就是 DESIGN #4 说「增量里可能有已作废
+    的内容, `final.content` 才是权威值」的那个场景; 前端收到 final 用权威值覆盖
+    缓冲, 正是为它准备的.
+    """
+    model = ScriptedModel(
+        [
+            text_response("这一步不算数", finish_reason=FinishReason.LENGTH),
+            text_response("精简后的答案"),
+        ]
+    )
+    sink = _Collector()
+    loop = AgentLoop(
+        model=model,
+        event_sink=sink,
+        stream=True,
+        truncation=TruncationStrategy.CONDENSE,
+    )
+
+    result = await loop.run([dict(USER_MSG)])
+
+    deltas = "".join(e.data["delta"] for e in sink.of(EventType.ANSWER_DELTA))
+    assert "这一步不算数" in deltas, "第一次截断的增量已经推给前端了"
+    assert result.content == "精简后的答案"
+    assert sink.of(EventType.FINAL)[0].data["content"] == "精简后的答案"
+    assert deltas != result.content, "增量与权威值分道 —— final 覆盖缓冲的理由"
+
+
+# ---------------------------------------------------------------------------
 # 终局事件选择规则 (已定案)
 # ---------------------------------------------------------------------------
 

@@ -439,6 +439,134 @@ async def test_stream_missing_finish_reason_raises_protocol_error(
 
 
 # ---------------------------------------------------------------------------
+# 流式增量回调 (接缝, #66): 旁路预览, 不改累积结果
+# ---------------------------------------------------------------------------
+
+
+def _two_channel_stream() -> str:
+    """reasoning 与 content 交错的两通道流 (末尾带空串填充块, 官方形态)."""
+    deltas = [
+        {"reasoning_content": "先核对"},
+        {"content": "订单"},
+        {"reasoning_content": "单号"},
+        {"content": ""},  # 填充块: 空串不是一块增量, 不该转发
+        {"content": "已发货"},
+    ]
+    return "".join(
+        [
+            *(
+                sse_chunk(
+                    {"choices": [{"index": 0, "delta": delta, "finish_reason": None}]}
+                )
+                for delta in deltas
+            ),
+            sse_chunk(
+                {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
+            ),
+            "data: [DONE]\n\n",
+        ]
+    )
+
+
+async def test_stream_forwards_deltas_on_both_channels(
+    chat_model: HttpXChatModel,
+) -> None:
+    """增量按块、按序转发; 正文与思维链分道互不串 (旁路预览, #66)."""
+    content_deltas: list[str] = []
+    reasoning_deltas: list[str] = []
+
+    async def on_delta(text: str) -> None:
+        content_deltas.append(text)
+
+    async def on_reasoning_delta(text: str) -> None:
+        reasoning_deltas.append(text)
+
+    async with respx.mock() as router:
+        router.post(CHAT_URL).mock(
+            return_value=httpx.Response(200, text=_two_channel_stream())
+        )
+        response = await chat_model.generate(
+            MESSAGES,
+            stream=True,
+            on_delta=on_delta,
+            on_reasoning_delta=on_reasoning_delta,
+        )
+    assert content_deltas == ["订单", "已发货"]  # 空串填充块不转发
+    assert reasoning_deltas == ["先核对", "单号"]  # 两条通道各走各的
+    # 旁路拼接与累积结果逐字一致 (回调接的是同一组 wire 字段)
+    assert "".join(content_deltas) == response.content
+    assert "".join(reasoning_deltas) == response.reasoning
+
+
+async def test_stream_result_is_identical_with_and_without_callbacks(
+    chat_model: HttpXChatModel,
+) -> None:
+    """挂了回调只是多一路旁路转发: 返回值与没挂回调时逐字一致 (#66 不变量)."""
+    body = _two_channel_stream()
+
+    async def collect(text: str) -> None:
+        pass  # 挂上就够: 本用例比的是返回值
+
+    async with respx.mock() as router:
+        router.post(CHAT_URL).mock(return_value=httpx.Response(200, text=body))
+        plain = await chat_model.generate(MESSAGES, stream=True)
+    async with respx.mock() as router:
+        router.post(CHAT_URL).mock(return_value=httpx.Response(200, text=body))
+        with_callbacks = await chat_model.generate(
+            MESSAGES,
+            stream=True,
+            on_delta=collect,
+            on_reasoning_delta=collect,
+        )
+    assert with_callbacks == plain
+
+
+async def test_stream_malformed_chunk_is_not_forwarded(
+    chat_model: HttpXChatModel,
+) -> None:
+    """畸形块先由累积层抛错: 它不该被当成增量吐出去 (转发排在累积之后).
+
+    这块的正文是**好的**, 坏在 tool_calls 分片上 —— 于是顺序真被钉住了: 先转发
+    就会把「半截」泄给回调, 先累积则当场抛错、一个字节都不出去.
+    """
+    forwarded: list[str] = []
+
+    async def on_delta(text: str) -> None:
+        forwarded.append(text)
+
+    body = "".join(
+        [
+            sse_chunk(
+                {
+                    "choices": [
+                        {
+                            "index": 0,
+                            # arguments 应为字符串: 累积层判它畸形 (protocol error)
+                            "delta": {
+                                "content": "半截",
+                                "tool_calls": [
+                                    {"index": 0, "function": {"arguments": 123}}
+                                ],
+                            },
+                            "finish_reason": None,
+                        }
+                    ]
+                }
+            ),
+            sse_chunk(
+                {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
+            ),
+            "data: [DONE]\n\n",
+        ]
+    )
+    async with respx.mock() as router:
+        router.post(CHAT_URL).mock(return_value=httpx.Response(200, text=body))
+        with pytest.raises(ModelProtocolError, match="字符串"):
+            await chat_model.generate(MESSAGES, stream=True, on_delta=on_delta)
+    assert forwarded == []
+
+
+# ---------------------------------------------------------------------------
 # 错误语义: 非 2xx -> 明确异常 (供 retry 判断瞬态 / 永久)
 # ---------------------------------------------------------------------------
 

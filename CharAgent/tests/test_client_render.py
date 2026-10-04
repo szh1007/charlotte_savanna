@@ -1,7 +1,7 @@
-"""client 终端渲染测试: 八类事件怎么画成一行字.
+"""client 终端渲染测试: 九类事件怎么画成一行字.
 
 场景 → 断言:
-- 八类事件各有一行版式, 标签是 `[thinking]` 这类方括号词 (可 grep)
+- 九类事件各有一行版式, 标签是 `[thinking]` 这类方括号词 (可 grep)
 - tool_call 的 arguments 是原始 JSON 字符串: 能解析就压成紧凑一行, 畸形就
   原样打并标注 (畸形本身是要给用户看的信息, #2)
 - tool_result 成功给「名字 ok (耗时): 摘要」, 失败给可操作错误
@@ -47,7 +47,7 @@ def rendered(event_type: EventType, *, color: bool = False, **data: Any) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 八类事件各一行
+# 九类事件各一行
 # ---------------------------------------------------------------------------
 
 
@@ -140,6 +140,17 @@ def test_reasoning_line_keeps_short_text_as_is() -> None:
     """reasoning 不超长: 原样打, 不加任何省略说明."""
     assert rendered(EventType.REASONING, delta="核对订单号", turn=1) == (
         "[reasoning] 核对订单号"
+    )
+
+
+def test_answer_delta_line_prints_the_piece() -> None:
+    """answer_delta: 一块正文增量原样打一行 (#66 的预览通道).
+
+    它不设长度上限也不加省略说明 —— 一块本来就只有几个字 (上游的切法), 截它
+    没有意义; 末尾整段打的那份才是权威值 (见模块 docstring 的那条约定).
+    """
+    assert rendered(EventType.ANSWER_DELTA, delta="订单", turn=1) == (
+        "[answer_delta] 订单"
     )
 
 

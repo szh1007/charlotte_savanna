@@ -22,18 +22,20 @@
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
 import pytest
 import respx
 from doubles import FakeClock, RecordingSleep
-from helpers import CHAT_URL, TOOL_SCHEMA, text_completion_json
+from helpers import CHAT_URL, TOOL_SCHEMA, sse_chunk, text_completion_json
 
 from CharAgent.agent import AgentLoop, LoopOutcome
 from CharAgent.model import (
     FinishReason,
     HttpXChatModel,
+    ModelConnectionError,
     ModelMessage,
     ModelResponse,
     ModelStatusError,
@@ -307,6 +309,224 @@ async def test_upstream_interrupted_retry_can_be_disabled(
     assert response.finish_reason is FinishReason.INSUFFICIENT_SYSTEM_RESOURCE
     assert len(route.calls) == 1
     assert sleep.delays == []
+
+
+# ---------------------------------------------------------------------------
+# 流式增量与吐字闸 (吐过字不重试, #66)
+# ---------------------------------------------------------------------------
+
+
+def _content_chunk(text: str) -> str:
+    """一块正文增量的 SSE 文本."""
+    return sse_chunk(
+        {"choices": [{"index": 0, "delta": {"content": text}, "finish_reason": None}]}
+    )
+
+
+def _stop_chunk() -> str:
+    return sse_chunk({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})
+
+
+async def _stream_then_break(parts: list[str]) -> AsyncIterator[bytes]:
+    """先原样吐出 `parts`, 然后把连接掐断 (httpx.ReadError -> 瞬态连接错误)."""
+    for part in parts:
+        yield part.encode("utf-8")
+    raise httpx.ReadError("连接被掐断")
+
+
+async def test_stream_deltas_pass_through_the_retry_wrapper(
+    chat_model: HttpXChatModel,
+) -> None:
+    """重试包装原样转发两个回调 (漏转的失效是「流式开着但前端一片空白」, 无报错)."""
+    sleep = RecordingSleep()
+    model = RetryingChatModel(chat_model, policy=_policy(sleep=sleep))
+    content: list[str] = []
+    reasoning: list[str] = []
+
+    async def on_delta(text: str) -> None:
+        content.append(text)
+
+    async def on_reasoning_delta(text: str) -> None:
+        reasoning.append(text)
+
+    body = "".join(
+        [
+            sse_chunk(
+                {
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"reasoning_content": "先核对"},
+                            "finish_reason": None,
+                        }
+                    ]
+                }
+            ),
+            _content_chunk("订单"),
+            _content_chunk("已发货"),
+            _stop_chunk(),
+            "data: [DONE]\n\n",
+        ]
+    )
+    async with respx.mock() as router:
+        router.post(CHAT_URL).mock(return_value=httpx.Response(200, text=body))
+        response = await model.generate(
+            MESSAGES,
+            stream=True,
+            on_delta=on_delta,
+            on_reasoning_delta=on_reasoning_delta,
+        )
+
+    assert content == ["订单", "已发货"]
+    assert reasoning == ["先核对"]
+    assert response.content == "订单已发货"  # 返回值仍是累积完的完整响应
+
+
+async def test_a_break_after_deltas_is_not_retried(
+    chat_model: HttpXChatModel,
+) -> None:
+    """吐过字不重试 (#66): 断流只发一次请求, 半截如实交给调用方.
+
+    重试 = 整条重发, 而已经吐出去的字收不回来 —— 用户会看到「半截 + 从头再来」,
+    比「半截 + 一句说明」糟得多.
+    """
+    clock = FakeClock()
+    sleep = RecordingSleep(clock)
+    model = RetryingChatModel(
+        chat_model, policy=_policy(sleep=sleep, time_source=clock)
+    )
+    emitted: list[str] = []
+
+    async def on_delta(text: str) -> None:
+        emitted.append(text)
+
+    async with respx.mock() as router:
+        route = router.post(CHAT_URL)
+        route.mock(
+            return_value=httpx.Response(
+                200,
+                content=_stream_then_break(
+                    [_content_chunk("订单"), _content_chunk("已发货")]
+                ),
+            )
+        )
+        with pytest.raises(ModelConnectionError):
+            await model.generate(MESSAGES, stream=True, on_delta=on_delta)
+
+    assert emitted == ["订单", "已发货"], "半截已经交到调用方手里, 收不回来"
+    assert len(route.calls) == 1, "吐过字之后不再发第二次"
+    assert sleep.delays == [], "一次退避都没等"
+
+
+async def test_a_break_before_any_delta_is_retried_as_before(
+    chat_model: HttpXChatModel,
+) -> None:
+    """对照: 还没吐过字时同样的断流照旧重试 (既有行为一字不动)."""
+    clock = FakeClock()
+    sleep = RecordingSleep(clock)
+    model = RetryingChatModel(
+        chat_model, policy=_policy(sleep=sleep, time_source=clock)
+    )
+    emitted: list[str] = []
+
+    async def on_delta(text: str) -> None:
+        emitted.append(text)
+
+    ok = "".join([_content_chunk("订单已发货"), _stop_chunk(), "data: [DONE]\n\n"])
+    async with respx.mock() as router:
+        route = router.post(CHAT_URL)
+        route.mock(
+            side_effect=[
+                httpx.Response(200, content=_stream_then_break([])),
+                httpx.Response(200, text=ok),
+            ]
+        )
+        response = await model.generate(MESSAGES, stream=True, on_delta=on_delta)
+
+    assert response.content == "订单已发货"
+    assert len(route.calls) == 2, "一个字都没吐, 断流照旧重试"
+    assert sleep.delays == [0.5]
+    assert emitted == ["订单已发货"], "增量只来自重试成功的那一趟"
+
+
+async def test_an_interrupted_stream_after_deltas_is_not_retried(
+    chat_model: HttpXChatModel,
+) -> None:
+    """响应判据同样过吐字闸: 吐过字之后「上游中断」也原样返回.
+
+    重试它会再烧一次钱, 而且前端已经画出的半截会被第二趟的增量接在后面.
+    """
+    sleep = RecordingSleep()
+    model = RetryingChatModel(chat_model, policy=_policy(sleep=sleep))
+
+    async def on_delta(text: str) -> None:
+        pass  # 挂上回调就够: 本用例只看有没有重发
+
+    body = "".join(
+        [
+            _content_chunk("您的订单"),
+            sse_chunk(
+                {
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {},
+                            "finish_reason": "insufficient_system_resource",
+                        }
+                    ]
+                }
+            ),
+            "data: [DONE]\n\n",
+        ]
+    )
+    async with respx.mock() as router:
+        route = router.post(CHAT_URL)
+        route.mock(return_value=httpx.Response(200, text=body))
+        response = await model.generate(MESSAGES, stream=True, on_delta=on_delta)
+
+    assert response.finish_reason is FinishReason.INSUFFICIENT_SYSTEM_RESOURCE
+    assert len(route.calls) == 1
+    assert sleep.delays == []
+
+
+async def test_an_interrupted_stream_without_deltas_is_retried_as_before(
+    chat_model: HttpXChatModel,
+) -> None:
+    """对照: 同一份中断流, 没挂回调 (一个字都没吐) 时照旧重试."""
+    sleep = RecordingSleep()
+    model = RetryingChatModel(chat_model, policy=_policy(sleep=sleep))
+    interrupted = "".join(
+        [
+            _content_chunk("您的订单"),
+            sse_chunk(
+                {
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {},
+                            "finish_reason": "insufficient_system_resource",
+                        }
+                    ]
+                }
+            ),
+            "data: [DONE]\n\n",
+        ]
+    )
+    ok = "".join([_content_chunk("订单已发货"), _stop_chunk(), "data: [DONE]\n\n"])
+
+    async with respx.mock() as router:
+        route = router.post(CHAT_URL)
+        route.mock(
+            side_effect=[
+                httpx.Response(200, text=interrupted),
+                httpx.Response(200, text=ok),
+            ]
+        )
+        response = await model.generate(MESSAGES, stream=True)
+
+    assert response.content == "订单已发货"
+    assert len(route.calls) == 2
+    assert sleep.delays == [0.5], "第一趟没吐过字, 判据与从前完全一样"
 
 
 # ---------------------------------------------------------------------------

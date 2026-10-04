@@ -36,13 +36,14 @@ tool_call_response) 都可带可选的 reasoning 与 usage, 好造出真实形�
 from __future__ import annotations
 
 import json
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
 from CharAgent.model.parse import parse_chat_completion
+from CharAgent.model.protocol import DeltaCallback
 from CharAgent.model.utils.types import (
     FinishReason,
     ModelMessage,
@@ -326,8 +327,15 @@ class RecordingChatModel:
         thinking: bool | None = None,
         reasoning_effort: str | None = None,
         stream: bool = False,
+        on_delta: DeltaCallback | None = None,
+        on_reasoning_delta: DeltaCallback | None = None,
     ) -> ModelResponse:
-        """转发给真模型, 记下请求与响应原文 (返回值原样透出)."""
+        """转发给真模型, 记下请求与响应原文 (返回值原样透出).
+
+        两个增量回调原样转发 (包装不透传它们, 表现是「流式开着但一片空白」).
+        注意录制本身走的是非流式路径 (要响应的 raw 原文, 流式路径不设它) ——
+        拿它录流式请求会在缺 raw 那一步报错, 那是有意的.
+        """
         request = request_record(
             messages,
             tools,
@@ -349,6 +357,8 @@ class RecordingChatModel:
             thinking=thinking,
             reasoning_effort=reasoning_effort,
             stream=stream,
+            on_delta=on_delta,
+            on_reasoning_delta=on_reasoning_delta,
         )
         if response.raw is None:
             raise AssertionError(
@@ -440,6 +450,7 @@ class MockLLM:
         mode: MockMode = MockMode.SCRIPTED,
         sample: LLMSample | None = None,
         verify_requests: bool = False,
+        delta_chunk_size: int = 3,
     ) -> None:
         """
         Args:
@@ -449,7 +460,15 @@ class MockLLM:
             verify_requests: 回放时校验「本次请求」与「录制时的请求」一致
                 (messages + tools), 不一致即报错 —— 契约回归的开关 (默认关:
                 换过 prompt / 工具描述的回放是有意为之, 不该一律判错).
+            delta_chunk_size: 流式模式下每块增量多少个字 (默认 3, 上游常见的
+                粒度是 2~4); 只在 `stream=True` 且挂了回调时用得上, 切块拼起来
+                与整段逐字不差.
         """
+        if delta_chunk_size < 1:
+            raise AssertionError(
+                f"delta_chunk_size 必须 >= 1, 实际: {delta_chunk_size}"
+            )
+        self._delta_chunk_size = delta_chunk_size
         self._script: list[ScriptStep] = list(script)
         self.mode = mode
         self.sample = sample
@@ -514,11 +533,17 @@ class MockLLM:
         thinking: bool | None = None,
         reasoning_effort: str | None = None,
         stream: bool = False,
+        on_delta: DeltaCallback | None = None,
+        on_reasoning_delta: DeltaCallback | None = None,
     ) -> ModelResponse:
-        """ChatModel 协议实现: 记录请求 → 按模式给出响应.
+        """ChatModel 协议实现: 记录请求 → 按模式给出响应 → (流式) 逐块吐增量.
 
         三种模式的分支: 固定返回恒回同一条; 回放先校验请求(可选)再弹响应;
         脚本化直接弹脚本 —— 弹空时抛错, 说清是脚本耗尽还是样本轮次用尽.
+
+        流式 (`stream=True`) 且挂了回调时, 按 `delta_chunk_size` 把响应切成块
+        逐块吐 (与真适配器同一条协议: 不流式就没有增量可言) —— 返回值仍是那条
+        完整响应, 与静默那条路逐字一致.
         """
         if tools is None:
             self.no_tools_calls += 1
@@ -548,6 +573,12 @@ class MockLLM:
         else:
             raise AssertionError(self._exhausted_message(turn, messages))
         self.responses.append(response)
+        if stream:
+            await self._emit_deltas(
+                response,
+                on_delta=on_delta,
+                on_reasoning_delta=on_reasoning_delta,
+            )
         return response
 
     async def aclose(self) -> None:
@@ -556,6 +587,31 @@ class MockLLM:
     # ------------------------------------------------------------------
     # 内部
     # ------------------------------------------------------------------
+
+    async def _emit_deltas(
+        self,
+        response: ModelResponse,
+        *,
+        on_delta: DeltaCallback | None,
+        on_reasoning_delta: DeltaCallback | None,
+    ) -> None:
+        """按块把这条响应的正文 / 思维链吐给回调 (两条通道各切各的).
+
+        切块只为造出「上游几十毫秒一块」的节奏 (真适配器那边一块多大由上游
+        决定, 这里不必猜); 内容一个字不多不少 —— 拼接逐字等于响应的那一段.
+        没有回调时一个 await 都不做 (与静默那条路逐字一致).
+        """
+        if on_delta is not None and response.content:
+            for piece in self._chunks(response.content):
+                await on_delta(piece)
+        if on_reasoning_delta is not None and response.reasoning:
+            for piece in self._chunks(response.reasoning):
+                await on_reasoning_delta(piece)
+
+    def _chunks(self, text: str) -> Iterator[str]:
+        """一段文本 → 按 delta_chunk_size 切好的块 (最后一块可能短些)."""
+        for start in range(0, len(text), self._delta_chunk_size):
+            yield text[start : start + self._delta_chunk_size]
 
     async def _response_of(
         self,

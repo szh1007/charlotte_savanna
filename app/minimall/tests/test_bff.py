@@ -39,10 +39,14 @@ from app.minimall.views_bff import (
     max_conversation_id_length,
 )
 
-# 只在这两条**长度**用例里借框架的校验函数: BFF 卡的那条线必须与助手服务真会走的
-# 那条线是同一条, 而「另一条线在哪」只有框架自己说了算 (写死一个 128 恰恰是这次
-# 出过的错). 别的用例不依赖框架 —— 两边之间是 HTTP, 不是 import.
+# 框架的 import 只用在这两处, 都属「同一条线只能由框架说了算」那一类:
+# - 两条**长度**用例借它的校验函数: BFF 卡的那条线必须与助手服务真会走的那条线是
+#   同一条 (写死一个 128 恰恰是这次出过的错)
+# - `test_every_event_type_has_a_handler` 借它的 `EventType` 全集: 页面要接哪些事件,
+#   由框架的枚举说了算 —— 手抄名单在框架新增事件时不会红 (见那条用例的说明)
+# 别的用例不依赖框架 —— 两边之间是 HTTP, 不是 import.
 from CharAgent.checkpoint import CheckpointConfigError, check_identifier
+from CharAgent.stream import EventType
 
 User = get_user_model()
 
@@ -2186,7 +2190,7 @@ class BffConversationActionsTest(BffTestBase):
 
 
 class AgentPageTest(BffTestBase):
-    """客服页面: 登录可见, 入口全站可达, **八类事件**都接了, 左栏是会话列表."""
+    """客服页面: 登录可见, 入口全站可达, **框架的九类事件**都接了, 左栏是会话列表."""
 
     def test_the_page_and_the_stream_are_for_logged_in_buyers_only(self):
         """未登录访问 → 跳登录页 (不是 500, 也不是空流)."""
@@ -2215,34 +2219,26 @@ class AgentPageTest(BffTestBase):
         self.assertNotIn("new EventSource(", body)
 
     def test_every_event_type_has_a_handler(self):
-        """八类事件一个不少 —— 漏一个的表现是「那种事件静默消失」.
+        """框架 `EventType` 的每一类, 页面都要做一次决定 —— 接上, 或者明说忽略.
 
-        这是前端能被 Django 测试够到的一半 (另一半是浏览器里真跑一遍): 事件名与
-        框架的 `EventType` 全集对齐. 断言前先把空白压平 —— 守的是「这八个名字在」,
-        不是「它们缩进几格」 (改个格式不该红).
+        这是前端能被 Django 测试够到的一半 (另一半是浏览器里真跑一遍). 名单**从框架
+        枚举派生**, 这里借一次框架的 import: 「一共有哪些事件」只有框架自己说了算
+        (与上面那两条长度用例同一个理由 —— 手抄一份迟早与真身脱节).
 
-        `context_compacted` 是第七类 (框架 issue 16 加的, 本片才接上): 它以前进
-        这个表就会红, 正是这条用例存在的意义 —— 框架新增一类事件时, 页面这边
-        必须有人做一次决定 (接上, 还是有意忽略).
-
-        `approval_required` 是第八类 (框架 issue 34 加, 本片接上): 它**同样是终局
-        事件**, 于是页面这边有两处要认它 —— 渲染表 (这一条) 与终局判定 (见
-        `AgentApprovalCardTest.test_the_card_is_built_from_the_event_and_from_history`).
+        手抄那份已经坑过一次: 2026-10-04 框架加第九类 `answer_delta` (`#66`), 而这条
+        用例当时遍历的是写死的八个名字 —— 框架多了事件, 页面没接, 它照旧全绿, 那张
+        「框架加类型时页面必须做决定」的网等于不存在. 现在改成派生: 以后框架再出一
+        类, 要么在页面的 `RENDERERS` 里接上, 要么往下面 `ignored` 里记一笔「有意不
+        渲染」—— 两条路都要有人动手, 用例才会绿.
         """
         compact = self.page_source()
+        ignored: frozenset[str] = frozenset()  # 现在没有一类事件是「有意不渲染」的
 
-        for event in (
-            "thinking",
-            "tool_call",
-            "tool_result",
-            "reasoning",
-            "context_compacted",
-            "approval_required",
-            "final",
-            "error",
-        ):
-            with self.subTest(event=event):
-                self.assertIn(f"{event}: function (data) {{", compact)
+        for event in EventType:
+            if event.value in ignored:
+                continue
+            with self.subTest(event=event.value):
+                self.assertIn(f"{event.value}: function (data) {{", compact)
 
     def test_the_page_borrows_the_sse_parser_instead_of_writing_one(self):
         """帧解析用库, 不自己写 —— 一个汉字被 TCP 切成两半那种细节不该由页面负责.

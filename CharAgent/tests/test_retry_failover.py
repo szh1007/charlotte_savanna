@@ -340,6 +340,114 @@ async def test_the_whole_run_continues_on_the_backup_after_the_trip() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 吐字闸: 已经吐过字的这一跳不换槽 (#66)
+# ---------------------------------------------------------------------------
+
+
+class _TalkingModel:
+    """先吐一段字再抛错的模型替身 (吐过字不换槽的对照面).
+
+    两个通道各吐一条: 本包装要证明它**两条都转发** (漏一条的失效是「流式开着
+    但前端一片空白」, 没有任何报错), 所以两条都得从这条路上走一遍.
+
+    attributes:
+        calls: 被调用了几次.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        *,
+        error: BaseException,
+        text: str = "半截",
+        reasoning: str = "先核对",
+    ) -> None:
+        self.model = name
+        self._error = error
+        self._text = text
+        self._reasoning = reasoning
+        self.calls = 0
+
+    async def generate(
+        self,
+        messages: list[ModelMessage],
+        tools: object = None,
+        **kwargs: object,
+    ) -> ModelResponse:
+        self.calls += 1
+        on_delta = kwargs.get("on_delta")
+        on_reasoning_delta = kwargs.get("on_reasoning_delta")
+        if on_delta is not None:
+            await on_delta(self._text)  # pyright: ignore[reportCallIssue]
+        if on_reasoning_delta is not None:
+            await on_reasoning_delta(self._reasoning)  # pyright: ignore[reportCallIssue]
+        raise self._error
+
+    async def aclose(self) -> None:
+        pass
+
+
+async def test_the_breaker_trips_without_switching_when_deltas_were_emitted() -> None:
+    """吐过字不换槽 (#66): 第三跳的失败本来会拨开闸并**当场**改走备份 —— 不切.
+
+    半截已经吐给调用方, 换槽 = 用备份把整条请求重发一遍, 收不回来; 闸的计数
+    照记 (失败就是失败), 到下一次调用才走备份.
+    """
+    clock = FakeClock()
+    primary = _TalkingModel(PRIMARY, error=_boom())
+    backup = _FakeModel(BACKUP)
+    model = _failover(clock, primary, backup)
+    content: list[str] = []
+    reasoning: list[str] = []
+
+    async def on_delta(text: str) -> None:
+        content.append(text)
+
+    async def on_reasoning_delta(text: str) -> None:
+        reasoning.append(text)
+
+    for _ in range(3):
+        with pytest.raises(ModelStatusError):
+            await model.generate(
+                MESSAGES, on_delta=on_delta, on_reasoning_delta=on_reasoning_delta
+            )
+
+    assert content == ["半截"] * 3, "正文增量逐跳原样转发"
+    assert reasoning == ["先核对"] * 3, "思维链增量同样转发 (两条通道各走各的)"
+    assert (primary.calls, backup.calls) == (3, 0), "三次失败都没换槽"
+    assert model.breakers[0].state is CircuitState.OPEN, "闸照记: 连续 3 次失败"
+
+    assert (await model.generate(MESSAGES)).content == "好的"
+    assert (primary.calls, backup.calls) == (3, 1), "闸开之后的下一跳才走备份"
+
+
+async def test_retry_gives_up_after_the_inner_failover_emitted() -> None:
+    """组装形状 (重试在外、熔断在内): 主模型吐了半截就断 —— 两层都不再从这一跳
+    自动兜底 (重试层不重试、熔断层不换槽), 一次物理调用收场 (#66).
+
+    阈值调到 1: 这一下**本来**会把闸拨开并当场改走备份, 闸开着之后的第二次尝试
+    也**本来**会直接落到备份 —— 两层各自收紧, 才有下面这一行断言.
+    """
+    clock = FakeClock()
+    primary = _TalkingModel(PRIMARY, error=_boom())
+    backup = _FakeModel(BACKUP)
+    wrapped = RetryingChatModel(
+        _failover(clock, primary, backup, failure_threshold=1),
+        policy=RetryPolicy(
+            max_attempts=3, initial_delay=0.5, jitter=0.0, sleep=RecordingSleep()
+        ),
+    )
+
+    async def on_delta(text: str) -> None:
+        pass
+
+    with pytest.raises(ModelStatusError):
+        await wrapped.generate(MESSAGES, stream=True, on_delta=on_delta)
+
+    assert (primary.calls, backup.calls) == (1, 0), "一次物理调用就收场"
+
+
+# ---------------------------------------------------------------------------
 # 半开: 只放一个探测
 # ---------------------------------------------------------------------------
 

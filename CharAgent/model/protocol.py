@@ -6,9 +6,15 @@ runtime. messages / tools 为 wire dict 直通 /chat/completions, 不引入中�
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from typing import Protocol
 
 from CharAgent.model.utils.types import ModelMessage, ModelResponse, ToolSpec
+
+# 增量回调: stream=True 时每收到一块增量文本调用一次 (正文 / 思维链各一个).
+# **async 且 await 到位才读下一块**: 消费者慢天然变成对上游读取的背压 —— 宁可让
+# 一个慢出口把模型流拖慢, 也不要给增量开一个没人盯着的无界缓冲 (#66).
+type DeltaCallback = Callable[[str], Awaitable[None]]
 
 
 class ChatModel(Protocol):
@@ -29,6 +35,8 @@ class ChatModel(Protocol):
         thinking: bool | None = None,
         reasoning_effort: str | None = None,
         stream: bool = False,
+        on_delta: DeltaCallback | None = None,
+        on_reasoning_delta: DeltaCallback | None = None,
     ) -> ModelResponse:
         """单次模型决策调用.
 
@@ -54,6 +62,13 @@ class ChatModel(Protocol):
                 与 thinking 同时显式传入且方向相反时报 ModelConfigError.
             stream: True 时走 SSE 并在内部累积 delta,
                     返回与非流式相同的完整 ModelResponse.
+            on_delta: 正文增量回调, None 表示不要增量. **仅 stream=True 且本块
+                确有 content 增量时被调用** (调用级旁路: 不改返回值, 返回给调用方
+                的仍是累积完的完整响应); 拼接回调收到的全部增量, 逐字等于
+                `ModelResponse.content`.
+            on_reasoning_delta: 思维链增量回调, 与 on_delta **分道** —— wire 上
+                正文与 reasoning_content 本来就是两个字段 (#11), 这里也不合并.
+                语义同 on_delta.
         """
         ...
 

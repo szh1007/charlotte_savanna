@@ -20,6 +20,11 @@ RetryPolicy 退避重试, 重试彻底耗尽才把失败交出去.
   中断, 重试可能违背用户意图): 原样返回给 loop, 由它按既有契约上报
   SERVER_INTERRUPTED.
 
+第三条判据 (只在挂了增量回调的流式调用上生效, #66): **吐过字不重试** —— 这一跳
+里 on_delta / on_reasoning_delta 被调用过, 此后无论异常路径还是「上游中断」响应
+都不再重试 (重试 = 整条重发, 已经吐出去的半截收不回来); 没吐过字时两条判据与
+重试行为与从前逐字一致.
+
 重试对 loop 透明 (契约不变):
 - 异常路径耗尽 -> 异常上抛, loop 不吞也不发终局事件 (由 server 降级)
 - 响应路径耗尽 -> 返回最后一个响应, loop 照旧判 SERVER_INTERRUPTED
@@ -36,15 +41,16 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from CharAgent.model.protocol import ChatModel
+from CharAgent.model.protocol import ChatModel, DeltaCallback
 from CharAgent.model.utils.types import (
     FinishReason,
     ModelMessage,
     ModelResponse,
     ToolSpec,
 )
+from CharAgent.retry.delta_gate import DeltaGate
 from CharAgent.retry.executor import retry_async
-from CharAgent.retry.policy import RetryPolicy
+from CharAgent.retry.policy import RetryPolicy, is_retryable
 from CharAgent.retry.utils.types import RetryCallback
 
 
@@ -90,14 +96,36 @@ class RetryingChatModel:
         thinking: bool | None = None,
         reasoning_effort: str | None = None,
         stream: bool = False,
+        on_delta: DeltaCallback | None = None,
+        on_reasoning_delta: DeltaCallback | None = None,
     ) -> ModelResponse:
         """ChatModel 协议实现: 逐参数透传底层模型, 失败按策略重试 (#13).
 
         参数语义与 ChatModel.generate 完全一致 (见 model/protocol.py) ——
-        包装不吞不改任何参数, 每次尝试带同样的采样参数 (#68).
+        包装不吞不改任何参数, 每次尝试带同样的采样参数 (#68); 两个增量回调
+        原样转发, 只是顺手记下「这一趟有没有吐过字」(#66, 见下).
+
+        **吐过字不重试** (两条判据之外的第三条, 只对挂了增量回调的流式调用生效):
+        回调一旦被调用过, 这一跳抛出的异常与「上游中断」响应都**不再重试** ——
+        重试是把整条请求重发一遍, 而已经吐给调用方的半截收不回来, 用户会看到
+        「半截 + 从头再来」, 比「半截 + 一句说明」糟得多. 没吐过字时, 两条判据
+        与重试行为与从前逐字一致.
         """
-        return await retry_async(
-            lambda: self._model.generate(
+        # 吐字闸: 这一趟「有没有把增量交给调用方」—— 置位之后不再重发 (重试 =
+        # 整条重发, 半截收不回来). 只有没吐过字的尝试才会走到下一轮, 所以闸里
+        # 那个位是单调的, 不必每轮清零.
+        gate = DeltaGate(on_delta, on_reasoning_delta)
+
+        def _attempt_retryable(exc: BaseException) -> bool:
+            """异常判据 + 吐字闸: 吐过字之后连瞬态错误也不再来第二遍."""
+            return not gate.emitted and is_retryable(exc)
+
+        def _accept_response(response: ModelResponse) -> str | None:
+            """响应判据 + 同一道吐字闸: 吐过字之后「上游中断」也原样返回."""
+            return None if gate.emitted else self._reject_response(response)
+
+        async def _attempt() -> ModelResponse:
+            return await self._model.generate(
                 messages,
                 tools,
                 temperature=temperature,
@@ -107,9 +135,14 @@ class RetryingChatModel:
                 thinking=thinking,
                 reasoning_effort=reasoning_effort,
                 stream=stream,
-            ),
+                **gate.kwargs,
+            )
+
+        return await retry_async(
+            _attempt,
             policy=self._policy,
-            retry_on_result=self._reject_response,
+            retryable=_attempt_retryable,
+            retry_on_result=_accept_response,
             on_retry=self._on_retry,
         )
 

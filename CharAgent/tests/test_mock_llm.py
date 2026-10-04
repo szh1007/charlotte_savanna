@@ -152,6 +152,86 @@ async def test_call_records_freeze_history_at_call_time() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 流式增量: fake 也按块吐 (#66)
+# ---------------------------------------------------------------------------
+
+
+class _DeltaRecorder:
+    """收增量的小口袋: 两条通道各一个列表, 方法本身就是回调."""
+
+    def __init__(self) -> None:
+        self.content: list[str] = []
+        self.reasoning: list[str] = []
+
+    async def on_delta(self, text: str) -> None:
+        self.content.append(text)
+
+    async def on_reasoning_delta(self, text: str) -> None:
+        self.reasoning.append(text)
+
+
+async def test_stream_mode_slices_content_and_reasoning_into_chunks() -> None:
+    """stream=True + 回调: 两条通道各切成块按序吐出, 拼起来逐字不差."""
+    model = MockLLM(
+        [text_response("订单已发货", reasoning="先核对")], delta_chunk_size=2
+    )
+    seen = _DeltaRecorder()
+
+    response = await model.generate(
+        [USER_MSG],
+        stream=True,
+        on_delta=seen.on_delta,
+        on_reasoning_delta=seen.on_reasoning_delta,
+    )
+
+    assert seen.content == ["订单", "已发", "货"]  # 每块 2 字, 最后一块短些
+    assert seen.reasoning == ["先核", "对"]
+    assert "".join(seen.content) == response.content, "返回值仍是那条完整响应"
+    assert "".join(seen.reasoning) == response.reasoning
+
+
+async def test_three_chars_per_chunk_by_default() -> None:
+    """默认每块 3 字 (上游常见的粒度 2~4) —— 要别的粒度构造时给."""
+    model = MockLLM.fixed(text_response("订单已发货"))
+    seen = _DeltaRecorder()
+
+    await model.generate([USER_MSG], stream=True, on_delta=seen.on_delta)
+
+    assert seen.content == ["订单已", "发货"]
+
+
+async def test_no_chunks_without_stream() -> None:
+    """没开 stream: 挂了回调也不吐 —— 与真适配器同一条协议 (非流式没有增量)."""
+    model = MockLLM.fixed(text_response("订单已发货"))
+    seen = _DeltaRecorder()
+
+    await model.generate([USER_MSG], on_delta=seen.on_delta)
+
+    assert seen.content == []
+
+
+async def test_no_chunks_without_a_callback() -> None:
+    """开了 stream 但没挂回调: 没有出口, 一块都不吐 (也不炸)."""
+    model = MockLLM.fixed(text_response("订单已发货"))
+
+    response = await model.generate([USER_MSG], stream=True)
+
+    assert response.content == "订单已发货"
+
+
+async def test_the_recorder_forwards_delta_callbacks_to_its_inner_model() -> None:
+    """录制包装原样转发两个回调 —— 漏转的表现是「流式开着但一片空白」, 无报错."""
+    recorder = RecordingChatModel(
+        MockLLM.fixed(recorded_response("订单已发货")), name="tmp_sample"
+    )
+    seen = _DeltaRecorder()
+
+    await recorder.generate([USER_MSG], stream=True, on_delta=seen.on_delta)
+
+    assert "".join(seen.content) == "订单已发货"
+
+
+# ---------------------------------------------------------------------------
 # 录制器
 # ---------------------------------------------------------------------------
 
@@ -191,6 +271,29 @@ async def test_recorder_closes_inner_model() -> None:
     await recorder.aclose()
 
     assert inner.calls == []  # 只关不调
+
+
+async def test_the_fakes_accept_the_delta_callbacks() -> None:
+    """两个假模型都按协议收下增量回调 —— 不收会当场 TypeError, 而调用方无从预料.
+
+    这里钉的是**协议面** (接不接得住), 不是吐字行为 —— 那条要 `stream=True`
+    (见上一节); 没开 stream 时收下也不吐, 与真适配器的流式路径一致.
+    """
+    emitted: list[str] = []
+
+    async def on_delta(text: str) -> None:
+        emitted.append(text)
+
+    fake = MockLLM.fixed(text_response("好的"))
+    response = await fake.generate(
+        [USER_MSG], on_delta=on_delta, on_reasoning_delta=on_delta
+    )
+    assert response.content == "好的"
+
+    recorder = RecordingChatModel(MockLLM.fixed(recorded_response()), name="tmp_sample")
+    await recorder.generate([USER_MSG], on_delta=on_delta, on_reasoning_delta=on_delta)
+
+    assert emitted == []
 
 
 def test_sample_rejects_unknown_version(tmp_path: Path) -> None:

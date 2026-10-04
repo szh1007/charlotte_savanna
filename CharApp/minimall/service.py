@@ -318,6 +318,13 @@ class MinimallService:
         thinking: 思考模式开关; None 表示不传 (上游默认开启). 服务端从
             `CHARAPP_THINKING` 读, 命令行入口从 `--no-thinking` 读 (两边都不填时
             语义相同: 让上游自己决定).
+        stream: 答复是否走**增量渲染** (#66 那条线): 打开后每次模型调用带
+            `stream=True`, 正文增量发成 `answer_delta`、思维链增量发成 `reasoning`
+            —— 前端边收边画, `final` 一到用权威值覆盖 (见 DESIGN #4).
+            **字段默认 False**: 打开它会让一次运行多出成百条事件, 而 ~80 处既有的
+            事件序列断言吃的是这里的默认值. 只有服务入口 (`server.build_service`)
+            显式打开 (读 `CHARAPP_STREAM`, 默认 on); CLI 与跑分吃默认值 ——
+            命令行这一批不做逐字.
         max_turns: 轮数上限 (防跑飞).
         max_total_tokens: 单次运行的 token 预算; None 表示不限.
         max_duration_seconds: 单次运行的墙钟预算 (秒); None 表示不限.
@@ -343,6 +350,7 @@ class MinimallService:
     database: PgDatabase | None = None
     model_name: str | None = None
     thinking: bool | None = None
+    stream: bool = False
     max_turns: int = DEFAULT_MAX_TURNS
     max_total_tokens: int | None = DEFAULT_MAX_TOTAL_TOKENS
     max_duration_seconds: float | None = DEFAULT_MAX_DURATION_SECONDS
@@ -491,6 +499,10 @@ class MinimallService:
                 max_duration_seconds=self.max_duration_seconds,
             ),
             thinking=self.thinking,
+            # 增量渲染 (#66): 开关在这里从零件透到会话, 会话再透给 loop ——
+            # 关着时 loop 一个关键字都不多传 (与从前逐字一致), 见 AgentLoop 的
+            # `stream` 参数.
+            stream=self.stream,
             # 业务提示词在业务自己的目录里, 框架目录里不留业务的东西 (PRD §4.8).
             # 名字里带版本, 而版本**默认**由清单文件说了算 (跑分钉了一版时走上面那个
             # `prompt_version`, 那条路不读清单 —— 见 `resolve_prompt_version`).

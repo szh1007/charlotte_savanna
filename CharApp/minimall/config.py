@@ -45,6 +45,15 @@ ENV_SERVER_PORT = "CHARAPP_SERVER_PORT"
 # 思考模式开关 (**服务端专用**: 命令行入口用 `--no-thinking`, 不看这个变量)
 ENV_THINKING = "CHARAPP_THINKING"
 
+# 增量渲染开关 (#66 那条线, C29): 答复是否边收边发 —— 打开后每次模型调用带
+# stream=True, 正文增量发成 `answer_delta`、思维链增量发成 `reasoning`.
+#
+# 与 CHARAPP_THINKING 的差别只在**默认方向**: 那个不填 = 不传 (让上游决定), 这个
+# 不填 = **开** —— 它是产品行为 (用户看得见的"逐字"), 服务入口该有它; 关掉是给
+# 对照实验与排障留的口子 (`.env` 里写 0). CLI 与跑分**不吃这个变量**: 它们拿的是
+# MinimallService.stream 的字段默认值 (False, 见那条注释).
+ENV_STREAM = "CHARAPP_STREAM"
+
 # 上下文压缩的五个旋钮 (ticket 18): 多大起压 / 留几轮 / 老工具结果截到多少字 /
 # 摘要开不开 / 压到多小才停手.
 #
@@ -215,6 +224,27 @@ def thinking_from_env(env: Mapping[str, str] | None = None) -> bool | None:
     )
 
 
+def stream_from_env(env: Mapping[str, str] | None = None) -> bool:
+    """读增量渲染开关 (**服务端专用**); **不填 = 开**.
+
+    两态 (不像 `thinking_from_env` 那样有三态): 「不填」在这里没有第三种含义 ——
+    它就是这个行为该有的默认值 (on). 想关掉 (对照实验 / 排障) 就显式写
+    0/false/no/off.
+
+    Args:
+        env: 环境变量映射; None 表示读 `os.environ`.
+
+    Returns:
+        bool: 开 / 关.
+
+    Raises:
+        MinimallConfigError: 值不认识. 它决定用户看不看得见"逐字", 写错了该当场
+            说清, 而不是猜一个方向.
+    """
+    values = os.environ if env is None else env
+    return _bool_from_env(values, ENV_STREAM, True, note="开")
+
+
 def _context_int(values: Mapping[str, str], name: str, default: int) -> int:
     """读一个整数旋钮: 空值 = 用默认; 不是整数、或不是一个正数就当场报."""
     raw = (values.get(name) or "").strip()
@@ -240,8 +270,16 @@ def _context_float(values: Mapping[str, str], name: str, default: float) -> floa
         raise MinimallConfigError(f"{name} 不是数字: {raw!r}") from None
 
 
-def _context_bool(values: Mapping[str, str], name: str, default: bool) -> bool:
-    """读一个开关 (与 `thinking_from_env` 同一套写法: 空值 = 默认, 认不出就报)."""
+def _bool_from_env(
+    values: Mapping[str, str], name: str, default: bool, *, note: str = "用默认值"
+) -> bool:
+    """读一个开关: 空值 = 默认, truthy / falsy 各一组, 认不出就报.
+
+    三处开关共用这一份解析 (`CHARAPP_CONTEXT_*` 的五个旋钮 / `CHARAPP_STREAM` /
+    `CHARAPP_THINKING` 的三态在外层另写 —— 它的"空值"是 None 不是默认值, 见那个
+    函数). `note` 只进错误消息的括注: 每个开关"不填"的含义不一样, 报错时要说清
+    是哪一个 (不然使用者得自己猜"默认"指什么).
+    """
     raw = (values.get(name) or "").strip().lower()
     if not raw:
         return default
@@ -250,8 +288,13 @@ def _context_bool(values: Mapping[str, str], name: str, default: bool) -> bool:
     if raw in _FALSY:
         return False
     raise MinimallConfigError(
-        f"{name} 只认 1/true/yes/on 或 0/false/no/off (不填 = 用默认值), 实际: {raw!r}"
+        f"{name} 只认 1/true/yes/on 或 0/false/no/off (不填 = {note}), 实际: {raw!r}"
     )
+
+
+def _context_bool(values: Mapping[str, str], name: str, default: bool) -> bool:
+    """上下文那五个旋钮里的开关 (空值 = 用默认值)."""
+    return _bool_from_env(values, name, default)
 
 
 def context_config_from_env(env: Mapping[str, str] | None = None) -> ContextConfig:

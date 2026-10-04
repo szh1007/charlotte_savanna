@@ -1,7 +1,7 @@
 """stream 包单元测试 (#4): 事件类型 / seq 编号 / 状态机不变量.
 
 场景 → 断言:
-- EventType 七类齐全 (事件名与 API 契约一一对应)
+- EventType 九类齐全 (事件名与 API 契约一一对应, 名单是穷举的)
 - seq: 每 run 从 1 起单调递增 (断点续拉的事件 id)
 - 状态机不变量 (违反即 EventSequenceError, 语义见 bus.EventBus docstring):
   1) tool_result 必须匹配一条未闭合 tool_call (按 tool_call_id 配对)
@@ -15,7 +15,7 @@
 被测对象是纯状态机 (不接 loop); loop 接线集成见 test_loop_events.py.
 
 大白话版 (这份「验货单」在验什么):
-- 喊话规范对不对: 7 种句式齐全.
+- 喊话规范对不对: 9 种句式齐全.
 - 场记的编号对不对: 每句话从 1 开始往上涨.
 - 纪律委员真的会拦人吗: 没说「要去查」就喊「查回来了」要报错; 同一句话没
   收到回音就重喊要报错; 工具还没回结果就喊「答完了」要报错; 喊完「答完了」
@@ -30,7 +30,13 @@ import asyncio
 import pytest
 
 from CharAgent.hooks import HookPoint, HookRegistry
-from CharAgent.stream import EventBus, EventSequenceError, EventType, StreamEvent
+from CharAgent.stream import (
+    TERMINAL_TYPES,
+    EventBus,
+    EventSequenceError,
+    EventType,
+    StreamEvent,
+)
 
 
 async def _open_and_close(bus: EventBus, call_id: str = "call_1") -> None:
@@ -58,12 +64,17 @@ async def _open_and_close(bus: EventBus, call_id: str = "call_1") -> None:
 
 
 def test_event_types_cover_contract() -> None:
-    """八类事件与 API 契约的事件名一致 (approval_required 是 issue 34 落的那一个)."""
+    """九类事件与 API 契约的事件名一致 (answer_delta 是 #66 落的那一个).
+
+    名单是**穷举**的: 框架加一类事件时这里会红, 逼着人做一次决定 ——
+    前端 (CharApp 的页面)、BFF 的终局集、CLI 渲染表都要跟着认一遍.
+    """
     assert [t.value for t in EventType] == [
         "thinking",
         "tool_call",
         "tool_result",
         "reasoning",
+        "answer_delta",
         "context_compacted",
         "approval_required",
         "final",
@@ -197,6 +208,24 @@ async def test_reasoning_is_side_channel() -> None:
     await bus.emit(EventType.TOOL_RESULT, tool_call_id="call_1", status="ok")
     await bus.emit(EventType.REASONING, delta="可以作答了")
     assert (await bus.emit(EventType.FINAL, content="答案")).seq == 6
+
+
+async def test_answer_delta_is_side_channel_and_not_terminal() -> None:
+    """answer_delta 旁路 (#66): 想发多少条发多少条, 不参与工具配对也不收线.
+
+    它只是「答案正在长」的预览 —— 权威值在 final.content, 所以它既不进终局集,
+    也不能替代终局 (发完一堆增量、没有 final, 流就是个半截).
+    """
+    bus = EventBus()
+    assert EventType.ANSWER_DELTA not in TERMINAL_TYPES
+    await bus.emit(EventType.ANSWER_DELTA, delta="订单", turn=1)
+    await bus.emit(EventType.ANSWER_DELTA, delta="已发货", turn=1)
+    await _open_and_close(bus)
+    await bus.emit(EventType.ANSWER_DELTA, delta="预计明天到达", turn=2)
+    assert (await bus.emit(EventType.FINAL, content="订单已发货")).seq == 6
+    # 终局之后同样不许再发 (与 reasoning 同一条约束, 由 _closed 判定管)
+    with pytest.raises(EventSequenceError, match="终局"):
+        await bus.emit(EventType.ANSWER_DELTA, delta="又冒出来一句", turn=2)
 
 
 async def test_context_compacted_is_side_channel() -> None:

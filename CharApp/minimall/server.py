@@ -100,6 +100,7 @@ from CharApp.minimall.config import (
     context_config_from_env,
     knowledge_config_from_env,
     server_config_from_env,
+    stream_from_env,
     thinking_from_env,
 )
 from CharApp.minimall.history_citations import HistoryCitations
@@ -302,6 +303,11 @@ def build_service(writer: Callable[[str], Any]) -> MinimallService:
         model=build_model_for(framework, writer),
         saver=build_saver_for(framework),
         thinking=thinking_from_env(),
+        # 增量渲染 (#66): 服务入口**显式打开** (读 CHARAPP_STREAM, 默认 on) ——
+        # 字段本身的默认值是 False, 因为打开它会让一次运行多出成百条事件, 而
+        # 那套事件序列是 ~80 处既有断言吃的东西. CLI 与跑分不走这里, 因此不吃
+        # 这个默认; 关掉 (`.env` 里写 0) 是给对照实验与排障留的口子.
+        stream=stream_from_env(),
         # 记录表那条线: 连接配置与快照后端同源 (根 .env 的 CHARAGENT_DB_DSN /
         # PGSQL_*). **构造不连库** (PgDatabase 的引擎是懒建的), 于是没配库 /
         # 库不在线都不拦住进程启动 —— 真到写记录时连不上就降级 (日志 + 提示行,
