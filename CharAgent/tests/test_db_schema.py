@@ -1,13 +1,13 @@
-"""表定义的自检 (不需要数据库): 六张表该有的形状都在.
+"""表定义的自检 (不需要数据库): 七张表该有的形状都在.
 
 关注点是「表定义有没有漏东西」—— 这些是**离线**能验的:
 - 表名都带 `charagent_` 前缀 (共库不撞名的前提)
 - 每张表、每一列都有注释 (库里的注释就是文档, 漏一个将来就得去翻代码)
-- 六个主键与设计一致 (含 tool_calls 的复合主键、幂等表的键即主键)
+- 七个主键与设计一致 (含 tool_calls 的复合主键、幂等表的键即主键)
 - 外键的删除动作 (CASCADE / SET NULL) 与设计一致
-- 索引齐全 (会话列表、历史翻页、按运行查调用)
+- 索引齐全 (会话列表、历史翻页、按运行查调用、按用户取记忆)
 
-**与库的实际结构是否一致**由 `test_db_store.py` 的 reflection 对比负责
+**与库的实际结构是否一致**由 `test_db_alembic.py` 的 reflection 对比负责
 (那个需要真库) —— 这里只管「定义本身写得对不对」.
 """
 
@@ -18,6 +18,7 @@ from CharAgent.db.schema import (
     TABLE_NAMES,
     checkpoints,
     idempotency_keys,
+    memories,
     messages,
     runs,
     threads,
@@ -28,7 +29,7 @@ PREFIX = "charagent_"
 
 
 def test_every_table_is_prefixed():
-    """六张表都带 charagent_ 前缀.
+    """七张表都带 charagent_ 前缀.
 
     为什么这条值得单独一个用例: 本项目各子项目**共用同一个 Postgres 库**, 而
     `threads` / `runs` / `messages` 是极常见的表名. `checkpoints` 已经真撞过一次
@@ -40,9 +41,9 @@ def test_every_table_is_prefixed():
 
 
 def test_every_table_is_declared():
-    """六张表齐全 (五实体各一张 + 幂等登记表).
+    """七张表齐全 (六实体各一张 + 幂等登记表).
 
-    多出来的那第六张 (`charagent_idempotency_keys`) **没有实体**, 而它仍然在
+    多出来的那第七张 (`charagent_idempotency_keys`) **没有实体**, 而它仍然在
     schema.py 里 —— 那是表定义的唯一来源, 「这张表没有业务视角的读法」不是把它
     挪走的理由 (它有库里的形状要维护, 也走同一套迁移与零差异门).
 
@@ -57,9 +58,10 @@ def test_every_table_is_declared():
         "charagent_messages",
         "charagent_tool_calls",
         "charagent_checkpoints",
+        "charagent_memories",
         "charagent_idempotency_keys",
     }
-    assert len(ALL_TABLES) == 6
+    assert len(ALL_TABLES) == 7
 
 
 def test_every_column_has_a_comment():
@@ -103,6 +105,7 @@ def test_primary_keys_match_the_design():
         "tool_call_id",
     ]
     assert [c.name for c in checkpoints.primary_key.columns] == ["checkpoint_id"]
+    assert [c.name for c in memories.primary_key.columns] == ["memory_id"]
     # 幂等表: 键就是身份 (认领的原子性正落在它上面, 见那张表的注释)
     assert [c.name for c in idempotency_keys.primary_key.columns] == ["key"]
 
@@ -163,6 +166,7 @@ def test_expected_indexes_exist():
         "ix_charagent_messages_thread_created",
         "ix_charagent_tool_calls_run_created",
         "ix_charagent_checkpoints_thread_created",
+        "ix_charagent_memories_tenant_user",
     }
     found = {index.name for table in ALL_TABLES for index in table.indexes}
     assert expected <= found, f"缺这些索引: {expected - found}"

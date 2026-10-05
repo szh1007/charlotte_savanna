@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from CharAgent.agent.utils.types import LoopOutcome
 from CharAgent.db.entities import (
+    KIND_BEHAVIORS,
+    MemoryKind,
     MessageRole,
     RunStatus,
     ThreadStatus,
@@ -74,6 +76,46 @@ def test_tool_call_status_includes_needs_approval():
         "cancelled",
         "needs_approval",
     ]
+
+
+def test_memory_kind_values():
+    """记忆四种 (C30): 累积型的两个 + 替换型的两个.
+
+    #31 列了四层, 这里落的是其中两层 (情景 / 语义) 加两个「对助手的偏好」
+    (风格 / 称呼) —— 短期记忆是对话上下文 (由会话与快照管着, 不在记忆表里),
+    程序性记忆 (行为模式) 是另一个量级的事, 不假装四层都做了.
+    """
+    assert [kind.value for kind in MemoryKind] == [
+        "episodic",
+        "semantic",
+        "style",
+        "nickname",
+    ]
+
+
+def test_every_kind_has_a_behavior_defined():
+    """每条 kind 都在行为表里, 标签齐全且不重复 —— 漏一个就是运行时 KeyError.
+
+    与 `test_every_loop_outcome_maps_to_a_run_status` 同款做法 (C30): 新增一个
+    kind 却忘了想清它的行为 (累积还是替换), 是这张表最该拦住的事.
+    """
+    assert set(KIND_BEHAVIORS) == set(MemoryKind)
+
+    labels = [behavior.label for behavior in KIND_BEHAVIORS.values()]
+    assert all(labels), "每条 kind 都要有给模型看的标签"
+    assert len(labels) == len(set(labels)), "标签重复会让 recall 分不清种类"
+
+
+def test_the_replace_kinds_are_the_expected_ones():
+    """替换型就是风格与称呼这两条 —— 增删是行为变更, 要在这里留下痕迹.
+
+    (「同一时刻只留一条」这件事只该发生在真的只有一个『槽』的概念上; 把一条
+    事实类错标成替换型, 会让它悄悄顶掉别的记忆 —— 与 C12 的累积语义相反.)
+    """
+    replacing = {
+        kind for kind, behavior in KIND_BEHAVIORS.items() if behavior.replaces_previous
+    }
+    assert replacing == {MemoryKind.STYLE, MemoryKind.NICKNAME}
 
 
 def test_every_loop_outcome_maps_to_a_run_status():

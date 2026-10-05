@@ -1,9 +1,9 @@
 """表定义的**唯一定义处**: 表长什么样只在这一个文件里说.
 
-一句话理解: 这个文件是**数据库的户型图**. 六张业务表 (会话 / 运行 / 消息 / 工具
-调用 / 快照 / 幂等登记) 各有哪些列、哪列是主键、谁引用谁、建哪些索引, 全部写在这里.
-别处 (仓储 / 快照存储 / alembic 迁移 / 测试) 都从这里取, 不许自己再抄一份 ——
-抄两份的结果一定是「改了一份忘了另一份」, 然后代码与库悄悄对不上.
+一句话理解: 这个文件是**数据库的户型图**. 七张业务表 (会话 / 运行 / 消息 / 工具
+调用 / 快照 / 幂等登记 / 长期记忆) 各有哪些列、哪列是主键、谁引用谁、建哪些索引,
+全部写在这里. 别处 (仓储 / 快照存储 / alembic 迁移 / 测试) 都从这里取, 不许
+自己再抄一份 —— 抄两份的结果一定是「改了一份忘了另一份」, 然后代码与库悄悄对不上.
 
 **`charagent_migrations` (alembic 的版本表) 例外, 不在这里声明** (ticket 24): 它是
 工具的表 —— 列名 `version_num` 与主键名 `charagent_migrations_pkc` 都由 alembic
@@ -77,7 +77,7 @@ NAMING_CONVENTION = {
     "pk": "pk_%(table_name)s",
 }
 
-# 全库共用的元数据容器: 六张表都挂在它下面. alembic 的 autogenerate 拿它当
+# 全库共用的元数据容器: 七张表都挂在它下面. alembic 的 autogenerate 拿它当
 # 「代码侧应该长什么样」的基准, alembic/env.py 的 target_metadata 就是它.
 metadata = MetaData(naming_convention=NAMING_CONVENTION)
 
@@ -86,7 +86,7 @@ metadata = MetaData(naming_convention=NAMING_CONVENTION)
 # 因为某个状态改名就要改表结构.
 _ENUM_LEN = 32
 
-# --- 六张业务表 ---------------------------------------------------------------
+# --- 七张业务表 ---------------------------------------------------------------
 
 threads = Table(
     "charagent_threads",
@@ -600,11 +600,109 @@ checkpoints = Table(
     comment="会话快照: 一帧一行, 全历史都在 (agent/loop.py 每 Turn 末尾落一帧)",
 )
 
+# 长期记忆 (#31-#33, MEM-D1): 跨会话还值得留着的**一句话事实** —— 偏好与事实
+# (semantic) 或带时间戳的历史事件 (episodic). 与 charagent_messages 的分工:
+# 那边回答「这段对话里发生了什么」, 这边回答「以后哪段对话都用得上的一句」——
+# 所以它存的是**提炼后的结论**, 不是原文, 更不是每轮摘要 (MEM-D2: 「每轮摘要」
+# 的家已经在 messages 的 hidden=True 行里, 再存一份就是双写, 两份会漂).
+#
+# **刻意不挂外键**: 记忆的本性就是比产生它的那段对话活得久 —— 挂上外键要么让
+# 删会话时把它 CASCADE 掉, 要么把它的来路 SET NULL 掉, 两个都不对. source_*
+# 两列只是**溯源线索** (「这条是哪次对话里来的」), 指向的行没了, 记忆仍然有效.
+#
+# **软删** (deleted_at): 与 #31「废弃用软删标记保留可追溯性」同源, 也与会话表
+# 那条 deleted_at 同一个写法 —— 行留着 (审计可查), 只是任何检索都不再返回它.
+memories = Table(
+    "charagent_memories",
+    metadata,
+    Column(
+        "memory_id",
+        String(128),
+        primary_key=True,
+        comment="记忆编号 (uuid4 hex)",
+    ),
+    Column(
+        "tenant_id",
+        String(128),
+        nullable=False,
+        comment="租户编号 —— 多租户隔离的过滤键 (#32): 检索强制带上, "
+        "不靠「相信模型不乱看」",
+    ),
+    Column(
+        "user_id",
+        String(128),
+        nullable=False,
+        comment="记忆属主 —— 谁说的记给谁, 检索按它过滤",
+    ),
+    Column(
+        "kind",
+        String(_ENUM_LEN),
+        nullable=False,
+        comment="记忆层次 (MemoryKind): episodic = 带时间戳的历史事件 "
+        "(「上次说他换了工作」), semantic = 偏好与事实 (「偏好简短回复」)",
+    ),
+    Column(
+        "content",
+        Text,
+        nullable=False,
+        comment="一句话事实 —— **提炼后的** (不是原文, 也不是每轮摘要): "
+        "「跨会话仍然有用」才值得写进这一行",
+    ),
+    Column(
+        "source_thread_id",
+        String(128),
+        nullable=True,
+        comment="这条记忆从哪段对话来 (溯源线索, 刻意不做外键: 会话删了, "
+        "记忆还该活着); NULL = 没记来路",
+    ),
+    Column(
+        "source_run_id",
+        String(128),
+        nullable=True,
+        comment="这条记忆从哪次运行来 (与 source_thread_id 同一条规矩: "
+        "只是线索, 不做外键)",
+    ),
+    Column(
+        "created_at",
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        comment="产生时刻 —— **时间衰减按它起算** (越新分值越高)",
+    ),
+    Column(
+        "updated_at",
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        comment="最后更新时刻 —— 同一句话被重复写入时刷新它 (去重, 不新增行)",
+    ),
+    Column(
+        "last_used_at",
+        DateTime(timezone=True),
+        nullable=True,
+        comment="最后一次被检索取回的时刻 —— 给「用得多的排前面」留的口; "
+        "NULL = 还没被用过",
+    ),
+    Column(
+        "deleted_at",
+        DateTime(timezone=True),
+        nullable=True,
+        comment="作废时刻 —— NULL = 还在; 有值 = 已作废 (软删: 行留着, "
+        "任何检索都不再返回它). 容量淘汰写的也是这一列",
+    ),
+    # 检索只有一种查法: 「这个用户还记得什么」(先按租户/属主过滤, 再取活的),
+    # 一条复合索引就够 —— 时间衰减的排序取回时在 Python 里算 (条数有上限,
+    # 见 repositories/memories.py)
+    Index("ix_charagent_memories_tenant_user", "tenant_id", "user_id"),
+    comment="长期记忆: 跨会话还有用的一句话事实 (偏好 / 历史事件) —— "
+    "按时间衰减排序取回, 超量淘汰分值最低的",
+)
+
 # 幂等登记簿 (#17): 一次**真实动作**一行 —— 这张表挡的不是「重复建 run」
 # (`runs.request_id` 管那件事, 见那张表的唯一约束), 而是「**同一次工具调用被
 # 执行两遍**」(HITL 的挂起-恢复被触发两次就是这条路径).
 #
-# **为什么这张表没有实体** (entities.py 里五实体没有它): 它「业务视角」的那一半
+# **为什么这张表没有实体** (entities.py 里六实体没有它): 它「业务视角」的那一半
 # 短到只有一句话 —— 「这个动作做过了吗」; 而这句话已经由 `retry/` 的
 # `IdempotencyStore` 协议 + `ClaimResult` 说明白了. 再包一层实体只会多一个没人
 # 读的中间形状.
@@ -670,7 +768,7 @@ idempotency_keys = Table(
     "持久化底座, 调用方是 HITL 的挂起-恢复)",
 )
 
-# 六张业务表按依赖顺序排好, 建表时直接按这个顺序跑 (被引用的先建, 否则外键指向
+# 七张业务表按依赖顺序排好, 建表时直接按这个顺序跑 (被引用的先建, 否则外键指向
 # 一个还不存在的表). SQLAlchemy 的 metadata.sorted_tables 也能算出来, 这里显式
 # 列一份是为了让「谁依赖谁」在文件里一眼可见.
 #
@@ -684,6 +782,9 @@ ALL_TABLES: tuple[Table, ...] = (
     messages,
     tool_calls,
     checkpoints,
+    # 长期记忆同样没有外键 (它刻意不挂在会话下面 —— 记忆比产生它的对话活得久,
+    # 见那张表的注释), 但它是业务数据, 跟在那几张之后
+    memories,
     # 幂等登记簿没有任何外键 (它不挂在会话 / 运行下面 —— 键是调用方拼出来的),
     # 于是它排在哪都行, 放最后
     idempotency_keys,

@@ -18,7 +18,7 @@
 | `hooks` | hook 注册表骨架 (六个触发点, 空注册零开销; 工具执行前那个可拒绝) |
 | `retry` | 重试退避 + 幂等键 (包在 ChatModel 协议层, loop 零改动) |
 | `checkpoint` | 快照序列化协议 + 内存 / Redis / Postgres 三实现 + 断点续跑 |
-| `db` | 五实体数据模型 + 表定义 + alembic 迁移 + 仓储 |
+| `db` | 六实体数据模型 + 表定义 + alembic 迁移 + 仓储 |
 | `prompt` | 提示词集中存放与按名加载 (`templates/*.prompt` + `load_prompt`) |
 | `redact` | 日志脱敏 (四条通用打码规则 + 业务声明的字段路径) |
 | `structured_logging` | 结构化日志 (一处出口 + 打码工序 + 三个 id 贯穿) |
@@ -108,10 +108,11 @@ from CharAgent.checkpoint import (
     summarize,
 )
 
-# --- db: 五实体数据模型 + 表定义 + 仓储 ------------------------------------
+# --- db: 六实体数据模型 + 表定义 + 仓储 ------------------------------------
 from CharAgent.db import (
     ALL_TABLES,
     ALLOWED_TRANSITIONS,
+    KIND_BEHAVIORS,
     RUN_STATUS_FOR_OUTCOME,
     SETTLEABLE_RUN_STATUSES,
     TABLE_NAMES,
@@ -125,6 +126,10 @@ from CharAgent.db import (
     DataStoreError,
     DbError,
     InvalidTransitionError,
+    KindBehavior,
+    MemoriesRepository,
+    Memory,
+    MemoryKind,
     Message,
     MessageRole,
     MessagesRepository,
@@ -162,10 +167,12 @@ from CharAgent.db import (
     ensure_transition,
     has_visible_answer,
     load_pricing,
+    memories,
     message_id_for,
     messages,
     metadata,
     model_to_dict,
+    recency_score,
     recorded_transcript,
     run_status_for_outcome,
     runs,
@@ -312,6 +319,7 @@ from CharAgent.structured_logging import (
 # --- tool: @tool 装饰器 + schema 生成 --------------------------------------
 # 注意: 装饰器 `tool` 刻意不在本文件导入 (会遮蔽子包 CharAgent.tool, 见模块 docstring)
 from CharAgent.tool import (
+    MAX_CONTENT_LENGTH,
     Tool,
     ToolActionableError,
     ToolConfigError,
@@ -320,6 +328,7 @@ from CharAgent.tool import (
     ToolSchemaInfo,
     ToolTimeoutError,
     build_manual_schema,
+    build_memory_tools,
     build_pydantic_schema,
     execute_tool,
 )
@@ -332,8 +341,10 @@ __all__ = [
     "DEFAULT_CODEC",
     "IDENTITY_ROLE",
     "ID_FIELDS",
+    "KIND_BEHAVIORS",
     "LOGGER_ROOT",
     "MASK_RULES",
+    "MAX_CONTENT_LENGTH",
     "RUN_STATUS_FOR_OUTCOME",
     "SCHEMA_VERSION",
     "SETTLEABLE_RUN_STATUSES",
@@ -401,6 +412,7 @@ __all__ = [
     "InMemoryIdempotencyStore",
     "InvalidTransitionError",
     "JsonFormatter",
+    "KindBehavior",
     "LoggingConfigError",
     "LoggingError",
     "LoopConfigError",
@@ -408,6 +420,9 @@ __all__ = [
     "LoopOutcome",
     "LoopResult",
     "Mask",
+    "MemoriesRepository",
+    "Memory",
+    "MemoryKind",
     "Message",
     "MessageRole",
     "MessagesRepository",
@@ -493,6 +508,7 @@ __all__ = [
     "Verdict",
     "assistant_answer",
     "build_manual_schema",
+    "build_memory_tools",
     "build_pydantic_schema",
     "build_saver",
     "build_tool_call",
@@ -523,6 +539,7 @@ __all__ = [
     "load_prompt",
     "log_context",
     "mask_text",
+    "memories",
     "message_id_for",
     "messages",
     "metadata",
@@ -532,6 +549,7 @@ __all__ = [
     "pending_tool_calls",
     "postgres_dsn",
     "prompt_ref",
+    "recency_score",
     "recorded_transcript",
     "ref_name",
     "resolve_model_name",

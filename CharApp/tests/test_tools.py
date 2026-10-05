@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import re
 from collections.abc import Mapping
 from typing import Any
 
@@ -28,12 +29,18 @@ from conftest import (
     TOOL_NAMES,
     agent_url,
     citations_for_tests,
+    memory_for_tests,
     retriever_for_tests,
 )
 
 from CharAgent.agent.utils.events import tool_result_data
 from CharAgent.tests.mock_llm import make_tool_call
-from CharAgent.tool import Tool, ToolActionableError, execute_tool
+from CharAgent.tool import (
+    Tool,
+    ToolActionableError,
+    build_memory_tools,
+    execute_tool,
+)
 from CharApp.minimall import injection
 from CharApp.minimall.client import MinimallClient, MinimallError
 from CharApp.minimall.tools import (
@@ -43,6 +50,10 @@ from CharApp.minimall.tools import (
     build_tools,
 )
 
+# 记忆工具在测试里的租户 (与 `test_provider.context_for` 里那个同值 —— 都是
+# "网页端"那一段, 见 service.TENANT_WEB)
+MEMORY_TENANT = "minimall"
+
 
 def tools_of(
     client: MinimallClient,
@@ -50,22 +61,35 @@ def tools_of(
     *,
     one_shot: Mapping[str, str] | None = None,
     retriever: Any = None,
+    memory: Any = None,
+    tenant_id: str = MEMORY_TENANT,
+    thread_id: str = f"{MEMORY_TENANT}:test",
 ) -> dict[str, Tool]:
     """工具名 → 工具 (装配是纯函数, 每个用例现装一份, 互不干扰).
 
-    检索器默认给空壳: 这一页绝大多数用例看的是工具**对外那份契约** (名字 /
-    schema / 结果), 知识库那一段自己注入替身 (见本文件末尾那一段).
+    检索器与记忆默认给空壳/空替身 (构造期不连任何东西, 见 conftest): 这一页绝
+    大多数用例看的是工具**对外那份契约** (名字 / schema / 结果), 知识库与记忆
+    那两段自己注入替身. 记忆那一族接在**最后** —— 与 `provider.provide` 的装配
+    顺序一致 (顺序另有一条用例对着 `TOOL_NAMES` 守).
     """
-    return {
-        item.name: item
-        for item in build_tools(
+    tools = list(
+        build_tools(
             client,
             user_id,
             one_shot=one_shot,
             retriever=retriever if retriever is not None else retriever_for_tests(),
             citations=citations_for_tests(),
         )
-    }
+    )
+    tools.extend(
+        build_memory_tools(
+            memory if memory is not None else memory_for_tests(),
+            tenant_id=tenant_id,
+            user_id=str(user_id),
+            thread_id=thread_id,
+        )
+    )
+    return {item.name: item for item in tools}
 
 
 async def call(
@@ -88,15 +112,10 @@ async def test_the_built_tools_are_exactly_the_expected_names(client) -> None:
     """工具集与期望名单**逐个对上** (名字与顺序; 多一个少一个都是契约变更).
 
     判据是 `conftest.TOOL_NAMES` 那份清单, 不是这里再写一个数 —— 数量变了,
-    该改的只有那份清单.
+    该改的只有那份清单. 装配走 `tools_of` (与 `provider.provide` 同形, 含记忆
+    那两个) —— 下面两条遍历用例也走它, 免得新增的工具在遍历里被漏掉.
     """
-    tools = build_tools(
-        client,
-        BUYER_ID,
-        retriever=retriever_for_tests(),
-        citations=citations_for_tests(),
-    )
-    names = tuple(item.name for item in tools)
+    names = tuple(tools_of(client))
 
     assert names == TOOL_NAMES
 
@@ -110,13 +129,8 @@ async def test_every_tool_is_async(client) -> None:
     它们要是同步的, 一次「加购 + 下单」就能把线程池占住.
     """
     not_async = [
-        item.name
-        for item in build_tools(
-            client,
-            BUYER_ID,
-            retriever=retriever_for_tests(),
-            citations=citations_for_tests(),
-        )
+        name
+        for name, item in tools_of(client).items()
         if not inspect.iscoroutinefunction(item.fn)
     ]
 
@@ -132,13 +146,8 @@ async def test_every_description_says_when_to_use_it(client) -> None:
     会拿其中一个去试另一个该做的事.
     """
     without_hint = [
-        item.name
-        for item in build_tools(
-            client,
-            BUYER_ID,
-            retriever=retriever_for_tests(),
-            citations=citations_for_tests(),
-        )
+        name
+        for name, item in tools_of(client).items()
         if "使用" not in item.description
     ]
 
@@ -867,3 +876,189 @@ async def test_the_knowledge_tool_is_read_only_and_asks_only_for_a_query(
     assert tool.annotations.get(WRITE_ANNOTATION_KEY) is None, (
         "知识检索不改任何数据 —— 它不该占买家的写预算"
     )
+
+
+# ---------------------------------------------------------------------------
+# 长期记忆 (C13): 跨会话 / 隔离 / 去重 / 容量 —— 走替身的那几面契约
+# ---------------------------------------------------------------------------
+# 工具自己的那几面 (schema / 拒写文本) 在框架侧 `CharAgent/tests/test_tool_memory.py`;
+# 这里看的是**接进这套装配之后**的行为: 记忆只有仓储一个落点 (所以跨会话是免费的),
+# 而隔离 / 去重 / 淘汰是把仓储契约用工具路径再跑一遍.
+
+
+async def test_a_memory_survives_a_new_conversation(client) -> None:
+    """**跨会话**: 会话 A 里记住的一句, 会话 B (新装的一套工具) 里想得起来.
+
+    这条是「长期」二字的全部意义, 而它成立的原因是**记忆不在会话状态里** ——
+    快照与消息里都没有它, 落点只有仓储. 同一个替身装两套工具, 就是两段对话.
+    """
+    store = memory_for_tests()
+    first = tools_of(client, memory=store)
+    await first["remember"].fn(content="偏好货到付款", kind="semantic")
+
+    second = tools_of(client, memory=store)  # 新的一段对话, 工具全是新装的
+    reply = await second["recall"].fn()
+
+    assert "偏好货到付款" in reply
+    assert "[事实]" in reply, "每条带种类标签"
+
+
+async def test_another_buyer_or_tenant_cannot_recall_the_memory(client) -> None:
+    """否定断言: 换买家 / 换租户都看不到上一个人的记忆 (两种方向都要).
+
+    身份是闭包里的那两个串; 换了人就是另一个闭包 —— 底下那份替身按
+    (tenant, user) 过滤, 与真库里的查询同一条口径 (#32).
+    """
+    store = memory_for_tests()
+    await tools_of(client, BUYER_ID, memory=store)["remember"].fn(
+        content="偏好货到付款", kind="semantic"
+    )
+
+    other_buyer = await tools_of(client, BUYER_ID + 1, memory=store)["recall"].fn()
+    other_tenant = await tools_of(
+        client, BUYER_ID, memory=store, tenant_id="minimall-cli"
+    )["recall"].fn()
+
+    assert "偏好货到付款" not in other_buyer
+    assert "偏好货到付款" not in other_tenant
+    assert "空" in other_buyer and "空" in other_tenant, "两边都该是干净的"
+
+
+async def test_repeating_the_same_thing_does_not_store_it_twice(client) -> None:
+    """同一句话连续 remember 两次 → 还是一条 (去重在仓储; 工具原样透传)."""
+    store = memory_for_tests()
+    remember = tools_of(client, memory=store)["remember"]
+
+    await remember.fn(content="偏好货到付款", kind="semantic")
+    await remember.fn(content="偏好货到付款", kind="semantic")
+
+    assert len(store.rows) == 1
+
+
+async def test_recall_returns_the_newest_first(client) -> None:
+    """写进去三条, recall 出来新的在前 (衰减排序在仓储, 工具这一层只保序)."""
+    store = memory_for_tests()
+    tools = tools_of(client, memory=store)
+    for content in ("第一件", "第二件", "第三件"):
+        await tools["remember"].fn(content=content, kind="episodic")
+
+    reply = await tools["recall"].fn()
+
+    assert reply.index("第三件") < reply.index("第二件") < reply.index("第一件")
+
+
+async def test_staying_under_capacity_evicts_nothing(client) -> None:
+    """没写到上限就不该淘汰任何一条 —— 「超过才淘汰」的对照面.
+
+    (review 抓到过替身在这一格上的错: `_prune` 的切片在"未满"时误删最老的几条,
+    而上面那些用例写得太少 (1~3 条) 恰好踩不到. 这一条把「未满」钉住.)
+    """
+    store = memory_for_tests(capacity=5)
+    tools = tools_of(client, memory=store)
+    for content in ("第一件", "第二件", "第三件"):
+        await tools["remember"].fn(content=content, kind="episodic")
+
+    reply = await tools["recall"].fn()
+
+    assert "第一件" in reply and "第二件" in reply and "第三件" in reply
+    assert all(row.deleted_at is None for row in store.rows), "一条都不该被淘汰"
+
+
+async def test_going_over_capacity_evicts_the_oldest(client) -> None:
+    """超过容量上限: 最老的被**软删** (行还在), recall 不再返回它."""
+    store = memory_for_tests(capacity=2)
+    tools = tools_of(client, memory=store)
+    for content in ("第一件", "第二件", "第三件"):
+        await tools["remember"].fn(content=content, kind="episodic")
+
+    reply = await tools["recall"].fn()
+
+    assert "第三件" in reply and "第二件" in reply
+    assert "第一件" not in reply
+    assert len(store.rows) == 3, "被淘汰的是软删 —— 行还在"
+    assert store.rows[0].deleted_at is not None
+
+
+async def test_a_sensitive_value_never_reaches_the_store(client) -> None:
+    """敏感值 (支付密码形状) 在工具那一层被拒: 仓储一行都没收到, 回话可操作.
+
+    (工具的拒写判据细在框架侧用例; 这条从**这套装配**再走一遍, 因为票面的验收
+    就是在这个形状上写的: 买家说了一句带密码的话, 那件事不能悄悄落进长期记忆.)
+    """
+    store = memory_for_tests()
+    remember = tools_of(client, memory=store)["remember"]
+
+    with pytest.raises(ToolActionableError) as excinfo:
+        await remember.fn(content="我的支付密码是 135791", kind="semantic")
+
+    assert store.rows == []
+    assert "没有写进" in str(excinfo.value)
+
+
+async def test_changing_a_style_supersedes_the_previous_one(client) -> None:
+    """换风格 = 顶掉旧的 (C30): 说完「高冷」, 「可爱」不再是活记忆.
+
+    这是「同一时刻只有一种风格」在工具路径上的样子 —— 模型只管记新的, 旧的
+    由仓储自动软删 (行留着, 何时被换掉可查).
+    """
+    store = memory_for_tests()
+    remember = tools_of(client, memory=store)["remember"]
+
+    await remember.fn(content="偏好可爱一点的语气", kind="style")
+    await remember.fn(content="偏好高冷一点的语气", kind="style")
+
+    reply = await tools_of(client, memory=store)["recall"].fn()
+
+    assert "偏好高冷一点的语气" in reply
+    assert "偏好可爱一点的语气" not in reply
+    assert len(store.rows) == 2, "旧行还在 (软删, 不是物理删)"
+    assert sum(row.deleted_at is not None for row in store.rows) == 1
+
+
+async def test_a_style_does_not_touch_the_nickname(client) -> None:
+    """换风格不动称呼 —— 两个替换型 kind 是两个「槽」, 互不干扰 (C30)."""
+    store = memory_for_tests()
+    remember = tools_of(client, memory=store)["remember"]
+
+    await remember.fn(content="叫我老张", kind="nickname")
+    await remember.fn(content="偏好可爱一点的语气", kind="style")
+    await remember.fn(content="偏好高冷一点的语气", kind="style")
+
+    reply = await tools_of(client, memory=store)["recall"].fn()
+
+    assert "叫我老张" in reply
+    assert "[称呼]" in reply and "[风格]" in reply
+
+
+async def test_forget_removes_the_memory_the_model_pointed_at(client) -> None:
+    """forget 走完整条路: recall 拿编号 → 按编号删 → recall 不再返回它 (C30).
+
+    这就是「取消某个风格」的路径 —— 模型从 recall 的编号里自己挑, 系统零猜测.
+    """
+    store = memory_for_tests()
+    tools = tools_of(client, memory=store)
+    await tools["remember"].fn(content="偏好可爱一点的语气", kind="style")
+
+    listing = await tools["recall"].fn()
+    match = re.search(r"编号 ([0-9a-f]{8})", listing)
+    assert match is not None, f"recall 该带编号: {listing}"
+
+    reply = await tools["forget"].fn(memory_id=match.group(1))
+
+    assert "已忘掉" in reply and "偏好可爱" in reply
+    assert await tools["recall"].fn() == "(还没有记住这位用户的任何事: 长期记忆是空的)"
+
+
+async def test_forget_never_removes_someone_elses_memory(client) -> None:
+    """否定断言: 换一个买家拿到的编号, 删不动上一个人的那条."""
+    store = memory_for_tests()
+    await tools_of(client, BUYER_ID, memory=store)["remember"].fn(
+        content="偏好货到付款", kind="semantic"
+    )
+    other = tools_of(client, BUYER_ID + 1, memory=store)
+    prefix = store.rows[0].memory_id[:8]
+
+    reply = await other["forget"].fn(memory_id=prefix)
+
+    assert "没有找到" in reply
+    assert store.rows[0].deleted_at is None, "那一行没被动过"

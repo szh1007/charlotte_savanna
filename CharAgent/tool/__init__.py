@@ -14,6 +14,8 @@
                     #15) → 规范化
 - tools_demo.py     演示工具集: 5 pydantic SOTA + 1 manual 对照 (业务无关,
                     供 agent loop / CLI 复用; 业务工具属业务 demo 层)
+- memory.py         长期记忆工具工厂 (remember / recall, C13): 把 db 层的记忆
+                    仓储翻成模型的两个动作, 身份走闭包; 仓库挂哪个业务都不改它
 - schema/           子包: 双引擎分开 —— engine_pydantic (SOTA 主路径) /
                     engine_manual (教学对照) + 共享支撑 signature (签名/docstring
                     内省) / types (产出类型)
@@ -29,6 +31,7 @@ from __future__ import annotations
 
 from CharAgent.tool.decorator import Tool, tool
 from CharAgent.tool.executor import ToolExecution, execute_tool
+from CharAgent.tool.memory import MAX_CONTENT_LENGTH, build_memory_tools
 from CharAgent.tool.schema import (
     ToolSchemaInfo,
     build_manual_schema,
@@ -42,6 +45,7 @@ from CharAgent.tool.utils.errors import (
 )
 
 __all__ = [
+    "MAX_CONTENT_LENGTH",
     "Tool",
     "ToolActionableError",
     "ToolConfigError",
@@ -50,6 +54,7 @@ __all__ = [
     "ToolSchemaInfo",
     "ToolTimeoutError",
     "build_manual_schema",
+    "build_memory_tools",
     "build_pydantic_schema",
     "execute_tool",
     "tool",

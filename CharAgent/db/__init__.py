@@ -1,4 +1,4 @@
-"""db 包: 五实体的数据模型 + 表定义 + 仓储 (difficulties #12).
+"""db 包: 六实体的数据模型 + 表定义 + 仓储 (difficulties #12, #31-#33).
 
 目录叫 `db/` 而不是 `models/`: 与 `CharAgent/model/` (LLM 模型层) 名字太近, 两个
 都叫 model 会分不清谁是谁. 这里的东西全是数据库相关的, `db` 一眼到位.
@@ -15,14 +15,14 @@
 | 文件 | 管什么 |
 |------|--------|
 | `schema.py` | 表定义唯一来源 (迁移与快照存储都从这里取) |
-| `entities.py` | 五个实体 + 四个状态枚举 |
+| `entities.py` | 六个实体 + 五个状态枚举 |
 | `state.py` | 运行状态机的规则 (合法迁移表 + 结束原因映射) |
 | `conversation.py` | 会话消息分层 (哪几条给前端看; 答复取 `LoopResult.content`) |
 | `database.py` | 连库与事务 (`PgDatabase`: 同步引擎 + `asyncio.to_thread`) |
 | `config.py` | 连接配置 (环境变量 → 连接串) |
 | `cost.py` | 成本折算: 收尾那一刻按当时价目表算好金额 (写进 runs, 事后不重算) |
 | `errors.py` | 三类错误 (配置错 / 状态迁移非法 / 库出错) |
-| `repositories/` | 五个取数口 (会话 / 运行 / 消息 / 工具调用 / 幂等登记) |
+| `repositories/` | 六个取数口 (会话 / 运行 / 消息 / 工具调用 / 幂等登记 / 记忆) |
 | `recorder.py` | 会话记录: 一次运行收尾把这一轮写进上面几张表 |
 | | (本包**第一个生产调用方** —— 此前那几张表没有任何生产代码在用) |
 | `testing.py` | 测试替身: 一个认读写、不过滤不排序的假库 (框架自己的用例与业务侧的 |
@@ -102,7 +102,11 @@ from CharAgent.db.cost import (
 )
 from CharAgent.db.database import PgDatabase
 from CharAgent.db.entities import (
+    KIND_BEHAVIORS,
     CheckpointRow,
+    KindBehavior,
+    Memory,
+    MemoryKind,
     Message,
     MessageRole,
     Run,
@@ -122,6 +126,7 @@ from CharAgent.db.errors import (
 from CharAgent.db.recorder import ConversationRecorder, RunRecorder, title_for
 from CharAgent.db.repositories import (
     Database,
+    MemoriesRepository,
     MessagesRepository,
     PgIdempotencyStore,
     PgRepository,
@@ -131,12 +136,14 @@ from CharAgent.db.repositories import (
     ToolCallSummary,
     build_tool_call,
     message_id_for,
+    recency_score,
 )
 from CharAgent.db.repositories.utils.mapping import model_to_dict
 from CharAgent.db.schema import (
     ALL_TABLES,
     TABLE_NAMES,
     checkpoints,
+    memories,
     messages,
     metadata,
     runs,
@@ -156,6 +163,7 @@ from CharAgent.db.state import (
 __all__ = [
     "ALLOWED_TRANSITIONS",
     "ALL_TABLES",
+    "KIND_BEHAVIORS",
     "RUN_STATUS_FOR_OUTCOME",
     "SETTLEABLE_RUN_STATUSES",
     "TABLE_NAMES",
@@ -169,6 +177,10 @@ __all__ = [
     "Database",
     "DbError",
     "InvalidTransitionError",
+    "KindBehavior",
+    "MemoriesRepository",
+    "Memory",
+    "MemoryKind",
     "Message",
     "MessageRole",
     "MessagesRepository",
@@ -206,10 +218,12 @@ __all__ = [
     "ensure_transition",
     "has_visible_answer",
     "load_pricing",
+    "memories",
     "message_id_for",
     "messages",
     "metadata",
     "model_to_dict",
+    "recency_score",
     "recorded_transcript",
     "run_status_for_outcome",
     "runs",

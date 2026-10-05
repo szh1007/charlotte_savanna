@@ -108,7 +108,7 @@ def _reflect(connection: Connection) -> MetaData:
 
 
 def test_upgrade_head_creates_every_table_on_an_empty_schema(migrated, _engine):
-    """空库跑 `upgrade head`: 六张业务表齐全.
+    """空库跑 `upgrade head`: 七张业务表齐全.
 
     这是一条关键验收 (「alembic 首次迁移在空库可执行」) —— 从零建库
     是每个新环境的第一件事, 它在半路报错的话后面什么都做不了.
@@ -182,7 +182,7 @@ def test_alembic_version_records_the_head_revision(migrated, _engine):
             {"name": f"{ALEMBIC_SCHEMA}.{VERSION_TABLE}"},
         ).scalar()
 
-    assert version == "0006_run_usage_by_model"
+    assert version == "0007_memories"
     assert test_schema_version, (
         "版本表没落在测试 schema 里 (version_table_schema 没生效)"
     )
@@ -200,7 +200,7 @@ def test_upgrade_head_is_idempotent(migrated, _engine):
             text(f"SELECT version_num FROM {ALEMBIC_SCHEMA}.{VERSION_TABLE}")
         ).scalar()
 
-    assert version == "0006_run_usage_by_model"
+    assert version == "0007_memories"
 
 
 def test_the_version_row_records_the_step_that_just_ran(migrated, _engine):
@@ -224,8 +224,10 @@ def test_the_version_row_records_the_step_that_just_ran(migrated, _engine):
     还是同一天, 第五条 (issue 34 的 0005) —— 给工具调用表补两列 (挂起时给用户看
     的那句话与还缺什么), 于是刷新页面之后确认卡重建得出来.
     第六条 (difficulties #14 的 0006) —— 给运行行加一列逐模型用量 (一趟里换过家时
-    金额才拆得开). 六步走完, 那条设计照旧成立: 迁移是**库该长成什么样**的历史,
-    每一版都算数.
+    金额才拆得开).
+    第七条 (difficulties #31-#33 的 0007, 2026-10-05) —— 新建长期记忆表 (跨会话
+    还有用的一句话事实; 此前在 `db/README.md` 的追加路径里列作 P2). 七步走完,
+    那条设计照旧成立: 迁移是**库该长成什么样**的历史, 每一版都算数.
     """
     with _engine.connect() as connection:
         row = connection.execute(
@@ -239,14 +241,12 @@ def test_the_version_row_records_the_step_that_just_ran(migrated, _engine):
             )
         ).one()
 
-    assert row.version_num == "0006_run_usage_by_model"
-    assert row.name == "逐模型用量列: 一趟里换过家时, 金额才拆得开", (
+    assert row.version_num == "0007_memories"
+    assert row.name == "长期记忆表: 跨会话还有用的一句话事实", (
         "标题取的是脚本 docstring 的**首段** (alembic 的 `Script.doc` 就是这么切的)"
     )
-    assert row.versions == 6, "空库到 head 走了六步 (0001 → ... → 0006)"
-    assert row.from_rev == "0005_tool_call_approval_columns", (
-        "当前这一版是从 0005 上来的"
-    )
+    assert row.versions == 7, "空库到 head 走了七步 (0001 → ... → 0007)"
+    assert row.from_rev == "0006_run_usage_by_model", "当前这一版是从 0006 上来的"
     assert row.at and row.by, "时刻与执行者都该是真值 (钩子写在同一步的事务里)"
 
 

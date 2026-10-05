@@ -12,8 +12,8 @@ P0 前六项交付后，运行时能跑，但**业务数据无处落库**：谁�
 什么样、用户问了什么、模型答了什么、调了哪些工具 —— 只在内存与 checkpoint 快照
 里（快照只存「接着跑要用的」，不回答「查得到、看得到」）。
 
-本层把五个实体定死（thread / run / message / tool_call / checkpoint），用
-alembic 把 Postgres 结构纳入版本管理，并提供五个取数口（仓储）。加上第六张表
+本层把六个实体定死（thread / run / message / tool_call / checkpoint / memory），
+用 alembic 把 Postgres 结构纳入版本管理，并提供六个取数口（仓储）。加上第七张表
 `charagent_idempotency_keys`（幂等登记簿，**没有实体** —— 它没有「业务视角」的
 那一半，只有「认领」一个动作，见 `schema.py` 与 `repositories/idempotency.py`）。
 
@@ -21,14 +21,14 @@ alembic 把 Postgres 结构纳入版本管理，并提供五个取数口（仓�
 
 | 文件 | 管什么 |
 |------|--------|
-| `schema.py` | **表定义唯一来源**（六张 `Table`；迁移与快照存储都从这里取） |
-| `entities.py` | 五个实体 + 四个状态枚举（`Thread` / `Run` / `Message` / `ToolCall` / `CheckpointRow`） |
+| `schema.py` | **表定义唯一来源**（七张 `Table`；迁移与快照存储都从这里取） |
+| `entities.py` | 六个实体 + 五个状态枚举（`Thread` / `Run` / `Message` / `ToolCall` / `CheckpointRow` / `Memory`） |
 | `state.py` | 运行状态机规则（合法迁移表 + 结束原因映射） |
 | `conversation.py` | 会话消息分层（哪几条给前端看） |
 | `database.py` | 连库与事务（`PgDatabase`：同步引擎 + `asyncio.to_thread`） |
 | `config.py` | 连接配置（环境变量 → 连接串） |
 | `errors.py` | 三类错误（配置错 / 状态迁移非法 / 库出错） |
-| `repositories/` | 五个取数口（会话 / 运行 / 消息 / 工具调用 / 幂等登记） |
+| `repositories/` | 六个取数口（会话 / 运行 / 消息 / 工具调用 / 幂等登记 / 记忆） |
 | `../alembic/` | 迁移脚本（结构变更的历史，**只追加不改写**；2026-09-23 发布前压缩过一次，见下文「既有迁移」） |
 
 > 迁移目录在 `CharAgent/alembic/`（**不在 `db/` 里面**）—— 这是 alembic 的
@@ -85,7 +85,7 @@ pytest -m pg_db
 迁移。（唯一一次例外是 2026-09-23 的压缩：那时还没发布，只有本机这一个库用过那些
 编号，压掉不欠谁的 —— 发布之后不再有这种例外。）
 
-**既有迁移**（四条）：
+**既有迁移**（七条）：
 
 | 编号 | 做了什么 | 备注 |
 |------|---------|------|
@@ -93,8 +93,11 @@ pytest -m pg_db
 | `0002_thread_management` | `charagent_threads` 补两列（`pinned_at` / `deleted_at`） | **压缩之后的第一条增量迁移** —— 「只追加不改写」这条规矩从它开始真正被执行（ticket 20 的会话管理动作） |
 | `0003_run_cost_columns` | `charagent_runs` 加一列（`total_cost_detail`）并把 `total_cost` 改成可空 | 成本口径改成「收尾算好写死」（ticket 28，取舍见 ADR-0018）；改成可空是为了把「没算出来」（NULL）与「真的花了 0 元」分开 |
 | `0004_idempotency_keys` | 新建 `charagent_idempotency_keys`（幂等登记簿） | HITL 的挂起-恢复跨进程，进程内 dict 挡不住重放（ticket 32，依据 ADR-0017）；**只加一张表，不碰任何既有表** |
+| `0005_tool_call_approval_columns` | `charagent_tool_calls` 补两列（`approval_prompt` / `approval_needs`） | 挂起时**问用户什么**要有地方记 —— 刷新页面之后靠它重建确认卡（issue 34，依据 ADR-0014） |
+| `0006_run_usage_by_model` | `charagent_runs` 加一列（`usage_by_model`） | 一趟里换过家时，金额要按各家分别算 —— 逐模型用量记在行上（difficulties #14，依据 ADR-0025） |
+| `0007_memories` | 新建 `charagent_memories`（长期记忆） | 跨会话还有用的一句话事实（偏好 / 历史事件），按时间衰减排序、超量淘汰（difficulties #31-#33，ticket C12）；**只加一张表，不碰任何既有表** |
 
-四条都是**手写**的：那份 `op.create_table` / `op.add_column` 是逐列核对过的结果，
+七条都是**手写**的：那份 `op.create_table` / `op.add_column` 是逐列核对过的结果，
 而纪律的真正保险不是 `--autogenerate` 这个动作，是 `pytest -m pg_db` 里那条
 「迁移结果与表定义逐列零差异」的比对 —— 手写脚本一样要过它。
 
@@ -146,7 +149,9 @@ head**（后续 `upgrade` 直接报错），所以它天生不是「一行一条
 | **P1** | ~~幂等表 `idempotency_keys`（**仅此一张**）~~ | **已建**（2026-09-25，ticket 32）：`0004_idempotency_keys` → 表名 `charagent_idempotency_keys`。它挡什么、过期怎么算、为什么不做后台清理，见 `schema.py` 那张表的注释与 `repositories/idempotency.py` 的模块 docstring |
 
 > **2026-09-18**：原列在本行的 `tickets` / `escalations` / `approvals` / `audit_logs` **四张业务表已移出框架**（分层剥离）—— 它们归业务侧独立维护，走自己的迁移链与版本表，与本文的追加流程无关。框架侧只留 `idempotency_keys`（请求幂等属运行时能力）。
-| **P2** | `events` 表（事件溯源 #12）、`memories` 表、`cost_entries` 表 | 自增下一号迁移 |
+| **P2** | `events` 表（事件溯源 #12）、~~`memories` 表~~、`cost_entries` 表 | 自增下一号迁移 |
+
+> **2026-10-05**：`memories` 表**已建**（difficulties #31-#33，ticket C12）：`0007_memories` → 表名 `charagent_memories`。它存什么（提炼后的事实，不是每轮摘要）、为什么不挂外键、衰减与淘汰的口径，见 `schema.py` 那张表的注释与 `repositories/memories.py` 的模块 docstring。P2 剩下 `events` 与 `cost_entries` 两张。
 
 两条约定：
 

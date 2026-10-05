@@ -93,6 +93,12 @@ def pay_case() -> EvalCase:
     )
 
 
+# 跑分那条线**不装**的工具 (C13/C30): 记忆跨题传递状态 (上一题记下的偏好, 下一题
+# recall 得到), 与"每题独立可复现"冲突 —— 装配那一处的判据见 `service._memory_store`.
+# 放在这里当差额的来源: 「加工具忘了想它该不该进跑分」会在下面那条工具数断言上红.
+EVAL_SKIPPED_TOOLS = ("remember", "recall", "forget")
+
+
 def subject_with(script: list[Any], **kwargs: Any) -> HarnessSubject:
     """造一个被测对象: 剧本与旋钮由调用方给 (**直接建, 不走工厂**).
 
@@ -376,8 +382,33 @@ async def test_the_approval_mode_is_written_into_the_config_snapshot() -> None:
 
     assert on_facts.config["模拟确认"].startswith("开")
     assert off_facts.config["模拟确认"].startswith("关")
-    assert on_facts.config["工具数"] == len(TOOL_NAMES), (
-        "配置快照要说得清这一跑开了几个工具 (那个数是权威清单, 不是写死的 18)"
+    assert on_facts.config["工具数"] == len(TOOL_NAMES) - len(EVAL_SKIPPED_TOOLS), (
+        "配置快照要说得清这一跑开了几个工具: 生产清单减去跑分不装的那两个 "
+        "(见 EVAL_SKIPPED_TOOLS), 数字从清单算, 不手写"
+    )
+
+
+async def test_the_eval_line_does_not_wire_the_memory_tools() -> None:
+    """跑分那条线**不装**记忆工具 (`remember` / `recall`) —— 跑分与生产唯一的差.
+
+    为什么差这一处: 记忆是**状态性**的 —— 上一题让模型记下的偏好, 下一题 recall
+    就得到; 而跑分立身于每题独立可复现 (A/B 的两组要能逐题对比, 一题的行为不能
+    取决于它前面跑过什么). 装配那一处的判据是「库入口是不是真库」: 跑分用假记录
+    库, 没有真库就没有记忆 (见 `service._memory_store`).
+
+    判据直接问装配 (装一台跑分会话, 看它装出来的工具名清单), 不是数数字 ——
+    数字对得上也可能是少了别的、多了别的.
+    """
+    subject = subject_with([text_response("好的")])
+    await subject.run_once(EvalCase(id="policy-01", question="几点发货"))
+    harness = environment_of(subject)
+
+    session = await harness.session(harness.context("eval-memory-check"))
+
+    assert "remember" not in session.tool_names
+    assert "recall" not in session.tool_names
+    assert set(session.tool_names) == set(TOOL_NAMES) - set(EVAL_SKIPPED_TOOLS), (
+        "跑分与生产的差**只有**记忆那两个"
     )
 
 

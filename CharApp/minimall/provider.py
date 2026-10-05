@@ -34,6 +34,14 @@
 通道 (构造参数), 但它记得的是**这段对话**的事 —— 检索工具每次从它那儿领一段
 连续编号, 收尾时它再把引用挂到 `final` 上. 装配处造它一次、交给工具与钩子两处
 用, 于是「哪几段被引用了」只有一份账.
+
+**第五个进闭包的东西是记忆仓储** (C13): 与检索器同一条通道 (构造参数, 进程级
+共享), 但**身份也从上下文取** —— 记忆属于 `(tenant_id, user_id)` 那一对 (与
+会话隔离同一对键: 谁能读到谁的记忆, 与谁能看到谁的会话, 是同一条边界; 命令行
+调试聊出来的东西也因此不会污染买家在网页上的长期记忆). 于是记忆工具是**唯一**
+身份不来自 `payload` 的那一族 —— 框架的 `RunContext` 本来就有那两个字段, 不为
+记忆另造一份. 它**不装在 `tools.build_tools` 里** (那个函数的入参是业务身份
+`(client, int user_id)`, 装不下这一对键), 由 `provide` 接在最后.
 """
 
 from __future__ import annotations
@@ -41,7 +49,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from CharAgent.agent import RunContext
-from CharAgent.tool import Tool
+from CharAgent.db import MemoriesRepository
+from CharAgent.tool import Tool, build_memory_tools
 from CharApp.minimall.client import MinimallClient
 from CharApp.minimall.config import MinimallConfigError
 from CharApp.minimall.knowledge.citations import Citations
@@ -117,6 +126,10 @@ class MinimallToolProvider:
             很轻: 只拿着配置与会话那个模型), 而它用到的重零件 —— 向量库连接与
             两个本地模型 —— 是 `knowledge/` 里的惰性单例, 一个进程一份。与身份
             不同, 它**不带买家**: 政策对谁都是同一份。
+        citations: 这段对话的引用账 (L5-c), 每会话一份.
+        memory: 长期记忆仓储 (C13); None 表示**这个进程没有记忆能力** (不记账的
+            进程没有那条库入口, 见 `service.MinimallService.database`) —— 装出来
+            的工具集因此少 `remember` / `recall` 两个, 而不是装一个会炸的进去.
 
     attributes:
         (无公开属性; 工具集每次现装 —— 装配是纯函数, 不做缓存)
@@ -127,10 +140,12 @@ class MinimallToolProvider:
         client: MinimallClient,
         retriever: KnowledgeRetriever,
         citations: Citations,
+        memory: MemoriesRepository | None = None,
     ) -> None:
         self._client = client
         self._retriever = retriever
         self._citations = citations
+        self._memory = memory
 
     async def provide(self, context: RunContext) -> Sequence[Tool]:
         """按上下文里的买家身份装出这次运行的那套工具。
@@ -140,19 +155,36 @@ class MinimallToolProvider:
                 那一次还会有一份一次性凭据)。
 
         Returns:
-            Sequence[Tool]: 那套工具 (只读的 + 打 `writes` 注解的 + 知识检索),
-            身份与凭据都已裹进各自的闭包。
+            Sequence[Tool]: 那套工具 (只读的 + 打 `writes` 注解的 + 知识检索;
+            配了记忆仓储时还有 `remember` / `recall`), 身份与凭据都已裹进各自的
+            闭包。
 
         Raises:
             MinimallConfigError: 载荷里没有买家身份 (见 `buyer_id`)。
         """
-        return build_tools(
-            self._client,
-            buyer_id(context),
-            one_shot=one_shot_payload(context),
-            retriever=self._retriever,
-            citations=self._citations,
+        tools = list(
+            build_tools(
+                self._client,
+                buyer_id(context),
+                one_shot=one_shot_payload(context),
+                retriever=self._retriever,
+                citations=self._citations,
+            )
         )
+        if self._memory is not None:
+            # 记忆那两个工具**接在最后**, 身份取的是上下文里那一对会话隔离键
+            # (不是 payload 里那个整数买家号) —— 理由见模块 docstring 第五段;
+            # thread_id 一并给 (C30: 写进 source_thread_id, 「这条记忆从哪段对话来」
+            # 的线索 —— 只有装配期拿得到, 事后补不回来)
+            tools.extend(
+                build_memory_tools(
+                    self._memory,
+                    tenant_id=context.tenant_id,
+                    user_id=context.user_id,
+                    thread_id=context.thread_id,
+                )
+            )
+        return tuple(tools)
 
 
 __all__ = [

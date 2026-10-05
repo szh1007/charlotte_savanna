@@ -43,7 +43,12 @@ from CharAgent.agent import (
 )
 from CharAgent.checkpoint import CheckpointError, CheckpointSaver
 from CharAgent.client import ChatSession, CliOptions, build_model
-from CharAgent.db import ConversationRecorder, PgDatabase, load_pricing
+from CharAgent.db import (
+    ConversationRecorder,
+    MemoriesRepository,
+    PgDatabase,
+    load_pricing,
+)
 from CharAgent.db.errors import PricingNotReadyError
 from CharAgent.hooks import HookPoint, HookRegistry
 from CharAgent.model import ModelError
@@ -397,6 +402,28 @@ class MinimallService:
             return
         load_pricing()
 
+    def _memory_store(self) -> MemoriesRepository | None:
+        """这个进程的记忆仓储; **没有真库时是 None** (记忆工具因此不装).
+
+        判据是「库入口是不是真库」(`PgDatabase`): 记忆工具的全部行为都落在
+        `charagent_memories` 表上 (按 (tenant, user) 过滤 + 排序 + 淘汰), 而
+        记录层的测试替身 (`FakeRecordDatabase`) 只复刻记录那几张表 —— **跑分那条
+        线正是用它** (跑分不打真库), 于是跑分天然没有记忆, 这正是想要的: 记忆跨题
+        传递状态 (一题写下的偏好, 下一题读得到), 而跑分立身于每题独立可复现
+        (跑分的工具集与生产因此差这两个工具, 与 scoping 的"裁剪只在跑分线装"
+        同一条边界).
+
+        不记账的进程 (`database=None`) 同样没有 —— 它连记录表都没有, 更谈不上记忆.
+
+        **一处已知错配**: 跑分那条线的提示词仍走默认版 (v8 里写着「先调一次
+        `recall`」), 而它的工具集里没有那两个工具 —— 与 scoping 裁剪组「提示词
+        提到、工具没给」是同一类边界, 影响有界 (模型只会调 wire 上真有的工具;
+        真调了不在列表里的名字, 框架会给一句可操作的回填).
+        """
+        if isinstance(self.database, PgDatabase):
+            return MemoriesRepository(self.database)
+        return None
+
     async def session_for(
         self,
         context: RunContext,
@@ -452,7 +479,7 @@ class MinimallService:
         if self.database is not None:
             citations.seed(await search_result_texts(self.database, context.thread_id))
         tools: Sequence[Tool] = await MinimallToolProvider(
-            self.client, retriever, citations
+            self.client, retriever, citations, memory=self._memory_store()
         ).provide(context)
         # 护栏挂在这**唯一一处装配**上: 命令行与 HTTP 两个入口因此都装上, 不会有
         # 「网页版忘了挂」这种半边生效 (05 立过的旗). 注册表一次会话一份, 里面

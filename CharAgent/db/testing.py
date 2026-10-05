@@ -1,7 +1,8 @@
 """记录层的测试替身: 一个认读写、不过滤不排序的假库 (issue 41).
 
-一句话理解: `charagent_threads` 那五张表的 `Database` 在这儿的替身 —— 记录员往里
-写, 取数口往外读, 全程不碰 Postgres.
+一句话理解: 记录层那几张表 (`charagent_threads` / `runs` / `messages` /
+`tool_calls`) 的 `Database` 在这儿的替身 —— 记录员往里写, 取数口往外读, 全程不碰
+Postgres.
 
 **为什么它在 `db/` 包里而不是 `tests/` 里**: 有两个消费方, 而其中一个不是测试 ——
 业务侧的离线跑分器 (跑分环境要一份记录层, 却不该为它起一个 Postgres). 假库留在

@@ -1,9 +1,10 @@
-"""五个实体 + 四个状态枚举 (P0 一次定死, difficulties #12 实体部分).
+"""六个实体 + 五个状态枚举 (difficulties #12 实体部分; 记忆那个是后来补的)
+—— #31-#33.
 
 一句话理解: 这是**数据库的户口本** —— 会话 (Thread)、运行 (Run)、消息
-(Message)、工具调用 (ToolCall)、快照 (CheckpointRow) 各是什么、有哪些字段、
-状态能怎么变, 全写在这里. 表长什么样在 schema.py, 这里写的是「怎么读写它」
-以及「哪些取值是合法的」.
+(Message)、工具调用 (ToolCall)、快照 (CheckpointRow)、记忆 (Memory) 各是什么、
+有哪些字段、状态能怎么变, 全写在这里. 表长什么样在 schema.py, 这里写的是
+「怎么读写它」以及「哪些取值是合法的」.
 
 **业务含义**与**库里的形状**的关系: 前者是「这个词在业务上指什么」, 这里
 是「它**落到库里是什么样**」. 两边必须一一对应, 有出入就是有一处过时了.
@@ -15,12 +16,13 @@
 `StrEnum` 的成员**本身就是字符串**, 所以直接塞进 SQLAlchemy 的 String 列、
 直接 `== "running"` 比较都没问题 —— 既是枚举又不影响存库.
 
-**四个状态枚举的取值来源** (测试 test_db_entities.py 会逐条对齐):
+**五个状态枚举的取值来源** (测试 test_db_entities.py 会逐条对齐):
 
 - ThreadStatus      会话状态: 与 Thread 实体的 status 字段一一对应
 - RunStatus         运行状态机 (#16): 8 态, 有合法迁移规则 (见 state.py)
 - MessageRole       发言者: 与 wire 消息的 role 取值一致 (user/assistant/tool/system)
 - ToolCallStatus    工具调用状态: 含 needs_approval (HITL 挂起 #25)
+- MemoryKind        记忆层次 (#31): episodic / semantic 两层
 
 **时间戳得由调用方传** (2026-09-14 审计澄清): 这些类是用 `__table__` 映射到 Core
 表的, 那种写法**拿不到 Python 侧的默认值** (SQLAlchemy 不会把 `Column(default=...)`
@@ -39,12 +41,14 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import StrEnum
 
 from sqlalchemy.orm import DeclarativeBase
 
 from CharAgent.db.schema import (
     checkpoints,
+    memories,
     messages,
     runs,
     threads,
@@ -110,6 +114,54 @@ class ToolCallStatus(StrEnum):
     NEEDS_APPROVAL = "needs_approval"  # 挂起等人工批准 (#25): 退款这类高危动作
 
 
+class MemoryKind(StrEnum):
+    """记忆种类: 两种**行为语义** —— 累积型与替换型 (C30).
+
+    - **累积型** (`episodic` / `semantic`): 多条并存, 只增 —— 「寄到公司」与
+      「对花生过敏」同时有效.
+    - **替换型** (`style` / `nickname`): 同一时刻只留一条, 新写顶掉旧的 ——
+      改风格就是改风格, 不是「再记一条风格」.
+
+    **kind 分的是行为, 不是主题**: 不为「地址」「口味」这类主题各开一个 kind
+    (它们在 `semantic` 里并存、行为一致); 一个替换型概念一个 kind (kind 即那个
+    「槽」—— 风格与称呼要能并存, 所以是两个 kind 而不是一个). 行为由
+    `KIND_BEHAVIORS` 定, 每条 kind 在那张表里都必须有定义 (有用例守着).
+
+    #31 的另两层不在表内: 短期记忆是对话上下文 (由会话与快照管着); 程序性记忆
+    (「用户遇到问题会先查 FAQ」这类行为模式) 是另一个量级的事, 本项目不做.
+    """
+
+    EPISODIC = "episodic"  # 累积: 带时间戳的历史事件 (「上次说他换了工作」)
+    SEMANTIC = "semantic"  # 累积: 世界事实与业务偏好 (「寄到公司」「对花生过敏」)
+    STYLE = "style"  # 替换: 对回答方式的偏好 (语气 / 长短 / 语言)
+    NICKNAME = "nickname"  # 替换: 希望怎么称呼他 (「叫我老张」)
+
+
+@dataclass(frozen=True, slots=True)
+class KindBehavior:
+    """一种记忆的行为 (C30): 给模型看的标签 + 新写入时旧值怎么办.
+
+    Args:
+        label: recall 展示里那种 `[事实]` 的中文说法.
+        replaces_previous: True = 替换型 (写新值前先把同 kind 的活行软删);
+            False = 累积型 (多条并存).
+    """
+
+    label: str
+    replaces_previous: bool
+
+
+# 每种 kind 的行为 —— 与 state.py 的 ALLOWED_TRANSITIONS 同款: 枚举 + 单独规则表
+# (行为不塞进枚举, 是为了「新增一个 kind 必须同时想清它的行为」在代码里看得见).
+# **每条 kind 都必须在这张表里**: 漏一个就是运行时 KeyError, 有用例当场红.
+KIND_BEHAVIORS: dict[MemoryKind, KindBehavior] = {
+    MemoryKind.EPISODIC: KindBehavior(label="事件", replaces_previous=False),
+    MemoryKind.SEMANTIC: KindBehavior(label="事实", replaces_previous=False),
+    MemoryKind.STYLE: KindBehavior(label="风格", replaces_previous=True),
+    MemoryKind.NICKNAME: KindBehavior(label="称呼", replaces_previous=True),
+}
+
+
 class Base(DeclarativeBase):
     """所有实体的基类, 并**认领 schema.py 那份 metadata** 作为自己的表定义.
 
@@ -123,7 +175,7 @@ class Base(DeclarativeBase):
     串, 迁移脚本里想改一个约束就得先去库里查它叫什么.
     """
 
-    # 自己不映射任何表 (基类不是实体): 五张业务表分别由下面的五个子类认领.
+    # 自己不映射任何表 (基类不是实体): 六张业务表分别由下面的六个子类认领.
     # (`charagent_migrations` 那张版本表**没有实体** —— 它是 alembic 的设施
     # (ticket 24 起兼作审计表), 由它的钩子直接写, 没有业务代码去读它.)
     # 少了这一行, SQLAlchemy 会试着给基类也找一张表, 找不到就报错.
@@ -312,6 +364,44 @@ class ToolCall(Base):
         return (
             f"ToolCall(run_id={self.run_id!r}, tool_call_id={self.tool_call_id!r}, "
             f"tool_name={self.tool_name!r}, status={self.status!r})"
+        )
+
+
+class Memory(Base):
+    """记忆 (Memory): 跨会话还有用的一句话事实 (difficulties #31-#33, MEM-D1).
+
+    **它与 Message 的分工** (MEM-D2): 消息表回答「这段对话里发生了什么」, 记忆
+    回答「以后哪段对话都用得上的一句」—— 所以它存的是**提炼后的结论**, 不是
+    原文, 也不是每轮摘要 (「每轮摘要」的家已经在 messages 的 `hidden=True`
+    行里, 再存一份就是双写, 两份会漂).
+
+    **它为什么不挂在会话下面**: 记忆的本性就是比产生它的那段对话活得久 ——
+    没有指向 `charagent_threads` 的外键, `source_thread_id` / `source_run_id`
+    只是溯源线索 (指向的行没了, 记忆仍然有效).
+
+    attributes:
+        memory_id: 记忆编号.
+        tenant_id / user_id: 归属 —— 多租户隔离的过滤键 (#32): 检索强制带上,
+            不靠「相信模型不乱看」.
+        kind: 记忆层次, 见 MemoryKind.
+        content: 一句话事实 (提炼后的, 不是原文).
+        source_thread_id / source_run_id: 从哪段对话 / 哪次运行来 (线索, 可空).
+        created_at / updated_at: 产生 / 最后更新时刻 —— 时间衰减按 created_at
+            起算; 重复写入同一句话刷新 updated_at (去重, 不新增行).
+        last_used_at: 最后一次被检索取回的时刻; None = 还没被用过 —— 给
+            「用得多的排前面」留的口.
+        deleted_at: 作废时刻; None = 还在 —— 有值表示已被软删 (容量淘汰或人工
+            作废): 行留着, 任何检索都不再返回它.
+    """
+
+    __table__ = memories
+
+    def __repr__(self) -> str:
+        """调试用的一行摘要 (content 可能较长, 只给个预览)."""
+        preview = (self.content or "")[:24]
+        return (
+            f"Memory(memory_id={self.memory_id!r}, kind={self.kind!r}, "
+            f"content={preview!r})"
         )
 
 

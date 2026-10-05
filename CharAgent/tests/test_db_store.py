@@ -24,13 +24,15 @@ from uuid import uuid4
 
 import pytest
 from conftest import TEST_SCHEMA
-from sqlalchemy import delete, text
+from sqlalchemy import delete, select, text
 
 from CharAgent.checkpoint.postgres import PostgresCheckpointSaver
 from CharAgent.checkpoint.utils.types import Checkpoint, CheckpointState
 from CharAgent.db import (
     DataConfigError,
     DataStoreError,
+    MemoriesRepository,
+    MemoryKind,
     MessagesRepository,
     PgDatabase,
     RunsRepository,
@@ -45,6 +47,7 @@ from CharAgent.db import (
     visible_transcript,
 )
 from CharAgent.db.schema import TABLE_NAMES, checkpoints
+from CharAgent.db.schema import memories as memories_table
 from CharAgent.db.schema import runs as runs_table
 
 pytestmark = pytest.mark.pg_db
@@ -1598,3 +1601,337 @@ async def test_set_status_can_backfill_what_to_ask_the_user(db: PgDatabase):
     finished = await calls.get(run.run_id, turn, "call_0")
     assert finished.result == "付好了"
     assert finished.approval_prompt == "要输支付密码"
+
+
+# ---------------------------------------------------------------------------
+# 长期记忆 (difficulties #31-#33): 隔离 / 去重 / 衰减排序 / 软删 / 容量淘汰
+# ---------------------------------------------------------------------------
+
+
+async def test_memory_roundtrip(db: PgDatabase):
+    """写一条记忆 → 取回来: 字段逐一对上 (含来源线索与空的时间列)."""
+    memories = MemoriesRepository(db)
+    created = await memories.add(
+        tenant_id="t-1",
+        user_id="u-1",
+        content="偏好货到付款",
+        kind=MemoryKind.SEMANTIC,
+        source_thread_id="thread-1",
+        source_run_id="run-1",
+    )
+
+    listed = await memories.list_for_user("t-1", "u-1")
+
+    assert [memory.memory_id for memory in listed] == [created.memory_id]
+    row = listed[0]
+    assert row.content == "偏好货到付款"
+    assert row.kind == "semantic"
+    assert row.source_thread_id == "thread-1"
+    assert row.source_run_id == "run-1"
+    assert row.deleted_at is None
+    assert row.last_used_at is None
+    assert row.created_at.tzinfo is not None, "时间列带时区 (库里是 TIMESTAMPTZ)"
+
+
+async def test_memories_are_scoped_to_the_owner(db: PgDatabase):
+    """换一个用户 / 换一个租户都查不到别人的记忆 (#32 的否定断言).
+
+    这是记忆数据最该守的一条 —— 「买家 A 的偏好不能出现在买家 B 的回答里」,
+    而防线不是「相信模型不乱看」, 是查询强制带 (tenant_id, user_id).
+    """
+    memories = MemoriesRepository(db)
+    await memories.add(
+        tenant_id="tenant-a",
+        user_id="u-1",
+        content="偏好货到付款",
+        kind=MemoryKind.SEMANTIC,
+    )
+
+    assert await memories.list_for_user("tenant-a", "u-2") == []
+    assert await memories.list_for_user("tenant-b", "u-1") == []
+
+
+async def test_repeating_the_same_content_does_not_add_a_row(db: PgDatabase):
+    """同一句话写两遍 → 还是一条; 第二遍刷新 updated_at, **不动 created_at**.
+
+    去重是 (tenant, user, content) 的精确匹配; 衰减基准刻意不被重复提及重置 ——
+    那是一条已知边界 (见仓储模块 docstring), 这一条把边界钉成事实而不是留在
+    注释里.
+    """
+    memories = MemoriesRepository(db)
+    earlier = datetime(2026, 9, 14, 10, 0, tzinfo=UTC)
+    later = datetime(2026, 9, 15, 10, 0, tzinfo=UTC)
+    first = await memories.add(
+        tenant_id="t-1",
+        user_id="u-1",
+        content="偏好货到付款",
+        kind=MemoryKind.SEMANTIC,
+        created_at=earlier,
+    )
+    second = await memories.add(
+        tenant_id="t-1",
+        user_id="u-1",
+        content="偏好货到付款",
+        kind=MemoryKind.SEMANTIC,
+        created_at=later,
+    )
+
+    listed = await memories.list_for_user("t-1", "u-1")
+    assert len(listed) == 1, "同一句话不该产生两条"
+    assert second.memory_id == first.memory_id
+    assert listed[0].updated_at == later, "「又被说了一次」的痕迹"
+    assert listed[0].created_at == earlier, "衰减基准不被重复提及重置 (已知边界)"
+
+
+async def test_a_different_wording_is_not_deduplicated(db: PgDatabase):
+    """去重只认**完全相同的** content —— 换个说法就是第二条 (精确匹配, 不做相似度).
+
+    刻意不做相似度: 那需要向量或编辑距离, 而「两句是不是同一个意思」判错了
+    的代价 (把一条新偏好并进旧条目) 比多留一条大.
+    """
+    memories = MemoriesRepository(db)
+    for text_ in ("偏好货到付款", "喜欢货到付款"):
+        await memories.add(
+            tenant_id="t-1",
+            user_id="u-1",
+            content=text_,
+            kind=MemoryKind.SEMANTIC,
+        )
+
+    assert len(await memories.list_for_user("t-1", "u-1")) == 2
+
+
+async def test_newer_memories_rank_higher(db: PgDatabase):
+    """两条一样「重」的记忆, 新的排在前面 —— 时间衰减定的排序.
+
+    (本票没有权重列: 排序分里「权重」那一半恒为 1, 见仓储模块 docstring ——
+    于是仅存的时间差就是排序的全部依据, 这正是要验的那条曲线.)
+    """
+    base = datetime(2026, 9, 14, 10, 0, tzinfo=UTC)
+    memories = MemoriesRepository(db)
+    fresh = await memories.add(
+        tenant_id="t-1",
+        user_id="u-1",
+        content="上周说的",
+        kind=MemoryKind.SEMANTIC,
+        created_at=base - timedelta(days=1),
+    )
+    stale = await memories.add(
+        tenant_id="t-1",
+        user_id="u-1",
+        content="半年前说的",
+        kind=MemoryKind.EPISODIC,
+        created_at=base - timedelta(days=180),
+    )
+
+    listed = await memories.list_for_user("t-1", "u-1")
+
+    assert [memory.memory_id for memory in listed] == [
+        fresh.memory_id,
+        stale.memory_id,
+    ]
+
+
+async def test_soft_deleted_memories_disappear_but_stay_in_the_table(
+    db: PgDatabase,
+):
+    """软删: 查询不再返回它, 但**行还在** (审计可查) —— 不是物理删."""
+    memories = MemoriesRepository(db)
+    created = await memories.add(
+        tenant_id="t-1",
+        user_id="u-1",
+        content="要作废的",
+        kind=MemoryKind.SEMANTIC,
+    )
+
+    assert await memories.soft_delete(created.memory_id, tenant_id="t-1", user_id="u-1")
+    assert await memories.list_for_user("t-1", "u-1") == []
+
+    async with db.connect() as session:
+        row = session.execute(
+            select(memories_table.c.memory_id, memories_table.c.deleted_at)
+        ).one()
+    assert row.memory_id == created.memory_id, "行还在"
+    assert row.deleted_at is not None, "作废时刻写上了"
+
+
+async def test_soft_delete_is_scoped_to_the_owner(db: PgDatabase):
+    """别人的记忆删不掉 (回 False), 且那一行没被动过."""
+    memories = MemoriesRepository(db)
+    created = await memories.add(
+        tenant_id="tenant-a",
+        user_id="u-1",
+        content="偏好货到付款",
+        kind=MemoryKind.SEMANTIC,
+    )
+
+    assert not await memories.soft_delete(
+        created.memory_id, tenant_id="tenant-a", user_id="u-2"
+    )
+    assert not await memories.soft_delete(
+        created.memory_id, tenant_id="tenant-b", user_id="u-1"
+    )
+    assert len(await memories.list_for_user("tenant-a", "u-1")) == 1
+
+
+async def test_a_replacing_kind_supersedes_the_previous_one(db: PgDatabase):
+    """替换型 (C30): 写第二条 style → 旧的**软删** (行还在), 只留新的.
+
+    「同一时刻只有一种风格」在库里的样子 —— 这是 C30 的核心行为.
+    """
+    memories = MemoriesRepository(db)
+    first = await memories.add(
+        tenant_id="t-1",
+        user_id="u-1",
+        content="偏好可爱一点的语气",
+        kind=MemoryKind.STYLE,
+    )
+    second = await memories.add(
+        tenant_id="t-1",
+        user_id="u-1",
+        content="偏好高冷一点的语气",
+        kind=MemoryKind.STYLE,
+    )
+
+    listed = await memories.list_for_user("t-1", "u-1")
+    assert [memory.memory_id for memory in listed] == [second.memory_id]
+
+    async with db.connect() as session:
+        rows = session.execute(
+            select(memories_table.c.memory_id, memories_table.c.deleted_at)
+        ).all()
+    old = next(row for row in rows if row.memory_id == first.memory_id)
+    assert old.deleted_at is not None, "旧的被软删 (行还在 —— 何时被换掉可查)"
+
+
+async def test_a_replacing_kind_does_not_touch_other_kinds(db: PgDatabase):
+    """替换只在自己的槽里发生: 换风格不动称呼、也不动事实."""
+    memories = MemoriesRepository(db)
+    style = await memories.add(
+        tenant_id="t-1", user_id="u-1", content="偏好可爱", kind=MemoryKind.STYLE
+    )
+    nickname = await memories.add(
+        tenant_id="t-1", user_id="u-1", content="叫我老张", kind=MemoryKind.NICKNAME
+    )
+    fact = await memories.add(
+        tenant_id="t-1", user_id="u-1", content="寄到公司", kind=MemoryKind.SEMANTIC
+    )
+    await memories.add(
+        tenant_id="t-1", user_id="u-1", content="偏好高冷", kind=MemoryKind.STYLE
+    )
+
+    alive = {memory.memory_id for memory in await memories.list_for_user("t-1", "u-1")}
+    assert nickname.memory_id in alive
+    assert fact.memory_id in alive
+    assert style.memory_id not in alive
+
+
+async def test_repeating_the_same_replacing_value_keeps_one_row(db: PgDatabase):
+    """替换型里重复写**同一条** → 去重优先 (只刷时间戳), 不产生删一插一的历史."""
+    memories = MemoriesRepository(db)
+    first = await memories.add(
+        tenant_id="t-1", user_id="u-1", content="偏好可爱", kind=MemoryKind.STYLE
+    )
+    second = await memories.add(
+        tenant_id="t-1", user_id="u-1", content="偏好可爱", kind=MemoryKind.STYLE
+    )
+
+    assert second.memory_id == first.memory_id
+    async with db.connect() as session:
+        total = session.execute(select(memories_table.c.memory_id)).all()
+    assert len(total) == 1, "同一时刻只有一行 (不是两行)"
+
+
+async def test_list_by_id_prefix_finds_the_living_rows(db: PgDatabase):
+    """编号前缀查 (C30): 命中活行; 软删的不算; 别人的不算; 通配符按字面."""
+    memories = MemoriesRepository(db)
+    mine = await memories.add(
+        tenant_id="t-1", user_id="u-1", content="偏好货到付款", kind=MemoryKind.SEMANTIC
+    )
+    gone = await memories.add(
+        tenant_id="t-1", user_id="u-1", content="要作废的", kind=MemoryKind.SEMANTIC
+    )
+    await memories.soft_delete(gone.memory_id, tenant_id="t-1", user_id="u-1")
+    await memories.add(
+        tenant_id="t-1", user_id="u-2", content="别人的", kind=MemoryKind.SEMANTIC
+    )
+
+    prefix = mine.memory_id[:8]
+    found = await memories.list_by_id_prefix(prefix, tenant_id="t-1", user_id="u-1")
+    assert [memory.memory_id for memory in found] == [mine.memory_id]
+
+    # 完整编号也是前缀; 不存在的编号是空; `%` 不被当通配符
+    assert await memories.list_by_id_prefix(
+        mine.memory_id, tenant_id="t-1", user_id="u-1"
+    )
+    assert (
+        await memories.list_by_id_prefix("ffffffff", tenant_id="t-1", user_id="u-1")
+        == []
+    )
+    assert await memories.list_by_id_prefix("%", tenant_id="t-1", user_id="u-1") == []
+
+
+async def test_touch_used_stamps_when_a_memory_was_last_recalled(db: PgDatabase):
+    """取回后刷 `last_used_at` (C30): 只记账, 不碰排序."""
+    base = datetime(2026, 9, 14, 10, 0, tzinfo=UTC)
+    memories = MemoriesRepository(db)
+    first = await memories.add(
+        tenant_id="t-1",
+        user_id="u-1",
+        content="老的",
+        kind=MemoryKind.EPISODIC,
+        created_at=base,
+    )
+    second = await memories.add(
+        tenant_id="t-1",
+        user_id="u-1",
+        content="新的",
+        kind=MemoryKind.EPISODIC,
+        created_at=base + timedelta(days=1),
+    )
+
+    stamped = await memories.touch_used(
+        [first.memory_id, second.memory_id], tenant_id="t-1", user_id="u-1"
+    )
+    assert stamped == 2
+
+    listed = await memories.list_for_user("t-1", "u-1")
+    assert all(memory.last_used_at is not None for memory in listed)
+    assert [memory.memory_id for memory in listed] == [
+        second.memory_id,
+        first.memory_id,
+    ], "顺序仍然只由 created_at 决定 (刷使用时刻不参与排序)"
+    # 别人的行刷不到
+    assert (
+        await memories.touch_used([first.memory_id], tenant_id="t-2", user_id="u-1")
+        == 0
+    )
+
+
+async def test_overflow_evicts_the_lowest_scoring_memory(db: PgDatabase):
+    """容量淘汰: 写到上限之上, **分值最低**的那条被软删 (行还在).
+
+    capacity=3 的小仓储写四条: 最早那条 (分值最低) 出局, 剩下的仍然只有三条
+    —— 「模型写多了靠淘汰收场」这句话的证据.
+    """
+    base = datetime(2026, 9, 14, 10, 0, tzinfo=UTC)
+    memories = MemoriesRepository(db, capacity=3)
+    for index in range(4):
+        await memories.add(
+            tenant_id="t-1",
+            user_id="u-1",
+            content=f"第 {index} 条",
+            kind=MemoryKind.SEMANTIC,
+            created_at=base + timedelta(days=index),
+        )
+
+    listed = await memories.list_for_user("t-1", "u-1")
+    assert [memory.content for memory in listed] == ["第 3 条", "第 2 条", "第 1 条"]
+
+    async with db.connect() as session:
+        rows = session.execute(
+            select(memories_table.c.content, memories_table.c.deleted_at)
+        ).all()
+    assert len(rows) == 4, "被淘汰的是软删 —— 行还在"
+    evicted = next(row for row in rows if row.content == "第 0 条")
+    assert evicted.deleted_at is not None

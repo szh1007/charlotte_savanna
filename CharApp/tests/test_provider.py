@@ -29,6 +29,7 @@ from conftest import (
     TOOL_NAMES,
     agent_url,
     citations_for_tests,
+    memory_for_tests,
     retriever_for_tests,
 )
 
@@ -77,6 +78,11 @@ EXPECTED_PARAMS: dict[str, set[str]] = {
     "pay_my_order": {"order_no"},
     # --- 知识库 (L5-b): 一个参数, 而且是**检索词**不是身份 ---
     "search_knowledge": {"query"},
+    # --- 长期记忆 (C13): content + kind 两个参数, recall 一个都不收 ---
+    "remember": {"content", "kind"},
+    "recall": set(),
+    # --- forget (C30): 按编号删, 那串编号来自 recall 的显示 ---
+    "forget": {"memory_id"},
 }
 
 # 任何形态的身份字段都不许出现在参数表里 (中英文写法都列上)
@@ -114,16 +120,21 @@ def context_for(
     )
 
 
-def provider_for(client: MinimallClient, retriever: Any = None) -> MinimallToolProvider:
+def provider_for(
+    client: MinimallClient, retriever: Any = None, memory: Any = None
+) -> MinimallToolProvider:
     """装一套工具用的提供者.
 
     `retriever` 默认给一个**空壳** (构造期不连 Milvus 也不加载模型, 见 conftest 的
-    `retriever_for_tests`) —— 要看「传给工具的是不是这一个」的用例自己传替身.
+    `retriever_for_tests`), `memory` 默认给一份**空的内存替身** (`memory_for_tests`)
+    —— 要看「传给工具的是不是这一个」的用例自己传替身. 名字与顺序那条用例比的是
+    `TOOL_NAMES`, 所以这里默认把记忆也装上 (与生产的装配一致).
     """
     return MinimallToolProvider(
         client,
         retriever if retriever is not None else retriever_for_tests(),
         citations_for_tests(),
+        memory=memory if memory is not None else memory_for_tests(),
     )
 
 
@@ -306,7 +317,8 @@ async def test_the_identity_only_tools_take_no_arguments_at_all(
     no_argument = [item for item in tools if EXPECTED_PARAMS[item.name] == set()]
 
     # 5 个只读 (分类/精选/购物车/余额/地址) + 2 个写 (清空购物车/看我的退款)
-    assert len(no_argument) == 7
+    # + 1 个记忆 (recall —— 身份在闭包里, 它一个参数都不收)
+    assert len(no_argument) == 8
     for item in no_argument:
         assert item.parameters.get("required", []) == []
 
