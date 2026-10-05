@@ -63,7 +63,7 @@ project/rag_text2sql/
 │   │   ├── query_schema.py          #   Pydantic 请求模型
 │   │   └── dependencies.py          #   FastAPI 依赖注入 (仓库实例化)
 │   ├── clients/                     # 基础设施客户端 (单例)
-│   │   ├── mysql.py                 #   连接池 + 会话工厂 (dw_client / meta_client)
+│   │   ├── mysql.py                 #   连接池 + 会话工厂 (dw_client 带只读档案 / meta_client)
 │   │   ├── qdrant.py                #   AsyncQdrantClient
 │   │   ├── es.py                    #   AsyncElasticsearch
 │   │   └── embedding.py             #   OpenAIEmbeddings -> TEI 兼容服务
@@ -73,7 +73,8 @@ project/rag_text2sql/
 │   ├── core/                        # 框架层
 │   │   ├── lifespan.py              #   启动/关闭时初始化与释放客户端
 │   │   ├── log.py                   #   loguru 配置 (request_id 注入)
-│   │   └── context.py               #   ContextVar (request_id)
+│   │   ├── context.py               #   ContextVar (request_id)
+│   │   └── sql_guard.py             #   SQL 护栏判据 (只读白名单 / LIMIT 补齐收紧)
 │   ├── models/                      # ORM / TypedDict 实体
 │   │   ├── mysql.py                 #   table_info / column_info / metric_info / column_metric
 │   │   ├── qdrant.py                #   ColumnInfoQdrant / MetricInfoQdrant
@@ -81,7 +82,7 @@ project/rag_text2sql/
 │   ├── repositories/                # 数据访问层 (按存储拆分)
 │   │   ├── mysql/
 │   │   │   ├── meta.py              #   元数据库 CRUD (全量重建幂等 / 主外键查询)
-│   │   │   └── dw.py                #   数仓只读查询 (类型 / 取值 / SQL 执行)
+│   │   │   └── dw.py                #   数仓只读查询; 模型生成的 SQL 从这里过护栏
 │   │   ├── qdrant/
 │   │   │   ├── column.py            #   字段集合: 重建 / 批量 upsert / 向量检索 (阈值 0.6)
 │   │   │   └── metric.py            #   指标集合: 重建 / 批量 upsert / 向量检索 (阈值 0.7)
@@ -90,6 +91,13 @@ project/rag_text2sql/
 │   ├── services/                    # 业务服务层
 │   │   ├── meta.py                  #   元数据索引构建 MetaService (yaml -> 三存储)
 │   │   └── query.py                 #   查询服务 QueryService (图执行 + SSE)
+│   ├── eval/                        # 评估体系 (C15, 见 §7)
+│   │   ├── golden.py                #   题库加载与严格校验
+│   │   ├── golden_set.yaml          #   39 题 (人工写问题 + 人工确认口径, 随仓库提交)
+│   │   ├── metrics.py               #   L1 计分 / 极差 / EEX 结果比对 (纯函数)
+│   │   ├── runner.py                #   跑批器 + CLI (--check-gold 验题库 / --merge-into 复跑并回)
+│   │   ├── report.py                #   JSON + Markdown 双报告渲染
+│   │   └── reports/                 #   落盘报告 (baseline.json/md + after-c16.json/md)
 │   └── scripts/
 │       └── build_meta.py            #   元数据索引构建入口
 ├── conf/                            # 本地私有配置 (根 .gitignore *.yaml 已忽略, 不提交)
@@ -181,9 +189,28 @@ graph LR
 | `filter_metric` | LLM 裁剪指标 | `filter_metric_info` prompt: 仅保留实际度量诉求对应指标, 可返回 `[]`（无度量时不选） |
 | `pad_context` | 补充生成上下文 | 当前日期 `date` / 星期 / 季度（当日实取）+ dw 库 `SELECT VERSION()` 版本与方言（MySQL 8.0） |
 | `generate_sql` | 生成 SQL | `generate_sql` prompt: 表/字段信息、指标口径、日期、方言全部 yaml 注入; 约束仅用真实表字段 / 只读 / 单条 / 无 Markdown 围栏 |
-| `validate_sql` | 真实执行校验 | 直接对生成的 SQL 执行一次（不取结果）, 异常则写入 `error` 走 `correct_sql`, 否则置 `error=None` 执行 |
+| `validate_sql` | 真实执行校验 | 直接对生成的 SQL 执行一次（不取结果）, 异常则写入 `error` 走 `correct_sql`, 否则置 `error=None` 执行; 执行前**过护栏**（白名单 + LIMIT, 见 §3.3）, 被拒时把可操作理由回填给校正节点 |
 | `correct_sql` | 错误驱动校正 | `correct_sql` prompt: 注入错误信息最小修复, 强制保持原业务语义 / 结构稳定, 返回修正 SQL 后进入执行 |
-| `execute_sql` | 执行并返回 | 执行 `text(sql)`, 结果以 `{"result": [...]}` 经 stream_writer 推送 SSE |
+| `execute_sql` | 执行并返回 | 执行 `text(sql)`, 结果以 `{"result": [...]}` 经 stream_writer 推送 SSE; 同样**过护栏** |
+
+### 3.3 执行护栏（C16）
+
+链路执行的是**模型生成的 SQL**，所以「能不能进数据库」不靠 prompt 里的一句话，而是三层闸门：
+
+| 层 | 位置 | 行为 |
+|----|------|------|
+| **语句级白名单** | `app/core/sql_guard.py` + `DwMysqlRepository` | 只放行单条 `SELECT` / `WITH` 查询（词表挡藏在子句里的写操作、开头判定挡多语句）；扫描前先屏蔽字符串字面量与**惰性**注释，避免误杀；**被拒的语句不下发数据库**，拒绝理由是给校正节点看的可操作文本 |
+| **LIMIT 补齐 / 收紧** | 同上 | 没有 `LIMIT` 的查询在末尾补默认 200；带 `LIMIT` 超过上限 1000 的收紧到上限；都没超就原样放行。**只动数字、不重写语句**（早先的派生表包裹会让两表同名列的合法 JOIN 报 1060）；留痕记「补过 / 收紧过 / 原样」 |
+| **数据库侧兜底** | `app/clients/mysql.py` 的 dw 连接档案 | 每个池连接建立时就 `SET SESSION TRANSACTION READ ONLY` + `max_execution_time`（默认 10s）+ `read_timeout` / `connect_timeout`；写操作报 1792，慢查询报 3024 且连接仍可用 |
+
+四个实测出来的细节，都写进了判据与用例：
+
+- **`/*! … */` 是可执行注释**：MySQL 会执行里面的内容，所以它不能被当作惰性注释屏蔽掉（否则 `SELECT 1 /*!80000 ; DROP … */` 能绕过白名单）；同理 `--x` 在 MySQL 里不是注释（要求 `--` 后跟空白），把它当注释会让后面的内容隐形
+- **asyncmy 默认开着 `MULTI_STATEMENTS`**（实测 `SELECT 1; SELECT 2` 两条都执行）—— 所以白名单里「只允许单条语句」那条检查是承重的，不是形式
+- 只读事务连 `SELECT ... FOR UPDATE` 这类锁定读也一并拒掉（1792）
+- 被 `max_execution_time` 掐断的只是那条语句，**连接不会废**，校正节点能接着走（3024 之后同一会话照常查询）
+
+单节点重试与 LLM 预算：`DwMysqlRepository` 只在**连接失效**时重试一次（语句错不重试，它该走校正节点）；LLM 调用显式给了 `timeout`（默认 60s）与 `max_retries`（默认 2，交给 OpenAI SDK —— 只重 429/5xx/连接/超时，外加 408/409 这两个幂等可重的，其余 4xx 直接放弃）。
 
 ---
 
@@ -225,7 +252,10 @@ qdrant:  { host: localhost, port: 6333, embedding_size: 1024,
            collection_name_column: rag-text2sql-column, collection_name_metric: rag-text2sql-metric }
 embedding: { host: localhost, port: 8088, model: BAAI/bge-large-zh-v1.5 }
 es: { host: localhost, port: 9200, index_name: rag-text2sql-value }
-llm: { model_name: <模型名>, api_key: <密钥> }   # DeepSeek 等 OpenAI 兼容服务
+llm: { model_name: <模型名>, api_key: <密钥>,   # DeepSeek 等 OpenAI 兼容服务
+       timeout_s: 60.0, max_retries: 2 }        # C16 的调用预算 (缺省即可, 见 §3.3)
+dw_guard: { statement_timeout_ms: 10000,        # dw 连接的加固档位 (缺省即可)
+            read_timeout_s: 30, connect_timeout_s: 5 }
 ```
 
 ```yaml
@@ -267,7 +297,10 @@ cd frontend && npm install && npm run dev    # http://127.0.0.1:8201
 # 5. 图级自测 (graph.py 自带测试入口, 问题: 统计华北地区的销售总额)
 python -m app.agent.graph
 
-# 6. curl 验证
+# 6. 跑评估 (见 §7; 要真模型, 39 题 x 3 次约 40 分钟; 只验题库用 --check-gold)
+python -m app.eval.runner
+
+# 7. curl 验证
 curl -N -X POST http://127.0.0.1:8200/api/query -H "Content-Type: application/json" -d '{"query": "统计华北地区的销售总额"}'
 ```
 
@@ -300,53 +333,82 @@ curl -N -X POST http://127.0.0.1:8200/api/query -H "Content-Type: application/js
 | 1 | **召回噪声进候选, LLM 过滤是唯一闸门** | `_3` 合并表集合包含无关表（别名短向量命中同义词, 如 `category.alias="分类"` 泛命中） | 阈值调优（见 6.1-5）; `_4_1` 过滤 prompt 已规则化（时间/人群/主外键必留、冗余必删）, 但候选过大时仍可能误留/误删。改进: 过滤前按关键词做一次**规则保底剪枝**, 与 LLM 结果取交集 |
 | 2 | **过滤阶段误删必需字段 → 生成幻觉** | `_4_1` 结果中缺关键列, 而 `_6` 生成 SQL 仍出现该列 | 过滤输出与 `_1` 关键词/`_3` 合并结果**交叉校验**, 缺列则回退补齐再生成; 目前无此回退, LLM 可能编造未提供字段 |
 | 3 | **指标口径与 SQL 语义脱节** | `_6` 生成的 SQL 聚合/过滤与 query 意图不符（问数量却 SUM 金额, 日志中"卖了多少台"一度召回 GMV 指标） | 指标元数据只有 description + 关联列, **无口径模板**（聚合函数/单位/过滤规则）; 扩展为「指标口径注册表」后在 generate prompt 中以规则注入, 减少 LLM 自行解读 |
-| 4 | **校验只查执行, 不查语义** | `_7` 通过但结果明显错误（如丢 WHERE、忘 GROUP BY 维度） | `validate_sql` 仅真实执行一遍, 语法/运行通过即放行。改进: ① 校验 LIMIT/只读/未引用候选外字段等硬规则 ② 增加 LLM 语义一致性双检（SQL ↔ query ↔ 召回 schema） |
+| 4 | **校验只查执行, 不查语义** | `_7` 通过但结果明显错误（如丢 WHERE、忘 GROUP BY 维度） | `validate_sql` 真实执行一遍即放行 —— **执行前的硬规则已补**（只读白名单 + LIMIT, 见 §3.3）; 仍缺「未引用候选外字段」检查与 LLM 语义一致性双检（SQL ↔ query ↔ 召回 schema） |
 | 5 | **校正只有一轮, 无循环上限与兜底** | `correct_sql` 一次后仍失败则 `execute_sql` 返回 error（日志中 `division by zero` 跨多天反复出现） | 改为 `validate → correct` **最多 N 轮**后终止; 达到上限时输出"生成失败 + 最后错误", 而非裸错误流; 除零类运行时错误可在 prompt 中显式要求 `NULLIF` 防护 |
 | 6 | **时间语义裸交给 LLM** | `_5` 只提供今天日期/季度; "去年 / 上季度 / 最近三个月"由 LLM 自译, 且 dim_date 与事实表关联方式未显式注入 | 增加**时间解析节点**: 相对时间 → 绝对区间并翻译成 `date_id BETWEEN` 条件; 事实表日期关联字段（外键）在 `_4` 后显式保留 |
 | 7 | **无对话历史与澄清机制** | 歧义问题（"华北"指 region_name 还是 province 某值）直接生成 | 召回不确定时**追问澄清**（列出候选取值让用户选）或返回候选列表而非硬生成; 前端已有步骤流, 可扩展选择交互 |
 | 8 | **无 few-shot 与历史复用** | 同类问题每次重新生成, 波动大 | 沉淀「query ↔ SQL 样例库」, 生成前检索相似问题作为 few-shot 注入; 同一会话内缓存 |
-| 9 | **指标误用无法被检出** | 端到端无人核对结果与 query | 指标判定（要什么度量）与过滤（用哪些字段）分层输出可解释的**依据链**, 供前端/用户核验; 评估体系落地后自动检出（见 §7） |
+| 9 | **指标误用无法被检出** | 端到端无人核对结果与 query | 指标判定（要什么度量）与过滤（用哪些字段）分层输出可解释的**依据链**, 供前端/用户核验; 评估体系（§7）能测出"该调的指标有没有召回", 但"SQL 是否按该口径算"仍要靠 EEX / 人核 |
 
 ---
 
-## 7. 评估体系搭建建议（当前未落地）
+## 7. 评估体系（已落地: golden set + L1/L2 报告）
 
-系统目前无自动化评估（logs 中为手工试问记录）。Text2SQL 评估与纯 RAG 检索评估不同: 终点不是"答对", 而是 **SQL 可执行且结果正确**。建议自建轻量评测框架, 分三层建模:
+> 重跑日期 **2026-10-05**（模型 `deepseek-v4-flash`, 39 题 x 3 次, 用时 32.6 分钟）;
+> 2026-10-06 复跑首轮超时的 2 道题并回基线（`--cases … --merge-into …`, 其余题不重掷）。
+> 一键命令: `python -m app.eval.runner`（要真模型）; 只验题库不调模型: `--check-gold`。
+> 报告落盘 `app/eval/reports/baseline.{json,md}` —— JSON 给程序 diff, Markdown 给人看。
+> 2026-10-06 **C16 加固后全量重跑**：`app/eval/reports/after-c16.{json,md}`（对比结论见 §7.6）。
 
-### 7.1 评测分层与指标
+### 7.1 两个数字（验收口径）
 
-| 层级 | 评测对象 | 建议指标 | 说明 |
-|------|----------|----------|------|
-| L1 Schema 召回 | `_2` 召回 + `_3` 合并 + `_4` 过滤后的表/列/指标集合 | 列精确率 / 列召回率 / 表必命中率 / 指标命中率 | 题库标注 **gold 列集合与 gold 表集合**; 对照三处输出分别算分, 可定位"召回丢列 vs 过滤误删" |
-| L2 SQL 生成 | `_6` 生成 + `_7`/`_8` 校正后的最终 SQL | 可执行率（EX）/ 结果正确率（EEX: 与 gold SQL 执行结果逐行对比, 忽略列序）/ SQL 文本匹配率 | 参考 Spider / BIRD 的 execution accuracy 口径; 结果对比是**无模型的主观性指标**, 应为第一判据 |
-| L3 端到端 | 最终结果对用户问题的回答质量 | LLM-as-Judge（正确性 / 完整性 / 口径明确性 1-5 分）或人工抽检 | 覆盖口径类问题（"销售额含退货吗"）与语义类问题 |
+| 指标 | 数值 | 读法 |
+|------|------|------|
+| **L1 列召回率** | **90.5%** | 过滤后的候选集里, gold 必需列找回多少 |
+| **L2 SQL 可执行率（EX）** | **100%**（117/117） | 最终 SQL 在 dw 库跑得通的比例 |
+| └ 其中「没跑完」的 run | **0** | 首轮曾有 2 次 240s 超时, 复跑全部成功并回基线（现场与根因见 §7.5） |
 
-### 7.2 题库结构（golden dataset）
+配套数字: 列精确率 97.4%（臂内极差 1.3pp）· 表必命中率 82.1% · 指标命中率 100% ·
+召回@merge 94.5%（诊断行）· 运行失败率 0% · EEX 9 道手算题 100% · 生成 SQL 撞执行护栏被拒 0 次。
 
-```json
-{
-  "query": "统计华北地区的销售总额",
-  "gold_columns": ["fact_order.order_amount", "dim_region.region_name", "fact_order.region_id", "dim_region.region_id"],
-  "gold_tables": ["fact_order", "dim_region"],
-  "gold_metric": "GMV",
-  "gold_sql": "SELECT SUM(fo.order_amount) FROM fact_order fo JOIN dim_region r ON fo.region_id = r.region_id WHERE r.region_name = '华北'",
-  "notes": "口径: 按 region_name 归属, 非 province"
-}
-```
+### 7.2 评测分层与判据
 
-建议 30~50 条起步, 覆盖: 单表聚合 / 多表 JOIN 聚合 / 时间区间 / 相对时间 / 维度过滤值 / 指标别名问法 / 无指标列表型问题 / 歧义问题（记录预期行为）。
+| 层级 | 评测对象 | 指标 | 状态 |
+|------|----------|------|------|
+| L1 Schema 召回 | `filter_table` / `filter_metric` **之后**的候选集（读节点输出, 不读最终 SQL） | 列精确率 / 召回率 · 表必命中率 · 指标命中率 · 召回@merge（诊断） | ✅ 已落地 |
+| L2 SQL 生成 | 最终 SQL 在 dw 库的执行 | 可执行率 EX（全部题）· EEX 结果完全一致（9 道能手算的题） | ✅ 已落地 |
+| L3 端到端 | 结果对问题的回答质量 | LLM-as-judge | ❌ 不做（理由落在报告"不做什么"节: 引 judge 会把非确定性引进判据） |
 
-### 7.3 稳定性设计与落地路径
+- 候选集**读节点输出**而不是最终 SQL 文本: 报告里 "召回@merge → 过滤后" 两行一比, 就知道列是丢在召回还是丢在过滤
+- **EX 对运行失败的题计 0**（没有 SQL 可执行）, 失败率单独给一行, 两个数字可分解
+- EEX 只在前 7 道能手算的题上做: 30~50 题的规模上逐题人工确认结果集的性价比不成立, 如实说明范围比硬凑数字好
 
-- **隔离 LLM 随机性**: L1 评测时对 `_1` 扩展关键词 / `_4` 过滤用固定输出注入（直接喂题库关键词或 patch LLM）, 让检索链路可复现; L2 生成层单独全量跑 LLM 看真实分布
-- **逐节点快照**: 为每题记录 12 个节点（9 个逻辑阶段）的输入输出 JSON（一次执行收集全链 trace）, 指标异常时能直接定位到层
-- **真实执行**: SQL 统一在只读事务 / `LIMIT` 保护下执行, 结果序列化对比
-- 落地路径（三个里程碑）:
-  1. 题库 + 执行器脚本（跑题 → 收集 trace → 算 L1/L2 指标 → 落盘 JSON 报告）
-  2. 基线报告 + 分层定位（调阈值 / 改 prompt 后重跑对比基线, 全部指标量化）
-  3. 接入 L3 LLM-Judge 与 CI（提交前跑 50 题回归, 失败即拦截）
+### 7.3 题库（golden set）
 
-> 成熟后可与 rag_knowledge 的 `rag_eval` 思路对齐: 统一入口类 + 报告落盘 `artifacts/`, 但指标口径需按 Text2SQL 语义另行定义（见 §7.1）。
+- `app/eval/golden_set.yaml`, **39 题**, 七类覆盖: 单表聚合 5 / 多表 JOIN 8 / 时间区间 5 / 相对时间 4 / 维度取值 8 / 指标别名 4 / 无指标列表 5
+- **标准答案来源: 人工写问题 + 人工确认口径**（PLAN D4）。gold 表/列/SQL 照 `meta_config.yaml` 与 dw 数据语义手写, **绝不用系统跑通的 SQL 反推** —— 否则等于把当前缺陷固化成"正确答案", 题库就永远测不出问题
+- 每题带 `notes` 口径说明; 加载期严格校验（未知字段 / 重复 id / 类别枚举 / "表名.列名" 格式）
+- `--check-gold` 自检全部 gold SQL 可执行（本次 39/39）; 另有测试把 gold 标识符与 `meta_config.yaml` 交叉核对
+- 两个已定边界: **不扩 dw 数据**（时间维止于 2025-03-31, 空窗口题如实记录）; **不设计歧义题**（当前定位是简单问答统计, 系统也尚无澄清机制, 记"有没有反问"会是恒定 0）
+
+### 7.4 跑批器与稳定性
+
+| 设计 | 做法 |
+|------|------|
+| 每题跑 N 次 | 默认 N=3, 报告给每题均值与**臂内极差**; 本次 L1 极差全为 0（temperature=0 的产物 —— 按 L4 的教训, "极差为 0"不能读成"稳定"） |
+| 逐节点快照 | `stream_mode=["custom","updates"]` 接住每个节点的增量, 逐 run 落 keywords / 召回 id / merge 候选 / 过滤后候选 / SQL / 校验错误 —— 失败时能定位到哪一层 |
+| 快照深拷贝 | `filter_table` 是**原地**改 `table_infos` 的; 不深拷贝的话"召回@merge"会被过滤步骤改掉, 诊断行整个失效（有回归用例钉住） |
+| 执行护栏 | 跑批**直接用生产链路的执行咽喉**（`DwMysqlRepository` + §3.3 的三层闸门）—— C15 那版跑批侧子护栏已在 C16 删除, 图内图外同一份实现; 档位也与生产同档（补 200 / 上限 1000） |
+| 失败隔离 | 单题超时 240s / 图抛错都记进报告并继续整批; 每题用独立的只读会话 |
+| 命令行 | `--times N` / `--cases a,b` 局部跑 · `--check-gold` 只验题库不调模型 · `--merge-into` 复跑指定题并回已落盘报告（其余题不重掷）· `--max-rows` / `--limit-cap` 换护栏档位 · `--out` / `--stem` 换落盘位置 |
+
+### 7.5 本次读出来的结论
+
+- **时间类（time_range / relative_time）表必命中率 20% / 25% 不是召回失败**: merge 阶段 dim_date 已召回（79% / 73%）, 是 `filter_table` 把它裁掉、系统改走 `fact_order.date_id` 直接取范围（逐 run 数: dim_date 在两类题里分别缺 12/15、9/12 次, 而最终 SQL **0 次**引用它）
+- **两种时间写法等价这件事是量出来的, 不是推的**: time-01 / relative-01 开 EEX 直接比对结果集（通过）; 另用独立口径 SQL（只对 `fact_order.date_id` 取区间, 不经过任何节点）手工复核 6 道时间/相对时间题 x 3 次, 结果全部一致
+- **无指标列表题列精确率 79%**: merge 会给涉及的表补主外键, 过滤后仍留下未被使用的列（最差两道多带 `dim_customer.customer_id` 等, 由报告现算）
+- **首轮 2 次 240s 超时都卡在同一处, 复跑全部成功**: 两次都挂在 `recall_value`（取值召回）的那次 LLM 调用上 —— 该节点的两条日志一条都没打出来, 而并行的列召回 / 指标召回都在几秒内完成（app.log 时间窗核对）; 该调用正常只要 2~20s（探针 12 次实测）, 复跑同题 6 次全部 8.6~17.1s 通过。**根因是上游偶发挂起**: 客户端读超时 600s、`max_retries=2`, 240s 内既没报错也没重试记录 —— 请求一直在飞; prompt 仅 1.6KB、只要一个小 JSON, 排除"生成太长"。与 C16 的"无超时与重试"是同一条, 现场位置已记进 C16
+- 那两题的 SQL 与结果本来也是对的一次（超时那跑没产出 SQL, 不是算错）: 复跑后 `single-04` 仍是 622 件、`nom-05` 仍是 20 位客户
+- 117 次里模型没有生成过非只读语句（护栏 0 次命中 —— 0 次也是结论）
+
+### 7.6 下一步
+
+- ~~C16 加固后重跑对比~~ **已完成（2026-10-06）**: 加固（§3.3）后全量重跑, 可执行率 100% 不变、
+  表必命中 / 指标命中 / 召回@merge / 失败率**完全不变**; 列召回率 90.5% → 90.3%、精确率 97.4% → 96.8%
+  的三处逐题抖动都在**过滤阶段的候选集**（LLM 侧固有波动, 加固前那一批的臂内也出现过）——
+  护栏本身 117 次全是「包裹」, 0 次拒绝
+- §8.6 时间语义显式化落地后, 时间类的"策略差异"应变成口径一致 —— 本报告即其对照基线
+- 题库扩容需要先扩 dw 数据（更丰富的时间跨度）, 本次按决策不扩
 
 ---
 
@@ -354,10 +416,11 @@ curl -N -X POST http://127.0.0.1:8200/api/query -H "Content-Type: application/js
 
 按优先级排序（低序号先做）, 每项给出方案参考。
 
-### 8.1 建立 Text2SQL 评测闭环
+### 8.1 ~~建立 Text2SQL 评测闭环~~（已完成, 见 §7）
 
-- **问题**: 无量化手段, 调参/改 prompt 全凭手工试问（§7 已给完整方案）。
-- **方案参考**: 按 §7.3 里程碑落地; 召回阈值（0.6 / 0.7）、TopK、prompt 版本的每次变更都留基线对比。
+- **原问题**: 无量化手段, 调参/改 prompt 全凭手工试问。
+- **现状（2026-10-05）**: golden set（39 题）+ L1/L2 报告已落地, 基线数字与重跑命令见 §7。
+- **后续纪律**: 召回阈值（0.6 / 0.7）、TopK、prompt 版本的每次变更, 都重跑 §7 的报告做前后对照（JSON 可直接 diff）。
 
 ### 8.2 空召回与失败兜底
 
@@ -372,7 +435,8 @@ curl -N -X POST http://127.0.0.1:8200/api/query -H "Content-Type: application/js
 ### 8.4 SQL 语义一致性双检与多轮校正
 
 - **问题**: 校验只查执行不查语义, 校正仅一轮（§6.2-4/5）。
-- **方案参考**: `_7` 后增加规则检查（强制 LIMIT / 只读白名单 / 字段名 ∈ 候选集）; `_8` 循环上限 N=3; 最后增加一次 LLM 复核节点: 把 query、SQL、召回 schema 三者对照, 输出一致/不一致原因。
+- **已完成一半（C16，见 §3.3）**: 规则检查里的**强制 LIMIT 与只读白名单**已落地（执行咽喉 `DwMysqlRepository` + 数据库侧只读事务），拒绝理由回填给校正节点。
+- **仍缺**: 「字段名 ∈ 候选集」的规则校验; `_8` 循环上限 N=3（现在仍是一轮）; LLM 语义复核节点（把 query、SQL、召回 schema 三者对照, 输出一致/不一致原因）。
 
 ### 8.5 指标口径注册表升级
 
@@ -401,4 +465,4 @@ curl -N -X POST http://127.0.0.1:8200/api/query -H "Content-Type: application/js
 
 ---
 
-> 最后更新: 2026-09-30（C01: 节点计数与 ES `_id` 口径修正 · 两处真 bug 修复 · 借道导入清理 · 测试骨架）
+> 最后更新: 2026-10-06（C15: 评估体系落地 —— golden set 39 题 + L1/L2 报告（列召回率 90.5% / 可执行率 100%）；复跑首轮超时的 2 题并回基线 · **C16: 执行护栏落地（§3.3: 只读白名单 + LIMIT 补齐/收紧 + 只读事务与语句预算 + LLM 调用预算），加固后全量重跑对比 100% 不变**）

@@ -61,6 +61,49 @@ class FakeMetaMysqlRepository:
         return self._key_columns.get(table_id, [])
 
 
+class FakeResult:
+    """`session.execute(...)` 的返回值替身: 只实现 `.mappings().fetchall()`."""
+
+    def __init__(self, rows: list[dict]) -> None:
+        self._rows = rows
+
+    def mappings(self) -> FakeResult:
+        return self
+
+    def fetchall(self) -> list[dict]:
+        return self._rows
+
+
+class FakeAsyncSession:
+    """dw 会话替身: 记录下发过的语句, 按脚本回放结果或异常.
+
+    `script` 的每个元素是 `(error, result)`; 第 n 次 `execute` 取第 n 条,
+    用完之后一直用最后一条 —— 这样「第一次断连, 第二次成功」这类序列能写出来.
+    `result=` / `error=` 是单条脚本的简写 (老用例在用).
+    """
+
+    def __init__(
+        self,
+        result: list[dict] | None = None,
+        error: Exception | None = None,
+        script: list[tuple[Exception | None, list[dict] | None]] | None = None,
+    ) -> None:
+        self.statements: list[str] = []
+        self.rollbacks = 0
+        self.script = script if script is not None else [(error, result)]
+
+    async def execute(self, statement: object):
+        self.statements.append(str(statement))
+        index = min(len(self.statements) - 1, len(self.script) - 1)
+        error, result = self.script[index]
+        if error is not None:
+            raise error
+        return FakeResult(result if result is not None else [])
+
+    async def rollback(self) -> None:
+        self.rollbacks += 1
+
+
 class FakeDwMysqlRepository:
     """dw 库的执行替身: `execute_sql` 要么返回预置结果, 要么按预置抛错."""
 

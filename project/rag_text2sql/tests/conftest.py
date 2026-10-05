@@ -31,7 +31,7 @@ _LOAD_CUT_MARKER = "config_file = "
 
 # 占位值刻意取「空」而不是 127.0.0.1 那种像真的地址: 万一将来有 import 期就连接的
 # 代码, 空值会当场失败, 而不是悄悄连到本机某个真服务上
-_PLACEHOLDERS: dict[type, object] = {bool: False, int: 0, str: ""}
+_PLACEHOLDERS: dict[type, object] = {bool: False, int: 0, float: 0.0, str: ""}
 
 
 def _instantiate(config_class: type) -> object:

@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from omegaconf import OmegaConf
@@ -63,6 +63,21 @@ class ESConfig:
 class LLMConfig:
     model_name: str
     api_key: str
+    # C16: LLM 调用的预算 —— 没有它时 SDK 默认读超时 600s, 一次上游挂起
+    # 能烧掉 10 分钟 (C15 跑批实测: 2/117 次卡在取值召回的调用上)
+    timeout_s: float = 60.0
+    # 重试次数交给 OpenAI SDK: 它只重瞬态 (429 / 5xx / 连接失败 / 超时),
+    # 4xx 直接放弃 —— 与 C16 票面的判据一致, 不自己再包一层
+    max_retries: int = 2
+
+
+@dataclass
+class DwGuardConfig:
+    """dw 连接的加固档位 (C16): 语句预算 + 两层传输超时."""
+
+    statement_timeout_ms: int = 10_000
+    read_timeout_s: int = 30
+    connect_timeout_s: int = 5
 
 
 @dataclass
@@ -74,6 +89,8 @@ class AppConfig:
     embedding: EmbeddingConfig
     es: ESConfig
     llm: LLMConfig
+    # 有默认值: 老配置文件缺这一节也能起 (合并时按默认补齐)
+    dw_guard: DwGuardConfig = field(default_factory=DwGuardConfig)
 
 
 # 配置文件路径

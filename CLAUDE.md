@@ -367,7 +367,8 @@ charlotte_savanna/
 | Agent (`app/agent/graph.py`) | ✅ | LangGraph 单图 9 节点: 关键词 → 三路召回 → 合并补齐 → LLM 过滤 → 生成/校验/校正/执行 |
 | API (`main.py`) | ✅ | FastAPI SSE（端口 8200, POST /api/query） |
 | 前端 (`frontend/`) | ✅ | Vue 3 + Vite（端口 8201, /api 代理, SSE 步骤流 + 结果表格） |
-| 评估体系 | ❌ | 暂无, 分层搭建建议见子项目 README §7 |
+| 评估体系 (`app/eval/`) | ✅ | golden set 39 题 + 跑批器（L1/L2 报告）; 2026-10-05 基线（2026-10-06 复跑超时题并回）: 列召回率 90.5% / 可执行率 100% |
+| 执行护栏 (`core/sql_guard.py`) | ✅ | C16: 只读白名单 + LIMIT 补齐/收紧（默认 200 / 上限 1000）; dw 连接只读事务 + `max_execution_time` 10s; LLM 调用预算 60s × 2 次重试（只重瞬态） |
 
 > 已闭环，`cd project/rag_text2sql && python main.py`（127.0.0.1:8200）+ `cd frontend && npm run dev`（8201）启动。召回率/准确率偏低排查与改进方向见子项目 README §6 ~ §8。
 
@@ -444,6 +445,7 @@ charlotte_savanna/
 - **rag_knowledge 后端**：`sh/rag_knowledge.sh`（或 `python -m project.rag_knowledge.app.api.server`, 127.0.0.1:8100, 原生 HTML 页面，无独立前端）
 - **rag_knowledge 评测**：`cd project/rag_knowledge && python -m tests.test_rag_eval_tester`（详见子项目 README §6）
 - **rag_text2sql 建索引**：`cd project/rag_text2sql && python -m app.scripts.build_meta`（依赖 MySQL meta/dw + Qdrant + ES + Embedding 服务）
+- **rag_text2sql 评估**：`cd project/rag_text2sql && python -m app.eval.runner`（真模型, 39 题 x 3 次约 36 分钟; 只验题库用 `--check-gold`; 报告落 `app/eval/reports/`，详见子项目 README §7）
 - **rag_text2sql 后端**：`sh/rag_text2sql_backend.sh`（或 `cd project/rag_text2sql && python main.py`, 127.0.0.1:8200, 配置见 conf/*.yaml）
 - **rag_text2sql 前端**：`sh/rag_text2sql_frontend.sh`（或 `cd project/rag_text2sql/frontend && npm run dev`, 127.0.0.1:8201）
 - **charplot 后端**：`sh/charplot_backend.sh`（或 `python -m project.charplot.api.server`, 127.0.0.1:8004, AI 能力端; Django 侧随主项目 8000 启动, 前置 MySQL/Redis/Milvus + modelscope 本地模型）
@@ -502,4 +504,4 @@ cd project/charplot/frontend && npm install
 
 ---
 
-> **最后更新**：2026-10-03 | **维护者**：Claude Code (charlotte)
+> **最后更新**：2026-10-05 | **维护者**：Claude Code (charlotte)

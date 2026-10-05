@@ -48,6 +48,10 @@ async def filter_table(state: DataAgentState, runtime: Runtime[DataAgentContext]
         """
         logger.info(f"表结构过滤信息\n{result}")
 
+        # 注意: 下面这些 remove 是**原地**改 `state["table_infos"]` 里的表与列,
+        # 返回的也是同一个列表对象. 任何在节点之外取快照的消费者 (如跑批器的
+        # 逐节点快照) 必须深拷贝 —— 否则它在 merge 阶段抓的候选集会被这里改掉
+        # (C15 踩过: 「召回@merge」整行诊断因此失真).
         for table_info in table_infos[:]:  # 浅拷贝: 遍历中有删除操作, 所以要复制一份
             table_name = table_info["name"]
             columns = table_info["columns"]

@@ -23,6 +23,9 @@ env/
 # 于是它天然落在上面那条通用规则里 —— 而它是产品的一部分, 跟 manifest 同一个道理:
 # 缺了它, 两个 A/B 就没有可跑的题.
 !CharApp/eval/cases/*.yaml
+# 例外: rag_text2sql 的评估题集 (C15). 同理 —— 题是数据, 是评估体系的一半,
+# 缺了它「跑批器一行命令」就没有可跑的题.
+!project/rag_text2sql/app/eval/golden_set.yaml
 
 # --- IDE / 编辑器 ---
 .idea/
