@@ -20,6 +20,10 @@
 `CHARAPP_EMBEDDING_*` / `CHARAPP_RERANKER_*` / 两个 K / `CHARAPP_QUERY_REWRITE`):
 向量库地址与两个本地模型的位置是**部署期**配置, 与前面几组同属「业务读 env」这一个
 翻译层 —— 它是这一页的最后一段, 不是另一页纸。
+
+暴露侧 (`mcp_server.py`) 要的那个买家 (`CHARAPP_MCP_USER_ID`) 同理: 它是**那个进程
+代表谁**的全部 (客户端说什么都不算数, 见 ADR-0030), 与上面几组都不是一回事 —— 但
+同样是「业务读 env」, 同样只该有一处翻译。
 """
 
 from __future__ import annotations
@@ -41,6 +45,11 @@ ENV_TOKEN = "CHARAPP_INTERNAL_TOKEN"
 # 服务进程的监听地址与端口 (与既有 CHARAPP_* 同族)
 ENV_SERVER_HOST = "CHARAPP_SERVER_HOST"
 ENV_SERVER_PORT = "CHARAPP_SERVER_PORT"
+
+# 暴露侧 (MCP server) 代表的那**一个**买家 (ADR-0030). 它与上面那两个不是一族:
+# 那两个说「监听在哪儿」, 这个说「这个进程代表谁」—— MCP 客户端不在浏览器的信任域
+# 里, 身份因此只能绑死在配置里 (为什么见 ADR-0030).
+ENV_MCP_USER_ID = "CHARAPP_MCP_USER_ID"
 
 # 思考模式开关 (**服务端专用**: 命令行入口用 `--no-thinking`, 不看这个变量)
 ENV_THINKING = "CHARAPP_THINKING"
@@ -191,6 +200,47 @@ def client_from_env(env: Mapping[str, str] | None = None) -> MinimallClient:
     values = os.environ if env is None else env
     base_url = (values.get(ENV_BASE_URL) or "").strip() or DEFAULT_BASE_URL
     return MinimallClient(base_url=base_url, token=token_from_env(values))
+
+
+def mcp_user_id_from_env(env: Mapping[str, str] | None = None) -> int:
+    """读暴露侧 (MCP server) 绑定的**那一个**买家 ID (**必填, fail closed**).
+
+    它是 ADR-0030 的全部内容落到代码上的那一行: MCP 客户端**不在**浏览器的信任域
+    里 (它没有 session cookie), 所以这个进程不能像服务端那样「按请求头认人」——
+    它只能代表**配置里写死的那一个账户**, 而且这个值只从环境变量来, 客户端说什么
+    都不算数.
+
+    **不给默认值**同 `token_from_env` 那条: 猜一个 (比如 1) 的后果是任何客户端
+    连上来都能读 1 号买家的订单, 而这件事没有任何地方会报错.
+
+    Args:
+        env: 环境变量映射; None 表示读 `os.environ` (测试传一个字典来钉死配置).
+
+    Returns:
+        int: 商城里的 User ID.
+
+    Raises:
+        MinimallConfigError: 没配 / 不是整数 / 不是一个合法的 User ID. 消息里说明
+            该去哪儿配 —— 这一条是**启动期**错误, 两种人都该看见它 (使用者照着改,
+            而不是对着「没有查到订单」猜).
+    """
+    values = os.environ if env is None else env
+    raw = (values.get(ENV_MCP_USER_ID) or "").strip()
+    if not raw:
+        raise MinimallConfigError(
+            f"{ENV_MCP_USER_ID} 未配置 —— 暴露侧必须绑定一个买家账户 "
+            f"(它就是「这个 MCP server 代表谁」的全部, 见 ADR-0030), "
+            f"请在仓库根 .env 里填商城里的 User ID, 模板见 .env.example"
+        )
+    try:
+        user_id = int(raw)
+    except ValueError as exc:
+        raise MinimallConfigError(f"{ENV_MCP_USER_ID} 不是整数: {raw!r}") from exc
+    if user_id < 1:
+        raise MinimallConfigError(
+            f"{ENV_MCP_USER_ID} 应是商城里的 User ID (>= 1), 实际: {user_id}"
+        )
+    return user_id
 
 
 def thinking_from_env(env: Mapping[str, str] | None = None) -> bool | None:
@@ -589,6 +639,7 @@ __all__ = [
     "ENV_EMBEDDING_MODEL",
     "ENV_EMBEDDING_MODEL_NAME",
     "ENV_EVAL_PAYMENT_PASSWORD",
+    "ENV_MCP_USER_ID",
     "ENV_MILVUS_URL",
     "ENV_MODELSCOPE_ROOT",
     "ENV_QUERY_REWRITE",
@@ -609,6 +660,7 @@ __all__ = [
     "context_config_from_env",
     "eval_payment_password",
     "knowledge_config_from_env",
+    "mcp_user_id_from_env",
     "server_config_from_env",
     "thinking_from_env",
     "token_from_env",

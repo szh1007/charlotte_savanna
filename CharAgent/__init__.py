@@ -7,7 +7,8 @@
 
 汇聚的十一个包 (P0 的八个 + 后来补的 `prompt` / `redact` / `structured_logging`;
 职责见下表).
-(框架另外还有三个包 —— `client` / `server` / `eval` —— 刻意不在这里, 见下面第四条)
+(框架另外还有四个包 —— `client` / `server` / `mcp_client` / `eval` —— 刻意不在这里,
+见下面那几条)
 
 | 包 | 一句话 |
 |----|--------|
@@ -23,7 +24,7 @@
 | `redact` | 日志脱敏 (四条通用打码规则 + 业务声明的字段路径) |
 | `structured_logging` | 结构化日志 (一处出口 + 打码工序 + 三个 id 贯穿) |
 
-四条刻意的排除 (不是漏了, 理由各不同):
+五条刻意的排除 (不是漏了, 理由各不同):
 
 1. **`tool` (小写, 那个 @tool 装饰器) 不在顶层导出** —— 它与子包
    `CharAgent.tool` 同名, 导出会遮蔽包属性, 于是 `from CharAgent.tool import
@@ -36,7 +37,12 @@
    让只想用 agent loop 的人先装一个 web 框架. 要用 HTTP 的写
    `from CharAgent.server import create_app` 并装上那个 extra —— 这条纪律由用例
    守着 (`tests/test_root_facade.py` 起子进程验「import 根门面不会拖上 web 栈」).
-4. **`eval` 也不入本文件** —— 离线跑分那层要**真 API key** 才跑得动 (它专门打真
+4. **`mcp_client` 也不入本文件** —— 「把外部 MCP server 的工具接进来」那一层
+   (**可选依赖组** `charagent[mcp]`). 与上一条同一个理由再加一条实测: MCP SDK
+   自己会把 web 栈拖进来 (`import mcp` 之后 starlette 就在 `sys.modules` 里),
+   它进根门面等于把「零 web 依赖」那句话作废. 要用 MCP 的写
+   `from CharAgent.mcp_client import McpToolProvider` 并装上那个 extra.
+5. **`eval` 也不入本文件** —— 离线跑分那层要**真 API key** 才跑得动 (它专门打真
    模型), 与上面两条同属「要额外条件才能用」. 跑分与回看写
    `from CharAgent.eval import EvalRunner`, 命令行是
    `python -m CharAgent.eval compare a.json b.json`.

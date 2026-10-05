@@ -8,7 +8,7 @@
 #
 # 必装依赖只有八项, 且都是框架真正 import 到的. **没有 LangChain / LangGraph** ——
 # 「零框架依赖」是这个项目立身的那句话, 下面这份清单就是它的证据: 想看是否属实,
-# 把任意一项删掉, 框架立刻有 import 报错. 另外两组是**可选**的 (server / pricing):
+# 把任意一项删掉, 框架立刻有 import 报错. 另外三组是**可选**的 (server / pricing / mcp):
 # 不装它们照样能用框架的核心, 只是少了对应的那层能力.
 #
 # 与根目录 pyproject.toml 的关系: 那份是**整个仓库**的 ruff 配置, 不含 [project]
@@ -58,7 +58,7 @@ dependencies = [
 # 框架的核心 (loop / 工具 / 事件流 / 快照) 一个 web 框架都不需要, 而 server 层要
 # fastapi. 把它做成硬依赖, 等于让只想用 agent loop 的人先装一个 web 框架; 做成
 # extra, 「不装 web 框架也能用这个框架」就成了一句能兑现的话 —— 根门面因此也
-# 不导出 server 的名字 (见 CharAgent/__init__.py 的三条排除).
+# 不导出 server 的名字 (见 CharAgent/__init__.py 的排除清单).
 #
 #   pip install "charagent[server]"
 #
@@ -77,6 +77,20 @@ server = [
 # 启动自检会先拦住. 仓库自己的 requirements.txt 无条件带上它 (本机演示与测试都要用).
 pricing = [
     "chinesecalendar>=1.11.0",
+]
+# mcp (消费侧: 把外部 MCP server 的工具接进循环) 同样**可选**: 框架的核心
+# (loop / 工具 / 事件 / 快照) 不需要 MCP —— 需要的是「从别处拿工具」那一类业务.
+# 除了「不是谁都用到」这条, 另有一条实测的理由: MCP SDK 自己会把 web 栈拖进来
+# (`import mcp` 之后 starlette 就在 sys.modules 里, 1.29 实测), 而「零 web 依赖」
+# 是本包立身的那句话 —— 做成硬依赖, 上面 server 那一组也就不再成立了.
+#
+#   pip install "charagent[mcp]"
+#
+# 目录名是 `mcp_client` 不是 `mcp`: 第三方顶包就叫 `mcp`, 而本包目录一旦与顶包
+# 同名, `CharAgent/` 进 sys.path 的那一刻 (pytest 就会) 它会把顶包遮蔽掉 (见那个
+# 包的 docstring). 名字里多了后半个, 装的东西是同一个.
+mcp = [
+    "mcp>=1.29",
 ]
 
 [tool.setuptools.packages.find]

@@ -24,6 +24,11 @@ known-first-party = ["app"]
 [tool.ruff.lint.per-file-ignores]
 "CharAgent/**/__init__.py" = ["N999"]
 "CharAgent/**/__main__.py" = ["N999"]
+# 假商城的 HTTP 处理器: `do_GET` 这个名字是 `BaseHTTPRequestHandler` 的**分派约定**,
+# 改不得. 这里按文件豁免而不是就地 `# noqa` —— pre-commit 钉的 ruff (0.12) 要那道
+# noqa, 而 venv 里的新版 (0.15) 反过来判它「多余」(RUF100), 两边打架; 写进配置两边
+# 都干净.
+"CharApp/tests/test_mcp_two_sides.py" = ["N802"]
 
 [tool.ruff.format]
 quote-style = "double"

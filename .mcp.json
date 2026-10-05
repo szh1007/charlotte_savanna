@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "minimall": {
+      "command": "D:/__WorkSpace__/charlotte_savanna/.venv/Scripts/python.exe",
+      "args": ["-m", "CharApp.minimall.mcp_server"],
+      "env": {
+        "PYTHONPATH": "D:/__WorkSpace__/charlotte_savanna"
+      }
+    }
+  }
+}

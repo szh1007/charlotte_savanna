@@ -43,8 +43,9 @@
 
 ## 三、顺带
 
-- `requirements.txt`：本阶段新增的依赖（MCP SDK **已经在里面了**，不需要动；`langchain-mcp-adapters` 若最终没用上可以去掉）
-- `.env.example`：补 `CHARAPP_MILVUS_URL` / `CHARAPP_MODELSCOPE_ROOT` 等 C08 新增的键
+- `requirements.txt`：本阶段新增的依赖（MCP SDK **已经在里面了**，不需要动；`langchain-mcp-adapters` **C14 之后确认没用上**（消费侧直接用官方 SDK —— 它产出的是 LangChain 工具，等于多一层翻译），可以删；`mcp` 那一项对应 `CharAgent/pyproject.toml` 的可选依赖组 `charagent[mcp]`）
+- `.env.example`：补 `CHARAPP_MILVUS_URL` / `CHARAPP_MODELSCOPE_ROOT` 等 C08 新增的键；**`CHARAPP_MCP_USER_ID`（C14 已加）那份注释指向 ADR-0030，写文档时别把边界那两句丢了**
+- 仓库根的 **`.mcp.json`**（C14 新增，项目级 MCP 配置）：根 README 的「快速开始」值得提一句「Claude Code 打开仓库就会认到 minimall 这个只读 server」—— 它是这四条经历里**最容易被当场演示**的一个入口
 
 ---
 

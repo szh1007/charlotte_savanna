@@ -77,6 +77,7 @@ from CharApp.minimall.config import (
     ENV_CONTEXT_TOOL_LIMIT,
     ENV_CONTEXT_WATERMARK,
     ENV_EVAL_PAYMENT_PASSWORD,
+    ENV_MCP_USER_ID,
     ENV_SERVER_HOST,
     ENV_SERVER_PORT,
     ENV_STREAM,
@@ -1310,6 +1311,9 @@ def test_the_template_lists_every_variable_the_business_reads() -> None:
         # 跑分那一个也读 env (issue 43) —— 只被离线跑分器读, 但名字同样只有模板
         # 这一个可照抄的出处
         ENV_EVAL_PAYMENT_PASSWORD,
+        # 暴露侧 (MCP server) 绑定的那个买家 (C14): 没配它那个进程起不来, 而
+        # 照着模板填是使用者唯一有据可依的做法
+        ENV_MCP_USER_ID,
     ):
         assert name in text, f".env.example 缺少 {name}"
 

@@ -5,17 +5,21 @@
 这句待办**四处**都写着 —— 四轮都往后推, 一直没做 (最后一次性补齐). 一条用例
 比四句待办更管用: 以后往子包 __all__ 里加了名字却忘了在根门面补上, 这里立刻红.
 
-四条刻意排除 (与根门面 docstring 写的是同四条, 理由各不同):
+五条刻意排除 (与根门面 docstring 写的是同一批, 理由各不同):
 - `tool` (小写, @tool 装饰器) —— 与子包 `CharAgent.tool` 同名, 导出会遮蔽包属性
 - `client` 整个包 —— 它是应用入口 (`python -m CharAgent.client`), 不是库 API
 - `server` 整个包 —— 它要 web 栈 (可选依赖组 `charagent[server]`): 根门面是
   「装了这个包就能用」的库 API, 不该把一个可选的 web 框架变成硬依赖
+- `mcp_client` 整个包 —— 同属「要额外条件才能用」那一类 (可选依赖组
+  `charagent[mcp]`): MCP SDK 自己会把 web 栈拖进来 (1.29 实测: `import mcp`
+  之后 starlette 就在 `sys.modules` 里了), 于是它进根门面等于把上一条保证作废
 - `eval` 整个包 —— 它要真 API key 才跑得动 (跑分打的是真模型), 同属「要额外条件
-  才能用」那一类. 名字与 `client` / `server` 一起列在 `EXCLUDED_PACKAGES` 里,
-  于是「它真的不在根门面」是被断言守着的, 而不是碰巧没写
+  才能用」那一类. 名字与 `client` / `server` / `mcp_client` 一起列在
+  `EXCLUDED_PACKAGES` 里, 于是「它真的不在根门面」是被断言守着的, 而不是碰巧没写
 
-被测对象是「两份 __all__ 的对应关系」, 不涉及运行时行为 (最后一条例外: 它起一个
-子进程验「import 根门面不会拖上 web 栈」, 那件事只有真 import 一次才看得见).
+被测对象是「两份 __all__ 的对应关系」, 不涉及运行时行为. 两条例外各自起一个子进程
+(「import 根门面不拖 web 栈」与「不拖 MCP SDK」) —— 那两件事只有真 import 一次才
+看得见, 在测试进程里看 `sys.modules` 等于测了个假的.
 """
 
 from __future__ import annotations
@@ -29,7 +33,7 @@ import pytest
 
 import CharAgent
 
-# 汇聚进根门面的框架包 (十一层; client / server / eval 刻意不在内, 见模块 docstring)
+# 汇聚进根门面的框架包 (十一层; client / server / mcp_client / eval 刻意不在内)
 FRAMEWORK_PACKAGES = (
     "model",
     "tool",
@@ -45,7 +49,7 @@ FRAMEWORK_PACKAGES = (
 )
 
 # 同一份名单的「出口目」: 它们也是框架的包, 但刻意不进门面 (见模块 docstring)
-EXCLUDED_PACKAGES = ("client", "server", "eval")
+EXCLUDED_PACKAGES = ("client", "server", "mcp_client", "eval")
 
 # 同名遮蔽: 装饰器 `tool` 只能在 CharAgent.tool 里取 (见模块 docstring)
 SHADOWED = frozenset({"tool"})
@@ -102,13 +106,13 @@ def test_package_facades_do_not_collide_with_each_other() -> None:
 
 @pytest.mark.parametrize("package", EXCLUDED_PACKAGES)
 def test_the_excluded_packages_are_not_exported_at_the_root(package: str) -> None:
-    """三个刻意排除的包, 一个名字都不许上根门面 (理由见模块 docstring)."""
+    """四个刻意排除的包, 一个名字都不许上根门面 (理由见模块 docstring)."""
     for name in _package_all(package):
         assert name not in CharAgent.__all__, f"{name} 不该出现在根门面"
 
 
 def test_the_record_double_is_not_exported_at_the_root() -> None:
-    """记录层的假库也不上门面 —— **包内的某个模块**不上, 与那三个包同一件事.
+    """记录层的假库也不上门面 —— **包内的某个模块**不上, 与那四个包同一件事.
 
     `db/testing.py` 的处境与 `db/config.py` 的两个环境变量名常量一样: 是「要用库
     的东西」那一层, 不是「装了 charagent 就有」的 API (需要的人按完整路径取).
@@ -151,4 +155,31 @@ def test_importing_the_root_does_not_pull_in_the_web_stack() -> None:
 
     assert proc.stdout.strip() == "False", (
         f"根门面把 web 栈拖进来了: {proc.stdout.strip()} (server 该留在可选层)"
+    )
+
+
+def test_importing_the_root_does_not_pull_in_the_mcp_sdk() -> None:
+    """`import CharAgent` 也不带 MCP SDK —— 「mcp_client 是可选层」这句话的证据.
+
+    与上一条其实是同一件事的两面 (MCP SDK 自己会把 starlette 拖进来), 分开写是
+    因为**失败时指向的地方不同**: 那一条指向 `server`, 这一条指向「谁把
+    `mcp_client` 导进了根门面」.
+    """
+    script = (
+        "import sys, CharAgent; "
+        "print(any(name == 'mcp' or name.startswith('mcp.') for name in sys.modules))"
+    )
+
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=REPO_ROOT,
+        check=True,
+    )
+
+    assert proc.stdout.strip() == "False", (
+        f"根门面把 MCP SDK 拖进来了: {proc.stdout.strip()} "
+        f"(它该留在 charagent[mcp] 那一层)"
     )
