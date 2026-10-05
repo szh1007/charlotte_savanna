@@ -88,7 +88,9 @@ project/rag_knowledge/
 │   │   ├── metrics.py              #   指标计算（主体命中率 / 召回率 / 必命中率 / MRR@K / NDCG@K）
 │   │   ├── runner.py               #   评估执行: 走真实查询链路 -> 分层算分 -> 汇总报告
 │   │   ├── tester.py               #   RagEvalTester 统一入口类
+│   │   ├── latency.py              #   逐节点耗时汇总 P50/P95 (C18, 见 §3.3)
 │   │   └── artifacts/              #   题库 eval_cases.json + 评测报告 eval_report_<时间戳>.json
+│   │                               #   + 耗时报告 latency_<时间戳>.json (C18)
 │   └── shared/                     # 共享层（跨业务复用的基础能力）
 │       ├── clients/                #   milvus_utils（混合检索）/ mongo_utils（历史 CRUD）
 │       ├── config/                 #   各组件环境变量配置（llm / embedding / reranker / milvus / mineru / minio / mongo）
@@ -102,7 +104,8 @@ project/rag_knowledge/
 │   ├── zip/                        #   MinerU 返回的 zip 包
 │   └── ...
 ├── logs/                           # 运行日志
-├── tests/                          # 纯函数回归用例 + 4 个手工跑图脚本（test_load_graph 等, 已标 __test__ = False）
+├── tests/                          # 纯函数回归用例 + 4 个手工跑图脚本（test_load_graph 等, 已标 __test__ = False
+│                                   #   并挂 pytest.mark.integration / addopts 默认排除）
 └── .env                            # 环境变量（RK_ 前缀, 不提交）
 ```
 
@@ -176,6 +179,33 @@ graph LR
 | `_10 node_rrf` | `rrf_service.fuse_by_rrf` | RRF 加权融合排序 | `rrf_score = w * (1 / (k + rank))`, k=60; embedding 与 hyde 各 0.5 权重; 按 chunk_id 去重累加, 取 Top 5 |
 | `_11 node_rerank` | `rerank_service.rerank_documents` | bge-reranker 精确打分重排 | ① RRF 结果与 Web 结果合并统一格式 → ② 按本批最长文本选窗口档位（1024 / 2048, 见 `RERANK_LENGTH_TIERS`）→ ③ reranker 对「问题-文本」对打分（normalize, **超窗口直接截断, 不做 LLM 压缩**）→ ④ 与 RRF 先验**加权融合**（`RERANK_FUSION_ALPHA`）, 其中**文档标题片再打折**（`DOC_HEAD_SCORE_FACTOR`, 见 §5.2-11）→ ⑤ 排序后**动态 TopK**: 从 `RERANK_MIN_TOPK` 起检测"断崖"（相对**第 1 名**的累计衰减 > 0.2）, 断崖即截断, 上限 `RERANK_MAX_TOPK` |
 | `_12 node_answer_output` | `answer_service.generate_answer` | 生成最终答案 | ① 若 state 已有 answer（主体未确认分支）直接返回 → ② 组装 prompt（参考内容 + 置信度 + 来源 + 历史对话 + 主体）→ ③ 模型生成（流式则 SSE `DELTA` 逐字推送）→ ④ 从命中 chunk 提取图片 URL → ⑤ 保存助手回答到 MongoDB |
+
+### 3.3 延迟拆解（C18）
+
+**这一节先给方法与装置，数字待跑** —— 知识库、分块与题库正随 C17（题库扩容）一起重建，
+届时用两条命令出表（真 Milvus + 真模型 + 真 LLM）：
+
+```bash
+cd project/rag_knowledge
+python -m tests.test_rag_eval_tester   # 真跑一遍评测 (40 题)
+python -m app.rag_eval.latency         # 从日志汇总逐节点 P50/P95 → artifacts/latency_*.json
+```
+
+读数字之前先认口径（都写在 `app/rag_eval/latency.py` 的 docstring 里）：
+
+- 耗时取自 `@node_log` 打的 `耗时=Nms`，**逐节点**；一次问答 = 一个追踪 ID。
+- 评测跑批器里 `_09_1 普通检索` 与 `_09_2 HyDE 检索` 是**串行调用**的，而线上查询图里
+  它们是**并行**的两条边 —— 所以「单次合计」是评测口径的**上界**，不是用户等待时间。
+- 评测链路**不含** `_09_3 联网` 与 `_12 作答生成`（作答是流式，TTFT 要另量）。
+
+**本票在 rag_knowledge 侧没有做并发优化，逐条说清为什么**（这一条比硬凑一个数字要紧）：
+
+| 候选 | 结论 |
+|------|------|
+| 三路召回「逐关键词串行」 | **本项目没有这样的循环** —— 那是 C18 票面把 rag_text2sql 的代码写成了本项目的文件名（详见票面实施记录）。三路召回在这里是查询图的**三条并行边**，每一路只对**一条**文本做嵌入（`infra_model.embedding([text])`），没有批可批 |
+| 加载侧嵌入批量 | 已是 `EMBEDDING_BATCH_SIZE=5` 分批（`_06`） |
+| Milvus 批量插入 | 已是**一次** `insert(data=embeddings)` 全量插入（`_07`，注释就写着"批量插入"）；`item_name` 那条一文档一条，是设计如此 |
+| 精排（rerank）批量化 | `FlagReranker.compute_score` **本来就吃 `pairs` 列表**，已经是批量的。本机 CPU 单次打分是秒级，能省的只有三条路：缩小候选池（**要先有 C17 的开/关消融数据才敢动**）、换更小的模型或量化、上 GPU / 独立推理服务 —— 都不是这一票能单独拍板的，如实留在这里 |
 
 ---
 
@@ -283,6 +313,9 @@ graph LR
   评测里塞过一条**假文档**; 空值降级落地后这条约束没有了, 假文档也不再注入
   （它本来会真的进精排池抢名次）。
 - **4 层独立评估**: 普通检索 / HyDE 检索 / RRF 融合 / 最终重排结果分别算分, 可定位"哪一层拖了后腿"（基础召回差 / 融合后掉了 / rerank 选错）
+- **模型质量不做自动化断言**（C18 明确决定）: 答复质量要真模型、输出非确定 —— 想把它变成一条每次都绿的用例，只能把断言放宽到"没崩"，
+  那种断言没有信息量，还会给人"质量被测住了"的错觉。本项目的自动化用例只钉**确定性的那部分**（分块、阈值分支、字段映射、指标公式、耗时汇总），
+  质量与延迟用**落盘报告 + 人工判读**（§3.3 / §6.4），不混进 pytest。
 
 ### 6.4 基线
 

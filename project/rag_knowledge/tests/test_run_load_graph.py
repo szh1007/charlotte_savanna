@@ -5,12 +5,16 @@
 要跑它仍然可以: `python -m tests.test_run_load_graph`.
 """
 
+import pytest
+
 from app.process.load.agent.main_graph import graph
 from app.process.load.agent.state import create_default_state
 from app.shared.runtime.logger import PROJECT_ROOT, logger
 
 # pytest 见到它就整模块跳过 (这是脚本, 不是用例)
 __test__ = False
+# 再挂 integration 标记: `-m "not integration"` 的全量跑默认排除这类脚本
+pytestmark = pytest.mark.integration
 
 TEST_PDF_PATH = PROJECT_ROOT / "assets" / "hak180产品安全手册.pdf"
 

@@ -5,6 +5,7 @@
 要跑它仍然可以: `python -m tests.test_query_graph`.
 """
 
+import pytest
 from rich import print as rprint
 
 from app.process.query.agent.main_graph import graph
@@ -12,6 +13,8 @@ from app.process.query.agent.state import create_query_default_state
 
 # pytest 见到它就整模块跳过 (这是脚本, 不是用例)
 __test__ = False
+# 再挂 integration 标记: `-m "not integration"` 的全量跑默认排除这类脚本
+pytestmark = pytest.mark.integration
 
 
 def run_query_graph() -> None:

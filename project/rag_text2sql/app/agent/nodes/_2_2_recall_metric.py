@@ -6,6 +6,8 @@ from app.agent.context import DataAgentContext
 from app.agent.llm import llm
 from app.agent.prompt_loader import load_prompt
 from app.agent.state import DataAgentState
+from app.conf.app_config import app_config
+from app.core.concurrency import gather_limited
 from app.core.log import logger
 from app.models.qdrant import MetricInfoQdrant
 
@@ -43,12 +45,17 @@ async def recall_metric(state: DataAgentState, runtime: Runtime[DataAgentContext
         # 定义字典结构去除召回的重复指标信息
         # 因为指标信息存储qdrant时, 同一个指标根据 name, description, alias 存储了多次
         # 检索同一个指标的这3个属性如果相似度都较高, 就会重复召回, 所以需要去重
-        retrieved_metric_map: dict[str, MetricInfoQdrant] = {}
-        for keyword in merged_keywords:
-            embedding = await embeddings.aembed_query(keyword)
-            payloads: list[MetricInfoQdrant] = await metric_qr.search(embedding)
+        #
+        # C18: 与列召回同款 —— 一次批量嵌入 + 带上限地并发检索, 不再逐关键词 await
+        vectors = await embeddings.aembed_documents(merged_keywords)
+        payload_lists = await gather_limited(
+            (metric_qr.search(vector) for vector in vectors),
+            limit=app_config.recall.concurrency,
+        )
 
-            # 遍历召回结果
+        retrieved_metric_map: dict[str, MetricInfoQdrant] = {}
+        # 保序回填, 去重仍是「先到先得」(与并发化之前一致)
+        for payloads in payload_lists:
             for payload in payloads:
                 metric_id = payload["id"]
                 if metric_id not in retrieved_metric_map:

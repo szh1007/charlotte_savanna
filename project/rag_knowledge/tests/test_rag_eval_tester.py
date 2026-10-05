@@ -16,11 +16,15 @@ tester.run_eval()
 这个测试文件也可以一起复制过去, 作为最小调用样例.
 """
 
+import pytest
+
 from app.rag_eval import RagEvalTester
 
 # pytest 见到它就整模块跳过 —— 这是「最小调用样例」脚本, 需要真实 Milvus / LLM / Mongo.
 # 要跑它: `python -m tests.test_rag_eval_tester` (issue C02 收口时加的标记)
 __test__ = False
+# 再挂 integration 标记: `-m "not integration"` 的全量跑默认排除这类脚本
+pytestmark = pytest.mark.integration
 
 
 def run_eval():

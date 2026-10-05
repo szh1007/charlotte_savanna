@@ -7,6 +7,9 @@
 2) **切分器没兜底**: `_split_chunk_content` 传的 separators 少了 LangChain 最后
     那个 `""`(按字符硬切的兜底), 于是一段没有分隔符的文本会**整段返回**,
     chunk_size 形同虚设. 真实产物里出现过 793 / 944 / 1403 字符的块.
+
+末尾一节钉 `_split_document_by_title` 自己的切分契约 (连续标题 / 无标题内容 /
+代码块), 它们此前只有经过 section_path 的间接覆盖.
 """
 
 from __future__ import annotations
@@ -193,7 +196,7 @@ def test_oversized_table_splits_on_rows_and_each_piece_is_closed():
 def test_letter_pseudo_titles_do_not_start_a_new_section(tmp_path):
     """MinerU 误判出来的伪标题 (`## a 按 (Foil Save)...`) 要当内容行处理.
 
-    否则每个操作步骤自成一个 section, 标题退化成 "## a"、丢掉所属章节,
+    否则每个操作步骤自成一个 section, 标题退化成 "## a", 丢掉所属章节,
     嵌出来的向量也就没了可检索的语义.
     """
     content = "## 6.4.2 跳过模式\n正文说明\n## a 按 (Foil Save) 按钮。\n继续说明\n"
@@ -343,3 +346,77 @@ def test_split_pieces_keep_the_ancestor_chain(tmp_path):
     assert len(chunks) > 1
     for piece in chunks:
         assert piece["content"].splitlines()[0] == "## 5. 快速开始 > ### 5.1 前置服务"
+
+
+# ---------------------------------------------------------------------------
+# 4) 多级标题切分契约: 连续标题 / 无标题内容 / 代码块
+#
+# 入口是 `_split_document_by_title` —— 上面那些用例大多走完整 pipeline, 只能
+# 间接覆盖它; 这一节直接打这三个契约, 免得哪条被改坏时还被下游的分支掩盖.
+# ---------------------------------------------------------------------------
+
+
+def test_consecutive_titles_are_joined_into_a_parent_child_chain():
+    """连续出现的多级标题要拼成一条链, 而**不是**丢掉子标题只留第一个.
+
+    `## 5. 快速开始` 紧跟 `### 5.2 环境变量` 且中间没有正文时, 子节的归属
+    信息只存在于这个拼接结果里 —— 拼错了, 块就同时丢了「5.2 环境变量」这一级.
+    """
+    chunks = split_service._split_document_by_title(
+        "## 5. 快速开始\n### 5.2 环境变量\n密钥填在 .env 里。\n", "t"
+    )
+
+    assert len(chunks) == 1, "连续标题之间没有正文, 应当合成一块"
+    assert chunks[0]["title"] == "## 5. 快速开始_### 5.2 环境变量"
+    assert chunks[0]["section_path"] == "## 5. 快速开始 > ### 5.2 环境变量"
+
+
+def test_content_before_the_first_title_belongs_to_the_next_section():
+    """文档开头那段没有标题的内容要归给紧接着的下一个标题, 而不是被丢掉."""
+    chunks = split_service._split_document_by_title(
+        "这是一段没有标题的开头说明\n\n## 甲\n正文甲\n", "t"
+    )
+
+    assert len(chunks) == 1
+    assert chunks[0]["title"] == "## 甲"
+    assert chunks[0]["content"] == "## 甲\n这是一段没有标题的开头说明\n正文甲"
+
+
+def test_hashes_inside_a_code_fence_do_not_start_a_section():
+    """代码块里的 `# 注释` 不是标题, 整个代码块保持在一块里.
+
+    若把围栏里的 `#` 行当成真标题, 一个代码块会被切成好几节: 每行注释各成
+    标题, 代码上下文被拆散.
+    """
+    chunks = split_service._split_document_by_title(
+        "## 甲\n```python\n# 不是标题\nprint(1)\n```\n正文甲\n", "t"
+    )
+
+    assert len(chunks) == 1
+    assert chunks[0]["title"] == "## 甲"
+    assert "```python\n# 不是标题\nprint(1)\n```" in chunks[0]["content"]
+
+
+def test_section_path_is_snapshotted_when_each_chunk_is_settled():
+    """section_path 是结算每一块那一刻的栈快照: 三级都进链, 新兄弟节点要出栈.
+
+    只在最终正文里看路径的话, 中间态的错法 (比如 5.2 仍带着 5.1.1 的祖先)
+    要等 `_attach_section_path` 换首行时才暴露; 直接看字段钉的是「栈在结算
+    时是什么样」.
+    """
+    md = (
+        "## 5. 快速开始\n正文0\n\n"
+        "### 5.1 前置服务\n正文1\n\n"
+        "#### 5.1.1 启动 Milvus\n正文2\n\n"
+        "### 5.2 环境变量\n正文3\n"
+    )
+
+    chunks = split_service._split_document_by_title(md, "t")
+    paths = {c["title"]: c["section_path"] for c in chunks}
+
+    assert paths["## 5. 快速开始"] == "## 5. 快速开始"
+    assert paths["### 5.1 前置服务"] == "## 5. 快速开始 > ### 5.1 前置服务"
+    assert paths["#### 5.1.1 启动 Milvus"] == (
+        "## 5. 快速开始 > ### 5.1 前置服务 > #### 5.1.1 启动 Milvus"
+    )
+    assert paths["### 5.2 环境变量"] == "## 5. 快速开始 > ### 5.2 环境变量"

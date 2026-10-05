@@ -81,6 +81,18 @@ class DwGuardConfig:
 
 
 @dataclass
+class RecallConfig:
+    """三路召回节点内部的并发档位 (C18).
+
+    每个关键词要发一次检索; 串行时 N 个关键词就是 N 个 RTT 相加. 上限是给
+    嵌入服务 / Qdrant / ES 的连接池留的余量 —— 关键词个数由 LLM 扩展决定
+    (实测 2~10 个), 不设上限等于把并发交给上游模型的心情.
+    """
+
+    concurrency: int = 4
+
+
+@dataclass
 class AppConfig:
     logging: LoggingConfig
     db_meta: DBConfig
@@ -91,6 +103,7 @@ class AppConfig:
     llm: LLMConfig
     # 有默认值: 老配置文件缺这一节也能起 (合并时按默认补齐)
     dw_guard: DwGuardConfig = field(default_factory=DwGuardConfig)
+    recall: RecallConfig = field(default_factory=RecallConfig)
 
 
 # 配置文件路径

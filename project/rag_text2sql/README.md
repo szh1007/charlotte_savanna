@@ -96,8 +96,11 @@ project/rag_text2sql/
 │   │   ├── golden_set.yaml          #   39 题 (人工写问题 + 人工确认口径, 随仓库提交)
 │   │   ├── metrics.py               #   L1 计分 / 极差 / EEX 结果比对 (纯函数)
 │   │   ├── runner.py                #   跑批器 + CLI (--check-gold 验题库 / --merge-into 复跑并回)
+│   │   ├── latency.py               #   召回节点耗时测量 + CLI (C18, 见 §3.4)
+│   │   ├── fixtures/                #   冻结的关键词扩展结果 (重放用, 见 §3.4)
 │   │   ├── report.py                #   JSON + Markdown 双报告渲染
-│   │   └── reports/                 #   落盘报告 (baseline.json/md + after-c16.json/md)
+│   │   └── reports/                 #   落盘报告 (baseline.json/md + after-c16.json/md
+│   │                                #   + latency_recall_{before,after}.json)
 │   └── scripts/
 │       └── build_meta.py            #   元数据索引构建入口
 ├── conf/                            # 本地私有配置 (根 .gitignore *.yaml 已忽略, 不提交)
@@ -212,6 +215,73 @@ graph LR
 
 单节点重试与 LLM 预算：`DwMysqlRepository` 只在**连接失效**时重试一次（语句错不重试，它该走校正节点）；LLM 调用显式给了 `timeout`（默认 60s）与 `max_retries`（默认 2，交给 OpenAI SDK —— 只重 429/5xx/连接/超时，外加 408/409 这两个幂等可重的，其余 4xx 直接放弃）。
 
+### 3.4 召回节点的延迟拆解（C18）
+
+三路召回节点内部此前是**逐关键词串行**：每个关键词一次 `aembed_query` + 一次检索，N 个关键词就是 2N 个 RTT 相加。关键词个数实测（39 题，去重后**实际送检索**的个数）：jieba 那层 2~7 个（中位 4）；加上 LLM 扩展词后列召回 3~8（中位 5）、指标召回 7~16（中位 11）、取值召回 2~10（中位 4）。C18 改成**一次批量嵌入 + 带上限地并发检索**，上限是 `app_config.recall.concurrency`（默认 4）。
+
+量法：`python -m app.eval.latency`（39 题 × 5 次，2026-10-06，报告落盘 `app/eval/reports/latency_recall_{before,after}.json`）：
+
+```bash
+cd project/rag_text2sql
+python -m app.eval.latency --capture                # 抓一次冻结词表 (要真 LLM, 约 20 分钟)
+python -m app.eval.latency --mode recall --repeat 5 # 只量「嵌入 + 检索」: A/B 用这一档
+```
+
+**为什么这里的数字只来自 recall 档**：节点里还有一次**真 LLM** 的关键词扩展调用
+（实测 1.5~5.1 秒、上游偶发挂起时会飙到 20 秒以上），它的随机性会盖住被改的那几百毫秒。
+`--mode recall` 把那次调用换成**冻结结果** —— 前后两趟输入完全一致，差只可能来自代码。
+
+`--mode node` 保留着（跑整个节点、含真 LLM，想看"线上一个节点大概几秒"时用它），
+**但它的报告不入库、也不要拿来做前后对照**：两趟的输入不同、LLM 抖动可达 20 秒，
+摆在一起看会得出反的结论（2026-10-06 真被这么读过一次，报告已从仓库移走）。
+它落盘的文件里带一句 `notes` 写着这件事。
+
+| 节点 | 优化前 P50 / P95 (ms) | 优化后 P50 / P95 (ms) | P50 变化 |
+|------|----------------------|----------------------|----------|
+| `recall_column` | 752 / 1172 | 473 / 772 | **−37%** |
+| `recall_metric` | 1601 / 2063 | 870 / 1310 | **−46%** |
+| `recall_value` | 22 / 36 | 10 / 15 | **−55%** |
+
+> 表里是同一台机器上**连跑两趟**的第二趟；两趟的比例一致（−37/−46/−55 与 −34/−44/−49）。逐题配对（每题先取 5 次的**中位数**，再算「后 / 前」）的比值中位数是 **0.62 / 0.53 / 0.44**，39 题里**没有一题变慢**（最差的一题也只到 0.85）。机器负载会漂（同一侧两趟之间的绝对值差 15%~36%），所以看的是**同一趟的前后配对**，不是跨趟的绝对值。
+
+**先看结果有没有被换掉，再看省了多少。** 117 组（39 题 × 3 节点）召回 id 的**集合全部一致**（一个没多、一个没少）；其中 30 组顺序不同 —— 那不是这次改动的产物：`merged_keywords = list(set(keywords + result))` 的迭代顺序由**进程内的字符串哈希**决定，同一份代码换一个进程重跑，40/117 组同样会顺序不同（实测）。顺序会影响「同一字段被多个关键词召回时留哪一份」，属既有行为，本票没动它。
+
+**省不动的地方要如实说。** 剩下的大头是**嵌入推理本身**，不是并发度。微基准（同一台机器、TEI 服务、`bge-large-zh-v1.5`、CPU）：
+
+| 调用 | 耗时 |
+|------|------|
+| `aembed_documents` × 1 条 | 110 ms |
+| `aembed_documents` × 4 条 | 180 ms（45 ms/条） |
+| `aembed_documents` × 8 条 | 336 ms（42 ms/条） |
+| `aembed_query` 逐条 × 4 | 504 ms（126 ms/条） |
+
+批量化省掉的是逐条调用那 2/3 的往返与排空开销；**再往上加并发没有意义** —— 检索本身很快（`recall_value` 那一路只有检索、没有嵌入，P50 只有 10 ms，单次检索约 1~2 ms），把上限从 4 调到 8 能省的只有几十毫秒的排队，代价却是把嵌入服务/向量库的连接池压力放大。真要再快只剩换更快的嵌入硬件或服务（GPU / 批内并行），那是部署问题不是代码问题。
+
+<details>
+<summary>那张微基准怎么复核（同一台机器，服务起着就能重跑）</summary>
+
+```bash
+cd project/rag_text2sql && python -c "
+import asyncio, time
+from app.clients.embedding import embedding_client
+async def main():
+    embedding_client.init(); emb = embedding_client.embeddings
+    await emb.aembed_documents(['预热'])
+    texts = ['销售总额','大区','销售额','成交额','总金额','订单数','客户数','省份']
+    for n in (1, 4, 8):
+        t0 = time.perf_counter(); await emb.aembed_documents(texts[:n])
+        print(n, round((time.perf_counter()-t0)*1000), 'ms')
+    t0 = time.perf_counter()
+    for t in texts[:4]: await emb.aembed_query(t)
+    print('逐条 4:', round((time.perf_counter()-t0)*1000), 'ms')
+asyncio.run(main())"
+```
+</details>
+
+**这段优化在整条链里占多大分量**：召回节点整节的耗时大头是「关键词扩展」那次 LLM 调用（秒级起，
+同一题两次跑能差几倍），召回段只在几百毫秒量级 —— 所以这次优化**改善的是那条链的稳定下限，
+不是端到端秒数**。端到端的等待时间要动的是 LLM（并发、流式、缓存），不属于本票。
+
 ---
 
 ## 4. API 一览
@@ -256,6 +326,7 @@ llm: { model_name: <模型名>, api_key: <密钥>,   # DeepSeek 等 OpenAI 兼�
        timeout_s: 60.0, max_retries: 2 }        # C16 的调用预算 (缺省即可, 见 §3.3)
 dw_guard: { statement_timeout_ms: 10000,        # dw 连接的加固档位 (缺省即可)
             read_timeout_s: 30, connect_timeout_s: 5 }
+recall: { concurrency: 4 }                      # C18 三路召回节点内的并发上限 (缺省即可, 见 §3.4)
 ```
 
 ```yaml

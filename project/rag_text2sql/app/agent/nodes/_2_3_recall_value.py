@@ -6,6 +6,8 @@ from app.agent.context import DataAgentContext
 from app.agent.llm import llm
 from app.agent.prompt_loader import load_prompt
 from app.agent.state import DataAgentState
+from app.conf.app_config import app_config
+from app.core.concurrency import gather_limited
 from app.core.log import logger
 from app.models.es import ValueInfoEs
 
@@ -41,13 +43,17 @@ async def recall_value(state: DataAgentState, runtime: Runtime[DataAgentContext]
         # 2.字段取值召回 - ES
         # 定义字典结构去除召回的重复字段取值信息
         # 因为根据关键词召回字段取值时, 不同的关键词可能会召回同一个字段取值
-        retrieved_value_map: dict[str, ValueInfoEs] = {}
-        for keyword in merged_keywords:
-            values: list[ValueInfoEs] = await value_es.search(keyword)
-            if not values:
-                continue
+        #
+        # C18: 这一路没有嵌入 (ES 直接吃关键词), 只把逐关键词的 await 换成
+        # 带上限地并发; 上限与另两路同一档 (见 app_config.recall)
+        hits_per_keyword = await gather_limited(
+            (value_es.search(keyword) for keyword in merged_keywords),
+            limit=app_config.recall.concurrency,
+        )
 
-            # 遍历ES检索结果
+        retrieved_value_map: dict[str, ValueInfoEs] = {}
+        # 保序回填, 去重仍是「先到先得」(与并发化之前一致)
+        for values in hits_per_keyword:
             for value in values:
                 value_id = value["id"]
                 if value_id not in retrieved_value_map:
