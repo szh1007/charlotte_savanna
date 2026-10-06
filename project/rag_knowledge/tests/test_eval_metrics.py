@@ -10,6 +10,7 @@ from app.rag_eval.metrics import (
     compute_chunk_metrics,
     compute_item_name_hit_rate,
     extract_chunk_ids,
+    mean_must_hit_rate,
 )
 
 # ---------------------------------------------------------------------------
@@ -52,9 +53,14 @@ def test_item_name_hit_rate_is_zero_when_nothing_matched():
     assert compute_item_name_hit_rate([], ["A"]) == 0.0
 
 
-def test_item_name_hit_rate_is_zero_when_there_is_nothing_to_match():
-    """没有预期主体时不该给满分 —— 那会把「无标注」混成「全中」."""
-    assert compute_item_name_hit_rate(["A"], []) == 0.0
+def test_item_name_hit_rate_is_not_applicable_without_expectation():
+    """没标预期主体的题记 None (不适用), 不是 0, 也不是 1.
+
+    那类题是「该答不知道」—— **正确行为就是认不出主体**, 记 0 等于把答对算成答错;
+    记 1 又等于白送分. 汇总是按"适用"平均的, None 直接排除出分母.
+    """
+    assert compute_item_name_hit_rate(["A"], []) is None
+    assert compute_item_name_hit_rate([], []) is None
 
 
 # ---------------------------------------------------------------------------
@@ -112,3 +118,62 @@ def test_chunk_metrics_ndcg_rewards_putting_the_right_answer_first():
     bad = compute_chunk_metrics(["x", "1", "2"], ["1", "2"], ["1"])["ndcg_at_k"]
 
     assert good > bad
+
+
+# ---------------------------------------------------------------------------
+# must_hit 的口径 (C17 改: 从"覆盖率"改成"最低门槛")
+# ---------------------------------------------------------------------------
+
+
+def test_must_hit_rate_is_a_threshold_not_a_coverage():
+    """标了 3 条关键 chunk, 捞到其中 1 条就算过.
+
+    它量的是「最关键的那类内容有没有捞到」, 不是「捞到了几成」—— 后者会随标注条数
+    变化, 同一条链路标 1 条时是 1.0、标 3 条时是 0.33, 数字不可比.
+    """
+    metrics = compute_chunk_metrics(
+        retrieved_chunk_ids=["1", "x"],
+        gold_chunk_ids=["1", "2", "3"],
+        must_hit_chunk_ids=["1", "2", "3"],
+    )
+
+    assert metrics["must_hit_rate"] == 1.0
+    # 明细照留: 报告里仍然看得到"打中了几条"
+    assert metrics["must_hit_count"] == 1
+
+
+def test_must_hit_rate_is_zero_when_no_key_chunk_is_hit():
+    metrics = compute_chunk_metrics(
+        retrieved_chunk_ids=["x"],
+        gold_chunk_ids=["1", "2"],
+        must_hit_chunk_ids=["1", "2"],
+    )
+
+    assert metrics["must_hit_rate"] == 0.0
+
+
+def test_must_hit_rate_is_not_applicable_without_annotation():
+    """0 条标注的题 (「该答不知道」那类) 既不算"打中"也不算"打漏".
+
+    记 None: 汇总时被排除出分母 —— 否则要么凭空送分, 要么凭空扣分.
+    """
+    metrics = compute_chunk_metrics(
+        retrieved_chunk_ids=["1"],
+        gold_chunk_ids=["1"],
+        must_hit_chunk_ids=[],
+    )
+
+    assert metrics["must_hit_rate"] is None
+
+
+def test_mean_must_hit_rate_skips_not_applicable_cases():
+    """平均值只在"适用"的题上算."""
+    assert mean_must_hit_rate([1.0, 0.0, None]) == 0.5
+
+
+def test_mean_must_hit_rate_is_none_when_nothing_applies():
+    assert mean_must_hit_rate([None, None]) is None
+
+
+def test_mean_must_hit_rate_of_empty_input_is_none():
+    assert mean_must_hit_rate([]) is None

@@ -83,10 +83,15 @@ def extract_chunk_ids(docs: list[dict] | None) -> list[str]:
     return _deduplicate_keep_order(chunk_ids)
 
 
+def _round_or_none(value: float | None) -> float | None:
+    """保留 None 的"不适用"语义 —— 不能顺手 round 成 0, 那会把"没标"报成"没做到"."""
+    return None if value is None else round(value, 4)
+
+
 def compute_item_name_hit_rate(
     predicted_item_names: list[str] | None,
     expected_item_names: list[str] | None,
-) -> float:
+) -> float | None:
     """
     计算主体识别命中率.
 
@@ -95,16 +100,39 @@ def compute_item_name_hit_rate(
     - expected_item_names: 题库里标注的预期主体列表
 
     返回值:
-    - float: 主体命中率
+    - float | None: 主体命中率; 没标预期主体 (「该答不知道」那类) 时返回 None
 
     公式:
     预测主体和预期主体的交集数量 / 预期主体数量
+
+    没标预期主体的题记 None 而不是 0.0: 那道题的**正确行为就是认不出主体**,
+    记 0 等于把"答对了"算成"答错了", 汇总时白白扣分. 与 must_hit 同一套语义 ——
+    不适用的记 null, 汇总时排除出分母.
     """
     predicted = set(predicted_item_names or [])
     expected = set(expected_item_names or [])
     if not expected:
-        return 0.0
+        return None
     return len(predicted & expected) / len(expected)
+
+
+def mean_must_hit_rate(values: list[float | None]) -> float | None:
+    """
+    汇总必命中率: 只在"适用"的题上取平均.
+
+    参数:
+    - values: 每题一个值; 没标注关键 chunk 的题记 None
+
+    返回值:
+    - float | None: 平均值; 一道适用的题都没有时返回 None (而不是 0.0 ——
+      那会把"这批题不适用"报成"全都没打中")
+
+    不把 None 当 0 是这一层的要点: 否则「该答不知道」那类题会凭空拉低指标.
+    """
+    applicable = [v for v in values if v is not None]
+    if not applicable:
+        return None
+    return sum(applicable) / len(applicable)
 
 
 def _compute_rank_metrics(
@@ -193,7 +221,11 @@ def compute_chunk_metrics(
 
     precision = len(hit_chunk_ids) / len(retrieved) if retrieved else 0.0
     recall = len(hit_chunk_ids) / len(gold_set) if gold_set else 0.0
-    must_hit_rate = len(must_hit_ids) / len(must_hit_set) if must_hit_set else 0.0
+    # 必命中率是**最低门槛**, 不是覆盖率: 标注了 N 条关键 chunk, 捞到其中任意一条
+    # 就算过了. 用"命中数 / 标注数"的话, 同一条链路标 1 条时是 1.0、标 3 条时是
+    # 0.33 —— 数字随标注习惯变, 不可比 (C17 改的口径).
+    # 一条都没标 (「该答不知道」那类) 时记 None: 既不算打中也不算打漏, 汇总时排除.
+    must_hit_rate = None if not must_hit_set else (1.0 if must_hit_ids else 0.0)
     rank_metrics = _compute_rank_metrics(retrieved, gold_set, k=rank_k)
 
     return {
@@ -226,10 +258,10 @@ def compute_chunk_metrics(
         # 命中的相关 chunk 数 / 题库标注相关 chunk 总数.
         # 反映"该召回的内容有没有召回到".
         "recall": round(recall, 4),
-        # 必命中率:
-        # 命中的关键 chunk 数 / 题库标注关键 chunk 总数.
-        # 反映"最关键的内容有没有打中".
-        "must_hit_rate": round(must_hit_rate, 4),
+        # 必命中率 (最低门槛):
+        # 标注了关键 chunk 的题里, 至少捞到一条的占比. 没标注的题记 None.
+        # 反映"最关键的那类内容有没有捞到".
+        "must_hit_rate": None if must_hit_rate is None else round(must_hit_rate, 4),
         # MRR@k: 第一个命中 gold 的位置倒数.
         # 反映"正确答案排在第几位".
         "mrr_at_k": rank_metrics["mrr_at_k"],
@@ -297,11 +329,10 @@ def evaluate_query_state(
         "predicted_item_names": result_state.get("item_names", []),
         # 主体命中率:
         # 识别主体和预期主体的交集数量 / 预期主体数量.
-        "item_name_hit_rate": round(
+        "item_name_hit_rate": _round_or_none(
             compute_item_name_hit_rate(
                 result_state.get("item_names", []), expected_item_names
-            ),
-            4,
+            )
         ),
         # 4 层结果的分层评测详情:
         # - embedding_chunks

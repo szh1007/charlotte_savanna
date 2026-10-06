@@ -1,0 +1,349 @@
+{
+ "log": "D:\\__WorkSpace__\\charlotte_savanna\\project\\rag_knowledge\\logs\\app_20261006.log",
+ "generated_at": "2026-10-06T18:38:16",
+ "queries": 350,
+ "nodes": {
+  "node_answer_output": {
+   "n": 5,
+   "p50_ms": 1411.0,
+   "p95_ms": 1751.0,
+   "min_ms": 505.0,
+   "max_ms": 1751.0,
+   "mean_ms": 1241.0
+  },
+  "node_bge_embedding": {
+   "n": 16,
+   "p50_ms": 11508.0,
+   "p95_ms": 27764.0,
+   "min_ms": 3685.0,
+   "max_ms": 27764.0,
+   "mean_ms": 13687.8
+  },
+  "node_document_split": {
+   "n": 16,
+   "p50_ms": 46.0,
+   "p95_ms": 669.0,
+   "min_ms": 26.0,
+   "max_ms": 669.0,
+   "mean_ms": 84.3
+  },
+  "node_entry": {
+   "n": 16,
+   "p50_ms": 4.0,
+   "p95_ms": 10.0,
+   "min_ms": 4.0,
+   "max_ms": 10.0,
+   "mean_ms": 5.2
+  },
+  "node_import_milvus": {
+   "n": 16,
+   "p50_ms": 136.0,
+   "p95_ms": 232.0,
+   "min_ms": 41.0,
+   "max_ms": 232.0,
+   "mean_ms": 146.0
+  },
+  "node_item_name_confirm": {
+   "n": 334,
+   "p50_ms": 1345.0,
+   "p95_ms": 2277.0,
+   "min_ms": 743.0,
+   "max_ms": 5208.0,
+   "mean_ms": 1457.1
+  },
+  "node_item_name_recognition": {
+   "n": 16,
+   "p50_ms": 905.0,
+   "p95_ms": 3957.0,
+   "min_ms": 708.0,
+   "max_ms": 3957.0,
+   "mean_ms": 1107.6
+  },
+  "node_md_img": {
+   "n": 16,
+   "p50_ms": 14.0,
+   "p95_ms": 24.0,
+   "min_ms": 8.0,
+   "max_ms": 24.0,
+   "mean_ms": 14.8
+  },
+  "node_rerank": {
+   "n": 167,
+   "p50_ms": 4071.0,
+   "p95_ms": 20424.0,
+   "min_ms": 99.0,
+   "max_ms": 48839.0,
+   "mean_ms": 8689.6
+  },
+  "node_rrf": {
+   "n": 244,
+   "p50_ms": 127.0,
+   "p95_ms": 209.0,
+   "min_ms": 3.0,
+   "max_ms": 314.0,
+   "mean_ms": 97.8
+  },
+  "node_search_embedding": {
+   "n": 244,
+   "p50_ms": 594.0,
+   "p95_ms": 769.0,
+   "min_ms": 252.0,
+   "max_ms": 988.0,
+   "mean_ms": 526.4
+  },
+  "node_search_embedding_hyde": {
+   "n": 244,
+   "p50_ms": 869.0,
+   "p95_ms": 1123.0,
+   "min_ms": 394.0,
+   "max_ms": 4701.0,
+   "mean_ms": 866.2
+  },
+  "node_web_search": {
+   "n": 5,
+   "p50_ms": 3164.0,
+   "p95_ms": 3701.0,
+   "min_ms": 2443.0,
+   "max_ms": 3701.0,
+   "mean_ms": 3148.6
+  }
+ },
+ "per_query_total": {
+  "n": 350,
+  "p50_ms": 2990.0,
+  "p95_ms": 23686.0,
+  "min_ms": 850.0,
+  "max_ms": 59689.0,
+  "mean_ms": 7326.2
+ },
+ "arms": {
+  "未标注": {
+   "queries": 184,
+   "nodes": {
+    "node_answer_output": {
+     "n": 5,
+     "p50_ms": 1411.0,
+     "p95_ms": 1751.0,
+     "min_ms": 505.0,
+     "max_ms": 1751.0,
+     "mean_ms": 1241.0
+    },
+    "node_bge_embedding": {
+     "n": 16,
+     "p50_ms": 11508.0,
+     "p95_ms": 27764.0,
+     "min_ms": 3685.0,
+     "max_ms": 27764.0,
+     "mean_ms": 13687.8
+    },
+    "node_document_split": {
+     "n": 16,
+     "p50_ms": 46.0,
+     "p95_ms": 669.0,
+     "min_ms": 26.0,
+     "max_ms": 669.0,
+     "mean_ms": 84.3
+    },
+    "node_entry": {
+     "n": 16,
+     "p50_ms": 4.0,
+     "p95_ms": 10.0,
+     "min_ms": 4.0,
+     "max_ms": 10.0,
+     "mean_ms": 5.2
+    },
+    "node_import_milvus": {
+     "n": 16,
+     "p50_ms": 136.0,
+     "p95_ms": 232.0,
+     "min_ms": 41.0,
+     "max_ms": 232.0,
+     "mean_ms": 146.0
+    },
+    "node_item_name_confirm": {
+     "n": 168,
+     "p50_ms": 1147.0,
+     "p95_ms": 2090.0,
+     "min_ms": 743.0,
+     "max_ms": 5208.0,
+     "mean_ms": 1285.0
+    },
+    "node_item_name_recognition": {
+     "n": 16,
+     "p50_ms": 905.0,
+     "p95_ms": 3957.0,
+     "min_ms": 708.0,
+     "max_ms": 3957.0,
+     "mean_ms": 1107.6
+    },
+    "node_md_img": {
+     "n": 16,
+     "p50_ms": 14.0,
+     "p95_ms": 24.0,
+     "min_ms": 8.0,
+     "max_ms": 24.0,
+     "mean_ms": 14.8
+    },
+    "node_rerank": {
+     "n": 5,
+     "p50_ms": 44617.0,
+     "p95_ms": 48839.0,
+     "min_ms": 35129.0,
+     "max_ms": 48839.0,
+     "mean_ms": 43467.0
+    },
+    "node_rrf": {
+     "n": 82,
+     "p50_ms": 5.0,
+     "p95_ms": 7.0,
+     "min_ms": 3.0,
+     "max_ms": 11.0,
+     "mean_ms": 5.1
+    },
+    "node_search_embedding": {
+     "n": 82,
+     "p50_ms": 321.0,
+     "p95_ms": 357.0,
+     "min_ms": 252.0,
+     "max_ms": 444.0,
+     "mean_ms": 321.7
+    },
+    "node_search_embedding_hyde": {
+     "n": 82,
+     "p50_ms": 647.0,
+     "p95_ms": 1512.0,
+     "min_ms": 394.0,
+     "max_ms": 4701.0,
+     "mean_ms": 734.0
+    },
+    "node_web_search": {
+     "n": 5,
+     "p50_ms": 3164.0,
+     "p95_ms": 3701.0,
+     "min_ms": 2443.0,
+     "max_ms": 3701.0,
+     "mean_ms": 3148.6
+    }
+   },
+   "per_query_total": {
+    "n": 184,
+    "p50_ms": 1793.0,
+    "p95_ms": 17568.0,
+    "min_ms": 850.0,
+    "max_ms": 59689.0,
+    "mean_ms": 4254.7
+   }
+  },
+  "rerank-on": {
+   "queries": 83,
+   "nodes": {
+    "node_item_name_confirm": {
+     "n": 83,
+     "p50_ms": 1636.0,
+     "p95_ms": 2609.0,
+     "min_ms": 1150.0,
+     "max_ms": 5176.0,
+     "mean_ms": 1751.7
+    },
+    "node_rerank": {
+     "n": 81,
+     "p50_ms": 18421.0,
+     "p95_ms": 20416.0,
+     "min_ms": 3949.0,
+     "max_ms": 20822.0,
+     "mean_ms": 15057.6
+    },
+    "node_rrf": {
+     "n": 81,
+     "p50_ms": 145.0,
+     "p95_ms": 238.0,
+     "min_ms": 80.0,
+     "max_ms": 314.0,
+     "mean_ms": 155.2
+    },
+    "node_search_embedding": {
+     "n": 81,
+     "p50_ms": 646.0,
+     "p95_ms": 819.0,
+     "min_ms": 482.0,
+     "max_ms": 988.0,
+     "mean_ms": 663.0
+    },
+    "node_search_embedding_hyde": {
+     "n": 81,
+     "p50_ms": 950.0,
+     "p95_ms": 1201.0,
+     "min_ms": 675.0,
+     "max_ms": 1343.0,
+     "mean_ms": 968.4
+    }
+   },
+   "per_query_total": {
+    "n": 83,
+    "p50_ms": 21433.0,
+    "p95_ms": 24390.0,
+    "min_ms": 1426.0,
+    "max_ms": 25000.0,
+    "mean_ms": 18190.0
+   }
+  },
+  "rerank-off": {
+   "queries": 83,
+   "nodes": {
+    "node_item_name_confirm": {
+     "n": 83,
+     "p50_ms": 1468.0,
+     "p95_ms": 1944.0,
+     "min_ms": 1029.0,
+     "max_ms": 4992.0,
+     "mean_ms": 1511.0
+    },
+    "node_rerank": {
+     "n": 81,
+     "p50_ms": 172.0,
+     "p95_ms": 249.0,
+     "min_ms": 99.0,
+     "max_ms": 309.0,
+     "mean_ms": 174.9
+    },
+    "node_rrf": {
+     "n": 81,
+     "p50_ms": 135.0,
+     "p95_ms": 176.0,
+     "min_ms": 83.0,
+     "max_ms": 273.0,
+     "mean_ms": 134.2
+    },
+    "node_search_embedding": {
+     "n": 81,
+     "p50_ms": 599.0,
+     "p95_ms": 690.0,
+     "min_ms": 425.0,
+     "max_ms": 873.0,
+     "mean_ms": 597.0
+    },
+    "node_search_embedding_hyde": {
+     "n": 81,
+     "p50_ms": 912.0,
+     "p95_ms": 1060.0,
+     "min_ms": 530.0,
+     "max_ms": 1346.0,
+     "mean_ms": 897.9
+    }
+   },
+   "per_query_total": {
+    "n": 83,
+    "p50_ms": 3271.0,
+    "p95_ms": 3988.0,
+    "min_ms": 1380.0,
+    "max_ms": 7015.0,
+    "mean_ms": 3271.4
+   }
+  }
+ },
+ "notes": [
+  "耗时来自日志里的 @node_log, 逐节点; 不含联网召回与作答生成.",
+  "评测跑批器里普通检索与 HyDE 检索是串行调的, 线上查询图里是并行 — 所以 per_query_total 是评测口径的上界, 不是用户看到的等待时间.",
+  "按臂拆分看 `arms`: 评测跑批器把 session_id 写成 `{case_id}_query@{臂名}`, 两臂因此各成一组; 消融的耗时对照读这一节, 别读总表 (混着两臂)."
+ ]
+}

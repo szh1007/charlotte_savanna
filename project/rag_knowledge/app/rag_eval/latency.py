@@ -35,6 +35,9 @@ NODE_DONE = re.compile(
     r"耗时=(?P<ms>\d+)ms"
 )
 
+# 追踪 ID 里的臂名分隔符 (`{case_id}_query@{臂名}`), 见 runner.run_query_eval_case
+ARM_SEPARATOR = "@"
+
 
 def percentile(values: list[float], pct: float) -> float:
     """最近秩法 (nearest-rank) 的百分位 —— 不插值.
@@ -74,8 +77,21 @@ def summarize(values: list[float]) -> dict:
     }
 
 
-def build_report(per_trace: dict[str, dict[str, int]], log_path: str) -> dict:
-    """逐节点 + 每次问答合计的汇总."""
+def split_arm(trace: str) -> str:
+    """从追踪 ID 里取臂名.
+
+    评测跑批器把 session_id 写成 `{case_id}_query@{臂名}` —— 两臂跑的是同一批题,
+    不带臂名的话追踪 ID 完全相同, 而上面的逐节点汇总对同名节点是**后写覆盖**:
+    同一天跑完两臂, 汇总里只剩后跑那一臂, 且不会报错 (issue C17 修的就是这个).
+    没有 `@` 的是线上或旧格式的追踪 ID, 归到「未标注」.
+    """
+    if ARM_SEPARATOR not in trace:
+        return "未标注"
+    return trace.rpartition(ARM_SEPARATOR)[2] or "未标注"
+
+
+def _summarize_traces(per_trace: dict[str, dict[str, int]]) -> dict:
+    """一组追踪 ID 的逐节点 + 每次问答合计."""
     node_values: dict[str, list[float]] = defaultdict(list)
     totals: list[float] = []
     for durations in per_trace.values():
@@ -84,39 +100,69 @@ def build_report(per_trace: dict[str, dict[str, int]], log_path: str) -> dict:
         for node, ms in durations.items():
             node_values[node].append(float(ms))
         totals.append(float(sum(durations.values())))
-
     return {
-        "log": log_path,
-        "generated_at": datetime.now().isoformat(timespec="seconds"),
         "queries": len(totals),
         "nodes": {
             node: summarize(values) for node, values in sorted(node_values.items())
         },
         "per_query_total": summarize(totals),
+    }
+
+
+def build_report(per_trace: dict[str, dict[str, int]], log_path: str) -> dict:
+    """逐节点 + 每次问答合计的汇总, 并**按臂再拆一份**."""
+    overall = _summarize_traces(per_trace)
+
+    per_arm: dict[str, dict[str, dict[str, int]]] = defaultdict(dict)
+    for trace, durations in per_trace.items():
+        per_arm[split_arm(trace)][trace] = durations
+    arms = {arm: _summarize_traces(traces) for arm, traces in per_arm.items()}
+
+    return {
+        "log": log_path,
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        **overall,
+        "arms": arms,
         "notes": [
             "耗时来自日志里的 @node_log, 逐节点; 不含联网召回与作答生成.",
             "评测跑批器里普通检索与 HyDE 检索是串行调的, 线上查询图里是并行 — "
             "所以 per_query_total 是评测口径的上界, 不是用户看到的等待时间.",
+            "按臂拆分看 `arms`: 评测跑批器把 session_id 写成 `{case_id}_query@{臂名}`, "
+            "两臂因此各成一组; 消融的耗时对照读这一节, 别读总表 (混着两臂).",
         ],
     }
 
 
-def render_markdown(report: dict) -> str:
+def _render_table(summary: dict) -> list[str]:
     rows = [
         "| 节点 | n | P50 (ms) | P95 (ms) | 均值 (ms) |",
         "|---|---|---|---|---|",
     ]
-    for node, stat in report["nodes"].items():
+    for node, stat in summary["nodes"].items():
         rows.append(
             f"| `{node}` | {stat['n']} | {stat['p50_ms']:.0f} | "
             f"{stat['p95_ms']:.0f} | {stat['mean_ms']:.0f} |"
         )
-    total = report["per_query_total"]
+    total = summary["per_query_total"]
     rows.append(
         f"| **单次问答合计 (评测口径)** | {total['n']} | {total['p50_ms']:.0f} | "
         f"{total['p95_ms']:.0f} | {total['mean_ms']:.0f} |"
     )
-    return "\n".join(rows)
+    return rows
+
+
+def render_markdown(report: dict) -> str:
+    """有多个臂时逐臂出一张表 —— 混在一起看会把两臂的耗时平均掉."""
+    arms = report.get("arms") or {}
+    if len(arms) > 1:
+        blocks: list[str] = []
+        for arm, summary in arms.items():
+            blocks.append(f"### 臂: {arm} ({summary['queries']} 次问答)")
+            blocks.append("")
+            blocks.extend(_render_table(summary))
+            blocks.append("")
+        return "\n".join(blocks).strip()
+    return "\n".join(_render_table(report))
 
 
 def _latest_log() -> Path:

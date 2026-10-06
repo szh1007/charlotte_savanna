@@ -7,8 +7,21 @@
 
 from __future__ import annotations
 
+import pytest
+
 from app.rag.query import rerank_service
-from app.rag.query.config import RERANK_FUSION_ALPHA
+
+# 这些用例测的是**融合与折扣的机制**, 不是线上当前调成多少 —— 所以把参数钉住,
+# 别读 `config` 里的实时值: 2026-10-06 线上把 alpha 调成 0、标题片折扣调成 1.0
+# (两者都是拿数据扫出来的), 机制本身没变, 读实时值会让用例跟着调参一起挂.
+FUSION_ALPHA = 0.5
+HEAD_FACTOR = 0.7
+
+
+@pytest.fixture(autouse=True)
+def _pin_fusion_params(monkeypatch):
+    monkeypatch.setattr(rerank_service, "RERANK_FUSION_ALPHA", FUSION_ALPHA)
+    monkeypatch.setattr(rerank_service, "DOC_HEAD_SCORE_FACTOR", HEAD_FACTOR)
 
 
 def _fake_reranker(monkeypatch, scores: list[float]):
@@ -66,14 +79,8 @@ def test_fusion_weight_matches_config(monkeypatch):
     rerank_service._list_score_and_rank(merged, [["q", "a"], ["q", "b"]])
 
     by_id = {c["chunk_id"]: c for c in merged}
-    assert (
-        by_id["a"]["score"]
-        == RERANK_FUSION_ALPHA * 1.0 + (1 - RERANK_FUSION_ALPHA) * 0.2
-    )
-    assert (
-        by_id["b"]["score"]
-        == RERANK_FUSION_ALPHA * 0.0 + (1 - RERANK_FUSION_ALPHA) * 0.4
-    )
+    assert by_id["a"]["score"] == FUSION_ALPHA * 1.0 + (1 - FUSION_ALPHA) * 0.2
+    assert by_id["b"]["score"] == FUSION_ALPHA * 0.0 + (1 - FUSION_ALPHA) * 0.4
 
 
 def test_identical_rrf_scores_do_not_divide_by_zero(monkeypatch):

@@ -12,12 +12,26 @@
 
 from __future__ import annotations
 
+import pytest
+
 from app.rag.query import rerank_service, rrf_service
 from app.shared.runtime.route_isolation import isolate_route
 
 # ---------------------------------------------------------------------------
 # RRF: 单路为空不再是错误
 # ---------------------------------------------------------------------------
+
+
+# 断崖窗口钉住: 下面这些用例测的是**判据本身** (落差会不会被检查到、全 0 会不会炸),
+# 与"线上当前交付几条"无关. 2026-10-06 `RERANK_MAX_TOPK` 由 8 调到 1 之后, 依赖
+# "窗口够宽"的用例全挂了 —— 根因就是它们读的是线上调参值.
+CLIFF_MAX, CLIFF_MIN = 8, 1
+
+
+@pytest.fixture(autouse=True)
+def _pin_cliff_window(monkeypatch):
+    monkeypatch.setattr(rerank_service, "RERANK_MAX_TOPK", CLIFF_MAX)
+    monkeypatch.setattr(rerank_service, "RERANK_MIN_TOPK", CLIFF_MIN)
 
 
 def test_rrf_tolerates_a_single_empty_route():
