@@ -1,10 +1,10 @@
 # C20 · 根 `README.md` + 根 `CLAUDE.md` 更新
 
-**Status:** todo
+**Status:** done
 
 **Type:** docs
 
-**Blocked by:** C19
+**Blocked by:** C19（已 done, 2026-10-06 提交于 `a3bc3f8`）
 
 **上游:** `.scratch/Charlotte/PLAN.md` §7；`CharApp/docs/PLAN.md:194-197`（当初押后的理由与解除条件）
 
@@ -51,18 +51,53 @@
 
 ## 验收
 
-- [ ] 根 README 的第一屏能看出四条经历是什么，且每条都点得进对应的 README
-- [ ] 根 README 里 `CharAgent` / `CharApp` 有命中（这条是这次改动的**最低验收线**）
-- [ ] `demo/` 被明确标注为学习区
-- [ ] 根 CLAUDE.md 的目录树、状态表、启动命令、`CHARAPP_*` 段都补齐
-- [ ] **§4.8 的「解构 subagent」表述改掉**
-- [ ] `.env.example` 与代码里实际读的键**逐条对齐**（有现成的做法可参考：三个子项目的 `.env.example` 都是全的）
-- [ ] 「最后更新」字段刷新
+- [x] 根 README 的第一屏能看出四条经历是什么，且每条都点得进对应的 README
+      （新增「作品集导览」表紧随项目简介；13 个链接目标逐一实测存在）
+- [x] 根 README 里 `CharAgent` / `CharApp` 有命中（这条是这次改动的**最低验收线**）
+      （副标题 / 模块表两行 / 导览 / 目录树 / 启动表 / 环境变量 / 文档导航, 共 20+ 处）
+- [x] `demo/` 被明确标注为学习区
+      （模块表「自学教程（非业务代码，可忽略）」+ 目录树「非业务代码, 可忽略」）
+- [x] 根 CLAUDE.md 的目录树、状态表、启动命令、`CHARAPP_*` 段都补齐
+      （§3 加 CharAgent/ CharApp/ 两个顶层块 + sh/charapp_* 四条 + .mcp.json, 并去掉已删除的 AGENTS.md/AGENTS_SYSTEM.md；§5 开头加两节主线状态表；§6.3 加 CharAgent CLI 与 charapp_demo/client/backend 三条；§6.1 加「CharApp/CharAgent 用根 .env」一条）
+- [x] **§4.8 的「解构 subagent」表述改掉**
+      （改为「DeepAgents = **检索** subagent（图谱解构与出题是裸 LLM 调用 + 结构校验, 不是 subagent）」, 字面 grep「检索/解构」零命中）
+- [x] `.env.example` 与代码里实际读的键**逐条对齐**
+      （脚本按「代码实际读的键 vs 模板（含注释示例）」逐文件核对：根模板 0 缺；charplot 26/26；rag_knowledge 补 `RK_BGE_M3` 一档；video_downloader 补 `FREE_SUMMARY_DAILY` / `FREE_QA_DAILY` 与 `DEEPSEEK_*` 回退键。§三 点名要补的 `CHARAPP_MILVUS_URL` / `CHARAPP_MODELSCOPE_ROOT` 在 HEAD 已存在（C08/C14 已补）, `CHARAPP_MCP_USER_ID` 的 ADR-0030 指针与两句边界均在）
+- [x] 「最后更新」字段刷新 → 2026-10-06
 
 ## 改了哪些文件
 
-（实施时补）
+| 文件 | 说明 |
+|---|---|
+| `README.md` | 副标题与徽章（+CharAgent / PostgreSQL / Qdrant / Elasticsearch）· 项目简介改写 + 模块表加两行主线 · **新增「作品集导览」**（四条经历, D3 落点）· 目录树加 CharAgent//CharApp//.mcp.json · 快速开始（环境要求加 PG、启动表加 CharAgent/CharApp 两行、`.mcp.json` 一句）· 环境变量（加「主线专用（根 .env）」条）· 文档导航加两份主线 README · 顺带修 minimall 小节的模型数（9→11, 含 RefundRequest/KnowledgeArticle）与 API/页面描述 |
+| `CLAUDE.md` | §1 概述与模块表（加两条主线）· §2 技术栈（+PG、+CharAgent 行）· §3 目录树（两主线块 / sh/ 四条 / .mcp.json / .scratch 两阶段 / minimall 子树补齐 / 去 AGENTS*）· §4.7 12 节点 · §4.8 检索 subagent · **新增 §4.10 CharAgent 约定**（依赖单向 / 零框架依赖 / 不许改 loop.py / 框架给协议业务给内容 / 四个包不进根门面 / 测试）· §5 开头加两节主线状态表 + 5.1/5.5/5.6/5.7 陈旧数字修正 · §6.1 根 .env 一段 · §6.3 CharAgent/CharApp 启动三条 + 评估 35 分钟 · §6.4 核心依赖 + 删依赖两头一起 · §5.9 基础设施行 · §7 Domain docs 指向 CharApp/CONTEXT.md + 31 条 ADR · 页脚日期 |
+| `project/rag_knowledge/.env.example` | 补 `RK_BGE_M3`（本地路径与默认之间的中间档）一行注释示例 |
+| `project/video_downloader/.env.example` | 补免费档每日配额两个键（`FREE_SUMMARY_DAILY` / `FREE_QA_DAILY`）与 `DEEPSEEK_*` 回退键（原先只在注释里提过） |
 
 ## 实施记录
 
-（实施时补）
+### 2026-10-06 · `langchain-mcp-adapters` 的处置（用户决定：留着）
+
+票面 §三 说它「可以删」（全仓确认零引用：只有 C14 的票据提过它，代码里一处没用 —— 消费侧走的是官方 SDK）。实施时：`requirements.txt` 的行删掉了，但 `pip uninstall -y langchain-mcp-adapters` 被权限拦下（动的是 venv 里已装的包），成了「文件删了、venv 还装着」的半状态。
+
+**用户当天拍板：带上无所谓，不需要移除。** 于是两处都还原 —— `requirements.txt` 放回 `langchain-mcp-adapters==0.3.2`，为解释半状态临时加进 CLAUDE.md §6.4 的那句「删依赖要两头一起」也一并撤掉。**requirements.txt 最终不在本票改动清单里。**
+
+### 两处编号上的取舍（避免打翻既有引用）
+
+- **§4 新增的 CharAgent 一节编号为 §4.10**（排在 §4.9 代码质量之后）：§4.9 被多张票据引用为「注释标点一律半角」的出处，不重编号。
+- **§5 的两节主线状态表用不编号标题**（插在 §5 导语与 §5.1 之间）：5.1–5.9 不动，票据里对 §5.6/§5.7 的引用继续有效。
+
+### 评审（两轴子代理）与处置
+
+**Spec 轴**：7 个验收框全部达标（`CharAgent`/`CharApp` 命中、`.env.example` 逐键核对、§4.8 字面复核、链接目标逐一存在、C19 移交的 5 条全部落到位）。抓到一条措辞过宽：README「每条经历的 README 采用同一套结构」对经历 4（deep_search/menu/video_downloader 仍是旧结构）不成立 → 已改为「经历 1–3 的 README」。
+
+**Standards 轴**抓到两条硬事实错误 + 三条判断项，均已修：
+① minimall 模型数：实为 **11 个**（9 + `RefundRequest` + `KnowledgeArticle`）,  README 与 CLAUDE.md 两处「9 个」→ 已改并补齐 agent 接入一行；
+② README 导览措辞（同上）；
+③ §5 CharAgent 行的「限流 / 分布式锁」引用外延过大（PLAN §5 未覆盖）→ 改指 `DESIGN.md` #20–#22；
+④ 两份目录树把 `client/eval` 也说成「可选依赖组」→ 改为「可选依赖组 server / mcp 按需装」；
+⑤ video_downloader 回退说明与新注释重复 → 合并成一段。
+
+### 与 C19 的关系
+
+C19 的记录里给 C20 留了 5 条交接（§4.7 节点数 / §6.3 耗时 / §4.8 措辞 / README 第一屏 / 速览形状）—— 已全部落地。C19 提交于 `a3bc3f8`（用户手动提交），本票在其之上。

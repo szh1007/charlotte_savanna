@@ -1,6 +1,6 @@
 # 人机确认（L3b）· 专题底稿
 
-> 本目录一共五份：`INTERVIEW.md`（题典）· `context-compaction-notes.md`（上下文压缩）· `estimator-and-trigger.md`（压缩原理）· `observability-notes.md`（L3a 可观测）· **本份**（L3b 人机确认：挂起-恢复 / 幂等 / 代付 / 确认卡）。
+> 本目录一共七份：`INTERVIEW.md`（题典）· `context-compaction-notes.md`（上下文压缩）· `estimator-and-trigger.md`（压缩原理）· `observability-notes.md`（L3a 可观测）· **本份**（L3b 人机确认：挂起-恢复 / 幂等 / 代付 / 确认卡）· [`stateless-and-drain-notes.md`](./stateless-and-drain-notes.md)（#64 无状态化与 graceful drain）· [`multiagent-notes.md`](./multiagent-notes.md)（#42–#44 多智能体）。
 > 覆盖阶段：**L3b**，对应 issues **32–38**（2026-09-25 ~ 09-26 落地，09-26 真机验收）。决策记录：**ADR-0014 / 0015 / 0017**。
 > 代码锚点：[`CharAgent/hooks/utils/types.py`](../../../CharAgent/hooks/utils/types.py) · [`CharAgent/hooks/registry.py`](../../../CharAgent/hooks/registry.py) · [`CharAgent/agent/loop.py`](../../../CharAgent/agent/loop.py) · [`CharAgent/retry/idempotency.py`](../../../CharAgent/retry/idempotency.py) · [`CharAgent/db/repositories/idempotency.py`](../../../CharAgent/db/repositories/idempotency.py) · [`CharAgent/server/app.py`](../../../CharAgent/server/app.py) · [`CharAgent/server/sessions.py`](../../../CharAgent/server/sessions.py) · [`CharApp/minimall/guardrail.py`](../../../CharApp/minimall/guardrail.py) · [`CharApp/minimall/tools.py`](../../../CharApp/minimall/tools.py) · [`app/minimall/views_bff.py`](../../../app/minimall/views_bff.py) · [`templates/minimall/agent.html`](../../../templates/minimall/agent.html)
 > 本文里的数字全部来自真机实测或测试计数，出处写在数字旁边。

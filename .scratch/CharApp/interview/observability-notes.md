@@ -1,6 +1,6 @@
 # 可观测（L3a）· 专题底稿
 
-> 本目录一共四份：`INTERVIEW.md`（题典：题 + 五段结构）· `context-compaction-notes.md`（上下文压缩专题）· `estimator-and-trigger.md`（压缩的原理底稿）· **本份**（可观测专题：工具轨迹 / 成本口径 / 日志脱敏 / 起点延迟与竞态）。
+> 本目录一共七份：`INTERVIEW.md`（题典：题 + 五段结构）· `context-compaction-notes.md`（上下文压缩专题）· `estimator-and-trigger.md`（压缩的原理底稿）· **本份**（可观测专题：工具轨迹 / 成本口径 / 日志脱敏 / 起点延迟与竞态）· [`hitl-approval-notes.md`](./hitl-approval-notes.md)（L3b 人机确认）· [`stateless-and-drain-notes.md`](./stateless-and-drain-notes.md)（#64 无状态化与 graceful drain）· [`multiagent-notes.md`](./multiagent-notes.md)（#42–#44 多智能体）。
 > 覆盖阶段：**L3a**，对应 issues **27–31**（2026-09-24 ~ 09-25 落地，09-25 真机验收）。决策记录：ADR-0016 / 0018 / 0019 / 0020。
 > 代码锚点：[`CharAgent/agent/loop.py`](../../../CharAgent/agent/loop.py) · [`CharAgent/agent/utils/types.py`](../../../CharAgent/agent/utils/types.py) · [`CharAgent/db/recorder.py`](../../../CharAgent/db/recorder.py) · [`CharAgent/db/cost.py`](../../../CharAgent/db/cost.py) · [`CharAgent/client/trace.py`](../../../CharAgent/client/trace.py) · [`CharAgent/redact/`](../../../CharAgent/redact/) · [`CharApp/minimall/log_redaction.py`](../../../CharApp/minimall/log_redaction.py) · [`app/minimall/views_bff.py`](../../../app/minimall/views_bff.py) · [`templates/minimall/agent.html`](../../../templates/minimall/agent.html)
 > 本文里的数字全部来自真机实测或测试计数，出处写在数字旁边。

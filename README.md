@@ -2,18 +2,22 @@
 
 <div align="center">
 
-**全栈技术学习项目** — 以 Django / FastAPI 为骨架，贯通 Web 后端、LLM Agent、向量检索与 Vue 前端
+**从 0 手写的 Agent 运行时 + 四条 LLM 工程经历** — Django / FastAPI / Vue 为骨架，贯通 Web 后端、Agent、RAG 与前端
 
 ![Python](https://img.shields.io/badge/Python-3.13-3776AB?style=flat&logo=python&logoColor=white)
 ![Django](https://img.shields.io/badge/Django-6.0-092E20?style=flat&logo=django&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.139-009688?style=flat&logo=fastapi&logoColor=white)
 ![Vue](https://img.shields.io/badge/Vue-3-4FC08D?style=flat&logo=vuedotjs&logoColor=white)
+![CharAgent](https://img.shields.io/badge/CharAgent-从零手写运行时-1C3C3C?style=flat)
 ![LangChain](https://img.shields.io/badge/LangChain-1.3-1C3C3C?style=flat&logo=langchain&logoColor=white)
 ![LangGraph](https://img.shields.io/badge/LangGraph-1.2-1C3C3C?style=flat&logo=langchain&logoColor=white)
 ![DeepAgents](https://img.shields.io/badge/DeepAgents-0.7-1C3C3C?style=flat&logo=langchain&logoColor=white)
 ![MySQL](https://img.shields.io/badge/MySQL-4479A1?style=flat&logo=mysql&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-316192?style=flat&logo=postgresql&logoColor=white)
 ![Redis](https://img.shields.io/badge/Redis-FF4438?style=flat&logo=redis&logoColor=white)
 ![Milvus](https://img.shields.io/badge/Milvus-00A1EA?style=flat&logo=milvus&logoColor=white)
+![Qdrant](https://img.shields.io/badge/Qdrant-DC244C?style=flat&logo=qdrant&logoColor=white)
+![Elasticsearch](https://img.shields.io/badge/Elasticsearch-005571?style=flat&logo=elasticsearch&logoColor=white)
 
 </div>
 
@@ -21,20 +25,37 @@
 
 ## 项目简介
 
-个人技术学习项目，初始化于 2026-04。围绕 **Web 后端 → LLM Agent → 向量检索 → 前端** 一条完整链路，实践 Django、DRF、FastAPI、LangChain、LangGraph、DeepAgents、Vue 3 等技术栈。
+个人技术项目，初始化于 2026-04。主线是**从 0 手写的 AI Agent 运行时 [`CharAgent`](CharAgent/README.md)** —— 它驱动一个接真实商城的智能客服 [`CharApp`](CharApp/README.md)（查订单 / 下单 / 退款 / 代付 / 政策问答，真库真扣款）。围绕主线展开的是四种形态的 LLM 工程实践。
 
-代码按「业务模块 + 子项目 + 自学 demo」组织；正式「主流程」尚未确定，现有模块均为学习/测试性质：
+代码按「主线 + 子项目 + 自学 demo」组织：
 
 | 模块 | 定位 | 说明 |
 |------|------|------|
-| `app/minimall/` | 业务模块（测试原型） | Django 商城：DRF API + 页面 + Redis 缓存 |
+| `CharAgent/` | **主线（框架）** | 从 0 手写的 agent 运行时 —— **零 LLM 框架依赖**（`pyproject.toml` 的 8 项依赖即全部），loop / 流式事件 / 断点续跑 / HITL / 重试熔断 / 脱敏全部手写 |
+| `CharApp/` | **主线（业务）** | 电商智能客服（CharAgent 的业务验证载体）：接 `app/minimall` 商城，含 HITL 挂起、RAG + 逐句引用、评估与 A/B |
+| `app/minimall/` | 业务模块（测试原型） | Django 商城：DRF API + 页面 + Redis 缓存；同时是 CharApp 的业务后端 |
+| `project/rag_knowledge/` | 子项目 | 工业级 RAG 知识库问答（LangGraph 双图 + Milvus + 评估体系 + rerank 消融） |
+| `project/rag_text2sql/` | 子项目 | RAG Text2SQL 查询智能体（LangGraph 12 节点 + Qdrant/ES + MySQL 双库 + Vue） |
+| `app/charplot/` + `project/charplot/` | 子项目 | AI 闯关学习网站（双后端: Django 账号/闯关规则 + FastAPI AI 能力 + Vue, 三件套实践） |
 | `project/deep_search/` | 子项目 | 深度检索智能体（DeepAgents + FastAPI + Vue） |
 | `project/menu/` | 子项目 | 餐厅智能助手（LangChain Agent + FastAPI + Vue） |
 | `project/video_downloader/` | 子项目 | B 站视频下载站（FastAPI + yt-dlp + Vue，AI 视频总结） |
-| `project/rag_knowledge/` | 子项目 | 工业级 RAG 知识库问答（LangGraph 双图 + Milvus + 评估体系） |
-| `project/rag_text2sql/` | 子项目 | RAG Text2SQL 查询智能体（LangGraph + Qdrant/ES + MySQL 双库 + Vue） |
-| `app/charplot/` + `project/charplot/` | 子项目 | AI 闯关学习网站（双后端: Django 账号/闯关规则 + FastAPI AI 能力 + Vue, 三件套实践） |
-| `demo/` | 自学教程 | Python / LangChain / LangGraph / DeepAgents / FastAPI 教程 |
+| `demo/` | **自学教程（非业务代码，可忽略）** | Python / LangChain / LangGraph / DeepAgents / FastAPI 教程 |
+
+---
+
+## 作品集导览
+
+四条经历，按讲述顺序：
+
+| # | 经历 | 目录 | 一句话 |
+|---|------|------|--------|
+| 1（主线） | 从 0 手写的 Agent 运行时 + 真实业务落地 | [`CharAgent`](CharAgent/README.md) + [`CharApp`](CharApp/README.md) | 手写的 loop / 断点续跑 / HITL / 评估与 A/B，驱动一个接真实商城的智能客服 |
+| 2 | 「RAG 工程」—— 两种形态的 RAG | [`rag_knowledge`](project/rag_knowledge/README.md) + [`rag_text2sql`](project/rag_text2sql/README.md) | 固定管道（摄取 → 召回 → 精排 → 溯源）vs 带反馈闭环的 agent（生成 SQL → 真执行 → 校正），见下方「RAG 工程」一节 |
+| 3 | 用主流框架把 AI 落成产品 | [`app/charplot/`](app/charplot/) + [`project/charplot`](project/charplot/README.md) | 知识 → 技能树 → 渐进出题 → 游戏化闯关；讲的是**工程约束** |
+| 4 | 学习性子项目 | [`deep_search`](project/deep_search/README.md) · [`menu`](project/menu/README.md) · [`video_downloader`](project/video_downloader/README.md) | 深度检索 / 餐厅助手 / 视频下载站，各自独立闭环 |
+
+经历 1–3 的 README 采用同一套结构：一句话定位 · 架构图 · **已实现 vs 未实现对照表** · 关键决策 · 一行启动 · 测试规模 · 已知边界。
 
 ---
 
@@ -43,12 +64,13 @@
 | 层级 | 技术 | 说明 |
 |------|------|------|
 | **语言** | Python 3.13 | 类型注解、asyncio、ContextVar |
-| **Web 框架** | Django 6.0 / FastAPI 0.139 | Django 用于 minimall / charplot 主应用，FastAPI 用于六个子项目 AI 端 |
+| **Web 框架** | Django 6.0 / FastAPI 0.139 | Django 用于 minimall / charplot / CharApp BFF，FastAPI 用于六个子项目 AI 端与 CharApp 服务（:1007） |
 | **Django 扩展** | DRF + django-filter + django-mptt | REST API、过滤、树形分类 |
-| **ORM / DB** | PyMySQL / SQLAlchemy 2.0 | MySQL（参数化查询） |
+| **ORM / DB** | PyMySQL / SQLAlchemy 2.0 | MySQL（参数化查询）；PostgreSQL（CharAgent 快照 / 记录层，SQLAlchemy + alembic） |
 | **缓存** | Redis（django-redis / redis-py） | L2 缓存、击穿/穿透/雪崩防护、熔断 |
 | **LLM 框架** | LangChain 1.3 + LangGraph 1.2 | LCEL、`@tool`、`StateGraph` + checkpointer |
 | **Agent** | DeepAgents 0.7 | `create_deep_agent` 多 subagent 协作 |
+| **Agent 运行时** | [`CharAgent`](CharAgent/README.md)（从 0 手写，零 LLM 框架依赖） | agent loop / 流式事件 / 断点续跑 / HITL / 重试熔断 / 脱敏 —— 主线框架 |
 | **向量数据库** | Milvus / Qdrant / ChromaDB / FAISS | 语义检索（HNSW + 余弦相似度） |
 | **全文检索** | Elasticsearch（ik 分词） | 字段取值索引（rag_text2sql） |
 | **知识库** | RAGFlow | 企业知识库问答 |
@@ -67,9 +89,20 @@
 
 ```
 charlotte_savanna/
+├── CharAgent/               # 主线（框架）: 从 0 手写的 agent 运行时（十五个包, 见其 README）
+│   ├── agent/ tool/ stream/ checkpoint/ db/ hooks/ retry/ model/
+│   ├── redact/ structured_logging/ prompt/        #   根门面汇聚的十一个包
+│   ├── client/ server/ mcp_client/ eval/          #   四个应用入口（刻意不进根门面; 可选依赖组 server / mcp 按需装）
+│   ├── tests/ alembic/ docs/                      #   测试 / 迁移 / 设计地图（DESIGN.md + 14 分册）
+│   └── pyproject.toml                             #   包声明 —— 8 项依赖, 零 LLM 框架依赖
+├── CharApp/                 # 主线（业务）: 电商智能客服（CharAgent 的业务验证载体）
+│   ├── minimall/            #   工具集 / 服务进程 / CLI / 知识库 RAG / MCP 暴露侧
+│   ├── eval/                #   离线跑分（20 题 6 场景 + 两组 A/B 报告）
+│   ├── docs/                #   PLAN.md + 31 条 ADR（决策记录）
+│   └── tests/               #   465 用例（respx 假商城 + MockLLM, 全离线）
 ├── charlotte_savanna/       # Django 配置包（settings 拆分 dev/prod）
 ├── app/
-│   ├── minimall/            # 商城业务（Django，9 个模型 + 缓存）
+│   ├── minimall/            # 商城业务（Django，9 个模型 + 缓存 + agent/BFF 端点）
 │   └── charplot/            # CharPlot 闯关学习数据端（Django，12 表 + 规则层）
 ├── project/
 │   ├── deep_search/         # 深度检索智能体（DeepAgents + FastAPI + Vue）
@@ -79,14 +112,15 @@ charlotte_savanna/
 │   ├── rag_text2sql/        # RAG Text2SQL 查询智能体（LangGraph + Qdrant/ES + MySQL 双库）
 │   └── charplot/            # CharPlot AI 能力端（FastAPI + LangGraph/DeepAgents/LangChain + Vue）
 ├── templates/
-│   ├── minimall/            # 商城页面模板（base + partials）
+│   ├── minimall/            # 商城页面模板（base + partials + 客服页 agent.html）
 │   ├── charplot/            # report_share.html（/r/{slug} 公开分享页）
 │   └── admin/               # 自定义 Admin 模板
 ├── sh/                      # 各子项目启动脚本（后端/AI 端 + 前端, 见快速开始启动表）
-├── demo/                    # 自学教程（非业务代码）
+├── demo/                    # 自学教程（非业务代码, 可忽略）
 │   └── SUMMARY.md           # 知识点学习总结
 ├── docs/                    # Agent 定义、triage 规范、学习笔记
 ├── .scratch/                # 本地 Issue Tracker（Markdown, 按 feature-slug 分目录）
+├── .mcp.json                # 项目级 MCP 配置: Claude Code 认到 minimall 只读 server（CharApp 暴露侧）
 ├── requirements.txt         # Python 依赖
 ├── .env.example             # 环境变量模板
 └── CLAUDE.md                # 项目上下文与开发规范
@@ -100,9 +134,9 @@ charlotte_savanna/
 
 | 维度 | 内容 |
 |------|------|
-| 模型 | 9 个：Profile / Category(MPTT) / Product / ProductImage / Cart / CartItem / ShippingAddress / Order / OrderItem |
-| API | DRF：认证 / 商品 / 购物车 / 地址 / 订单 / 充值 |
-| 页面 | CBV：商品列表 / 详情 / 购物车 / 下单 / 个人中心 |
+| 模型 | 11 个：Profile / Category(MPTT) / Product / ProductImage / Cart / CartItem / ShippingAddress / Order / OrderItem / RefundRequest / KnowledgeArticle |
+| API | DRF：认证 / 商品 / 购物车 / 地址 / 订单 / 充值 / 退款；另有面向 agent 的 16 条内部端点（`X-Internal-Token`）与客服 BFF |
+| 页面 | CBV：商品列表 / 详情 / 购物车 / 下单 / 个人中心 / 客服对话页（CharApp 的前端） |
 | 缓存 | Redis L2：击穿（SETNX + Pub-Sub）、穿透（空值）、雪崩（随机 TTL）、熔断 |
 
 ### deep_search — 深度检索智能体（子项目）
@@ -202,7 +236,7 @@ Python 基础、LangChain 1.3、LangGraph 1.2、DeepAgents 0.7、FastAPI 的渐�
 ### 环境要求
 
 - Python 3.13、Node.js 18+
-- MySQL、Redis（必需）；Milvus（menu 语义检索 / charplot 知识库 RAG 需要）
+- MySQL、Redis（必需）；PostgreSQL（CharAgent 的快照 / 记录层与 CharApp 需要）；Milvus（menu / charplot / CharApp 知识库需要）
 
 ### 安装
 
@@ -222,6 +256,8 @@ cp .env.example .env               # 填入真实 API Key
 
 | 模块 | 后端 | 前端 |
 |------|------|------|
+| CharAgent | `python -m CharAgent.client -q "…"`（零依赖 CLI 演示; `--backend memory / redis / postgres` 换快照存储） | — |
+| CharApp + minimall | `bash sh/charapp_demo.sh`（一键装置: 依赖检查 → 建表 → 起 Django 8000 与客服服务 1007 → 数据准备 → 开客服页） | 客服页在 Django 8000（装置自开） |
 | minimall | `python manage.py runserver` | 内建页面 |
 | deep_search | `sh/deep_search_backend.sh` | `sh/deep_search_frontend.sh` |
 | menu | `sh/menu_backend.sh` | `sh/menu_frontend.sh` |
@@ -230,7 +266,9 @@ cp .env.example .env               # 填入真实 API Key
 | rag_text2sql | `sh/rag_text2sql_backend.sh` | `sh/rag_text2sql_frontend.sh` |
 | charplot | Django 主项目 `python manage.py runserver`（8000）+ `sh/charplot_backend.sh`（AI 端 8004） | `sh/charplot_frontend.sh`（9004） |
 
-所有子项目后端/前端脚本均在 `sh/` 目录；前端脚本首次运行自动执行 `npm install`（deep_search / menu 对应 `ui/` 目录，其余为 `frontend/`）。Django 主项目依赖 MySQL + Redis；charplot 额外依赖 Milvus + modelscope 本地模型。
+所有子项目后端/前端脚本均在 `sh/` 目录；前端脚本首次运行自动执行 `npm install`（deep_search / menu 对应 `ui/` 目录，其余为 `frontend/`）。Django 主项目依赖 MySQL + Redis；charplot 额外依赖 Milvus + modelscope 本地模型；CharApp 的演示装置与剧本见 [`sh/charapp_demo.md`](sh/charapp_demo.md)。
+
+> **MCP 顺带一提**：仓库根的 [`.mcp.json`](.mcp.json) 让 Claude Code 打开仓库时自动认到一个 `minimall` 只读 server（实现在 `CharApp/minimall/mcp_server.py`）—— 只暴露只读工具、且只代表配置里那一个账户（边界与理由见 [ADR-0030](CharApp/docs/adr/0030-mcp-exposes-read-only-tools-for-one-account.md)）。
 
 ---
 
@@ -242,6 +280,7 @@ cp .env.example .env               # 填入真实 API Key
 - **LLM（Embedding）**：`CLOSEAI_*`
 - **数据库**：`MYSQL_*`（Django + demo）、`PGSQL_*`（PostgreSQL demo）
 - **缓存 / 向量**：`REDIS_URL`、`MILVUS_*`（`MILVUS_URL` / `MILVUS_DATABASE_NAME` / `MILVUS_COLLECTION_NAME`）
+- **主线专用（都在根 `.env`）**：`CHARAPP_*`（CharApp：内部令牌 / 服务地址 / MCP 暴露账户 / 上下文压缩旋钮 / 知识库 RAG 与两个本地模型 / 增量渲染开关）与 `CHARAGENT_*`（框架自己的快照后端 / 记录层 DSN / 成本价目表）
 - **子项目专用**：`MENU_*`（menu）、`DS_*`（deep_search）、`RK_*`（rag_knowledge）、`CHARPLOT_*`（charplot, 含 `CHARPLOT_MODELSCOPE_ROOT` 本地模型根与两端同值的 `CHARPLOT_INTERNAL_TOKEN`）；video_downloader 独立 `.env`（`MEMBER_KEY` / `BILI_COOKIE` / `LLM_*` / `ASR_*`）；rag_text2sql 不依赖 `.env`（配置在子项目 `conf/*.yaml`，本地私有不提交）
 - **Django**：`DJANGO_*`
 - **外部服务**：`TAVILY_API_KEY`、`LANGSMITH_*`
@@ -252,6 +291,8 @@ cp .env.example .env               # 填入真实 API Key
 
 | 文档 | 内容 |
 |------|------|
+| [CharAgent/README.md](CharAgent/README.md) | 主线框架：零依赖运行时（架构 / 已实现对照表 / 关键决策 / 启动 / 边界） |
+| [CharApp/README.md](CharApp/README.md) | 主线业务：电商智能客服（信任边界 / L1a→L5 落地对照表 / ADR 指引） |
 | [CLAUDE.md](CLAUDE.md) | 项目上下文、框架规范、开发约定 |
 | [demo/SUMMARY.md](demo/SUMMARY.md) | 知识点学习总结（LangChain/LangGraph/DeepAgents） |
 | [project/deep_search/README.md](project/deep_search/README.md) | deep_search 子项目文档 |

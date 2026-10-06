@@ -8,19 +8,21 @@
 
 ## 1. 项目概述
 
-**charlotte_savanna** 是以 **Django 6.0** 为骨架的个人技术学习项目，自学 Django、LangChain、LangGraph、FastAPI、DeepAgents、Vue 3 等技术栈。
+**charlotte_savanna** 是以 **Django 6.0** 为骨架的个人技术项目：主线是**从 0 手写的 AI Agent 运行时 `CharAgent/` 与它的业务落地 `CharApp/`**（电商智能客服，接 `app/minimall` 商城），围绕主线展开四条 LLM 工程经历（两种 RAG / 双后端 AI 产品 / 学习性子项目）。
 
-项目初始化于 2026-04-27，当前处于活跃开发中。代码按「业务模块 + 子项目 + 自学 demo」组织；正式「主流程」尚未确定，现有模块均为学习/测试性质：
+项目初始化于 2026-04-27，当前处于活跃开发中。代码按「主线（CharAgent + CharApp）+ 子项目 + 自学 demo」组织：
 
 | 模块 | 类型 | 说明 |
 |------|------|------|
-| `app/minimall/` | 业务模块（测试原型） | 商城业务（DRF API + 页面，Redis 缓存） |
-| `project/deep_search/` | 子项目 | DeepAgents 深度检索智能体（FastAPI + Vue 前端） |
-| `project/menu/` | 子项目 | 餐厅智能助手（LangChain Agent + FastAPI + Vue） |
-| `project/video_downloader/` | 子项目 | B 站视频下载站（FastAPI + yt-dlp + Vue，AI 视频总结） |
+| `CharAgent/` | **主线（框架）** | 从 0 手写的 Agent 运行时，零 LLM 框架依赖；约定见 §4.10，文档见其 `README.md` 与 `docs/DESIGN.md` |
+| `CharApp/` | **主线（业务）** | 电商智能客服（CharAgent 的业务验证载体，含 HITL / RAG / 评估与 A/B / MCP 暴露侧） |
+| `app/minimall/` | 业务模块（测试原型） | 商城业务（DRF API + 页面 + Redis 缓存 + 面向 agent 的内部端点与 BFF） |
 | `project/rag_knowledge/` | 子项目 | 工业级 RAG 知识库问答（LangGraph 双图 + Milvus + 评估体系） |
 | `project/rag_text2sql/` | 子项目 | RAG Text2SQL 数据查询智能体（LangGraph + Qdrant/ES + MySQL 双库 + Vue） |
 | `app/charplot/` + `project/charplot/` | 子项目 | AI 闯关学习网站（双后端：Django 账号/闯关规则 + FastAPI AI 能力 + Vue 前端, LangGraph/DeepAgents/LangChain 三件套） |
+| `project/deep_search/` | 子项目 | DeepAgents 深度检索智能体（FastAPI + Vue 前端） |
+| `project/menu/` | 子项目 | 餐厅智能助手（LangChain Agent + FastAPI + Vue） |
+| `project/video_downloader/` | 子项目 | B 站视频下载站（FastAPI + yt-dlp + Vue，AI 视频总结） |
 | `demo/` | 自学教程 | 非业务代码，见 §1.1 |
 
 ---
@@ -47,11 +49,11 @@
 |------|------|------|
 | **语言** | Python | 3.13 |
 | **Web 框架** | Django（minimall + charplot 主应用）+ FastAPI（deep_search / menu / video_downloader / rag_knowledge / rag_text2sql / charplot AI 端） | 6.0 / 0.139 |
-| **数据库** | MySQL + Redis 缓存（django-redis / redis-py） | — |
-| **ORM** | SQLAlchemy（menu 子项目） | 2.0 |
+| **数据库** | MySQL + PostgreSQL（CharAgent 快照 / 记录层）+ Redis 缓存（django-redis / redis-py） | — |
+| **ORM** | SQLAlchemy（CharAgent `db/` 层 + menu 子项目） | 2.0 |
 | **Django 扩展** | DRF + django-filter + django-mptt | 3.17 / 25.2 / 0.18 |
 | **LLM 框架** | LangChain + LangGraph | 1.3 / 1.2 |
-| **Agent** | DeepAgents | 0.7 |
+| **Agent** | DeepAgents + **CharAgent（从 0 手写, 零 LLM 框架依赖, 见 §4.10）** | 0.7 / — |
 | **视频处理** | yt-dlp + ffmpeg + SenseVoice（video_downloader 下载与 AI 总结） | — |
 | **向量数据库** | ChromaDB + FAISS + RAGFlow + Milvus + Qdrant | — |
 | **全文检索** | Elasticsearch（ik 分词, rag_text2sql 取值索引） | — |
@@ -68,6 +70,22 @@
 
 ```
 charlotte_savanna/
+├── CharAgent/                   # 主线（框架）: 从 0 手写的 Agent 运行时（十五个包, 零 LLM 框架依赖, 见 §4.10）
+│   ├── agent/                   #   agent loop / 循环防护 / 上下文压缩
+│   ├── tool/ stream/ hooks/     #   @tool 装饰器 / 流式事件总线（九类事件）/ hook 注册表
+│   ├── model/ retry/ checkpoint/#   ChatModel 协议 / 重试 + 熔断主备 / 快照三实现
+│   ├── db/ redact/ prompt/      #   数据层（六实体 + 迁移 + 仓储）/ 日志脱敏 / 提示词
+│   ├── structured_logging/      #   结构化日志（一处出口 + 三个 id 贯穿）
+│   ├── client/ server/ mcp_client/ eval/  #   四个应用入口（刻意不进根门面; 可选依赖组 server / mcp 按需装）
+│   ├── tests/                   #   1739 用例（默认跑 1594; 其余按 marker 需真 PG/Redis/API）
+│   ├── docs/                    #   DESIGN.md（70 个难点地图）+ difficulties/ 十四册
+│   └── pyproject.toml           #   包声明 —— 8 项依赖即「零框架依赖」的证据
+├── CharApp/                     # 主线（业务）: 电商智能客服（CharAgent 的业务验证载体）
+│   ├── minimall/                #   工具集 / 服务进程（:1007）/ CLI / 知识库 RAG / MCP 暴露侧
+│   ├── eval/                    #   离线跑分（20 题 6 场景 + 两组 A/B 报告, 报告随仓库提交）
+│   ├── docs/                    #   PLAN.md + adr/（31 条决策记录）
+│   ├── tests/                   #   465 用例（respx 假商城 + MockLLM, 全离线）
+│   └── CONTEXT.md               #   领域词汇表（会话 / 运行 / 挂起 / 记忆 / 脱敏…）
 ├── manage.py                    # Django CLI 入口（默认加载 settings.dev）
 ├── charlotte_savanna/           # Django 项目配置包
 │   ├── settings/                #   设置拆分目录（原 settings.py）
@@ -79,19 +97,25 @@ charlotte_savanna/
 │   └── __init__.py
 ├── app/                         # Django 业务子应用统一目录
 │   ├── minimall/                #   商城应用（AppConfig: MinimallConfig, label=minimall）
-│   │   ├── models.py            #   9 个模型: Profile/Category(MPTT)/Product/ProductImage/Cart/CartItem/ShippingAddress/Order/OrderItem
-│   │   ├── views_buyer.py       #   API 视图（DRF）
+│   │   ├── models.py            #   11 个模型: Profile/Category(MPTT)/Product/ProductImage/Cart/CartItem/
+│   │   │                        #   ShippingAddress/Order/OrderItem/RefundRequest/KnowledgeArticle
+│   │   ├── views_buyer.py       #   买家 API 视图（DRF）
 │   │   ├── views_html.py        #   页面视图（CBV）
+│   │   ├── views_agent.py       #   面向 agent 的内部端点（X-Internal-Token, 16 条路径）
+│   │   ├── views_bff.py         #   客服 BFF（session 认证 → 转发 CharApp 服务 → SSE 透传）
 │   │   ├── services.py          #   业务逻辑层（订单、余额等）
-│   │   ├── serializers.py       #   DRF 序列化器
+│   │   ├── serializers.py       #   DRF 序列化器；serializers_agent.py 是面向 agent 的契约
+│   │   ├── knowledge_corpus.py  #   政策语料（seed_knowledge 六篇 + 演示投毒篇）
 │   │   ├── cache.py             #   Redis 二级缓存（击穿/穿透/雪崩防护 + 熔断）
 │   │   ├── signals.py           #   缓存失效 Signal（post_save/delete + on_commit）
 │   │   ├── permissions.py       #   权限类
 │   │   ├── context_processors.py / filters.py / utils.py
+│   │   ├── management/commands/ #   demo_prepare（演示数据, 幂等）/ seed_knowledge（知识语料）
 │   │   ├── urls_api.py          #   API 路由（/api/minimall/...）
 │   │   ├── urls_html.py         #   页面路由（/minimall/...）
-│   │   ├── migrations/          #   17 个迁移
-│   │   ├── tests/               #   test_api / test_models / test_services
+│   │   ├── urls_agent.py / urls_bff.py  #   内部端点（/api/minimall/agent/...）与 BFF 路由
+│   │   ├── migrations/          #   迁移
+│   │   ├── tests/               #   test_api / test_models / test_services / test_agent_* / test_bff …
 │   │   ├── todo/redis.md        #   Redis 缓存设计文档（架构/风险/使用）
 │   │   └── uploads/             #   本地文件上传（.gitignore 排除）
 │   ├── charplot/                #   CharPlot 闯关学习主应用（label=charplot, 双后端数据端）
@@ -170,6 +194,10 @@ charlotte_savanna/
 │   └── admin/                   #   自定义 Admin 模板
 ├── sh/                          # 各子项目启动脚本（后端 = FastAPI/AI 端, 前端 = Vue dev server）
 │   ├── _status_.sh              #   查看全部项目运行进程（ps 归并: PID/端口/内存/命令）
+│   ├── charapp_demo.sh          #   一键演示装置（依赖检查 → 建表 → 起服务 → 数据准备 → 开客服页）
+│   ├── charapp_demo.md          #   演示剧本与每段兜底动作（C04）
+│   ├── charapp_backend.sh       #   启动 CharApp 客服服务（1007; Django 侧随主项目 8000）
+│   ├── charapp_client.sh        #   CharApp 命令行入口（--user-id N）
 │   ├── deep_search_backend.sh   #   启动 deep_search 后端
 │   ├── deep_search_frontend.sh  #   启动 deep_search 前端
 │   ├── menu_backend.sh          #   启动 menu 后端
@@ -188,7 +216,9 @@ charlotte_savanna/
 │   ├── DeepAgent_v0.7/          #   DeepAgent 0.7 教程
 │   ├── FastAPI/                 #   FastAPI 基础
 │   └── SUMMARY.md               #   知识点学习总结（LangChain/LangGraph/DeepAgents）
-├── .scratch/                    # 本地 Issue Tracker（Markdown，同步 GitHub，当前为空）
+├── .scratch/                    # 本地 Issue Tracker（Markdown，随仓库提交同步 GitHub）
+│   ├── CharApp/                 #   L1→L5 阶段票据（01–46）+ PRD + interview 底稿
+│   └── Charlotte/               #   求职收尾阶段票据（C01–C30）+ PLAN.md
 ├── docs/
 │   ├── agents/                  #   Agent 定义与 triage 规范
 │   └── note/                    #   学习笔记（skills 分析等）
@@ -198,11 +228,10 @@ charlotte_savanna/
 │   └── skills/                  #   自定义 skills（ai-radar / weekly-analyse-project / knowledge-interview-prep）
 ├── CLAUDE.md                    # 本文件（项目上下文）
 ├── CLAUDE_SYSTEM.md             # 系统级 CLAUDE.md 副本（参考用）
-├── AGENTS.md                    # 通用 Agent 指引（占位）
-├── AGENTS_SYSTEM.md             # 系统级 AGENTS.md 副本（参考用）
 ├── langgraph.json               # LangGraph CLI 配置（graph 指向 demo/LangGraph_v1.2）
+├── .mcp.json                    # 项目级 MCP 配置（Claude Code 认到 minimall 只读 server）
 ├── pyproject.toml               # Ruff 配置（line-length=88, py313）
-├── .pre-commit-config.yaml      # pre-commit hooks（ruff/codespell/conventional-commits）
+├── .pre-commit-config.yaml      # pre-commit hooks（ruff / conventional-commits 等）
 ├── .env                         # 环境变量（含 API Key，已加入 .gitignore）
 ├── .env.example                 # 环境变量模板（可安全提交）
 ├── requirements.txt             # 依赖列表
@@ -268,7 +297,7 @@ charlotte_savanna/
 
 ### 4.7 FastAPI / LangGraph（rag_text2sql 子项目）
 
-- **后端**：FastAPI（`main.py`, 端口 8200, SSE 流式）+ LangGraph 单图 9 节点（`app/agent/graph.py`），DeepSeek 生成 + jieba 关键词抽取
+- **后端**：FastAPI（`main.py`, 端口 8200, SSE 流式）+ LangGraph 单图 **12 个节点 / 9 个逻辑阶段**（`app/agent/graph.py`），DeepSeek 生成 + jieba 关键词抽取
 - **数据架构**：MySQL 双库 —— `meta`（元数据: table_info / column_info / metric_info / column_metric）+ `dw`（数仓业务数据）；`conf/meta_config.yaml` 声明式建模表 / 字段 / 指标
 - **三级语义索引**：列 / 指标按 name / description / alias 向量化入 Qdrant（bge-large-zh-v1.5, 1024 维）+ sync 列的字段取值全量同步 ES（ik 分词），`python -m app.scripts.build_meta` 幂等构建
 - **查询链路**：jieba 关键词 → LLM 语义扩展 → 三路并行召回（列 / 指标 / 取值）→ 合并补齐（指标关联列 + 主外键）→ LLM 过滤表字段与指标 → 生成 SQL → 真实执行校验 → 失败自动校正一次 → 执行返回
@@ -282,7 +311,7 @@ charlotte_savanna/
 - **双后端微服务**：Django（`app/charplot`, 8000）= 账号/学习数据/闯关交互规则/知识库元数据/Dashboard；FastAPI（`project/charplot/api/server.py`, 8004）= AI 能力（知识管道 / RAG / 题目生成 / 任务系统）
 - **闯关交互归 Django**：判分/心动值/XP/连胜/易错分/间隔复习为纯规则 + 预生成讲解，LLM 不参与答题路径；**RAG 全链路归 FastAPI**，Django 只存知识库元数据
 - **服务间认证**：FastAPI 调 Django 内部端点（图谱落库/出题 claim/索引 claim 等 13 个）一律 `X-Internal-Token`（`CHARPLOT_INTERNAL_TOKEN` 两端 .env 同值, fail closed）；不存在 Django → FastAPI 反向调用
-- **三件套分工**：LangGraph = 管道编排（`pipeline/` 4 阶段图）· DeepAgents = 检索/解构 subagent（`agents/`）· LangChain = RAG 组件（`rag/`：按类型调优切分 + Milvus 混合检索 + rerank + query rewrite）
+- **三件套分工**：LangGraph = 管道编排（`pipeline/` 4 阶段图）· DeepAgents = **检索** subagent（`agents/`；图谱解构与出题是裸 LLM 调用 + 结构校验, 不是 subagent）· LangChain = RAG 组件（`rag/`：按类型调优切分 + Milvus 混合检索 + rerank + query rewrite）
 - **本地模型（仅 2 个）**：bge-m3（embedding）+ bge-reranker-v2-m3（rerank），modelscope 预下载到本地目录（`CHARPLOT_MODELSCOPE_ROOT`, 默认 `D:/__WorkSpace__/modelscope`, `models/BAAI/` 平铺）；加载前 `config.resolve_local_model_path` 校验存在 —— embedding 缺失报错、rerank 缺失降级不精排，均不触发库级自动下载
 - **任务系统**：FastAPI 异步任务 + Redis（`/4`）+ SSE（`pipeline-progress`, Last-Event-ID 续推）；任务不持久化（重启丢失 → 前端兜底重新生成）；claim 幂等 + 10 分钟陈旧可重抢
 - **前端**：Vue 3 + Vite + Element Plus 动漫主题 + vue-flow 技能树（`frontend/`, 9004, /api /r→8000, /ai→8004），详细文档见 `project/charplot/README.md`
@@ -298,21 +327,58 @@ charlotte_savanna/
   - 标点一律英文：注释中的逗号、句号、括号、冒号等使用 `,` `.` `(` `)` `:`，符号后按英文风格空一格
   - 行宽：代码与注释每行 ≤ 88 字符（Black 风格），超长必须换行，避免 pre-commit 的 ruff format 报错
 
+### 4.10 手写 Agent 运行时（`CharAgent/`）
+
+> 主线框架：从 0 手写、对业务零知识；`CharApp/` 是它目前的业务调用方。设计地图见 `CharAgent/docs/DESIGN.md`（70 个难点）+ `docs/difficulties/` 十四册 —— 那是**难点地图不是实现清单**，实现状态以其 `README.md` 的「已实现 vs 未实现」对照表为准。
+
+- **依赖方向严格单向 `CharApp → CharAgent`**：框架不 import 任何 Django / minimall / CharApp 代码；由 `CharAgent/tests/` 的冒烟用例钉住（同一套 `AgentLoop` 装配两个互不相关的 `ToolProvider`）
+- **零 LLM 框架依赖**：`CharAgent/pyproject.toml` 的必装依赖只有 8 项且都是框架真正 import 到的（无 LangChain / LangGraph）；`server` / `pricing` / `mcp` 三组是**可选** extra —— 「不装 web 框架也能用 agent loop」由 `tests/test_root_facade.py` 起子进程守着
+- **加能力不许改 `agent/loop.py`**：L1a 定下的硬约束 —— 若加一个业务接入点需要改循环核心，说明接缝设计失败。业务接入走 `ToolProvider` / `hooks` / `RunContext.payload` 三个接缝；改过 `loop.py` 的都是确实动到循环语义的批次
+- **框架给规则与协议、业务给内容**：脱敏（`redact/` 给规则、业务给字段名单）、评估（`eval/` 给跑批器与协议、业务给题与判据）、记忆（框架给表与 `remember`/`recall`/`forget` 工具、业务装配）都是这一分工
+- **四个包刻意不进根门面**：`client`（CLI 入口）/ `server`（HTTP + SSE）/ `mcp_client`（外部 MCP server 工具接入）/ `eval`（离线跑分，要真 API key）—— 不写进 `import CharAgent` 的承诺里
+- **测试**：`cd CharAgent && pytest`（默认 1594 个，零外部依赖）；`-m pg_db` / `-m pg` / `-m redis` / `-m integration` 按需取用真服务
+
 ---
 
 ## 5. 当前开发状态
 
-> 当前各模块均为学习/测试性质，正式「主流程」尚未确定：minimall 为 Django 测试原型，deep_search / menu / video_downloader / rag_knowledge / rag_text2sql / charplot 为独立子项目。
+> 主线（`CharAgent` / `CharApp`）在最前两节；其余为独立子项目。各阶段的收口记录：`.scratch/CharApp/issues/`（L1–L5, issues 01–46）与 `.scratch/Charlotte/issues/`（收尾阶段 C 系列）。
+
+### 主线 — CharAgent 运行时（`CharAgent/`）
+
+| 组件 | 状态 | 说明 |
+|------|------|------|
+| 核心循环（`agent/` + `stream/`） | ✅ | 并行工具调用 / 错误自纠错 / 循环防护 + kill switch / 九类事件状态机 / 上下文压缩 |
+| 稳定性（`retry/` + 工具超时） | ✅ | 重试退避（只重瞬态）+ 幂等键；熔断三态 + 主备切换 + 逐模型记账；工具超时即中断本次运行 |
+| 状态与数据（`checkpoint/` + `db/`） | ✅ | 内存 / Redis / Postgres 三实现快照 + 断点续跑 + HITL 挂起；六实体 + alembic 迁移 + 仓储 + 会话记录与水合 |
+| 安全与留痕（`redact/` + `structured_logging/` + `hooks/`） | ✅ | 日志先脱敏再写；一处日志出口 + thread/run/request 三个 id 贯穿；hook 注册表（工具执行前可拒绝） |
+| 能力扩展 | ✅ | 长期记忆（`charagent_memories` + `remember`/`recall`/`forget`，C12/C13/C30）；MCP 消费侧（C14）；增量渲染 `answer_delta`（C26–C29） |
+| 评估与测试 | ✅ | `eval/` 协议 + 跑批器 + 双格式报告（ADR-0021）；1739 用例（默认跑 1594，其余按 marker 需真 PG/Redis/API） |
+| 设计储备未做 | ⬜ | 多 agent / 无状态化 + drain / 指标告警 / 灰度回滚（判据见 `.scratch/Charlotte/PLAN.md` §5）；限流 / 分布式锁 / 异步队列（见 `CharAgent/docs/DESIGN.md` #20–#22） |
+
+### 主线 — CharApp 电商智能客服（`CharApp/`）
+
+| 组件 | 状态 | 说明 |
+|------|------|------|
+| L1a–L1b 只读接通 → 网页闭环 | ✅ | 工具接缝 + CLI；SSE 服务（:1007）+ Django BFF + 客服页面 |
+| L2–L2.5 写路径 + 会话治理 | ✅ | 写操作 + 退款域 + 业务护栏；上下文压缩 / 会话记录与水合 / 前端会话列表 |
+| L3a–L3b 可观测 + 人工确认 | ✅ | 工具轨迹 + 成本 + `trace` + 日志脱敏；幂等 + HITL 挂起-恢复 + 代付 + 下单前确认 |
+| L4 评估与 A/B | ✅ | 评估集 20 题 6 场景 + 两组 A/B（工具数量 / prompt）；报告随仓库提交在 `CharApp/eval/reports/` |
+| L5 RAG + 注入防护 | ✅ | 知识库（6 篇政策 + 1 篇演示投毒）+ 逐句引用 + 四层防护 |
+| 配置与启动 | ✅ | 根 `.env` 的 `CHARAPP_*` 段；`bash sh/charapp_demo.sh` 一键装置（冷启动 14–30 s，见 `sh/charapp_demo.md`） |
+
+> 边界（记录在案）：单进程部署前提（ADR-0020）；MCP 暴露侧只读 + 单账户（ADR-0030）；记忆召回全量（C30 末节）。
 
 ### 5.1 测试原型 — minimall 商城 (`app/minimall/`)
 
 | 组件 | 状态 | 说明 |
 |------|------|------|
-| Models | ✅ | 9 个模型，含 MPTT 分类树 |
+| Models | ✅ | 11 个模型（9 个商城模型 + `RefundRequest` + `KnowledgeArticle`），含 MPTT 分类树 |
 | API (`views_buyer.py`) | ✅ | 认证/商品/购物车/地址/订单/充值等 DRF 接口 |
 | 页面 (`views_html.py`) | ✅ | 商品列表/详情/购物车/下单/个人中心等 CBV 页面 |
 | 缓存 (`cache.py`) | ✅ | Redis L2 缓存，覆盖击穿/穿透/雪崩/熔断 |
-| 测试 (`tests/`) | ✅ | test_api / test_models / test_services |
+| Agent 接入（L1–L2） | ✅ | 面向 agent 的内部端点（`views_agent.py`, 16 条路径, X-Internal-Token）+ 客服 BFF（`views_bff.py`）+ 客服页面；测试 `test_agent_api` / `test_agent_write_api` / `test_bff` / `test_knowledge` / `test_demo_prepare` / `test_concurrency` |
+| 测试 (`tests/`) | ✅ | 见上, 加 `test_api` / `test_models` / `test_services` / `test_admin` / `test_apps` |
 
 ### 5.2 子项目 — deep_search 智能体 (`project/deep_search/`)
 
@@ -355,7 +421,7 @@ charlotte_savanna/
 | 加载链路（load_graph） | ✅ | PDF（MinerU）/ MD → 图片语义化 → 分块 → 主体识别 → BGE-M3 → Milvus |
 | 查询链路（query_graph） | ✅ | 改写 + 主体确认 → 三路召回（向量/HyDE/Web）→ RRF → Rerank → 溯源回答 |
 | 基础设施 | ✅ | Milvus / MinIO / MongoDB / MinerU 远程解析 / Tavily |
-| 评估体系（rag_eval） | ✅ | golden 题库 40 用例（4 份项目文档 × 10 题）+ 4 层检索指标，报告落盘 artifacts/ |
+| 评估体系（rag_eval） | ✅ | golden 题库 83 题 / 15 篇语料（网络与数据合规法规）+ 4 层检索指标 + rerank 开/关消融，报告落盘 artifacts/ |
 
 > 已闭环，通过 `python -m project.rag_knowledge.app.api.server` 启动（127.0.0.1:8100，原生 HTML 页面，无独立前端）。详细文档见 `project/rag_knowledge/README.md`。
 
@@ -364,7 +430,7 @@ charlotte_savanna/
 | 组件 | 状态 | 说明 |
 |------|------|------|
 | 元数据索引构建 (`scripts/build_meta.py`) | ✅ | meta_config.yaml → meta MySQL + Qdrant（列/指标）+ ES（字段取值） |
-| Agent (`app/agent/graph.py`) | ✅ | LangGraph 单图 9 节点: 关键词 → 三路召回 → 合并补齐 → LLM 过滤 → 生成/校验/校正/执行 |
+| Agent (`app/agent/graph.py`) | ✅ | LangGraph 单图 12 个节点 / 9 个逻辑阶段: 关键词 → 三路召回 → 合并补齐 → LLM 过滤 → 生成/校验/校正/执行 |
 | API (`main.py`) | ✅ | FastAPI SSE（端口 8200, POST /api/query） |
 | 前端 (`frontend/`) | ✅ | Vue 3 + Vite（端口 8201, /api 代理, SSE 步骤流 + 结果表格） |
 | 评估体系 (`app/eval/`) | ✅ | golden set 39 题 + 跑批器（L1/L2 报告）; 2026-10-05 基线（2026-10-06 复跑超时题并回）: 列召回率 90.5% / 可执行率 100% |
@@ -377,9 +443,9 @@ charlotte_savanna/
 | 组件 | 状态 | 说明 |
 |------|------|------|
 | Django 数据端（`app/charplot/`） | ✅ | 12 表 + 41 路由（13 个内部端点 X-Internal-Token fail closed）+ 规则层（判分/心动值/重开/XP/连胜冻结/易错分/间隔复习），277 用例 |
-| FastAPI AI 端（`project/charplot/api/`） | ✅ | 7 个 `/ai/*` 端点（端口 8004）+ 任务系统（Redis /4 + SSE 续推 + 孤儿任务回收），LangGraph 管道图 + DeepAgents 检索 + LangChain RAG 真实接线 |
+| FastAPI AI 端（`project/charplot/api/`） | ✅ | 7 个业务端点 + `/ai/health`（端口 8004）+ 任务系统（Redis /4 + SSE 续推 + 孤儿任务回收），LangGraph 管道图 + DeepAgents 检索 + LangChain RAG 真实接线 |
 | 知识管道（`pipeline/`） | ✅ | 解析(txt/md/html/pdf/docx/pptx/链接) → 主内容分析 → 联网搜索增强 → 图谱解构, 检索源可插拔（网络/Context7/文档/知识库） |
-| RAG 链路（`rag/`） | ✅ | modelscope 本地 bge-m3 embedding + bge-reranker-v2-m3 rerank（必配链路；本地模型缺失时降级不精排, `/ai/health` 暴露真实状态）, Milvus 混合检索 + 软删 filter |
+| RAG 链路（`rag/`） | ✅ | modelscope 本地 bge-m3 embedding + bge-reranker-v2-m3 rerank（embedding 缺失报错、rerank 缺失降级不精排，`/ai/health` 暴露真实状态）, Milvus 混合检索 + 软删 filter |
 | 前端（`frontend/`） | ✅ | Vue 3 + Element Plus 动漫主题（9004, /api /r→8000, /ai→8004）, 11 个 view 全部接通 |
 
 > 业务链路已闭环（2026-09-08 三侧契约核对零断链）。已实现：旅程创建 → 图谱落库 → 技能树 → 渐进出题（间隔复习混入）→ 闯关答题 → 复盘分享 → Dashboard + LLM 状态总结 + 知识库管理。启动与已知边界见 `project/charplot/README.md`。
@@ -399,12 +465,12 @@ charlotte_savanna/
 
 | 项目 | 状态 | 说明 |
 |------|------|------|
-| .env 管理 | ✅ | `.env.example` 提供模板（Django/OpenAI/DeepSeek/Tavily/LangSmith/MySQL/PG/Redis/Milvus/CHARPLOT_*） |
-| 数据库/缓存 | ✅ | MySQL + Redis（django-redis），配置环境变量化 |
+| .env 管理 | ✅ | `.env.example` 提供模板（DeepSeek/CloseAI/MySQL/PG/Redis/Milvus/Django/Tavily/LangSmith + `CHARPLOT_*` / `CHARAPP_*` / `CHARAGENT_*`） |
+| 数据库/缓存 | ✅ | MySQL + PostgreSQL + Redis（django-redis），配置环境变量化 |
 | 代码质量 | ✅ | Ruff + pre-commit 已接入 |
-| 依赖管理 | ✅ | `requirements.txt` 已生成（267 个包） |
+| 依赖管理 | ✅ | `requirements.txt` 已生成（`pip freeze`，含业务 + 子项目全部依赖） |
 | 配置安全 | ✅ | SECRET_KEY / ALLOWED_HOSTS / DEBUG 已环境变量化，settings 拆分 dev/prod |
-| README | ✅ | 根 README 已补全（项目简介 / 技术栈 / 模块 / 快速开始） |
+| README | ✅ | 根 README 已补全（作品集导览 / 技术栈 / 模块 / 快速开始）；四条经历的 README 见各自目录 |
 
 ---
 
@@ -415,6 +481,7 @@ charlotte_savanna/
 > 通用安全规范（`.env` 管理、API Key 保护、`.gitignore` 检查清单、敏感信息泄露处理）参见系统级 CLAUDE.md 第 3 节。
 
 - 项目 `.env.example` 已提供所需环境变量模板
+- `CharApp` / `CharAgent` **不建子项目 `.env`**：配置就在**根** `.env` 的 `CHARAPP_*`（内部令牌 / 服务地址 / MCP 暴露账户 / 压缩旋钮 / 知识库与本地模型）与 `CHARAGENT_*`（快照后端 / 记录层 DSN / 成本价目表）两段；`CHARAPP_INTERNAL_TOKEN` 与 Django 侧同值（fail closed），MCP 暴露侧只代表 `CHARAPP_MCP_USER_ID` 那一个账户（边界见 ADR-0030）
 - `project/deep_search/.env`、`project/menu/.env`、`project/video_downloader/.env`、`project/rag_knowledge/.env`、`project/charplot/.env` 为子项目独立环境变量，同样不提交（charplot 为 `CHARPLOT_*` 前缀；`CHARPLOT_INTERNAL_TOKEN` 与 Django 侧同值）
 - `project/rag_text2sql/conf/*.yaml`（app_config / meta_config）为本地私有配置，根 .gitignore `*.yaml` 已忽略，同样不提交
 - 生产环境设置见 `settings/prod.py`（DEBUG=False + HSTS/HTTPS 加固），由 WSGI/ASGI 加载
@@ -435,6 +502,9 @@ charlotte_savanna/
 ### 6.3 开发约定
 
 - **虚拟环境**：`.venv/`，Windows Git Bash 下 `source .venv/Scripts/activate`
+- **CharAgent CLI**：`python -m CharAgent.client`（交互式；`-q "…"` 问一句即退；`--backend memory|redis|postgres` 换快照存储；`--resume` 断点续跑）；数据层建表/迁移 `cd CharAgent && alembic upgrade head`（换机器先跑，否则第一次写记录才报错）
+- **CharApp 演示装置**：`bash sh/charapp_demo.sh`（一条命令：依赖检查 → 建表检查 → 起 Django 8000 + 客服服务 1007 → 健康检查 → 演示数据准备 → 开客服页；`--no-open` 不开浏览器；剧本与兜底见 `sh/charapp_demo.md`）
+- **CharApp 服务 / CLI**：`sh/charapp_backend.sh`（或 `python -m CharApp.minimall.server`, 127.0.0.1:1007；Django 侧随主项目 8000）；`bash sh/charapp_client.sh --user-id N`（命令行问一句）
 - **Django 启动**：`python manage.py runserver`（默认加载 `settings.dev`，依赖 MySQL + Redis）
 - **deep_search 后端**：`sh/deep_search_backend.sh`（或 `python -m project.deep_search.api.server`）
 - **deep_search 前端**：`sh/deep_search_frontend.sh`（或 `cd project/deep_search/ui && npm run dev`，首次需 `npm install`）
@@ -445,7 +515,7 @@ charlotte_savanna/
 - **rag_knowledge 后端**：`sh/rag_knowledge.sh`（或 `python -m project.rag_knowledge.app.api.server`, 127.0.0.1:8100, 原生 HTML 页面，无独立前端）
 - **rag_knowledge 评测**：`cd project/rag_knowledge && python -m tests.test_rag_eval_tester`（详见子项目 README §6）
 - **rag_text2sql 建索引**：`cd project/rag_text2sql && python -m app.scripts.build_meta`（依赖 MySQL meta/dw + Qdrant + ES + Embedding 服务）
-- **rag_text2sql 评估**：`cd project/rag_text2sql && python -m app.eval.runner`（真模型, 39 题 x 3 次约 36 分钟; 只验题库用 `--check-gold`; 报告落 `app/eval/reports/`，详见子项目 README §7）
+- **rag_text2sql 评估**：`cd project/rag_text2sql && python -m app.eval.runner`（真模型, 39 题 x 3 次约 35 分钟; 只验题库用 `--check-gold`; 报告落 `app/eval/reports/`，详见子项目 README §7）
 - **rag_text2sql 后端**：`sh/rag_text2sql_backend.sh`（或 `cd project/rag_text2sql && python main.py`, 127.0.0.1:8200, 配置见 conf/*.yaml）
 - **rag_text2sql 前端**：`sh/rag_text2sql_frontend.sh`（或 `cd project/rag_text2sql/frontend && npm run dev`, 127.0.0.1:8201）
 - **charplot 后端**：`sh/charplot_backend.sh`（或 `python -m project.charplot.api.server`, 127.0.0.1:8004, AI 能力端; Django 侧随主项目 8000 启动, 前置 MySQL/Redis/Milvus + modelscope 本地模型）
@@ -469,7 +539,7 @@ cd project/rag_text2sql/frontend && npm install
 cd project/charplot/frontend && npm install
 ```
 
-核心依赖：Django 6.0、DRF、LangChain/LangGraph 1.x、DeepAgents、FastAPI、PyMySQL、SQLAlchemy、django-redis、redis-py、ChromaDB、FAISS、RAGFlow SDK、Milvus、Qdrant、Elasticsearch、python-dotenv、Tavily、yt-dlp、ffmpeg
+核心依赖：Django 6.0、DRF、LangChain/LangGraph 1.x、DeepAgents、FastAPI、PyMySQL、SQLAlchemy、django-redis、redis-py、ChromaDB、FAISS、RAGFlow SDK、Milvus、Qdrant、Elasticsearch、python-dotenv、Tavily、yt-dlp、ffmpeg，以及 CharAgent 自带的 8 项（alembic / httpx / openai SDK / psycopg / redis / SQLAlchemy / pydantic / python-dotenv，见 `CharAgent/pyproject.toml`）
 
 ### 6.5 Claude Code 说明
 
@@ -500,8 +570,8 @@ cd project/charplot/frontend && npm install
 
 ### Domain docs
 
-单上下文（single-context）：待创建 `CONTEXT.md` + `docs/adr/`。详见 `docs/agents/domain.md`。
+单上下文（single-context）：已落在 `CharApp/CONTEXT.md`（领域词汇表）+ `CharApp/docs/adr/`（31 条决策记录）。详见 `docs/agents/domain.md`。
 
 ---
 
-> **最后更新**：2026-10-05 | **维护者**：Claude Code (charlotte)
+> **最后更新**：2026-10-06 | **维护者**：Claude Code (charlotte)
