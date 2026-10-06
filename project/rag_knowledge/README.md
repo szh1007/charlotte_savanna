@@ -1,7 +1,57 @@
 # rag_knowledge — 基于 LangGraph 的工业级 RAG 知识库问答系统
 
-> 面向产品说明书 / 技术文档等**垂直领域知识库**的问答系统: 离线加载构建索引, 在线检索生成答案。
+> 面向**垂直领域知识库**的问答系统: 离线加载构建索引, 在线检索生成答案。当前评测语料是「网络与数据合规」的 15 篇政府公开文本（见 §6.4）。
 > 核心思路: **主体识别（item_name）+ 三路并行召回（向量 / HyDE / Web）+ RRF 融合前两路 + 精排合并第三路（Rerank）+ 溯源回答**。
+
+---
+
+## 速览（门面）
+
+**一行启动**（依赖 Milvus / MongoDB / MinIO + BGE-M3 与 reranker 两个本地模型, 明细见 §8）:
+
+```bash
+python -m project.rag_knowledge.app.api.server     # http://127.0.0.1:8100
+```
+
+```text
+浏览器（原生 HTML）
+   │ HTTP / SSE
+   ▼
+FastAPI :8100 ──► 查询图 query_graph ──► Milvus（chunks / item_name 两集合）
+   │                主体确认 → 三路并行召回 → RRF → 精排 → 溯源回答
+   └─────────────► 加载图 load_graph ──► MinerU（PDF 解析）/ MinIO（图片）/ Milvus
+```
+
+**已实现 vs 未实现** —— 状态: ✅ 已实现 · 🟡 部分 · ⬜ 未做（明细在各节与 ticket）
+
+| 能力 | 状态 | 一句话 |
+|------|------|--------|
+| 加载图（离线索引） | ✅ | PDF（MinerU）/ MD → 图片语义化（VL + MinIO）→ 标题级分块 → 主体识别 → BGE-M3 混合向量 → Milvus（§3.1） |
+| 查询图（在线问答） | ✅ | 问题改写 + 主体确认 → 三路并行召回（RRF 只融前两路, 联网在精排层并入）→ Rerank → 流式溯源回答（§3.2） |
+| 会话历史 | ✅ | MongoDB 存储, 多轮指代消解（最近 10 条） |
+| 评估体系 | ✅ | 83 题 / 15 篇语料 / 4 层检索指标 + **rerank 开/关消融**（§6.4） |
+| 工程韧性（C02/C17） | ✅ | 单路为空 / 单路失败**降级不 500**；分块器两处真 bug 修复；Milvus 返回值契约；主体识别内容兜底把入口从 29/79 提到 68/79（C17 诊断轮口径，见下） |
+| 引用溯源 | 🟡 | 链接进了 prompt、模型会写 `[参考来源]`；**前端仍按 textContent 渲染, 链接不可点**（C02 显式未做） |
+| 生成质量指标 | ⬜ | faithfulness / answer_relevancy（RAGAS 那一类）不做 —— 质量靠落盘报告 + 人工判读（§6.3 末条） |
+| 增量索引 / 版本 | ⬜ | 目前全量重传（按 `file_title` 删旧插新）, 无文档版本感知 |
+| 多主体消歧交互 | ⬜ | 候选主体（0.60~0.70 区间）直接作为答案输出, 引导选择未做（§7.6） |
+
+**关键决策**（每条一行, 细节见括号里的出处）:
+
+1. **主体识别是链路入口, 也是最大瓶颈** —— `expr="item_name in [...]"` 是硬过滤, 认不出主体整条检索链不跑；C17 加了简称归一化 + 内容兜底（阈值 0.65 是量出来的）, 入口通过率 29/79 → 68/79（C17 诊断轮, 79 题口径；§5.1-1 / [C17](../../.scratch/Charlotte/issues/C17-rag-knowledge-eval-expansion.md)）。
+2. **必命中率是门槛不是覆盖率** —— 捞到任意一条关键 chunk 就算过；一条都没标的拒答题记 `null`、排除出分母（§6.1）。
+3. **交付条数按量出来的最优取 top-1** —— 1 条 0.922/0.870 vs 2 条 0.507/0.916（参数扫描口径, 与 §6.4 的 83 题基线不是同一分母）；断崖判据留着但不参与（§6.3 / [C17](../../.scratch/Charlotte/issues/C17-rag-knowledge-eval-expansion.md)）。
+4. **评测里的随机性要冻住** —— HyDE 假设答案逐题落盘重放（冻的是那一次真 LLM 生成, 不是占位文字）；主体识别走真实链路, 只给原始问题（§6.3 / [C02](../../.scratch/Charlotte/issues/C02-rag-knowledge-hard-fixes.md)）。
+5. **参数跟着语料走** —— 文档标题片打折（0.7）是上一版语料上扫出来的, 换法规语料后重扫发现有害、改回 1.0；换语料必须重扫（§5.2-11 / §6.3）。
+6. **质量与延迟用报告 + 人工判读, 不进 pytest** —— 自动化用例只钉确定性的部分（分块 / 阈值分支 / 指标公式 / 耗时汇总）（§6.3 末条 / [C18](../../.scratch/Charlotte/issues/C18-rag-knowledge-ci-and-perf.md)）。
+
+**测试规模**: **141 个用例**, 纯函数与纯链路, **不连 Milvus / LLM / Mongo**；4 个手工跑图脚本挂 `pytest.mark.integration` 且默认排除。
+
+```bash
+cd project/rag_knowledge && python -m pytest
+```
+
+**已知边界**: 详见 §5（召回率低 / 准确率低排查手册）与 §7（可拓展与改进点）；三条最要紧的 —— ① 索引是手工全量重建（改一篇要重跑, 且本机 Milvus 要活着, §3.3）· ② 线上 TTFT 被「联网结果进精排池」拖到 ~51 s（查清了原因, 优化未做, §3.3）· ③ 前端引用链接不可点（§1 表）。
 
 ---
 
@@ -22,7 +72,7 @@
 | 流程编排 | LangGraph 1.x（StateGraph, 两个图: `load_graph` / `query_graph`） |
 | LLM / VL | DeepSeek（OpenAI 兼容, ChatDeepSeek）, 视觉模型用于图片语义化 |
 | Embedding | BGE-M3（稠密 1024 维 + 稀疏向量, 双路混合检索） |
-| Rerank | bge-reranker-large（FlagReranker） |
+| Rerank | bge-reranker-v2-m3（FlagReranker; 环境变量名里的 `LARGE` 是历史原因, 见 `reranker_config.py` 注释） |
 | 向量库 | Milvus（`chunks` + `item_name` 两个集合, HNSW + 稀疏倒排索引） |
 | PDF 解析 | MinerU 远程解析服务（上传 → 轮询 → 下载 zip） |
 | 对象存储 | MinIO（文档图片, 生成可访问 URL） |
@@ -87,10 +137,12 @@ project/rag_knowledge/
 │   │   ├── dataset.py              #   测试知识 / 题库定义与读写
 │   │   ├── metrics.py              #   指标计算（主体命中率 / 召回率 / 必命中率 / MRR@K / NDCG@K）
 │   │   ├── runner.py               #   评估执行: 走真实查询链路 -> 分层算分 -> 汇总报告
+│   │   ├── compare.py              #   rerank 开/关两臂对照（按报告里的臂名分组 + 臂内极差, C17）
 │   │   ├── tester.py               #   RagEvalTester 统一入口类
 │   │   ├── latency.py              #   逐节点耗时汇总 P50/P95 (C18, 见 §3.3)
-│   │   └── artifacts/              #   题库 eval_cases.json + 冻结的 HyDE 假设答案
-│   │                               #   hyde_answers.json + 报告 eval_report_<时间戳>.json
+│   │   └── artifacts/              #   题库源 cases_src.json（文本片段）+ 解析产物 eval_cases.json
+│   │                               #   + 冻结的 HyDE 假设答案 hyde_answers.json
+│   │                               #   + 报告 eval_report_<时间戳>.json / compare.{json,md}
 │   │                               #   + 耗时报告 latency_<时间戳>.json (C18)
 │   └── shared/                     # 共享层（跨业务复用的基础能力）
 │       ├── clients/                #   milvus_utils（混合检索）/ mongo_utils（历史 CRUD）
@@ -99,14 +151,17 @@ project/rag_knowledge/
 │       ├── runtime/                #   logger（节点日志装饰器）/ load_prompt（模板渲染）
 │       ├── tool/                   #   工具占位
 │       └── utils/                  #   sse_utils（SSE 队列）/ task_utils（任务状态）/ rate_limit_utils / escape_milvus_string_utils
-├── assets/                         # 上传的源文档（按日期目录归档）
+├── assets/                         # 语料: eval_corpus/（15 篇法规, C17 评测语料 + SOURCES.md）
+│                                   #   + test_corpus/（样本解读目录）
+├── scripts/                        # 语料与题库的构建脚本（build_eval_corpus / build_eval_cases /
+│                                   #   load_eval_corpus / measure_ttft）
 ├── output/                         # 加载产物
 │   ├── <文档名>/                   #   解压目录: markdown + images/
 │   ├── zip/                        #   MinerU 返回的 zip 包
 │   └── ...
 ├── logs/                           # 运行日志
-├── tests/                          # 纯函数回归用例 + 4 个手工跑图脚本（test_load_graph 等, 已标 __test__ = False
-│                                   #   并挂 pytest.mark.integration / addopts 默认排除）
+├── tests/                          # 141 个纯函数回归用例 + 4 个手工跑图脚本（test_load_graph 等,
+│                                   #   已标 __test__ = False 并挂 pytest.mark.integration / 默认排除）
 └── .env                            # 环境变量（RK_ 前缀, 不提交）
 ```
 
@@ -285,7 +340,7 @@ python scripts/measure_ttft.py         # 流式提问的首字时间 (TTFT)
 | 8 | **图片摘要噪音** | 查看 `_new.md` 中图片替换文本 | VL 摘要错误会把错误"事实"注入 chunk。提高 VL 提示词约束; 摘要前增加图片相关性判断 |
 | 9 | **向量检索 TopK 内噪声多** | 检查 `_09` 返回 chunk 的 score 分布 | 混合权重（稠密 0.7 / 稀疏 0.3）不适配当前文档类型时低分噪声混入。调权重 / 加最低分数过滤 |
 | 10 | **指标无法量化** | 查看 `app/rag_eval/artifacts/` 下最新一份评测报告的 4 层指标 | 评估体系已落地（见 §6）: 用题库 + 分层指标定位薄弱层, 调优后重跑评测对比基线（报告带时间戳, 旧基线不会被覆盖） |
-| 11 | **文档标题片挤占** | 看最终结果里有没有 `# 项目名 …` 那一块, 以及它是不是 gold | 它是全库唯一「含项目名 + 通篇讲这个项目」的块, 与任何带主体名的问题字面重合度都最高 —— 实测 40 题里 **35 题它都进了候选池**, 而真正拿它当答案的只有 **2 题**（「XX 是什么项目」那类）, 其余 13 次保留都是占位。**已修**: 融合分上打折（`DOC_HEAD_SCORE_FACTOR=0.7`）—— **降权而不是排除**, 因为那 2 题要它; 实测打折后平均召回 53.0%→55.5%、平均精确 49.0%→54.8%（两边同涨）, 而完全排除反而更差 |
+| 11 | **文档标题片挤占** | 看最终结果里有没有「通篇讲这一篇文档的头部块」, 以及它是不是 gold | 上一版语料（项目说明文档）上确有此事: 与任何带主体名的问题字面重合度都最高, 40 题里 35 题进候选池而真正是答案的只有 2 题。当时的处置是**降权而非排除**（`DOC_HEAD_SCORE_FACTOR=0.7`）。**换成法规语料后重扫, 打折反而有害**（0.870/0.818 对不打折 0.922/0.870）→ 参数改回 `1.0`（C17）。**参数跟着语料走, 换语料就得重扫** —— 这条比任何单个取值都重要 |
 
 ---
 
@@ -410,13 +465,9 @@ python scripts/measure_ttft.py         # 流式提问的首字时间 (TTFT)
 > LLM（主体识别）两次给了一样结果。**所以第二趟没有增加信息量**；真想要方差，得放开
 > 冻结或换随机采样，那是另一个实验。
 
-> **跨题库数字不可直接比**：语料 / 分块 / 题库 / 交付条数任一变化，两组数字就不在同一把
+> **跨题库的数字不可直接比**：语料 / 分块 / 题库 / 交付条数任一变化，两组数字就不在同一把
 > 尺子上。这份基线之前的每一轮（50 用例 hak180 手册、40 用例 4 份项目文档）都因语料或
-> 分块变更而作废。报告里也写着同一句（`REPORT_CAVEATS`）。
-> 基线数字与 rerank 开/关对照待本票跑完后填在这里。
->
-> **跨题库的数字不可直接比**: 语料、分块、题库、返回条数任一变化, 两组数字就不在同一把
-> 尺子上。报告里也写着同一句（`REPORT_CAVEATS`）—— 引用历史数字时先看它的语料版本。
+> 分块变更而作废。报告里也写着同一句（`REPORT_CAVEATS`）—— 引用历史数字时先看它的语料版本。
 
 ### 6.5 运行方式
 
@@ -455,8 +506,8 @@ tester.run_eval()               # 输出汇总指标, 报告落盘 artifacts/eva
 
 ### 7.1 完善评估体系（基础版已落地, 见 §6）
 
-- **现状**: 基于 golden dataset 的分层检索评测已落地（`app/rag_eval/`, 40 用例 / 4 份文档, 4 层检索指标, 见 §6）, "调优无量化指标"的问题已解决。
-- **方案参考**: 引入 **RAGAS** 或 LlamaIndex 评测框架, 补充生成质量指标 `faithfulness`（忠实度）/ `answer_relevancy`（回答相关性）; 题库扩充多主体 / 跨文档问题; 自定义题库可直接传 `run_batch_eval(case_list=...)`。
+- **现状**: 基于 golden dataset 的分层检索评测已落地（`app/rag_eval/`, 83 题 / 15 篇语料, 4 层检索指标 + rerank 开/关消融, 见 §6）, "调优无量化指标"的问题已解决。
+- **方案参考**: 引入 **RAGAS** 或 LlamaIndex 评测框架, 补充生成质量指标 `faithfulness`（忠实度）/ `answer_relevancy`（回答相关性）; 题库继续扩充多主体 / 跨文档问题; 自定义题库可直接传 `run_batch_eval(case_list=...)`。
 
 ### 7.2 增加 BM25 关键词检索路（提升召回率）
 
@@ -537,4 +588,6 @@ cd project/rag_knowledge && python -m tests.test_rag_eval_tester
 
 ---
 
-> 最后更新: 2026-09-30（C02: 分块两处真 bug 修复 · 单路为空降级而非 500 · Milvus 返回值契约 · 联网链接不再丢 · 过滤表达式转义 · 评测口径改为「主体识别真跑」· 死代码清理 · 测试骨架）
+> 最后更新: 2026-10-06（C17: 语料换 15 篇法规 + 题库 83 题 + rerank 开/关消融（净赚 2.4 个点 / 每题多花 18 秒）+ 主体识别三处修复 + 交付取 top-1 · C18: 测试覆盖到 141 个（全部离线）+ 延迟装置 · C19: 速览块与口径对齐）
+>
+> 更早: 2026-09-30（C02: 分块两处真 bug 修复 · 单路为空降级而非 500 · Milvus 返回值契约 · 联网链接不再丢 · 过滤表达式转义 · 评测口径改为「主体识别真跑」· 死代码清理 · 测试骨架）

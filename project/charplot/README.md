@@ -3,6 +3,61 @@
 > 输入想学的**任何知识**（一句话 / 一段话 / 文档 / 网页链接 / 管理员预建知识库）→ AI 联网获取知识 → 解构成技能树图谱 → 渐进生成闯关题目 → 游戏化答题（Duolingo 式：心动值 / 连胜 / XP）→ 通关复盘报告可分享。
 >
 > 架构按**真实产品**设计（账号体系 / 分享页 / 后台分析 Dashboard 齐全），付费商业机制（连胜冻结卡等）一律降级为学习币兑换的轻量化实现。
+>
+> 它的讲述重心是**工程约束**（双后端边界 / 规则与 LLM 的分工 / 失败面处理），不是 AI 深度 —— 框架能力的三件套（LangGraph / DeepAgents / LangChain）各用在该用的地方，分工见 §2。
+
+---
+
+## 速览（门面）
+
+**一行启动**（两份, 前置服务见 §5.1）:
+
+```bash
+python manage.py runserver                    # Django 状态端, 8000（随主项目一起起）
+python -m project.charplot.api.server         # FastAPI AI 能力端, 8004（/ai/health 健康检查）
+```
+
+```text
+Vue 3 前端 (9004) ──/api /r──► Django :8000 ──► MySQL（账号 / 学习数据 / 闯关规则 / 知识库元数据）
+        └──────────/ai + SSE──► FastAPI :8004 ──► LangGraph 管道 / DeepAgents 检索 / LangChain RAG
+                                     │              Redis /4（任务状态）+ Milvus（向量）
+                                     └──X-Internal-Token──► Django 内部端点（13 个, fail closed）
+```
+
+**已实现 vs 未实现** —— 状态: ✅ 已实现 · 🟡 有意降级 · ⬜ 未做（明细在各节）
+
+| 能力 | 状态 | 一句话 |
+|------|------|--------|
+| 知识管道（LangGraph 4 阶段） | ✅ | 解析（txt/md/html/pdf/docx/pptx/链接）→ 主内容分析 → 联网搜索增强 → 图谱解构（§4.1） |
+| 闯关规则（Django, 无 LLM） | ✅ | 判分 / 5 心动值安全失败 / 断点续答 / XP 等级 / 连胜冻结 / 间隔复习混 Top 20% 易错题（§1） |
+| 知识库 RAG（LangChain, 按类型切分 + 混合检索 + rerank） | ✅ | 管理与索引链路 + 软删实时生效 + 主题卡片直达 Journey（§4.2） |
+| 任务系统 | ✅ | Redis 状态 + SSE（Last-Event-ID 续推）+ **孤儿任务回收**（重启遗留不留死界面, §4.3） |
+| 复盘分享 / 后台分析 / 账号体系 | ✅ | slug 公开分享页（OG 卡片）+ 掌握度矩阵 / 易错清单 + LLM 状态总结（§6） |
+| 三端契约 | ✅ | FastAPI ↔ Django 的 13 个内部调用 / Django 12 表 41 路由 / 前端 11 页 30 API —— 2026-09-08 逐条核对无断链（§6） |
+| rerank 精排 | 🟡 | bge-reranker-v2-m3 本地模型；**缺失时降级不精排**（不报错），`/ai/health` 暴露真实状态（§5.3 / §7.3） |
+| 网络检索源 | 🟡 | Tavily key 缺失时**跳过该源**（Context7 / 文档源不受影响）（§5.2） |
+| 多 worker 部署 | ⬜ | 单进程前提（孤儿回收判据依赖进程注册表）；将来加 worker 要换跨进程心跳（§7.4） |
+| 视频输入 / 代码题 / 成就排行榜 / 增量索引 / Agentic RAG | ⬜ | Phase 2 明确不做（§8） |
+| Django 规则层的高并发场景 | ⬜ | 未做压测; bge-m3 推理等同步调用跑在事件循环上（§7.4, 有意取舍） |
+
+**关键决策**（每条一行, 细节见括号里的出处）:
+
+1. **闯关交互归 Django、且 LLM 不参与答题路径** —— 判分 / 心动值 / 间隔复习是纯规则 + 预生成讲解；AI 能力全在 FastAPI，两边职责不重叠（§2）。
+2. **RAG 只返回片段、不生成答案** —— 「生成依据」（检索）与「生成动作」（图谱 / 题目 / 讲解）拆开，配来源引用与反馈标记构成三层幻觉防护（§2）。
+3. **服务间认证一律 `X-Internal-Token` 且 fail closed**；**不存在 Django → FastAPI 反向调用**（索引 / 出题触发由前端直调 `/ai/*`）（§2）。
+4. **任务不持久化，但失败面必须收干净** —— SSE 断线按 `Last-Event-ID` 续推；服务重启后由**孤儿任务回收**把实体推回失败态，前端点「重试」就能真跑，不必等 10 分钟陈旧锁（§4.3 / [C03](../../.scratch/Charlotte/issues/C03-charplot-wording-and-resilience.md)）。
+5. **本地模型缺失时行为要如实**：embedding 缺失**报错**（必装）、rerank 缺失**降级不精排**（不静默失败也不硬崩），`/ai/health` 把运行时事实暴露出来（§5.3）。
+6. **DeepAgents 只用在检索** —— 出题与图谱解构是裸 LLM 调用 + 结构校验，不是 subagent；README 与代码逐字对齐（[C03](../../.scratch/Charlotte/issues/C03-charplot-wording-and-resilience.md) 修掉的就是这条表述）。
+7. **零引用的「有意保留」不留** —— stub 产物全部清理出仓库（归档到仓库外 `Temp/`）：留着零引用代码，在面试官眼里和「忘了删」分不出来（§7.3）。
+
+**测试规模**: **FastAPI 侧 89 个 + Django 侧 277 个**。FastAPI 侧全部离线（Redis `/15` 隔离 + Fake LLM，不触网）；Django 侧需本机 MySQL / Redis。
+
+```bash
+cd project/charplot && pytest                  # 89 个
+python manage.py test app.charplot             # 277 个（在仓库根运行）
+```
+
+**已知边界**: 详见 §7.4（架构级取舍）与 §8（Phase 2 不做清单）。四条最要紧的 —— ① 同步阻塞跑在事件循环上（bge-m3 / FlagReranker 首次加载可冻结心跳数十秒）· ② 孤儿回收依赖单进程部署 · ③ `agents/` 的真实执行路径只靠运行期验证（测试用 Fake 替换）· ④ `rag/__init__.py` 的顶层 re-export 使 import 顺序敏感。
 
 ---
 
@@ -206,7 +261,7 @@ cd project/charplot/frontend && npm run dev  # 127.0.0.1:9004
 
 ```bash
 # FastAPI 侧 (Redis /15 隔离 + Fake LLM, 无外部网络依赖; 需本机 Redis)
-cd project/charplot && pytest
+cd project/charplot && pytest                # 89 用例
 
 # Django 侧 (需本机 MySQL/Redis, settings.dev)
 python manage.py test app.charplot           # 277 用例
@@ -281,4 +336,4 @@ python manage.py test app.charplot           # 277 用例
 
 ---
 
-> 首次纳入文档：2026-09-08（业务完整性审查后补写）｜ 维护者：Claude Code (charlotte)
+> 首次纳入文档：2026-09-08（业务完整性审查后补写）｜ 最后更新：2026-10-06（C19: 速览块 + 口径对齐；C03 的处置见 §7）｜ 维护者：Claude Code (charlotte)
