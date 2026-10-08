@@ -1,9 +1,9 @@
-# 人机确认（L3b）· 专题底稿
+# 人机确认 · 专题底稿
 
-> 本目录一共七份：`INTERVIEW.md`（题典）· `context-compaction-notes.md`（上下文压缩）· `estimator-and-trigger.md`（压缩原理）· `observability-notes.md`（L3a 可观测）· **本份**（L3b 人机确认：挂起-恢复 / 幂等 / 代付 / 确认卡）· [`stateless-and-drain-notes.md`](./stateless-and-drain-notes.md)（#64 无状态化与 graceful drain）· [`multiagent-notes.md`](./multiagent-notes.md)（#42–#44 多智能体）。
-> 覆盖阶段：**L3b**，对应 issues **32–38**（2026-09-25 ~ 09-26 落地，09-26 真机验收）。决策记录：**ADR-0014 / 0015 / 0017**。
-> 代码锚点：[`CharAgent/hooks/utils/types.py`](../../../CharAgent/hooks/utils/types.py) · [`CharAgent/hooks/registry.py`](../../../CharAgent/hooks/registry.py) · [`CharAgent/agent/loop.py`](../../../CharAgent/agent/loop.py) · [`CharAgent/retry/idempotency.py`](../../../CharAgent/retry/idempotency.py) · [`CharAgent/db/repositories/idempotency.py`](../../../CharAgent/db/repositories/idempotency.py) · [`CharAgent/server/app.py`](../../../CharAgent/server/app.py) · [`CharAgent/server/sessions.py`](../../../CharAgent/server/sessions.py) · [`CharApp/minimall/guardrail.py`](../../../CharApp/minimall/guardrail.py) · [`CharApp/minimall/tools.py`](../../../CharApp/minimall/tools.py) · [`app/minimall/views_bff.py`](../../../app/minimall/views_bff.py) · [`templates/minimall/agent.html`](../../../templates/minimall/agent.html)
-> 本文里的数字全部来自真机实测或测试计数，出处写在数字旁边。
+> **本目录共五份专题底稿**：[01 上下文压缩](./01-context-compaction.md) · [02 可观测](./02-observability.md) · [03 人机确认](./03-hitl-approval.md) · [04 无状态化与 graceful drain](./04-stateless-and-drain.md) · [05 多智能体](./05-multiagent.md)。
+> 覆盖：**L3b**（issues 32–38，2026-09-25/26 落地并真机验收）—— 挂起-恢复 / 幂等持久化 / 代付 / 确认卡 / 下单前确认。决策记录：**ADR-0014 / 0015 / 0017**。
+> 代码锚点（行号按 2026-10-08 工作区记）：[`CharAgent/hooks/utils/types.py`](../../../CharAgent/hooks/utils/types.py) · [`CharAgent/hooks/registry.py`](../../../CharAgent/hooks/registry.py) · [`CharAgent/agent/loop.py`](../../../CharAgent/agent/loop.py) · [`CharAgent/retry/idempotency.py`](../../../CharAgent/retry/idempotency.py) · [`CharAgent/db/repositories/idempotency.py`](../../../CharAgent/db/repositories/idempotency.py) · [`CharAgent/server/app.py`](../../../CharAgent/server/app.py) · [`CharApp/minimall/tools.py`](../../../CharApp/minimall/tools.py) · [`app/minimall/views_bff.py`](../../../app/minimall/views_bff.py) · [`templates/minimall/agent.html`](../../../templates/minimall/agent.html)。
+> 行业侧只引**一手**（官方文档 / 官方源码），原文摘录统一放在 [§8](#8-行业一手来源原文摘录)。
 
 ---
 
@@ -22,7 +22,7 @@
 | **机制** | **34** | HITL 挂起-恢复：`Decision` 第三值 + `approval_required` 终局事件 + `POST /runs/{id}/resume` |
 | **业务** | **35** | 助手代付：支付内部端点 + `pay_my_order` 工具（schema 里**没有**密码） |
 | | **36** | BFF 转发 + 前端确认卡（含刷新恢复、未决期间锁输入区） |
-| | **37** | 下单前确认（纯是非卡）+ prompt v3 改写 |
+| | **37** | 下单前确认（纯是非卡）+ prompt 改写 |
 | **收口** | **38** | 真机验收 + **五条否定断言** + 欠账清点 + 文档同步 |
 
 ### 0.2 为什么这一阶段值得做（一句话版本）
@@ -38,7 +38,7 @@
 | 第一阶段 | 靠提示词（在系统提示里要求模型下单前问一句） | ❌ **从来没有实现过** —— `git log -S"确认吗"` 全仓只在 PRD 的计划里搜得到（issue 37 核实） |
 | 第三阶段 | **框架级**：工具执行前的挂载点返回「需要确认」，整个运行**暂停并存档**，用户确认后从存档点继续 | ✅ **本阶段走通的是这条** |
 
-> 面试金句：**「我们规划过一个 prompt 层的版本，后来核实发现那条路线从来没被实现过 —— 所以『prompt 层 vs 框架级』那次对照没有实测数据。我把这件事如实写进了文档，而不是假装做过。要补那个数，得先真写一版带那句话的提示词（记为 L4 的候选）。」**
+> **说明（如实记）**：那条 prompt 层路线从未被实现过 —— 所以「prompt 层 vs 框架级」那次对照**没有实测数据**。要补那个数，得先真写一版带那句话的提示词（记为 L4 的候选）。
 
 ### 0.3 真机验收的硬数字（面试可以直接报）
 
@@ -55,7 +55,7 @@
 
 | # | 断言 | 结论 |
 |---|------|------|
-| 1 | 会话历史里搜不到密码原文 | ✅ 全库**能按 `run_id` join 回来的 53 个列**扫下来，`payment_password` 这个名字**只**出现在 `charagent_tool_calls.approval_needs`（那是「要问什么」的清单，**不是值**）；DOM 与 `sessionStorage` **0 命中** |
+| 1 | 会话历史里搜不到密码原文 | ✅ 全库**能按 `run_id` join 回来的列**（后来随 `runs.usage_by_model` 与 `memories.source_run_id` 又多了两组）扫下来，`payment_password` 这个名字**只**出现在 `charagent_tool_calls.approval_needs`（那是「要问什么」的清单，**不是值**）；DOM 与 `sessionStorage` **0 命中** |
 | 2 | `charagent_tool_calls.arguments` 里没有密码 | ✅ 那一行就是 `{"order_no": "202609261603140000102499"}` —— **没有第二个参数** |
 | 3 | `resume` 重放两次只扣一次钱 | ✅ 见上表（挡在工具执行之前） |
 | 4 | 两侧日志里搜不到密码原文 | ✅ 字段名 **0 次**；**正对照**：`POST /minimall/agent/resume/` 四条 200 + 两条 404 都在日志里（说明那几行真的记了这次请求，只是没有 body） |
@@ -67,17 +67,81 @@
 
 1. **「挂起不建审批表。」**（ADR-0014）—— 一次挂起的全部状态由 `charagent_tool_calls` 那一行 + 快照里的 `Suspension` 表达。见 §4.1。
 2. **「密码走一次性载荷，永不进模型看得见的地方。」**（ADR-0015）—— 而且**工具 schema 里永远不出现 `payment_password` 这个参数**，这是前三条「永不」的前提。见 §4.2。
-3. **「幂等先做、工具超时推后 —— 因为依赖方向是单向的。」**（ADR-0017）—— 我把一条写着「要么一起做、要么都不做」的设计判断**改判了**。见 §4.3。
+3. **「幂等先做、工具超时推后 —— 因为依赖方向是单向的。」**（ADR-0017）—— 这条设计判断的判据改写见 §4.3。
 
 ---
 
 ## 1. 行业全景：企业级的人机确认长什么样
 
-<!-- SECTION_1_PLACEHOLDER -->
+### 1.1 三个框架级形态（agent 框架 / 工作流引擎各一家）
+
+**① LangGraph · interrupts（图框架的代表）**
+
+链接：<https://docs.langchain.com/oss/python/langgraph/interrupts>
+
+机制：节点里调 `interrupt(payload)` 暂停，**checkpointer 存下整个图状态**，`thread_id` 是「拼回去的指针」（`config={"configurable": {"thread_id": ...}}`），恢复用 `Command(resume=value)` —— resume 值成为 `interrupt()` 的返回值。
+
+三条规则最能说明这个机制的边界（都是官方原文，见 §8 A1）：
+
+1. **恢复时节点从头部重跑**（"the runtime restarts the entire node from the beginning—it does not resume from the exact line"）—— 于是**副作用必须幂等**：「Side effects called before `interrupt` must be idempotent」；
+2. **`interrupt()` 调用不许重排、不许条件跳过**（匹配是严格按 index 的）—— 也别用 `while True` 包验证循环（每次恢复会把之前每一轮都重放一遍，指数级）；
+3. **不许裸 `try/except` 包 `interrupt()`**（它靠抛一个特殊异常暂停，会被 except 抓住）；传的值要 JSON 可序列化。
+
+**② OpenAI Agents SDK · Human-in-the-loop（agent SDK 的代表）**
+
+链接：<https://openai.github.io/openai-agents-python/human_in_the_loop/>
+
+机制：工具用 `needs_approval=True`（或一个**按次判断的 callable**）声明；一旦需要批准，**执行暂停**，`RunResult.interruptions` 浮出待批准项；`result.to_state()` 序列化成 `RunState`（可存盘 / 换进程），`state.approve(...)` / `state.reject(...)` 后 resume。
+
+四条值得记的设计（原文见 §8 A2）：
+
+1. **fail closed**：callable 判断规则**在参数无法安全解析时一律要求人工批准**（参数缺失 / 空 / 全空白 / 畸形 JSON / 不是对象 / 含 `NaN` 这类非标准常量 —— 都不调 callable，直接挂起）；
+2. **粘性决定**：`always_approve` / `always_reject` 存进 run state，跨序列化存活；**只按「工具身份」粘**（hosted MCP 里还要求 server label 非空 —— 同名工具在另一个 server 不等于批过）；
+3. **部分决议**：一批挂起不要求一次全批 —— 只批准一部分时，已决的继续、未决的留在 `interruptions` 里再次暂停；
+4. **服务端审批的安全要求**（这一节最值钱）：序列化的 `RunState` **不认证**快照与提交者 —— 官方列了四条服务端必须做的事：**认证审批人**（「Do not take the reviewer's identity from the approval request body」）· **授权**（「Possession of a run ID or decision ID is not authorization」）· **校验提交的标识**（只认服务端自己那份挂起清单）· **原子过渡防重放**（"use an atomic owner-checked transition before starting resumed execution"）。还有一条工程提醒：**审批可能停留很久 → 与序列化状态一起存一个版本标记**（模型 / prompt / 工具定义变了要能路由到对应代码路径）。
+
+**③ AWS Step Functions · Wait for Callback（工作流引擎的代表）**
+
+链接：<https://docs.aws.amazon.com/step-functions/latest/dg/connect-to-resource.html>（`waitForTaskToken` 一节）
+
+机制：任务里带上一个 **task token** 发出去（如塞进 SQS 消息），外部系统做完事拿 token 回 `SendTaskSuccess` / `SendTaskFailure`；状态机在那一步**等**。原文说这个「等」**最长等到一年服务配额** —— 为了避免卡死，可以配 **`HeartbeatSeconds`**：超时未回，任务以 `States.Timeout` 失败。另有一条边界：**task token 只在同一 AWS 账号内有效**。
+
+> 三个形态的共同骨架：**把状态存到外部（checkpointer / RunState / 状态机历史），把一个「拼回去的凭据」交出去（thread_id / RunState 快照 / task token），回来时凭它恢复。** 差别在凭据的形态与谁来保存。
+
+### 1.2 企业级审批的通用清单（从三个形态 + 通用工程实践提炼）
+
+| # | 问题 | 通行答案 |
+|---|------|---------|
+| 1 | **挂起载体** | 外部持久化（图状态 / 序列化 run state / 状态机历史）—— 挂起必须能被**另一个进程**接上 |
+| 2 | **恢复凭据** | 一个指针（thread_id / 快照 / token），且**凭据 ≠ 授权**（OpenAI 文档明确强调） |
+| 3 | **审批粒度** | 到「一次调用」级（per tool call / per interrupt）—— 而不是整个 agent 批一次 |
+| 4 | **幂等** | 恢复可能被重放（双击 / 重发）→ 框架要求「挂起前的副作用必须幂等」，业务要求「恢复本身幂等」 |
+| 5 | **超时** | 引擎侧给兜底（Step Functions 的 `HeartbeatSeconds`）；框架侧通常**无限等**，等多久是应用的事 |
+| 6 | **幂等 / 重放的存储** | 需要一张「认领表」或原子过渡，防止同一个挂起被恢复两次 |
+| 7 | **审批人身份** | 从**服务端会话**取，不从请求体取（OpenAI 文档点名） |
+| 8 | **多角色 / 升级** | 真人组织的多级审批、转交、超时升级 —— 到那个量级审批单才需要独立生命周期 |
+| 9 | **版本化** | 挂起可能跨很久（模型 / prompt / 工具定义会变）→ 快照要带版本标记 |
+
+### 1.3 三个形态怎么做 vs 本项目怎么做
+
+| 维度 | 行业形态 | 本项目（L3b） | 差在哪 / 为什么 |
+|------|---------|--------------|----------------|
+| **审批载体** | 独立机制：checkpointer / `RunState` 序列化 / task token | **不建审批表**（ADR-0014）：挂起态就是那次工具调用行（`status = needs_approval` + `approved_by`/`approved_at`）+ 快照里的 `Suspension.pending` | 本项目「审批单没有独立生命周期」—— 它是二元事实（批没批、谁批的），天然宿主是那次调用。**判据**：何时该建表 —— 「审批单开始有自己的生命周期」（多级 / 意见 / 转交）时 |
+| **恢复凭据** | `thread_id` / 序列化快照 / token | **`run_id` + 幂等键**（恢复端点的 body 里甚至不带 run_id —— 由服务端现问未决挂起） | 同向：凭据只用于**找到**挂起，授权由服务端会话回答 |
+| **审批粒度** | 一次调用级 | 一次调用级，且**一次挂起只挂一条**（同一批里第二条要批的以「先处理前一条」回填） | 比框架更严：为了「一次确认配一份一次性载荷」的归属无歧义 |
+| **幂等** | LangGraph：要求「挂起前的副作用幂等」；SDK：粘性决定 + 原子过渡 | **幂等键（三列）+ `claim` 一条 SQL**：重放挡在**工具执行之前**；认领后失败**放回**键 | 本项目把幂等做成了**第一等公民**（专门的表与存储），不只是「要求业务幂等」 |
+| **挂起超时** | Step Functions 有 `HeartbeatSeconds`（超时 `States.Timeout`） | **明确不做**（记账在路线图）：不做的理由是「加超时要先答『超时了怎么办』」；改用**显式取消**（`cancel` 扩到挂起中） | 形态差异：无服务器函数有成本与并发压力，挂起必须兜底；本项目挂着不花钱、用户可取消 |
+| **审批人身份** | OpenAI 文档：从服务端认证中间件取，**不从请求体取** | **同一条**：BFF 从浏览器 session 取身份；`data` 走白名单（只放行 `needs` 点名的键） | 同一纪律的两次独立抵达 —— 本项目那次是**代码评审揪出来的真漏洞**（§4.4） |
+| **重放防护** | 「原子 owner-checked transition」 | `INSERT ... ON CONFLICT DO UPDATE WHERE expires_at <= now RETURNING`（一条 SQL 同时解决并发 / 过期 / 旧结果不冒充） | 同一条思路的两种实现 |
+| **版本化** | 快照带版本标记（模型 / prompt / 工具定义变化时路由） | `runs.prompt_version` 记了（现为 `system/v8`），但**没有**「挂起快照带版本路由」这一层 | **认下的差距**：本项目挂起里没有「等太久之后定义变了」的兼容问题（演示尺度），记为后续片 |
+| **多角色审批** | 真人组织的多级审批 | **不适用**（DESIGN #25 那条「发起方不得审批自己发起的」）：发起方是**模型**，确认人是**买家本人**，不存在「自己批自己」 | 换真人多角色那天才需要（§5.1） |
+| **审计** | 合规级审计（能证明没被改过） | `approved_by` / `approved_at` 两列（谁批的、什么时候） | 认证有了，「防篡改的审计」没有 —— 记为后续片（§5.4） |
+
+> **这张表的用法**：被问「HITL 你怎么做的、和框架比怎么样」时，**先给对方三个形态的共同骨架**（外部状态 + 恢复凭据 + 凭据≠授权），再落到本项目的两个不同（**不建审批表**与**幂等做成一等公民**），最后主动认差距（版本化路由 / 合规审计）。
 
 ---
 
-## 2. 本项目的逐条实现（带代码）
+## 2. 本项目实现
 
 ### 2.1 起点：三头都在，中间断了
 
@@ -90,7 +154,7 @@ issue 34 规划期核实的现状表（这是「一片要先量清楚」的样�
 | 挂起数据结构 | ✅ `Suspension(reason, pending, approval_id)` 在 `checkpoint/utils/types.py` |
 | **产生挂起帧** | ❌ **`agent/loop.py` 里 `Suspension` 零命中** —— `_save_checkpoint` 拼 `CheckpointState` 时**根本没传 `suspension`**，永远落 `None`。全仓唯一的挂起帧生产者是**测试** |
 | 补做欠账 | ✅ `pending_tool_calls` / `resume()` / `_complete_pending_turn` 三道护栏齐 |
-| 审批事件 | ❌ `EventType` 只有 7 个 —— **名字早就预留了**（注释：「HITL 挂起会再追加 `approval_required`」） |
+| 审批事件 | ❌ `EventType` 里**名字早就预留了**（注释：「HITL 挂起会再追加 `approval_required`」）但没接 |
 | 运行状态 | ⚠️ `RunStatus.WAITING_USER` **已存在但没有任何路径能走到它** |
 | 幂等兜底 | ❌ `retry/idempotency.py` 零生产调用方 |
 
@@ -99,7 +163,7 @@ issue 34 规划期核实的现状表（这是「一片要先量清楚」的样�
 **「预留的接口没人用过」这件事本身就是规划期的一等公民**（PRD §1 批评的原话）：**「没人用过的接口，等于没设计过。」** —— 而 L3b 正是把三个预留件（`Decision` 的第三值、`Suspension` 的落帧、`idempotency_keys` 表）**第一次接上真实调用方**。
 
 ```python
-# CharAgent/hooks/utils/types.py:51 (Verdict) / :68 (Decision)
+# CharAgent/hooks/utils/types.py:51 (Verdict) / :69 (Decision)
 class Verdict(StrEnum):
     """裁决点上插件能表的三种态 (对应 Decision.verdict).
 
@@ -125,37 +189,9 @@ class Decision:
     reason: str | None = None
     prompt: str = ""
     needs: tuple[str, ...] = ()
-
-    def __post_init__(self) -> None:
-        """三种形状各自校验 (构造期拦住): 该有的字段缺了就报, 不该有的报了也报."""
-        if self.verdict is Verdict.REJECT:
-            if not (self.reason or "").strip():
-                raise HookConfigError(
-                    "拒绝必须给出原因 (该原因会作为这次工具调用的失败文本回填给"
-                    "模型): 用 Decision.reject('为什么不行 / 该怎么改') 构造"
-                )
-            if self.prompt or self.needs:
-                raise HookConfigError(
-                    f"拒绝不该带确认话术与缺失项 (它是当场有结论, 没有要去问的人): "
-                    f"prompt={self.prompt!r}, needs={self.needs!r}"
-                )
-            return
-        if self.verdict is Verdict.REQUIRES_APPROVAL:
-            if not self.prompt.strip():
-                raise HookConfigError(
-                    "挂起必须给出 prompt (它是给用户看的那句话 —— 没有它, 前端弹出"
-                    "一张没有字的确认卡): 用 Decision.requires_approval(prompt=...)"
-                )
-            ...   # reason 必须为空 / needs 里不许有空串
-            return
-        if self.reason is not None or self.prompt or self.needs:
-            raise HookConfigError(
-                f"放行不该带原因 / 话术 / 缺失项 (没人会读它们, 而写它们的人多半是"
-                f"想拦): 用 Decision.allow() 构造"
-            )
 ```
 
-> **这段的看点不是三个 classmethod，是那个 `__post_init__`**：**「挂起必有话术 / 拒绝必有原因 / 放行不许夹带」在构造那一刻就报错** —— 于是 loop 拿到 `Decision` 时**不必再判空**。
+> **`Decision.__post_init__` 的那三条校验是这段的看点**：**「挂起必有话术 / 拒绝必有原因 / 放行不许夹带」在构造那一刻就报错** —— 于是 loop 拿到 `Decision` 时**不必再判空**。
 >
 > 这是全仓反复出现的一条形状：**把校验放到构造期，下游就不用写防御代码**（`PeakRule` 验时区、`PgIdempotencyStore` 验 TTL、`RetryPolicy` 验退避参数，都是同一个手法）。
 
@@ -170,23 +206,12 @@ async def decide(self, point: HookPoint, **kwargs: Any) -> Decision:
     # 变量就又要靠顺序决定, 而那正是这条改动要消掉的东西
     rejection: Decision | None = None
     approval: Decision | None = None
-    for hook in handlers:
-        verdict = self._verdict(point, hook, await self._call(point, hook, kwargs))
-        if verdict is None:
-            continue
-        if verdict.verdict is Verdict.REJECT:
-            if rejection is None:
-                rejection = verdict
-        elif approval is None:
-            approval = verdict
-    if rejection is not None:
-        return rejection
     ...
 ```
 
-> **`_verdict(...)` 那一层还守着 fail-closed**：`decide()` 的契约是「返回值有语义」，而**认不出来的返回值一律当成拒绝** —— 这也是 §2.4.1「为什么不新增平行类型」的理由。
+> **`_verdict(...)` 那一层还守着 fail-closed**：`decide()` 的契约是「返回值有语义」，而**认不出来的返回值一律当成拒绝** —— 与 OpenAI SDK 文档那条「参数无法安全解析时 fail closed 到人工批准」是同一个取向：**认不出的那一侧，选保守的**。
 
-**裁决落地的那三行**（`CharAgent/agent/loop.py:466`，`_execute_one` 里）：
+**裁决落地的那三行**（`CharAgent/agent/loop.py:501` 附近，`_execute_one` 里）：
 
 ```python
     decision = await self._hooks.decide(
@@ -203,7 +228,7 @@ async def decide(self, point: HookPoint, **kwargs: Any) -> Decision:
     return await execute_tool(tool, arguments=call.arguments)
 ```
 
-> **注意 `and not approved` 这半句**：恢复那一段传进去的 `approved` 集合**只抵消「需人工确认」这一种裁决** —— **护栏的拒绝照常生效**（真机验过：恢复时人批的抵消、护栏的拒绝照常生效，两条各有用例）。
+> **注意 `and not approved` 这半句**：恢复那一段传进去的 `approved` 集合**只抵消「需人工确认」这一种裁决** —— **护栏的拒绝照常生效**（真机验过，两条各有用例）。
 
 ### 2.2 issue 32 · 幂等持久化
 
@@ -236,52 +261,15 @@ async def claim(self, key: IdempotencyKey) -> ClaimResult:
     一整行 `claim` 的判定都压在那条 `ON CONFLICT` 上 —— 应用层不查、不判断,
     于是两个人同时来也只有一个人能拿到 `CLAIMED`.
     """
-    moment = self._now()
-    # 一次认领 = 这一行的全部内容 (状态在途 / 结果清空 / 有效期从头算). 改写
-    # 过期行用的是**同一份值**: 那一行从此描述的就是新的一次操作, 不该留半点
-    # 上一手的痕迹 —— 尤其不能留下上一手的结果 (否则后来者会把它当成自己的)
-    record = {
-        "status": ClaimStatus.IN_PROGRESS.value,
-        "result": None,
-        "expires_at": self._expires_at(moment),
-        "created_at": moment,
-        "updated_at": moment,
-    }
-    statement = (
-        pg_insert(idempotency_keys)
-        .values(key=key.value, **record)
-        .on_conflict_do_update(
-            index_elements=[idempotency_keys.c.key],
-            set_=record,
-            # 只有**已经过期**的那一行允许被这次认领改写. NULL (永不过期) 与
-            # 未来时刻都不满足它, 于是没过期的行一动不动: 那把键要么被挡回
-            # 「有人在做」, 要么直接返回既有结果
-            where=idempotency_keys.c.expires_at <= moment,
-        )
-        .returning(idempotency_keys.c.key)
-    )
-    async with self._session() as session:
-        if session.execute(statement).first() is not None:
-            # 插进去了 / 改写了过期行 —— 这次由我执行
-            return ClaimResult(status=ClaimStatus.CLAIMED)
-        row = session.execute(
-            select(idempotency_keys.c.status, idempotency_keys.c.result).where(
-                idempotency_keys.c.key == key.value
-            )
-        ).first()
-    # 走到这里说明上面那条改写没通过 —— 那一行要么永不过期、要么还在有效期内,
-    # 于是下面读到的东西没有「过期了但看起来还作数」的余地
-    if row is not None and row.status == ClaimStatus.COMPLETED.value:
-        return ClaimResult(status=ClaimStatus.COMPLETED, result=row.result)
-    # 其余一律当作「有人在办」: 这是**安全**的那个答复 (不会让调用方再执行一次)
-    return ClaimResult(status=ClaimStatus.IN_PROGRESS)
 ```
 
 **这条 SQL 只有一行，但它同时解决了三件事**：
 
 1. **并发**：两个请求同时来，只有一个能 `RETURNING`；
 2. **过期**：`WHERE expires_at <= now` 恰好是「`NULL` 或未来时刻」的**补集** —— 永不过期的与还没到期的，行一动不动；
-3. **旧结果不冒充新结果**：认领时把整行改写成新操作。
+3. **旧结果不冒充新结果**：认领时把整行改写成新操作（状态在途 / 结果清空 / 有效期从头算）—— 尤其不能留下上一手的结果，否则后来者会把它当成自己的。
+
+> 这一条与 OpenAI SDK 文档里那句「use **an atomic owner-checked transition** before starting resumed execution」是同一个要求 —— 只是它们说原则，这边给出了一条具体 SQL。
 
 #### 2.2.3 键的形态：三列，不是两列
 
@@ -301,7 +289,7 @@ async def claim(self, key: IdempotencyKey) -> ClaimResult:
 | **默认不过期**（`ttl_seconds=None`） | 内存实现也没有 TTL —— 默认值短命会让「换成持久化实现」变成**保护范围被悄悄改小** |
 | **`ttl_seconds <= 0` 构造期报错** | 0 与负数会让每把键认领完立刻可再认领，即**这个存储装上了却什么都挡不住，且不报任何错** |
 
-> **一条对票据措辞的澄清**（值得学）：票据说 `status` 列是「`ClaimStatus` 三值」，实际落库的只有**两值** —— `claimed` 是**本次认领成功的答复**，不是存下来的状态（认领成功写下来的是 `in_progress`）。**票据写错了，我改的是注释不是代码，并把这件事记下来。**
+> **一条对票据措辞的澄清**（值得学）：票据说 `status` 列是「`ClaimStatus` 三值」，实际落库的只有**两值** —— `claimed` 是**本次认领成功的答复**，不是存下来的状态（认领成功写下来的是 `in_progress`）。**票据写错了，改的是注释不是代码，并把这件事记下来。**
 
 #### 2.2.5 真机（本片没有调用方，能验的是「直连真库」）
 
@@ -345,7 +333,7 @@ async def claim(self, key: IdempotencyKey) -> ClaimResult:
 > `loop_id` 沿用是**结构事实**（同一次循环执行接着跑）；`run_id` 沿用是**业务选择**（同一次运行的第二段）—— 后者必须是**显式传入**的。
 
 ```python
-# CharAgent/client/session.py:406 (签名) + :459 (主体, 节选)
+# CharAgent/client/session.py:453 (签名) + :528 (主体, 节选)
 async def resume(
     self, *, run_id: str | None = None, approval: Approval | None = None
 ) -> LoopResult | None:
@@ -359,39 +347,7 @@ async def resume(
     - **传 `run_id`** (HITL 的审批恢复, issue 34): 这是**同一次运行的第二段**
       —— 那一行**不新建**, 而收尾那一笔照常写上去 (它记的是这一段的结局:
       跑完了 / 上游中断 / 又挂起了一次). 这一段落的帧与消息全部指回那一行.
-
-    为什么是参数而不是「`resume` 一律沿用」: 命令行那条如果也沿用, 一次
-    `--resume` 会在同一天里往同一行账上叠三段互不相干的对话, 「这次运行花了
-    多少」当场失去意义. **判据是「是不是同一次运行的第二段」**, 只有调用方
-    知道答案, 所以由调用方给.
     """
-    checkpoint = await self._saver.load_latest(self._thread_id)
-    if checkpoint is None:
-        return None
-    restored = self._restore(checkpoint)
-    # 这一段产生的消息从第几条开始: 起点的长度就是下标基准, 与 loop 的落库
-    # 协作者同一个口径 —— 两边算的编号必须对得上, 否则收尾会把运行中已经写过的
-    # 行再写一遍 (那会变成两条一样的消息)
-    since = len(restored.state.messages)
-    # 没传 run_id = 这一次是新的一次运行: 那一行由这一段开出来, 于是它的收尾
-    # **必须**落到那一行上 (没落的行会永远停在 running)
-    finish_run = run_id is None
-    if run_id is None:
-        run_id = await self._begin_run()
-    try:
-        result = await self._run(
-            self._loop.resume(restored, run_id=run_id, approval=approval)
-        )
-    except BaseException as exc:
-        # 失败与取消那一段**不碰**别人开的账 (finish_run 仍是上面那个值): 那次
-        # 运行还没结束 (它还等着人给结论), 这一段只是它的第二段 —— 把 failed
-        # 写上去等于把一次还能恢复的运行判死
-        await self._record_unfinished(
-            None, exc, run_id=run_id, since=since, finish_run=finish_run
-        )
-        raise
-    await self._record(result, run_id=run_id, since=since, ...)
-    return result
 ```
 
 > **`finish_run = run_id is None` 这一行本身就是设计**：它是评审「一个开关三种写法」之后收成的样子 —— 「调用方没给 `run_id`」与「这一段的账归我收」是**同一件事**，所以用一句话说清，而不是三个变量。
@@ -400,35 +356,25 @@ async def resume(
 
 | 补的 | 为什么 |
 |------|--------|
-| **`record_unfinished` 的 `question` 变成可选**（必填，可为 None） | 续跑段不是提问触发的，而失败那一轮也要落一条「这一轮没答完」。不补的话，命令行 `--resume` 一旦失败，**它自己刚建的那一行运行会永远停在 `running`**。**不编那句提问**：编一条 `user` 行会让记录撒谎（「只有真由用户输入产生的消息才是 user」是这一层立着的硬规矩） |
+| **`record_unfinished` 的 `question` 变成可选** | 续跑段不是提问触发的，而失败那一轮也要落一条「这一轮没答完」。不补的话，命令行 `--resume` 一旦失败，**它自己刚建的那一行运行会永远停在 `running`**。**不编那句提问**：编一条 `user` 行会让记录撒谎（「只有真由用户输入产生的消息才是 user」是这一层立着的硬规矩） |
 | **`RunSettlement`（收尾那一笔）打包** | 状态 / 账目 / 金额 / 最后一帧这四样必须同进同出，打包之后「这一段不收尾」也只要说一次（传 None）—— `_write` 的签名因此从 11 个参数降到 8 个 |
 
 ```python
-# CharAgent/db/recorder.py:512 (节选) —— 「这一段收不收尾」决定了那一笔给不给
+# CharAgent/db/recorder.py:527 (节选) —— 「这一段收不收尾」决定了那一笔给不给
     # 不结账 (HITL 续跑的第二段) 时这一笔整个不给: 状态 / 账目 / 金额 / 最后一帧
     # 都不写, 也不去算钱 —— 算了也没地方放 (见 RunSettlement)
     settlement: RunSettlement | None = None
     if finish_run:
-        facts = RunFacts.of(result, model=model)
-        settlement = RunSettlement(
-            status=run_status_for_outcome(result.outcome),
-            facts=facts,
-            cost=await self._cost_of(facts, run_id) if run_id is not None
-                 else RunCost(gap=CostGap.NO_MOMENT, model=model),
-            last_checkpoint_id=result.last_checkpoint_id,
-        )
+        ...
 ```
 
-**`RunSettlement` 的 docstring 把「None 那一种情形」写清了**：
-
-> **None 的那一种情形**（HITL 的第二段）：这一段跑完了，但**这一次运行**还没结束（可能再挂起，也可能就此收尾）—— 那一行该写什么只有收尾那一段知道，于是这一段**一笔都不碰它**。账目与金额不会因此丢：**续跑接着数计数器，收尾那一段拿到的结果里就是这一整趟的累计值。**
+> **「挂起那一段照样算钱」这条也是想清楚了的**：钱确实花了（那一轮真问过模型），所以挂起那一段**照常**把金额写上去；而恢复那一段收尾时**按累计用量重算覆盖**（C23/C24 之后是逐模型拆账、整份覆盖）—— `runs.settle` 的既定语义：**重算不是累加**（那几列是累计值）。
 
 **而底下那一层（`RunsRepository.settle`）还守着两条**：
 
 ```python
-# CharAgent/db/repositories/runs.py:114 (节选)
+# CharAgent/db/repositories/runs.py:117 附近 (节选)
     if status not in SETTLEABLE_RUN_STATUSES:
-        allowed = ", ".join(sorted(item.value for item in SETTLEABLE_RUN_STATUSES))
         raise DataConfigError(
             f"一段运行的结局只能是 ({allowed}), 实际: {status.value!r}"
             " —— 过程态 (waiting_tool / retrying) 说的是「正在做什么」, "
@@ -438,21 +384,9 @@ async def resume(
     if status in TERMINAL_RUN_STATUSES:
         # 只有真结束的那一次写它: 挂起那一段留空
         values["finished_at"] = stamp
-    ...
-    if total_cost is None and total_cost_detail is not None:
-        # 没算出来: 补一句「为什么没有」, 但**只在金额还空着的时候** ——
-        # 已经有金额的行不该被改成「没有」(金额与账单绑定, 只写一次)
-        session.execute(
-            update(runs)
-            .where(runs.c.run_id == run_id)
-            .where(runs.c.total_cost.is_(None))
-            .values(total_cost_detail=total_cost_detail, updated_at=stamp)
-        )
 ```
 
-> **「挂起那一段照样算钱」这条也是想清楚了的**：钱确实花了（那一轮真问过模型），所以挂起那一段**照常**把金额写上去；而恢复那一段收尾时**按累计用量重算覆盖**（`runs.settle` 的既定语义：**重算不是累加** —— 那五列是累计值）。
-
-#### 2.3.3 一个「一个开关三种写法」的评审发现
+#### 2.3.3 「一个开关三种写法」的评审发现
 
 ```
 continuation  →  not continuation  →  not finish_run
@@ -480,6 +414,8 @@ continuation  →  not continuation  →  not finish_run
 | 记录员忽略 `finish_run`（照样结账） | 用例红：`- running` / `+ finished` |
 | 会话不把 `run_id` 交给 loop | 两条真库用例红，报的正是本片要修的症状：帧的 `run_id` 是 `None` |
 
+---
+
 ### 2.4 issue 34 · HITL 挂起-恢复（框架侧的核心）
 
 #### 2.4.1 `Decision` 加第三值 —— 为什么不新增一个平行类型
@@ -489,7 +425,7 @@ continuation  →  not continuation  →  not finish_run
 ```python
 Decision.allow()                            # 放行（今天就有）
 Decision.reject("为什么不行 / 该怎么改")      # 当场有结论（今天就有）
-Decision.requires_approval(                 # 新增：等着别人给结论
+Decision.requires_approval(                 # 挂着等人
     prompt="这一单要付款了，需要你输一次支付密码",
     needs=("payment_password",),            # 机器可读：还缺什么（框架只透传，不解释）
 )
@@ -501,11 +437,11 @@ Decision.requires_approval(                 # 新增：等着别人给结论
 
 加了第三种值之后，「非放行」有两种，于是**注册顺序会决定用户体验**：业务侧同时挂「护栏（超预算就拒）」与「需确认」两条规则时，确认排在前面会让一个**会超预算**的操作先弹确认卡、用户确认完才被拒。
 
-**改成**：遍历全部 handlers，任一 `reject` 直接生效；一个都没有时才看有没有 `requires_approval`。
+**改成**：遍历全部 handlers，任一 `reject` 直接生效；一个都没有时才看有没有 `requires_approval`。（§2.1 的 `decide()` 代码里那「两个位置各记第一个」正是这件事。）
 
 > **为什么不靠注册顺序**：**顺序是「装配的偶然事实」，而「该不该做」应当是「内容决定」的。**
 
-**挂起那一条不回填**（`CharAgent/agent/loop.py:1077` 节选）：
+**挂起那一条不回填**（`CharAgent/agent/loop.py:1155` 附近节选）：
 
 ```python
     for call, result in zip(response.tool_calls, held, strict=True):
@@ -520,13 +456,6 @@ Decision.requires_approval(                 # 新增：等着别人给结论
                 # 结果欠着: 不 append tool 消息, 也不发 tool_result 事件 ——
                 # 「那一条还没有结果」是这次挂起的全部内容
                 continue
-        ...
-    if suspended is not None:
-        # 这一轮到此为止: 上面那条调用欠着结果, 进度与「欠着谁」一起落进这一帧
-        # (见 _save_checkpoint), 终局事件也换成 approval_required
-        state.approval = suspended
-        state.outcome = LoopOutcome.SUSPENDED
-        state.done = True
 ```
 
 **恢复时怎么把欠着的那条找回来**（`CharAgent/checkpoint/utils/pending.py:50`）：
@@ -540,24 +469,13 @@ def pending_tool_calls(messages: Sequence[ModelMessage]) -> list[ModelToolCall]:
     - 遇到 tool 消息 -> 按 tool_call_id 从当前批里划掉一个
     - 其他消息 -> 不动
     """
-    waiting: list[ModelToolCall] = []
-    for message in messages:
-        ...
-        if role == "assistant" and message.get("tool_calls"):
-            waiting = [call for call in map(_read_call, raw_calls) if call is not None]
-        elif role == "tool":
-            call_id = message.get("tool_call_id")
-            waiting = [call for call in waiting if call.id != call_id]
-    return waiting
 ```
 
-> **模块头里那句「为什么不能按 id 建字典」值得单独讲**：
+> **模块头里那句「为什么不能按 id 建字典」值得单独讲**：`tool_call_id` 会在不同轮次里重复（上游每轮从 `call_0` 重编号），所以「按 id 建字典、后面覆盖前面」的写法在这里是**错的**。
 >
-> > `tool_call_id` 会在不同轮次里重复 —— 上游每轮都从 `call_0` 重新编号，所以「按 id 建字典、后面覆盖前面」的写法在这里是**错的**。正确的读法只有一种：顺着历史往后走，**只记住最近一批**还没收到结果的调用。
->
-> **同一个坑在这个项目里出现了三次**（主键三列、幂等键三列、这里的扫描算法）—— **「`call_0` 每轮重编号」是这个项目里最容易被忽视的一条上游事实。**
+> **同一个坑在这个项目里出现了三次**（轨迹表主键三列、幂等键三列、这里的扫描算法）—— **「`call_0` 每轮重编号」是这个项目里最容易被忽视的一条上游事实。**
 
-**没有结论就不补做**（`CharAgent/agent/loop.py:750` 节选）：
+**没有结论就不补做**（`CharAgent/agent/loop.py:788` 附近节选）：
 
 ```python
         pending = pending_tool_calls(state.history)
@@ -567,13 +485,7 @@ def pending_tool_calls(messages: Sequence[ModelMessage]) -> list[ModelToolCall]:
                 # 欠着的那条调用可能正是「给这一单付款」, 而补做就是把它真的
                 # 执行掉 —— 框架绝不替人按这个确认键. 拦在这里, 命令行那条
                 # `--resume` 就不会把一次挂起悄悄变成一次执行
-                raise LoopConfigError(
-                    f"这帧快照是一次人工审批的挂起点 (还欠 {len(pending)} 条工具"
-                    f"调用的结果): 恢复它必须先有人给的结论 (approval=), 因为..."
-                )
-            response, calls = await self._complete_pending_turn(
-                state, bus, pending, approval
-            )
+                raise LoopConfigError(...)
 ```
 
 `_complete_pending_turn` 的两条路（**批了 → 照常执行；拒了 → 一条都不执行**）：
@@ -585,8 +497,7 @@ def pending_tool_calls(messages: Sequence[ModelMessage]) -> list[ModelToolCall]:
             pending, turn=turn, approved=frozenset(c.id for c in pending)
         )
     else:
-        # 拒了: 一条都不执行, 拒绝原因当作每条调用的失败结果回填 (ok=False 的那次
-        # 「执行」—— 与护栏拒绝、参数校验失败走的是同一条通道)
+        # 拒了: 一条都不执行, 拒绝原因当作每条调用的失败结果回填
         results = [
             ToolExecution(tool_name=call.name, ok=False, error=approval.reason)
             for call in pending
@@ -602,7 +513,7 @@ def pending_tool_calls(messages: Sequence[ModelMessage]) -> list[ModelToolCall]:
 - 遇到**第一条** `requires_approval` → 停，把它放进 `Suspension.pending` 挂起
 - **同一批里其余需要审批的调用** → 以「请先处理前一条」的理由回填拒绝
 
-**理由**：`Suspension.pending` 是列表（形状允许一批），但「**一次确认配一份一次性载荷**」要求载荷归属无歧义。
+**理由**：`Suspension.pending` 是列表（形状允许一批），但「**一次确认配一份一次性载荷**」要求载荷归属无歧义。（对比 OpenAI SDK：官方明确支持一次部分决议、未决的留着再次暂停 —— 那是另一条路，本项目选的是「一次只挂一条」。）
 
 #### 2.4.4 `LoopOutcome.SUSPENDED` 与 `RunStatus.WAITING_USER`
 
@@ -628,49 +539,32 @@ RUN_STATUS_FOR_OUTCOME: dict[LoopOutcome, RunStatus] = {
 
 | 处 | 位置 |
 |---|---|
-| 框架的事件类型与终局集 | `stream/utils/types.py` 的 `EventType` 与 `TERMINAL_TYPES`；`RunStream.push` 的 `_closed` 判定 |
+| 框架的事件类型与终局集 | `stream/utils/types.py` 的 `EventType` 与 `TERMINAL_TYPES`；`RunStream.push` 的 `_closed` 判定（C26–C29 之后 `EventType` 共 9 个成员，**终局集仍是 3 个**：`final` / `error` / `approval_required`） |
 | BFF 的终局集 | `views_bff.py` 的 `TERMINAL_EVENTS` |
-| 前端的渲染表 | `agent.html` 的 `RENDERERS` |
+| 前端的渲染表 | `agent.html` 的 `RENDERERS`（现 9 项） |
 
 事件载荷（**框架只搬运，语义由业务定**）：`tool_call_id` / `tool_name` / `prompt` / `needs`（+ `turn`，与其它事件同一条惯例）。
 
 ```python
-# CharAgent/agent/utils/events.py:174
+# CharAgent/agent/utils/events.py:176 (节选)
 async def emit_terminal(bus: EventBus, result: LoopResult) -> None:
     """run 的单一终局出口: 从 LoopResult 派生**恰好一个**终局事件.
 
     正常结束 → final; 其余 → error; **挂起等人 → approval_required**
-    (那一轮的答复还没发生, 所以既不是 final 也不是 error). 三种都是**终局**:
-    客户端收到它就知道这次 HTTP 请求到此为止 (挂起那条也一样 —— 前端据此渲染
-    确认卡并保持输入框禁用, 等用户给结论后另开一次 resume).
+    (那一轮的答复还没发生, 所以既不是 final 也不是 error). 三种都是**终局**.
     """
-    if result.approval is not None:
-        await bus.emit(
-            EventType.APPROVAL_REQUIRED, **approval_required_data(result.approval)
-        )
-        return
-    ...
 ```
 
 **注意它读的是 `result.approval` 而不是 `result.outcome`** —— 「这一轮停在谁那儿」是那张确认卡的直接来源，而 `outcome` 只是 `SUSPENDED` 这个分类。
 
 ```python
-# CharAgent/agent/utils/events.py:114
+# CharAgent/agent/utils/events.py:116
 def approval_required_data(approval: ApprovalRequest) -> dict[str, Any]:
     """一次挂起 → `approval_required` 事件载荷.
 
-    四样是前端重建一张确认卡要的全部: **哪一条**调用要批 (`tool_call_id` 与
-    `tool_name`, 前端按它把卡片插在会话流里那一次 tool_call 的位置上)、
-    **问什么** (`prompt`)、**缺什么** (`needs` —— 含 `payment_password` 就渲染
-    一个密码框, 空就只给两个按钮).
+    四样是前端重建一张确认卡要的全部: **哪一条**调用要批、**问什么**（`prompt`）、
+    **缺什么**（`needs` —— 含 `payment_password` 就渲染一个密码框, 空就只给两个按钮）。
     """
-    return {
-        "tool_call_id": approval.call.id,
-        "tool_name": approval.call.name,
-        "prompt": approval.prompt,
-        "needs": list(approval.needs),
-        "turn": approval.turn,
-    }
 ```
 
 > **这四样与 `GET /history` 的 `pending_approval` 是同一份形状**（框架侧两处同源）—— 这正是「刷新恢复」那条路能用**同一个渲染函数**的原因（§2.6.4）。
@@ -680,7 +574,7 @@ def approval_required_data(approval: ApprovalRequest) -> dict[str, Any]:
 与 `POST /runs` 同构：返回一条 SSE 流。
 
 - body：`{decision: "approve" | "reject", data: {...}}`
-- **一个端点，不拆 approve / reject 两个** —— **拒绝也要恢复**：把拒绝原因当**工具结果**回填，模型据此继续
+- **一个端点，不拆 approve / reject 两个** —— **拒绝也要恢复**：把拒绝原因当**工具结果**回填，模型据此继续（与 OpenAI SDK 的 `state.reject(...)` 同构：拒绝进的是同一个恢复流，还有 `rejection_message` 可自定义话术）
 - **幂等不是兜底，是主线**：恢复是 HTTP 端点，双击 / 重发 / 前端重试都会产生第二次，**而重放的是「给这一单付款」**
 
 七步（**顺序有讲究**）：认证 → 读 body → 查未决 → **认领幂等键** → 组载荷 → 占会话 → 起任务/流成 SSE。
@@ -688,7 +582,7 @@ def approval_required_data(approval: ApprovalRequest) -> dict[str, Any]:
 > **为什么「先认领键、后占会话」**：这样**并发那一相由键来回答**（`409 approval_in_progress`，跨进程），而不是被本进程的「会话忙」顺带答一句。
 
 ```python
-# CharAgent/server/app.py:789 —— 键怎么算
+# CharAgent/server/app.py:808 —— 键怎么算
 def _approval_key(row: ToolCall) -> IdempotencyKey:
     """一条未决的挂起 → 它那把幂等键.
 
@@ -699,7 +593,7 @@ def _approval_key(row: ToolCall) -> IdempotencyKey:
 ```
 
 ```python
-# CharAgent/server/app.py:485 —— 认领在前, 占会话在后
+# CharAgent/server/app.py:505 附近 —— 认领在前, 占会话在后
     # 认领在前, 占会话在后: 「这一次审批有人在办」该由**那一把键**回答
     # (它是跨进程的判据), 而不是由「会话忙不忙」顺带答一句. 代价是认领之后
     # 还有可能失败 (会话忙 / 装配出错) —— 那一笔必须**放回去**, 否则这把键
@@ -717,24 +611,21 @@ def _approval_key(row: ToolCall) -> IdempotencyKey:
 ```
 
 ```python
-# CharAgent/server/app.py:822 —— 抢不到键的两种答复
-    result = await guard.claim(key)
+# CharAgent/server/app.py:841 附近 —— 抢不到键的两种答复
     if result.status is ClaimStatus.CLAIMED:
         return
     if result.status is ClaimStatus.COMPLETED:
         raise ApprovalAlreadyHandledError(
-            f"这次的审批已经处理过了 (键 {key.value!r} 已登记完成): "
-            "不必再点一次 —— 刷新页面对一下最新状态",
+            "这次的审批已经处理过了 … 刷新页面对一下最新状态",
             code="approval_already_applied",
         )
     raise ApprovalAlreadyHandledError(
-        f"这次的审批正在处理中 (键 {key.value!r} 已有人认领): "
-        "请等这一次跑完, 不要重复提交",
+        "这次的审批正在处理中 … 请等这一次跑完, 不要重复提交",
         code="approval_in_progress",
     )
 ```
 
-> **`except BaseException` 里那次 `_release_claims` 是这一段最容易被漏的地方**：**认领成功了、但会话没占上** —— 如果不把键放回去，它就**永久卡在「在办」**，用户既恢复不了、也不知道为什么。有一条用例专盯这个（「**认领之后失败会把键放回去**」，伪证里也是逐条都红）。
+> **`except BaseException` 里那次 `_release_claims` 是这一段最容易被漏的地方**：**认领成功了、但会话没占上** —— 如果不把键放回去，它就**永久卡在「在办」**，用户既恢复不了、也不知道为什么。有一条用例专盯这个（伪证里也是逐条都红）。
 
 #### 2.4.7 三种「第二次 resume」的时相分工（这一条很能讲）
 
@@ -764,14 +655,12 @@ charagent_tool_calls.status = 'needs_approval' AND approved_at IS NULL AND run_i
 
 #### 2.4.9 挂起帧：`CheckpointSource.APPROVAL`
 
-`_save_checkpoint` 要传 `suspension`（今天漏了它），而帧的 `source` 不能用现成的 `SUSPENSION` —— 那个标签的注释写的是「**补做**挂起时欠下的工具调用, 因此落下的那一帧」，那是**恢复时**的帧。于是**新增一个枚举值 `APPROVAL`**。
+`_save_checkpoint` 要传 `suspension`（此前漏了它），而帧的 `source` 不能用现成的 `SUSPENSION` —— 那个标签的注释写的是「**补做**挂起时欠下的工具调用, 因此落下的那一帧」，那是**恢复时**的帧。于是**新增一个枚举值 `APPROVAL`**。
 
 `Suspension.reason` 用短标签 `"needs_approval"`（面向机器判断，不是给用户看的文案 —— 用户看的在 `Decision.prompt` 里）；`approval_id` **保持 `None`**（ADR-0014：本项目永远不给它接线）。
 
 ```python
-# CharAgent/checkpoint/utils/types.py:132 (节选) —— 两个词是挂起的两头
-    LOOP = "loop"              # 本次运行正常跑出来的一轮
-    FORK = "fork"              # 本次运行是从一帧快照接着跑的, 这是它落下的第一帧
+# CharAgent/checkpoint/utils/types.py:125 / :138 (节选) —— 两个词是挂起的两头
     SUSPENSION = "suspension"  # 补做挂起时欠下的工具调用, 因此落下的那一帧
     # 一次人工审批的**挂起点**那一帧 (工具还没执行, 等人给结论 #25 HITL).
     # 与上面那个 SUSPENSION 是**两头**: 那个是「欠的活补做完了」, 这个是「刚开始
@@ -780,69 +669,48 @@ charagent_tool_calls.status = 'needs_approval' AND approved_at IS NULL AND run_i
 ```
 
 ```python
-# CharAgent/agent/loop.py:1510 (节选) —— 挂起写进帧的进度
+# CharAgent/agent/loop.py:1619 附近 (节选) —— 挂起写进帧的进度
     suspension=(
         None
         if state.approval is None
         else Suspension(
             reason=SUSPENSION_REASON_APPROVAL,
             pending=[state.approval.call],
-            # ADR-0014: 本项目永远不给 approval_id 接线 (挂起的全部状态
-            # 由那次调用自己那一行 + 这里的 pending 表达)
             approval_id=None,
         )
     ),
 ```
 
 > **「两个都叫 suspension 会让人读反」这句话是命名课的素材**：`SUSPENSION` 与 `APPROVAL` 不是「一个东西的两个名字」，而是**同一件事的开头与结尾** —— 前者说「欠的活补做完了」，后者说「刚开始欠」。**取名字时先问「读的人会不会把它读反」。**
-
-> **顺带一个边界**：`Suspension.pending` 是**列表**（形状允许一批），而本项目**永远只装一条**（ADR-0014 的「一次挂起只挂一条」）。**形状留了余地、语义钉死了** —— 这是「不做提前抽象、但也不堵死将来」的常见做法。
+>
+> **顺带一个边界**：`Suspension.pending` 是**列表**（形状允许一批），而本项目**永远只装一条**（ADR-0014 的「一次挂起只挂一条」）。**形状留了余地、语义钉死了。**
 
 #### 2.4.10 「谁批的」为什么是一条独立的语句
 
 ```python
-# CharAgent/db/repositories/tool_calls.py:257
+# CharAgent/db/repositories/tool_calls.py:330 (节选)
 async def record_decision(
     self, run_id: str, message_id: str, tool_call_id: str, *, decided_by: str
 ) -> bool:
     """记下**谁在什么时候给了一次挂起的结论** (#25); 状态一个字都不碰.
 
     与 `set_status` 的分工: 那个推进的是「这条调用现在到哪一步了」, 这个是
-    「人什么时候拍的板」. 两者**刻意分开**, 因为它们的时刻不同: 人点确认的那
-    一刻, 那条调用还没执行 (它在恢复那一段里才跑), 而执行完又要写一次状态 ——
-    合成一条语句的话, 后写的那次会把先写的时刻冲掉.
+    「人什么时候拍的板」. 两者**刻意分开**, 因为它们的时刻不同.
 
     ADR-0014 把「批了没有」定成一对列 (`approved_at IS NULL` = 还没批), 而
     「还有没有未决挂起」的判据是 `status = needs_approval AND approved_at IS
     NULL` —— 于是这一笔同时是**闸门**: 写下去之后, 那次挂起就不再拦新提问了.
     """
-    statement = (
-        update(tool_calls)
-        .where(tool_calls.c.run_id == run_id)
-        ...
-        .values(
-            approved_by=decided_by,
-            approved_at=datetime.now(UTC),
-            updated_at=datetime.now(UTC),
-        )
-    )
 ```
 
-**它的唯一调用点在收尾任务里**（`CharAgent/server/app.py:1196` 节选）：
+**它的唯一调用点在收尾任务里**（`CharAgent/server/app.py:1227` 附近）：
 
 ```python
     applied = task.cancelled() is False and task.exception() is None
-    try:
-        for key in bookkeeping.keys:
-            if applied:
-                await bookkeeping.guard.complete(key, {"applied": True})
-            else:
-                await bookkeeping.guard.release(key)
+    ...
         if applied and bookkeeping.decided_by:
             # 批过了而且真的做完了: 记下「谁在什么时候拍的板」(ADR-0014 的那一对列).
             # 闸门问的正是这一对 —— 于是它到这里才打开, 而**不是**在前一步
-            for row in bookkeeping.approvals:
-                await bookkeeping.calls.record_decision(...)
 ```
 
 > **「闸门在后头打开」这件事是刻意的**：先记「做成了」、再开闸 —— 顺序反过来，就会出现「闸门开了但活还没干完」的窗口。
@@ -853,10 +721,10 @@ async def record_decision(
 
 #### 2.4.11 `needs_approval` 与那两列「问什么」是在哪一拍写的
 
-**先纠正一个容易想错的点**（我在写这份底稿时也差点写错）：**挂起那条不是「执行前那一拍」写成 `needs_approval` 的** —— 那一拍写的是 `pending`（裁决还没发生）。真正的时刻是**同一轮收尾那一拍**：
+**先纠正一个容易想错的点**：**挂起那条不是「执行前那一拍」写成 `needs_approval` 的** —— 那一拍写的是 `pending`（裁决还没发生）。真正的时刻是**同一轮收尾那一拍**：
 
 ```python
-# CharAgent/agent/loop.py:258 (节选) —— 裁决结果变事实
+# CharAgent/agent/loop.py:268 附近 (节选) —— 裁决结果变事实
     for call, result in zip(calls, results, strict=True):
         if isinstance(result, ApprovalRequest):
             # 没执行的第三条去路 (前两条是成功与失败): 它在等人批. 状态直接是
@@ -873,28 +741,22 @@ async def record_decision(
                     approval_needs=result.needs,
                 )
             )
-            continue
 ```
 
 ```python
-# CharAgent/db/recorder.py:847 (节选) —— 先建 pending 行, 再推进终态
-    for fact in calls:
-        if fact.outcome is ToolCallOutcome.PENDING:
-            # 还没执行 (执行前那一拍): 这一行停在「模型刚发起」就是事实
-            continue
+# CharAgent/db/recorder.py:937 附近 (节选) —— 先建 pending 行, 再推进终态
         await self._calls.set_status(
             run_id, message_id_for(run_id, fact.message_index), fact.tool_call_id,
             tool_call_status_for_outcome(fact.outcome),
             result=fact.result, duration_ms=fact.duration_ms,
             # 要人批的那一条把「问什么」带上 (挂起那一刻就落库): 刷新页面之后
-            # 前端靠这两列重建确认卡, 而**只能在这一笔写** —— 上面建行那一拍
-            # 不知道要不要人批 (裁决还没发生), 而建行走的是幂等插入 (已有的跳过)
+            # 前端靠这两列重建确认卡, 而**只能在这一笔写**
             approval_prompt=fact.approval_prompt or None,
             approval_needs=fact.approval_needs or None,
         )
 ```
 
-**四列的分工**（`schema.py:440` 的列注释）：
+**四列的分工**（`schema.py:465-495` 的列注释）：
 
 | 列 | 管什么 |
 |----|--------|
@@ -903,7 +765,7 @@ async def record_decision(
 
 > **两组列合起来才够前端重建一张卡**：**「批没批」决定这张卡该不该在，「问什么」决定卡上写什么、要不要渲染输入框。** 而它们**都在那一行上** —— 这就是 ADR-0014 那句「挂起态的家就是那次调用自己」的物理兑现。
 
-#### 2.4.10 真机跑了三遍，第三遍才发现的那个缺陷（本节最值钱）
+#### 2.4.12 真机跑了三遍，第三遍才发现的那个缺陷（本节最值钱）
 
 > **症状**：**取消一次挂起之后再问一句话，模型 API 回 400**（`assistant message with 'tool_calls' must be followed by tool messages`）。
 
@@ -913,26 +775,28 @@ async def record_decision(
 
 **补了一条离线用例盯「发给模型的那份历史是否配对」** —— 而**旧用例只断状态码，它一直是绿的**。
 
-> **这一条能讲三层**：① **测试替身与真上游的差距**（`MockLLM` 不校验消息配对，所以它漏掉了这个 bug）；② **「状态对了」不等于「数据对了」**（取消把库里改对了，内存里那份是坏的）；③ **前两遍真机没发现它**（我把那条 traceback 当成了上一次尝试的残留）——**真机跑三遍不是浪费**。
+> **这一条能讲三层**：① **测试替身与真上游的差距**（`MockLLM` 不校验消息配对，所以它漏掉了这个 bug）；② **「状态对了」不等于「数据对了」**（取消把库里改对了，内存里那份是坏的）；③ **前两遍真机没发现它**（我把那条 traceback 当成了上一次尝试的残留）。
 
-#### 2.4.11 除八件交付物外还补的三处
+#### 2.4.13 除八件交付物外还补的三处
 
 | 补的 | 为什么（不做就是半截账） |
 |------|------------------------|
-| **`charagent_tool_calls` 加两列**（`approval_prompt` / `approval_needs` + 迁移 0005） | 票据要的「够前端重建确认卡」四个字段里，`prompt` 与 `needs` 在库里**没有落点** —— 它们只有挂起那一刻在内存里。而挂起态的家就是那一行（ADR-0014），于是把它们记在那一行上：**`approved_at` 管「批没批」，这两列管「问什么」** |
+| **`charagent_tool_calls` 加两列**（`approval_prompt` / `approval_needs` + 迁移 0005） | 票据要的「够前端重建确认卡」四个字段里，`prompt` 与 `needs` 在库里**没有落点**。而挂起态的家就是那一行（ADR-0014）——**`approved_at` 管「批没批」，这两列管「问什么」** |
 | **恢复会重新装配一次会话** | ADR-0015 的密码通路是「`data` → `RunContext.payload` → **装配时**进工具闭包」，而会话是按 thread 缓存的 —— 复用旧会话等于把那份一次性载荷丢掉 |
 | **`resume()` 缺人的结论就报错** | 命令行 `--resume` 撞上一帧挂起点时原先会**直接补做**那条调用 —— 而它可能就是「给这一单付款」。DESIGN #25 写着「**绝不自动执行**」，于是没有 `approval` 就不补做 |
 
-#### 2.4.12 一处「零改判」与一处「改了说法」
+#### 2.4.14 一处「零改判」与一处「改了说法」
 
 - **零改判**：票据要求「恢复时人批的抵消、护栏的拒绝照常生效」—— 实现时发现**它天然成立**（恢复段重新装配，护栏账本是新的，而人批只是一个 `approved` 集合）。
 - **改判**：issue 33 的「第二段不碰那一行」→「**第二段写这一段的结局**」—— 挂起那一段自己也要写（写的是 `waiting_user`，不是终态），否则「它现在在等人」在库里没有落点。唯一例外是**失败/取消那一段不碰**（那一次运行还开着，写 `failed` 会把还能恢复的运行判死）。
 
-#### 2.4.13 十三条伪证
+#### 2.4.15 十三条伪证
 
 > **「把实现改坏，看用例红不红，逐条都红」** —— 这一片列了 13 条：挂起帧不写 `suspension` · 恢复时不再抵消「需人工确认」（又挂了一次）· 没有结论也照常补做 · 恢复端不再认领幂等键 · 挂起那条事实写成 `pending` · 状态映射改成 `finished` · 闸门失效 · 批完不记「谁批的」· 拒绝也去执行工具 · 认领之后失败不再把键放回去 · 取消挂起不再写那一行 · 幂等存储的 `claim` 直接放行 · **取消挂起不再丢掉那份会话缓存**（真机那个 400 的回归）。
 
 **伪证的副产物**：撞见一处**死代码** —— `_write_calls` 原先在建行那一拍也写「要问什么」，而建行那一拍**永远拿不到**它（裁决还没发生，事实是 PENDING）。删掉。
+
+---
 
 ### 2.5 issue 35 · 代付：端点 + 工具（schema 里没有密码）
 
@@ -941,10 +805,22 @@ async def record_decision(
 **这是本片的核心约束，也是 ADR-0015 的前提。**
 
 ```python
-def _pay_my_order(client, user_id, one_shot) -> Tool:
+# CharApp/minimall/tools.py:687 (节选)
+def _pay_my_order(
+    client: MinimallClient, user_id: int, one_shot: Mapping[str, str] | None
+) -> Tool:
+    """代付工具: 签名里只有订单号, 密码从闭包 (`one_shot`) 里取."""
+
     @tool(annotations={WRITE_ANNOTATION_KEY: True})
     async def pay_my_order(order_no: str) -> str:
-        """给这一单付款。**不需要你提供密码** —— 用户会在他自己的页面上输入。"""
+        """给**当前买家自己**的一笔**待付款**订单付款 (从余额里扣), 返回订单与
+        付款之后的余额. 买家说「帮我付了这单」「把这单钱付了」时使用.
+        **不要向买家索要支付密码**: 他会在自己的页面上输一次, 这一步会停下来等他
+        确认 —— 你只要照工具给的话说下去就好.
+        """
+        password = (one_shot or {}).get(PAYMENT_PASSWORD_FIELD)
+        if not password:
+            raise ToolActionableError(_NO_AUTHORIZATION_TEXT)
         ...
 ```
 
@@ -952,77 +828,31 @@ def _pay_my_order(client, user_id, one_shot) -> Tool:
 
 **密码从闭包取**：`build_tools(client, user_id, *, one_shot=None)`，`MinimallToolProvider.provide` 从 `ctx.payload` 里取。
 
-```python
-# CharApp/minimall/tools.py:683 (节选)
-def _pay_my_order(
-    client: MinimallClient, user_id: int, one_shot: Mapping[str, str] | None
-) -> Tool:
-    """代付工具: 签名里只有订单号, 密码从闭包 (`one_shot`) 里取.
-
-    Args:
-        one_shot: 这一次运行拿到的一次性凭据 (恢复时由用户输进来); None 表示这次
-            运行没有凭据 —— 那么工具**不执行**, 直接回一句「没有拿到授权」.
-            绝不用空密码去撞: 那会白烧一次业务侧的失败路径, 还可能把账号锁进
-            某种风控.
-    """
-
-    @tool(annotations={WRITE_ANNOTATION_KEY: True})
-    async def pay_my_order(order_no: str) -> str:
-        """给**当前买家自己**的一笔**待付款**订单付款 (从余额里扣), 返回订单与
-        付款之后的余额. 买家说「帮我付了这单」「把这单钱付了」时使用.
-        **不要向买家索要支付密码, 也不要等他给你密码**: 他会在自己的页面上输一次,
-        这一步会停下来等他确认 —— 你只要照工具给的话说下去就好.
-        """
-        password = (one_shot or {}).get(PAYMENT_PASSWORD_FIELD)
-        if not password:
-            raise ToolActionableError(_NO_AUTHORIZATION_TEXT)
-        return await _act(
-            client.pay_order,
-            user_id=user_id,
-            order_no=order_no,
-            payment_password=password,
-        )
-
-    return pay_my_order
-```
-
 **「密码缺失」那段文案本身也是一份设计**（它是给**模型**看的，不是说给用户听）：
 
-```python
-_NO_AUTHORIZATION_TEXT = (
-    "这次付款没有拿到买家的授权 (没拿到支付密码), 所以**没有执行**: 订单没有"
-    "付款, 余额没有变. 请如实告诉买家这一步没做成, 并让他重新说一次要付款 "
-    "(他会再输一次密码); 不要重试这次调用, 也不要向他要密码."
-)
+```
+"这次付款没有拿到买家的授权 (没拿到支付密码), 所以**没有执行**: … 请如实告诉
+买家这一步没做成, 并让他重新说一次要付款 … 不要重试这次调用, 也不要向他要密码."
 ```
 
 **「密码错」那句更有意思**（ADR-0015 点名要写死的）：
 
-```python
-    "payment_failed": (
-        "不要让买家重试这一次付款, 也不要再调 pay_my_order: 支付密码是一次性的, "
-        "重试撞的还是同一个结果. 让他重新说一次要付款, 再输一次密码"
-    ),
+```
+"不要让买家重试这一次付款, 也不要再调 pay_my_order: 支付密码是一次性的,
+重试撞的还是同一个结果. 让他重新说一次要付款, 再输一次密码"
 ```
 
 > **注意这两段文案的写法**：**它们不是「报错信息」，是「给模型的处置指令」** —— 「不要重试」「让他重新说一次」「不要向他要密码」，每一条都在阻止模型走一条错误的下一步。**给模型的错误文案与给人看的错误文案是两个读者、两种写法。**
 
-**而这条「抛而不是返回」的改判值得记**：返回的话框架把这次执行记成**成功**，而页面上出现的是「这一单付好了」—— 可这一单根本没付。**抛出去才走失败那条路。**
+**而这条「抛而不是返回」的取舍值得记**：返回的话框架把这次执行记成**成功**，而页面上出现的是「这一单付好了」—— 可这一单根本没付。**抛出去才走失败那条路。**
 
-**工具列表的接法**（代付**接在最后**，不走 `_BUILDERS` 表）：
-
-```python
-    tools = [builder(client, user_id) for builder in _BUILDERS]
-    # 代付**接在最后** (与上面那条「加工具是往后接而不是插队」同一条)
-    tools.append(_pay_my_order(client, user_id, one_shot))
-    return tuple(tools)
-```
+**工具列表的接法**（代付**接在最后**，不走 `_BUILDERS` 表）—— 与记忆工具同一条纪律（C12/C13 引入的 `remember` / `recall` / `forget` 也接在最后，且**不打 `writes` 注解、不占 `WRITE_BUDGET`**）。
 
 #### 2.5.2 密码缺失 / 过期时的行为
 
-- 闭包里没有密码 → 工具**不执行**，返回一句「这次付款没有拿到授权，请让用户重新发起」。**绝不**用空密码去撞（那会白烧一次业务侧的失败路径）
+- 闭包里没有密码 → 工具**不执行**，返回一句「这次付款没有拿到授权」。**绝不**用空密码去撞（那会白烧一次业务侧的失败路径，还可能把账号锁进某种风控）
 - **密码错 = 本次失败收场**：把 `PaymentError` 翻成一句面向模型的话，**明说不要重试**（重试拿的是同一个已消失的载荷）
-- **实现改成「抛」而不是「返回」**：返回的话框架把这次执行记成成功，而页面上出现的是「这一单付好了」—— 可这一单根本没付。抛出去才走失败那条路
+- **实现是「抛」不是「返回」**：见上（返回会被记成成功）
 
 #### 2.5.3 回执只加一个字段
 
@@ -1036,15 +866,17 @@ _NO_AUTHORIZATION_TEXT = (
 
 > 这正好呼应 §2.1 那句：**预留的接口没有调用方时，你无法判断它够不够用。**
 
-#### 2.5.5 真机（18 个真工具 + 真护栏 + 真商城）
+#### 2.5.5 真机（22 个真工具 + 真护栏 + 真商城）
+
+> （当时是 18 个工具；此后 C09 的知识检索与 C12/C13/C30 的记忆三工具接上，现为 **22 个**。）
 
 | 步 | 期望 | 实际 |
 |---|---|---|
 | 说「帮我把这单付了吧」 | 停在确认卡 | 事件 `reasoning → thinking → tool_call → approval_required` |
 | **挂起时真商城收到过付款请求吗** | 一次都没有 | 订单还是 pending、余额一分没动 |
-| 输密码 + 点确认 | 真的付掉 | **订单 `paid`**；**余额 19703.00 → 19604.00**（正好 −99.00）；调用行 `succeeded` + `approved_by=10` |
+| 输密码 + 点确认 | 真的付掉 | **订单 `paid`**；余额 **19703.00 → 19604.00**（正好 −99.00）；调用行 `succeeded` + `approved_by=10` |
 | 手抖再点一次确认 | 不重放 | HTTP 404，余额不变 |
-| **错密码** | 拒掉且不重试 | 事件以 `final` 收尾（重试的形态会是**再挂起一次**）；那一单还是 pending；**那次运行只发起过一次付款调用** |
+| **错密码** | 拒掉且不重试 | 事件以 `final` 收尾；那一单还是 pending；**那次运行只发起过一次付款调用** |
 | 三个「永不」 | 一处都不漏 | 消息与推理 **0 处**、`arguments`/`result` **0 处**、存档帧 **0 处**、应用日志 **0 处**（正对照：扫到 90 行消息 / 18 行调用 / 27 条日志） |
 
 > **验收第 4 条的方法改了**（值得学）：票据写「用 `MockLLM` 断言只调一次」，而**「模型会不会重试」是模型自己的行为 —— `MockLLM` 是脚本化的，它只会照脚本发牌，断言不出这件事**。离线保留的是**能断言的那半边**（文案里明写「不要重试」），「真的没重试」由真机负责。**要离线断言这一类，得引 L4 的评估集。**
@@ -1061,9 +893,11 @@ _NO_AUTHORIZATION_TEXT = (
 |---|---|---|
 | 用例 | 真走一次 ASGI 处理器（`ASGITransport` + `get_asgi_application()`）断言**不是 500** | 3 passed |
 | **伪证** | 把签名改回 `(sender, environ, **kwargs)` 再跑 | **3 条全红**，报的就是真机那条 `TypeError` |
-| 真机 | 把脚本里那段绕行**删掉**，重跑 | `EXIT=0` 全过 |
+| 真机 | 把脚本里那段绕行**删掉**，重跑 | 全过 |
 
 > **「只有第一个请求会撞上」这类缺陷特别阴**：它自己会消失，所以「再试一次就好了」——**没有断言就永远抓不到**。
+
+---
 
 ### 2.6 issue 36 · BFF 转发 + 前端确认卡
 
@@ -1086,31 +920,29 @@ _NO_AUTHORIZATION_TEXT = (
 
 **修法**：`pending_approval` 顺带把挂起声明的 `needs` 拿回来；新增 `one_shot_payload(resume, needs)` —— **白名单**（只放行挂起声明缺的那几个键）。
 
+> **这一段与 OpenAI SDK 文档那几个安全要求是同一个问题的两面**（§1.1 ②）：它们的场景是「客户端拿着序列化快照来恢复」，本项目是「客户端拿着 `data` 来恢复」—— 两边的结论一样：**提交者给的东西一律不能信**，只认服务端自己那份挂起清单（本项目的 `needs` 就是那份清单）。（SDK 还多两条本项目没有的：认证审批人身份、原子防重放 —— 前者本项目由 BFF session 回答，后者由幂等键回答。）
+
 **证据三处**：
 
 1. 用例：请求体里塞 `user_id` 与 `tenant_id`，断言转过去的只有 `payment_password`；
 2. 真机：拿页面自己的 `fetch` 直接 POST `resume/` 并注入 `data={"user_id": 1}` → 恢复照常跑完，下成的订单**属主仍是 `user=10`** —— 而 `user_id=1` 这个买家**压根不存在**（没筛的话那一趟只可能以「买家不存在」失败、不会有订单）；
 3. 框架那一侧的根因：合并顺序改成 **`{**data, **context.payload}`（只增不覆盖）** —— 一次性的东西只该**补上缺的那些**，已有的键一律以本次运行为准。
 
-**BFF 那道筛子**（`app/minimall/views_bff.py:1369`）：
+**BFF 那道筛子**（`app/minimall/views_bff.py:1375`）：
 
 ```python
 def one_shot_payload(resume: Resume, needs: tuple[str, ...]) -> dict:
     """浏览器给的那一袋 `data` → **这一次挂起真的缺的那几个键** (其余一律丢掉).
 
     为什么必须筛: 框架把 `data` **并进**运行上下文, 而且是 `{**payload, **data}`
-    —— `data` 在后, 覆盖得掉已有的键. 而这份载荷里装着这一趟运行的**身份**:
-    业务侧取买家 ID 正是从载荷里读的 (provider.py 的 `buyer_id` →
-    `payload["user_id"]`), 那套工具全按它绑数据. 于是「原样转发」等于把身份交给
-    浏览器改: 一个买家在自己那次挂起上带一个 `data={"user_id": 别人的}`, 恢复那
-    一段就以别人的身份查订单与余额, 而答复流回他自己页面上.
+    —— `data` 在后, 覆盖得掉已有的键. 而这份载荷里装着这一趟运行的**身份** …
     """
     if resume.decision != APPROVE_DECISION:
         return {}
     return {key: resume.data[key] for key in needs if key in resume.data}
 ```
 
-**框架侧那一行**（`CharAgent/server/app.py`，按用户决定改成「只增不覆盖」）：
+**框架侧那一行**（`CharAgent/server/app.py`）：
 
 ```python
     # 一次性的东西只该**补上缺的那些** —— 已有的键 (谁 / 哪一段会话) 一律以本次
@@ -1119,16 +951,7 @@ def one_shot_payload(resume: Resume, needs: tuple[str, ...]) -> dict:
     payload={**data, **context.payload},
 ```
 
-**配套的用例**（假业务把身份放进载荷，恢复时带一个 `user_id` 想覆盖）：
-
-```python
-async def test_the_one_shot_payload_can_only_add_never_override() -> None:
-    ...
-```
-
-> **伪证**：把顺序改回 `{**payload, **data}` 它**当场红**。
-
-**还有一处小但重要的形状**（`CharApp/minimall/provider.py:66`）——业务侧也筛了一遍，但**筛的理由不同**：
+**还有一处小但重要的形状**（`CharApp/minimall/provider.py:89`）——业务侧也筛了一遍，但**筛的理由不同**：
 
 ```python
 def one_shot_payload(context: RunContext) -> dict[str, str]:
@@ -1138,29 +961,22 @@ def one_shot_payload(context: RunContext) -> dict[str, str]:
     (语言 / 页面来源 / 权限), 而那些东西工具一个都用不上 —— 只把凭据交出去,
     闭包里就永远不会多出一份没人管的数据.
     """
-    return {
-        key: str(context.payload[key])
-        for key in ONE_SHOT_FIELDS
-        if context.payload.get(key)
-    }
 ```
 
 > **同一个名字、同一个手法，出现了两次，但防的是两件事**：
-> - **BFF 那道**（`:1369`）防的是**浏览器往里塞**（安全边界）；
-> - **provider 这道**（`:66`）防的是**闭包里多出没人管的数据**（职责边界）。
+> - **BFF 那道**（`:1375`）防的是**浏览器往里塞**（安全边界）；
+> - **provider 这道**（`:89`）防的是**闭包里多出没人管的数据**（职责边界）。
 >
 > **面试时这个区分很好用**：**「同样一个白名单，我在两处各写了一次 —— 但它们不是重复，它们防的是两个方向上的问题。」**
 
-> **这一条能讲三层**：① **「白名单 vs 黑名单」** —— 转发用户可控的载荷时，白名单是唯一安全的形状；② **「数据流里藏着身份」** —— 这个漏洞的本质不是「注入了参数」，是「**注入了身份**」；③ **「同一份修复要在两侧都做」** —— 前端/BFF 筛（业务侧），框架侧改合并顺序（框架侧），**两道都做了才叫修好**。
+> **这一条能讲三层**：① **「白名单 vs 黑名单」** —— 转发用户可控的载荷时，白名单是唯一安全的形状；② **「数据流里藏着身份」** —— 这个漏洞的本质不是「注入了参数」，是「**注入了身份**」；③ **「同一份修复要在两侧都做」** —— 业务侧筛、框架侧改合并顺序，**两道都做了才叫修好**。
 
 #### 2.6.3 前端：一张卡，两种形态
 
 ```
 ┌─────────────────────────────────────────┐
 │ ⚠ 这一单要付款了，需要你输一次支付密码     │   ← prompt（业务给的话术，前端原样显示）
-│                                          │
 │  支付密码  [••••••]                      │   ← needs 含 payment_password 时才渲染
-│                                          │
 │         [ 确认 ]      [ 取消 ]            │
 └─────────────────────────────────────────┘
 
@@ -1179,50 +995,7 @@ def one_shot_payload(context: RunContext) -> dict[str, str]:
 **手写 DOM，不引框架** —— `agent.html` 是零构建的原生模块，这条不能破。
 
 ```javascript
-// templates/minimall/agent.html —— 卡片的两态由 `needs` 决定, 页面不替业务编话术
-const PASSWORD_FIELD = 'payment_password';
-const PASSWORD_LENGTH = 6;
-
-function showApprovalCard(fields, live) {
-  // 同一时刻**只留一张**: 卡片是运行状态的渲染, 不是聊天记录 —— 上一条批准完之后
-  // 它变成静态的"已提交", 再有事时把它换掉
-  const stale = chat.querySelector('.agent-approval');
-  if (stale) stale.remove();
-  pendingApproval = fields || null;
-  if (pendingApproval) mountApprovalCard(buildApprovalCard(pendingApproval), live);
-  syncComposer();
-}
-
-function buildApprovalCard(fields) {
-  const card = el('div', 'agent-approval');
-  // `prompt` 是业务给的那句话 (框架只搬运), 原样显示 —— 页面不替业务编话术
-  card.appendChild(
-    el('div', 'agent-approval-title', '⚠ ' + (fields.prompt || '这一步需要你确认'))
-  );
-
-  const needs = Array.isArray(fields.needs) ? fields.needs : [];
-  let row = null;
-  let box = null;
-  if (needs.indexOf(PASSWORD_FIELD) >= 0) {      // ← 两态的开关就这一行
-    row = el('label', 'agent-approval-field');
-    row.appendChild(el('span', null, '支付密码'));
-    box = el('input', 'agent-approval-password');
-    box.type = 'password';
-    box.inputMode = 'numeric';
-    box.maxLength = PASSWORD_LENGTH;
-    // `autocomplete=off` 是本片加的: 一次性的东西不该被浏览器记住并替用户填上
-    // (ADR-0015 的"不做任何便捷口子")
-    box.autocomplete = 'off';
-    row.appendChild(box);
-    card.appendChild(row);
-  }
-  ...
-}
-```
-
-**提交那一下**（`agent.html:1022` 节选）—— **请求体里没有运行编号，密码立刻离开页面**：
-
-```javascript
+// templates/minimall/agent.html:1437 附近 (节选) —— 请求体里没有运行编号, 密码立刻离开页面
 async function decide(ui, decision, data) {
   // 两道防重复: 按钮当场禁用 (体验) + 服务端那把幂等键 (事实). 少了后面那道,
   // 双击的第二下重放的可是「给这一单付款」.
@@ -1233,30 +1006,15 @@ async function decide(ui, decision, data) {
   if (ui.box) ui.box.value = '';
 
   // 请求体里**没有运行编号**: 哪一次运行由服务端现问 (/history 的未决挂起).
-  // `tool_call_id` 是这张卡的**身份** —— 服务端拿它对一下"现在等着批的是不是同一条"
   const outcome = await postStream('/minimall/agent/resume/', {
     conversation_id: conversationId,
     decision: decision,
     tool_call_id: ui.toolCallId,
     data: data,
   });
-  if (outcome.problem) {
-    if (outcome.status === 404) {
-      // 这张卡过期了 → **当场作废** (摘卡 + 放开输入区), 只留一句说明
-      ui.void('这一次确认已经过期了, 这张卡片作废 (刷新页面能看到最新状态).');
-      return;
-    }
-    ui.reset(outcome.problem);
-    return;
-  }
-  ui.settle(decision);
-  pendingApproval = null;
-  syncComposer();
-  await readDecidedRun(outcome.response);
-}
 ```
 
-**卡片两种形态在请求体上就分得开**（issue 38 真机原文）：
+**卡片两种形态在请求体上就分得开**（真机原文）：
 
 ```json
 // 下单那张 (needs=()) —— data 是空的
@@ -1266,7 +1024,7 @@ async function decide(ui, decision, data) {
  "data": {"payment_password": "……"}}
 ```
 
-> **「同一套挂起-恢复，两种形态，在这两行 body 上看得见」** —— 这句话是收口票据里写的，很值钱。
+> **「同一套挂起-恢复，两种形态，在这两行 body 上看得见」** —— 这句话很值钱。
 
 #### 2.6.4 刷新恢复（最容易被漏掉的一条）
 
@@ -1284,13 +1042,9 @@ async function decide(ui, decision, data) {
 
 真机：无障碍快照里 `textbox [disabled]` / `发送 [disabled]`；**绕过前端直接 `fetch('/minimall/agent/chat/')`** → **502 + `thread_suspended`**。
 
-**前端这一半的实现**（`agent.html:296`）—— 挂在 L3a 那个「唯一开关出口」上：
+**前端这一半的实现**（`agent.html:344` 附近）—— 挂在 L3a 那个「唯一开关出口」上：
 
 ```javascript
-// 未决挂起那一块 (issue 36): 有它就说明这段会话**停在一个等人拍板的地方** ——
-// 输入区锁着, 会话流里摆着一张确认卡. 两块来源: 直播时由 `approval_required` 事件
-// 给, 刷新之后由 `/history` 的 `pending_approval` 重建 —— **同一个形状**, 两条路
-// 都走 `showApprovalCard`.
 let pendingApproval = null;
 
 function syncComposer() {
@@ -1301,13 +1055,12 @@ function syncComposer() {
 
 > **`syncComposer` 的第三个条件就是这一片加的**（L3a 那两份条件在前）—— **加一个新锁源，只动了这一个函数**。这就是「状态开关只留一个出口」那条纪律的回报，**跨阶段兑现了两次**。
 
-**直播那一路的入口**（`agent.html:606`）：
+**直播那一路的入口**（`agent.html:1010` 附近）：
 
 ```javascript
 function approval_required(data) {
-  // 第八类事件: 这一次运行**停在半路等人**. 它同样是终局事件 (流到此收线),
-  // 但输入区**不放开** (见 syncComposer 的第三个条件): 这张卡没处理完, 这一段
-  // 会话就不该再问下一句 —— 服务端也拦 (409 thread_suspended), 页面这一处只是体验.
+  // 这一次运行**停在半路等人**. 它同样是终局事件 (流到此收线),
+  // 但输入区**不放开**: 这张卡没处理完, 这一段会话就不该再问下一句.
   turn.waiting.remove();
   showApprovalCard(data, true);
 }
@@ -1336,7 +1089,7 @@ function approval_required(data) {
 
 > **「卡片过期」这条的来源**：原先是「卡片留在原地 + 一句提示，输入区仍然锁着」—— 用户改成**当场作废**，理由是**「一张按不动的卡摆在页面上只会让人以为『点了没反应』」**。**这是从用户视角出发的取舍，不是技术判断。**
 
-**真机补验**：拿页面自己的 `fetch` 送一个**别的** `tool_call_id` → 404（卡与输入区都不动）→ 从服务端把那条挂起撤掉（页面不知情）→ 输密码点确认 → **404 → 页面当场作废**（`卡片还在不在: false` · `输入区还锁着吗: false`）。
+**真机补验**：拿页面自己的 `fetch` 送一个**别的** `tool_call_id` → 404（卡与输入区都不动）→ 从服务端把那条挂起撤掉（页面不知情）→ 输密码点确认 → **404 → 页面当场作废**。
 
 #### 2.6.7 前端「点不动」的缺陷（评审逮到的）
 
@@ -1346,7 +1099,9 @@ function approval_required(data) {
 
 > 这与 L3a 的 `syncComposer` 是同一条纪律的两次应用：**状态开关只留一个出口。**
 
-### 2.7 issue 37 · 下单前确认 + prompt v3
+---
+
+### 2.7 issue 37 · 下单前确认 + prompt 改写
 
 #### 2.7.1 一片只加一条裁决、删一句 prompt
 
@@ -1372,7 +1127,7 @@ if tool.name == PLACE_ORDER_TOOL:
 
 > **第 3 条带来一个连带后果**：因为示例改了，**验收第 4 条的证据必须重跑**。这是「改了什么就要重验什么」的典型。
 
-#### 2.7.3 prompt v3 改了什么
+#### 2.7.3 prompt 改了什么
 
 v3 = v2 全文 + **六处改写**（抬头 / 下单那一行 / 付款那一行 / 先说清 / **第 1 条禁则** / 术语末条 / 两条示例）。
 
@@ -1384,9 +1139,11 @@ v3 = v2 全文 + **六处改写**（抬头 / 下单那一行 / 付款那一行 /
 
 > **这一条被标为「计划缺口」**：issue 35 收尾时才发现的 —— **原票据只点了「删掉下单确认那句」，没点这句**。发现后**补进了 37 的票据**，免得它跟着 35 一起翻篇。
 
+**后续版本**（现为 `system/v8`）：L4 的评估把基线推到 v4；此后 C09（知识检索）/ C10（引用）/ C11（注入防护）/ C13（记忆工具）各推一版，**C30 定「不做 v9」**。
+
 #### 2.7.4 一条要记的连带后果
 
-`runs.prompt_version` 从 `system/v2` 变成 **`system/v3`** —— **L4 的评估与 A/B 必须以 v3 为基线**，v2 时期的跑分（含 L2 那次）与 v3 之后的**不可直接比较**。`v2` 保留不删，正是留给「prompt 层确认 vs 框架级确认」那次 A/B 的对照。
+`runs.prompt_version` 逐版记录 —— **相邻版本的跑分不可直接比较**（v2 保留不删，正是留给「prompt 层确认 vs 框架级确认」那次 A/B 的对照；要补那个对照，得先真写一版带「下单前问一句」的提示词）。
 
 #### 2.7.5 真机七条
 
@@ -1398,14 +1155,16 @@ v3 = v2 全文 + **六处改写**（抬头 / 下单那一行 / 付款那一行 /
 | 4 | 说「帮我把刚才那单付了」→ **能走到确认卡** | **v2 在这一点上会答「我没有你的支付密码」** —— 所以这条正是付款那一节改写的证据 |
 | 5 | 超 5000 元的下单：直接拒 | 车里凑到 8099.00 元 → **0 张卡**、库里 `approval_prompt` 是 **NULL**（= 压根没挂起过） |
 | 6 | 预算用完时的第 9 次写：直接拒 | **0 张卡**，`approval_prompt` NULL |
-| 7 | `runs.prompt_version` 记的是 `system/v3` | 本片 11 次运行的 `prompt_version` **全部**是 `system/v3` |
+| 7 | `runs.prompt_version` 记的是当版 | 本片 11 次运行的 `prompt_version` **全部**是 `system/v3` |
 
-**五条伪证**（改坏看红）：`_order_decision` 直接挂起不判金额 → 7 条红 · 挂起排在判金额**之前** → 超限那条红（**顺序确实是它钉着的**）· 摘掉挂起 → 4 个参数化 + 挂起 + 金额优先 + fail closed 红 · 不记那一笔 → 额度那两条红 · **新断言拿去对 v2 跑 → 五条新判据一条都不成立**（`不能替买家付款` 在 v2 里 `True`）—— **断言不是空转**。
+**五条伪证**（改坏看红）：`_order_decision` 直接挂起不判金额 → 7 条红 · 挂起排在判金额**之前** → 超限那条红（**顺序确实是它钉着的**）· 摘掉挂起 → 4 个参数化 + 挂起 + 金额优先 + fail closed 红 · 不记那一笔 → 额度那两条红 · **新断言拿去对 v2 跑 → 五条新判据一条都不成立** —— **断言不是空转**。
 
 #### 2.7.6 顺手撞出来的两件事
 
 - **顺序做 9 次写、走不到第 9 次**：模型一步一次的话，第 8 次之后**框架的 token 预算**先到了。所以 `WRITE_BUDGET = 8` **拦的是「同一条回复里并发的多次写」**（那正是它设计时防的形态）。
 - **模型的两次拒绝都很在理**：并行同字段的 8 次改量、以及「同一条回复里发 9 个调用」，它都拒了并说清理由（**「改的是同一个字段, 并行等于互相覆盖, 最后剩几件是随机的」**）。
+
+---
 
 ### 2.8 issue 38 · 收口
 
@@ -1415,7 +1174,7 @@ v3 = v2 全文 + **六处改写**（抬头 / 下单那一行 / 付款那一行 /
 
 #### 2.8.2 一处自我失误（写下来免得再犯）
 
-为了抓「恢复请求长什么样」，我在页面上**装了两层 `fetch` 钩子**：第二层做了掩码（`payment_password` 的值换成 `<masked>`），**第一层没做** —— 于是**用户本人输的那个值被第一层记进了这次的工具结果里**。
+为了抓「恢复请求长什么样」，在页面上**装了两层 `fetch` 钩子**：第二层做了掩码（`payment_password` 的值换成 `<masked>`），**第一层没做** —— 于是**用户本人输的那个值被第一层记进了这次的工具结果里**。
 
 > **教训**：**钩子要么只装一层，要么第一层就掩码；「记下请求形状」这件事不该顺手把 body 原样带出来。**
 > 这一处只影响**记录卫生**，不影响 ADR-0015 的三条保证（那三条管的是密码不进消息 / 不进轨迹 / 不进日志）。
@@ -1424,12 +1183,12 @@ v3 = v2 全文 + **六处改写**（抬头 / 下单那一行 / 付款那一行 /
 
 | 项 | 为什么不做的理由 |
 |---|---|
-| **挂起超时** | 挂起的 run 就挂着，用户可以用 `POST /runs/{run_id}/cancel` 收掉。加超时要先有「超时了怎么办」的答案（降级？自动拒绝？），而那需要真实场景 —— 与 ADR-0017 对 #15 的处置同一条理由 |
+| **挂起超时** | 挂起的 run 就挂着，用户可以用 `POST /runs/{run_id}/cancel` 收掉。加超时要先有「超时了怎么办」的答案（降级？自动拒绝？），而那需要真实场景 —— 与 ADR-0017 对 #15 的处置同一条理由（对照面：Step Functions 有 `HeartbeatSeconds` —— 无服务器那边挂着有成本压力，兜底是刚需） |
 | **角色分离**（DESIGN #25 的「发起方不得审批自己发起的挂起项」） | 本项目的发起方是**模型**，确认人是**买家本人** —— **不存在「自己批自己」**。换成真人的多角色审批时才需要 |
 
-#### 2.8.4 欠账清点：18 条，**没有一条「待定」**
+#### 2.8.4 欠账清点：没有一条「待定」
 
-归属只有几档：`已结` 2 · `按设计` 1 · `不做` 2 · `备查` 3 · `L4` 6 · `单开一片` 3 · `DESIGN #38` 1。
+归属只有几档：`已结` · `按设计` · `不做` · `备查` · `L4` · `单开一片` · `DESIGN #38`。
 
 **先结掉从 L3a 传下来、点名给 L3b 的四条**：
 
@@ -1440,7 +1199,7 @@ v3 = v2 全文 + **六处改写**（抬头 / 下单那一行 / 付款那一行 /
 | 挂起那条初始状态先 `pending` 再推 | **按设计**（「结论」不该是一行的第一个状态） |
 | 问答路撞上「上游咽气那一瞬」 | **已结**：32 的幂等键把它盖住了 |
 
-**一处「故意不勾」**：L4 开工前提第 3 条「`trace` 能按时间段 / 按工具聚合」—— **核实后判定不成立，故意不勾**（勾了就成了「已具备」，而它正是 L4 要补的那一片）。
+**一处「故意不勾」**：L4 开工前提第 3 条「`trace` 能按时间段 / 按工具聚合」—— **核实后判定不成立，故意不勾**（勾了就成了「已具备」，而它正是 L4 要补的那一片；后来 `trace --summary` 补上了工具聚合这半边）。
 
 > **「故意不勾一个验收框」这个动作值得讲**：验收清单是给自己看的，**勾错一个比不勾更糟** —— 它会让下一个人以为那件事已经具备。
 
@@ -1448,11 +1207,185 @@ v3 = v2 全文 + **六处改写**（抬头 / 下单那一行 / 付款那一行 /
 
 > **别在收口片里顺手改机制** —— 发现的问题记进欠账表。**L3b 的机制一旦收口，它的形状就是 L4 的测量基线；收口之后改它，前面测的数就白测了。**
 
-<!-- SECTION_3_PLACEHOLDER -->
+---
+
+## 3. 面试题演练
+
+### 一、高频
+
+#### Q1. human-in-the-loop 怎么实现？把挂起-恢复的完整机制讲一遍（通用）
+
+🎯 **考点**：能不能把「暂停等人」讲成一条**完整的状态轨道**（挂起 → 存档 → 恢复 → 结算），而不是「让模型问一句」。卡点：答不出「挂起的时候状态存在哪、恢复靠什么找到它」。
+
+📌 **知识点**：
+1. **共同骨架**：三个主流形态（LangGraph `interrupt` / OpenAI Agents SDK 的 `needs_approval` / Step Functions 的 `waitForTaskToken`）做的是同一件事 —— **把状态存到外部，把一个「拼回去的凭据」交出去**（`thread_id` / 序列化快照 / task token），回来凭它恢复。**凭据只负责找到挂起，不负责授权。**
+2. **挂起是「结论欠着」而不是「失败」** —— 被判停的那条调用**不产生结果**（不回填 tool 消息），整个运行停在半路；下游要能区分「答完了」与「挂着等人」（本项目：`RunOutcome.SUSPENDED` → `RunStatus.WAITING_USER` + `finished_at IS NULL`）。
+3. **恢复 = 补做 + 记账** —— 恢复时要把「欠着的那条调用」找回来补做（本项目按「历史里最近一批没拿到结果的调用」扫）；而**同一次运行的第二段**要沿用原账（否则「这次花了多少」断链）。
+4. **恢复本身是一条 HTTP 端点** → 必然被重放（双击 / 重发）→ **幂等不是兜底是主线**（见 Q2）。
+5. **框架的两种态度**：LangGraph 恢复时**整个节点从头重跑**（所以要求「`interrupt` 前的副作用必须幂等」）；`interrupt()` 不许被 try/except 包、不许条件跳过（匹配按 index）。OpenAI SDK 支持**部分决议**（一批挂起可以只批一部分）；Step Functions 用 task token，超时兜底是 `HeartbeatSeconds`。
+
+💡 **类比**：像**去银行办一笔要授权的业务**。柜员不能替你签（模型不能单方面花你的钱），于是把单据**锁进保险柜**（状态存档）、给你一张**取件码**（凭据）；你下次带着取件码回来，柜员按号把单据取出来继续办。**取件码丢了要重办、被别人拿到要挡下来**（凭据 ≠ 授权）—— 这就是恢复端点为什么必须先验身份再查挂起。
+
+🖼️ **图**：
+```mermaid
+sequenceDiagram
+    participant M as 模型
+    participant F as 框架
+    participant S as 外部状态
+    participant U as 用户
+    M->>F: 要调 pay_my_order
+    F->>F: 裁决: requires_approval
+    F->>S: 存档: 欠着这条调用 (pending)
+    F-->>U: approval_required 事件 (终局, 流收线)
+    Note over U: 页面弹确认卡, 输入区锁着
+    U->>F: POST /resume {decision: approve}
+    F->>F: 认领幂等键 (重放挡在这)
+    F->>S: 读回挂起: 欠着哪条
+    F->>M: 补做那条调用, 从存档点接着跑
+    F->>S: 结账 (同一行账)
+```
+
+🗣️ **话术**：HITL 的主干是一条状态轨道。**第一，挂起**：业务在工具执行前的裁决点说「这条要人批」，框架把这条调用**停下来**（不执行、不产生结果），把「欠着哪条」写进外部状态，然后发一个**终局事件**让客户端知道这次请求到此为止。**第二，存哪**：行业里三个主流形态都是「状态存外部 + 交出一个凭据」—— LangGraph 是 checkpointer 加 `thread_id`，OpenAI SDK 是序列化的 `RunState`，Step Functions 是 task token；**凭据只负责找到挂起，不负责授权**，这是 OpenAI 文档明确强调的一条。**第三，恢复**：人给结论之后，恢复端点把欠着的那条调用找回来补做 —— 批了就照常执行，拒了就把拒绝原因当工具结果回填、模型据此继续。**第四，两个容易踩的点**：恢复是 HTTP 端点，**必然会被重放**，所以幂等要做实；以及**同一次运行的第二段要沿用原账**，不然「这次运行花了多少」当场失去意义。还有一条框架侧的差别值得提：LangGraph 恢复时节点是从头重跑的，所以它明确要求「`interrupt` 之前的副作用必须幂等」—— 这正好说明了挂起-恢复对幂等的依赖是结构性的，不是可选项。
+
+**我项目里的做法**：`Decision` 第三值（`requires_approval`）+ 挂起帧（`CheckpointSource.APPROVAL`）+ `approval_required` 终局事件 + `POST /runs/{id}/resume` 一条流走通；恢复段沿用原 `run_id`（issue 33 的记账），且**挂起那一段与恢复那一段各写各的结局**（`waiting_user` → 终态）。**没有人的结论就不补做**（命令行 `--resume` 撞上挂起点会被拦住，而不是把「付款」自动做掉）。
 
 ---
 
-## 4. 面试主菜：四处能讲深的设计
+#### Q2. 用户确认后重放，怎么保证不重复执行？（通用）
+
+🎯 **考点**：知不知道该防的不只是「用户手抖双击」，而是**恢复动作本身天然会重放**。卡点：只说「前端按钮禁用」。
+
+📌 **知识点**：
+1. **前端禁用只是体验，事实要靠服务端** —— 恢复是 HTTP 端点：双击、网络重发、客户端重试都会产生第二次，**而重放的是「给这一单付款」**。
+2. **幂等键 + 原子认领** —— 键要能唯一定位「这一次要做的动作」（本项目三列：运行 + 发起它的消息 + 调用编号）；认领靠**一条原子的 SQL**（`INSERT ... ON CONFLICT DO UPDATE ... WHERE expires_at <= now RETURNING`），而不是「先查后插」—— 后者有并发窗口，**唯一约束才是真正不会漏的那道闸**。OpenAI 文档管这个原则叫 "atomic owner-checked transition"。
+3. **挡住的位置要在「副作用之前」** —— 键认领成功才允许往下;两次重放都被挡在**工具执行之前**（真机：两次都 404，余额一分没多扣）。
+4. **认领后失败要把键放回去** —— 否则键永久卡在「在办」，用户既恢复不了也不知道为什么。
+5. **三种「第二次」要说得出各自的答复**：第一次还在跑（键在办 → 409）· 已经跑完（挂起已终态 → 404）· 进程死在半路（键卡在办 → 409）—— **三种都不重放**，差别只是前端话术。
+
+💡 **类比**：像**取号机 + 叫号**。取号机只认「这个号被取走没有」—— 两个窗口同时按，只有一个能取到（原子性靠的是机器本身，不是柜员的眼睛）。而且号一旦取走，**下一件事不是「再确认一次」，是把活干完**（认领后失败要放号 —— 相当于叫号作废重新取）。
+
+🖼️ **图**：
+```mermaid
+flowchart TB
+    A["POST /resume 第一次"] --> B["claim(key): INSERT ON CONFLICT ... RETURNING"]
+    B -->|"抢到"| C["下成方执行: 补做那条调用"]
+    B -->|"没抢到"| D{"那一行什么状态?"}
+    D -->|"in_progress"| E["409 有人在办<br/>(跨进程判据)"]
+    D -->|"completed"| F["已处理过<br/>404 / 409 带码"]
+    C --> G["complete(key)"]
+    C -.->|"会话没占上等失败"| H["release(key) 放回去<br/>⚠️ 漏了它键永久卡在办"]
+    style H stroke-dasharray: 5 5
+```
+
+🗣️ **话术**：先纠正一个常见的天真答案：「前端把按钮禁掉」——**那只是体验，不是事实**。恢复是一个 HTTP 端点，双击、网络重发、客户端重试都会产生第二次，而且第二次重放的动作可能就是「给这一单付款」。正确的做法是**幂等键 + 原子认领**：键要能唯一定位这一次动作；认领必须是一条原子 SQL（我们用的是 `INSERT ... ON CONFLICT DO UPDATE ... WHERE` 加 `RETURNING`），**而不是先查后插** —— 先查后插有并发窗口，唯一约束才是真正不会漏的那道闸，OpenAI 的文档管这条原则叫 atomic owner-checked transition。两个细节：**认领成功才允许往下走**，于是所有重放都被挡在副作用**之前**；**认领之后如果失败，必须把键放回去**，否则它永久卡在「在办」，用户既恢复不了也不知道为什么。最后要把「第二次」的三种时相答全：第一次还在跑、已经跑完、进程死在半路 —— 三种都不该重放，答复不同只是给前端的话术。
+
+**我项目里的做法**：`charagent_idempotency_keys` 表 + `PgIdempotencyStore`；键是三列 `resume:{run_id}:{message_id}:{tool_call_id}`（三列的原因：上游每轮从 `call_0` 重编号，少一列会撞）；认领压在那条 `ON CONFLICT` 上；`except BaseException` 里 `_release_claims` 放键。真机战绩：同一个 `resume` 重放两次，**两次都被挡在工具执行之前**（404），余额一分没多扣、`pay_my_order` 只执行过 1 行。还踩过一个测试坑：**第一版并发用例是假绿** —— 同一个事件循环里根本插不到一起，得各起线程与事件循环才是真并发。
+
+---
+
+### 二、低频
+
+#### Q3. 密码这类敏感值，怎么处理才不进模型上下文？（通用）
+
+🎯 **考点**：知不知道该防的不是「模型会不会说出去」，而是**从结构上让模型看不到、也改不了**。卡点：想到「在 prompt 里要求模型别泄露密码」。
+
+📌 **知识点**：
+1. **prompt 约束是最弱的一道** —— 只要那个参数出现在**工具的 wire schema** 里，模型就会按参数说明自己编一个值填进去，而编出来的值会走 `arguments` 落库。所以**第一条是结构性的：schema 里永远不出现这个参数**。
+2. **运行时凭据走「参数表之外」的通道** —— 本项目是 `RunContext.payload`（业务装配时塞进工具闭包），模型从头到尾不知道有密码这回事；行业同构的做法是 OpenAI SDK 的「审批人身份从服务端会话取，**不从请求体取**」。
+3. **三个「永不」要能各自说清靠什么成立**：不进 messages（模型没看见）· 不进 `arguments`（那是模型填的参数，密码是运行时注入 —— **两件事结构上不在同一个地方**）· 不进 `result`（返回「成功 / 密码错」，原文不回填）。
+4. **一次性**：恢复那一刻由用户本人输入，**提交后立刻离开页面**、不留 DOM、不做「记住 X 分钟」的便捷口子（一个「演示时跳过密码」的开关是安全反模式）。
+5. **白名单转发** —— 客户端提交的载荷只放行「这次挂起声明缺的那几个键」；框架侧合并顺序必须「只增不覆盖」（否则载荷里的**身份**字段会被客户端顶掉 —— 这是本项目真实抓到的漏洞）。用户可控的载荷里可能装着**身份**，这才是它比「参数注入」更危险的地方。
+
+💡 **类比**：像**保险箱的两把钥匙**。业务需要明文经手密码（要拿它去比对哈希），这条无法回避 —— 但可以做的是「让需要它的那一瞬间才交出来」：密码不进对话（模型看不到）、不进任务单（不写进参数）、用完即焚。**在 prompt 里写「不要泄露密码」，相当于在保险箱上贴一张「请勿打开」的纸条。**
+
+🖼️ **图**：
+```mermaid
+flowchart LR
+    A["用户在自己页面输密码"] --> B["恢复请求的 data"]
+    B -->|"白名单: 只放行 needs 点名的键"| C["RunContext.payload"]
+    C -->|"装配时进工具闭包"| D["工具执行那一刻"]
+    D --> E["比对哈希 → 成功/失败"]
+    B -.->|"❌ 不进"| F["messages<br/>(模型看不到)"]
+    D -.->|"❌ 不进"| G["arguments<br/>(那是模型填的)"]
+    E -.->|"❌ 不回填"| H["result"]
+    style F stroke-dasharray: 5 5
+    style G stroke-dasharray: 5 5
+    style H stroke-dasharray: 5 5
+```
+
+🗣️ **话术**：我会先说清一个事实：业务侧**必须明文经手**这个值（要拿它比对哈希），所以目标不是「让它不存在」，而是**让模型看不见、改不了**。第一道也是最要紧的一道是**结构性的**：工具的参数 schema 里**永远不出现**这个字段 —— 因为只要它出现在 schema 里，模型就会按说明书自己编一个填进去，而编出来的值走参数落库，后面所有保证当场失效。第二道是**通道**：运行时凭据走「参数表之外」的通道（我们是从运行上下文的载荷里、在装配时注入工具闭包），模型从头到尾不知道有密码这回事；行业里同构的一条是「审批人身份从服务端会话取，不从请求体取」。第三道是**一次性**：由用户本人在页面上输、提交后立刻离开页面，不做「记住几分钟」的便捷口子 —— 一个长活的东西比一个一次性载荷难守得多。最后还有一层容易漏的：**客户端提交的载荷要按白名单转发**，因为用户可控的载荷里可能装着身份字段，而框架把它并进运行上下文时如果允许「覆盖已有键」，那就等于让浏览器改身份 —— 这是我们代码评审真实抓到并修掉的漏洞。
+
+**我项目里的做法**：就是上面这套（ADR-0015）。三个「永不」的真机验证：全库能 join 回来的列扫下来，`payment_password` 这个名字**只**出现在「要问什么」的清单列里（不是值）；`arguments` 那行就是 `{"order_no": ...}` 没有第二个参数；两侧日志字段名 0 次（**配了正对照** —— 那几条 resume 请求的 200/404 都在日志里，说明搜索真的有效）。
+
+---
+
+#### Q4. 挂起状态存在哪？进程重启、多实例怎么办？（通用）
+
+🎯 **考点**：**状态外置**的纪律 —— 挂起跨的不只是请求，可能跨进程、跨天。卡点：把挂起状态放在内存里（「运行中的对象上挂个字段」）。
+
+📌 **知识点**：
+1. **挂起必须能被另一个进程接上** —— 三个主流形态都把状态放外部：checkpointer / 序列化状态 / 状态机历史。**内存里的「有人在办」重启即失效。**
+2. **判据要落在共享存储上** —— 本项目「有没有未决挂起」的判据是一条 SQL：`status = needs_approval AND approved_at IS NULL`（外加 run 归属本会话）。真机验证：挂着卡重启服务，新提问照样被 502 `thread_suspended`。
+3. **闸门要拦在正确的粒度上** —— 挂起期间该拒绝的是**新提问**，而 `resume` 与 `cancel` 必须放行（不然挂起就成了死结）。
+4. **恢复的并发由幂等键回答**（跨进程），而不是由「本进程的会话忙不忙」顺带答一句 —— 这是"判据落在哪里"的又一处。
+5. **框架文档里最值钱的一条警告**：序列化状态**不认证**提交者 —— OpenAI 文档明确说「Only deserialize snapshots from trusted storage」，且「Possession of a run ID or decision ID is not authorization」；**审批可能停很久 → 快照要带版本标记**（模型 / prompt / 工具定义会变）。
+
+💡 **类比**：像**医院的病历**。你不能把患者的检查结果记在医生脑子里（换班就丢）；要写进病历本（共享存储），任何一位医生接班都能接着看。而且病历本要**带版本**（哪种检查、哪个标准）—— 否则三个月后换个医生看旧记录会误读。
+
+🖼️ **图**：
+```mermaid
+flowchart TB
+    A["挂起那一刻"] --> B{"状态放哪?"}
+    B -->|"❌ 内存对象"| C["换进程 / 重启 → 丢<br/>新提问拦住不"]
+    B -->|"✅ 共享存储"| D["调用行 status=needs_approval<br/>+ 快照里的 Suspension"]
+    D --> E["判据 = 一条 SQL:<br/>needs_approval AND approved_at IS NULL"]
+    E --> F["拦新提问 (跨进程成立)<br/>放行 resume / cancel"]
+    F -.->|"恢复的并发"| G["幂等键回答 (跨进程)<br/>不是本进程的会话忙"]
+    style C stroke-dasharray: 5 5
+    style G stroke-dasharray: 5 5
+```
+
+🗣️ **话术**：一句话原则：**挂起状态必须外置 —— 它跨的不只是请求，可能跨进程、跨重启、甚至跨天。** 内存里挂一个「等待中」的字段是撑不住的：重启就丢、换一个进程就找不到。做对要三件事。**第一，状态载体**：行业三个形态都把状态放外部（图框架的 checkpointer、SDK 的序列化 run state、工作流引擎的状态机历史）；我们这边是「挂起态就挂在**那次工具调用**自己那一行上」—— `status = needs_approval` 加「谁批的、什么时候批的」两列，再加快照里一份「欠着哪条调用」的记录。**第二，判据落共享存储**：判断「这段会话有没有未决挂起」是一条 SQL（`needs_approval` 且未批准），所以进程重启也拦得住 —— 真机验过。**第三，闸门的方向要正确**：挂起期间拦的是**新提问**，`resume` 和 `cancel` 必须放行，不然挂起变死结。另外两条边界值得主动说：恢复的并发由**幂等键**回答而不是本进程的「会话忙」；框架文档也提醒**序列化状态不认证提交者、恢复凭据不是授权** —— 审批还可能停留很久，所以快照应该带版本标记（这一条我们没做，记在欠账里）。
+
+**我项目里的做法**：挂起判据在 PG（`charagent_tool_calls` 那两列），`SessionRegistry.acquire` 在有未决挂起时抛 `ThreadSuspendedError`（409，与「会话忙」不同的码）；真机：重启服务后直接 POST `chat/` → **502 `thread_suspended`**。**没做**的是「快照版本化路由」（审批跨很久、模型或 prompt 变了怎么办）—— 演示尺度用不到，记为后续片。
+
+---
+
+### 三、少数了解
+
+#### Q5. 哪些操作值得加人工闸？哪些不该加？（通用）
+
+🎯 **考点**：**判断力题**。会不会「什么都加确认」（用户被烦死）或「什么都不加」（不可逆的事造成损失）。卡点：答不出**判据**。
+
+📌 **知识点**：
+1. **判据一：不可逆 / 花钱** —— 写操作、外部副作用、金钱相关（下单、付款、发邮件、退款）值得加；**只读查询一律不加**（加了纯属噪音）。
+2. **判据二：错的代价 vs 挡的代价** —— 加闸的成本是「每次都要人点一下」，所以只对「错了难以挽回」的动作加。**「连续第 N 次写」这种量级约束用预算（护栏拒绝）比用 HITL 更对** —— 它需要的是「到此为止」，不是「问一句要不要继续」。
+3. **护栏（拒）与 HITL（挂起）是两种机制** —— 拒绝是**当场有结论**（模型换个说法继续答）；挂起是**等着别人给结论**（这一轮不继续）。**该拒的直接拒**（超预算、超金额上限），不要弹给用户（用户点了确认也不该放行）。
+4. **prompt 层 vs 框架级** —— 「在系统提示里要求模型先问一句」是 prompt 层；「工具执行前挂载点返回需确认」是框架级。prompt 层便宜但不可靠（模型可能忘）、且**无法作为任何保证**；框架级是**结构性**的，模型多聪明都绕不过。
+5. **确认卡的信息量要做对** —— 卡上应该显示「要做什么」的话术（业务给），需要用户补的数据才渲染输入框（`needs` 为空就是纯是非卡）—— **别把确认卡做成第二个表单**。
+
+💡 **类比**：像**公司里的审批制度**。买台几千块的显示器不用 CEO 签字（只读 / 小额）；动用预算外的大额支出要人签（不可逆 / 花钱）；而直接违反制度的（超预算）**不是找人签，是当场驳回** —— 找谁签都不该放行。**把「违规的事」做成「请人确认」，等于把制度问题丢给用户背。**
+
+🖼️ **图**：
+```mermaid
+flowchart TB
+    A["一个动作要落地"] --> B{"只读还是写?"}
+    B -->|"只读"| C["放行, 加闸是噪音"]
+    B -->|"写"| D{"错了能撤吗 / 涉及钱吗?"}
+    D -->|"能撤且不涉及钱"| E["放行 (或后置提示)"]
+    D -->|"不可逆 / 花钱"| F{"规则能写死吗?"}
+    F -->|"能 (超预算/超上限)"| G["护栏: 当场拒<br/>(用户确认了也不放行)"]
+    F -->|"不能 (要不要做这件事)"| H["HITL: 挂起等人<br/>确认卡 (业务话术 + needs)"]
+    style G stroke-dasharray: 5 5
+```
+
+🗣️ **话术**：判据是**两条**。第一条：**不可逆或涉及钱的动作才值得加闸** —— 写操作、外部副作用、金钱相关的（下单、付款、退款、发消息）；只读查询不加，加了只是噪音。第二条：**错的代价大于挡的代价** —— 加闸的成本是每次都要人点一下，所以只对难以挽回的动作加；像「连续第 N 次写」这种量级约束，用预算直接拒比问一句更对，它需要的是「到此为止」不是「要不要继续」。还有一个区分要讲清：**护栏（拒）和 HITL（挂起）是两种机制** —— 拒绝是当场有结论，模型换个说法继续答；挂起是等着别人给结论，这一轮不继续。所以我们把「超预算」交给护栏**直接拒**（用户点了确认也不该放行），把「要不要下这一单 / 要不要付这笔钱」交给 HITL 问本人。最后值得主动对比的一层：**prompt 层还是框架级** —— 在系统提示里要求模型「下单前问一句」是最便宜的做法，但它不可靠、也**不能作为任何保证**；框架级（工具执行前的挂载点返回需确认）是结构性的，模型再聪明也绕不过去。我们规划过 prompt 层那条线，后来核实发现**从来没实现过** —— 这件事如实记着，要补那个对照得先真写一版。
+
+**我项目里的做法**：三条闸落在 `BEFORE_TOOL_EXECUTE` 一个点上 —— 预算拒（护栏）、超 5000 元拒（护栏）、下单 / 付款挂起（HITL）；优先级是「拒绝优先于挂起」（内容决定，不看注册顺序）。真机：超 5000 元的下单**0 张卡**（压根没挂起过，直接拒）；下单与付款两种卡在同一个机制上渲染出「零输入框」与「一个密码框」两个形态 —— **框架一行没改**。
+
+---
+
+## 4. 能讲深的设计
 
 ### 4.1 挂起不建审批表：一次工具调用的状态就是审批单
 
@@ -1478,7 +1411,7 @@ v3 = v2 全文 + **六处改写**（抬头 / 下单那一行 / 付款那一行 /
 
 **面试官可能问**：
 
-- *「那将来要多级审批怎么办？」* → **判据是「审批单开始有自己的生命周期」**（多级 / 审批意见 / 转交 / 超时升级），**不是「审批次数变多了」**。缝合点就是那个一直留着的 `approval_id` + 一张业务侧的表，届时本 ADR 改成 `superseded by`。
+- *「那将来要多级审批怎么办？」* → **判据是「审批单开始有自己的生命周期」**（多级 / 审批意见 / 转交 / 超时升级），**不是「审批次数变多了」**。缝合点就是那个一直留着的 `approval_id` + 一张业务侧的表。（对照：Step Functions 的 `HeartbeatSeconds`、OpenAI SDK 的粘性决定与部分决议 —— 那些是「审批开始有生命周期」之后才需要的形态。）
 - *「为什么不用快照里的 `Suspension` 就够了？」* → 挂起态就成了**快照内部的私有数据**：**查不到、聚合不了**（「上周挂起了几次」要解 JSONB），而 `needs_approval` 这个状态值在表里**本来就是为它留的**。
 - *「为什么不记在 `runs` 上？」* → 挂起是**每条调用**的粒度不是每次运行的：一轮里可以有一条退款在等批、另一条查询已经跑完。**记在 run 上会把粒度弄丢。**
 
@@ -1486,9 +1419,9 @@ v3 = v2 全文 + **六处改写**（抬头 / 下单那一行 / 付款那一行 /
 
 **怎么讲（先给「不可调和的矛盾」）**：
 
-`Profile.check_payment_password()` 要**明文经手**（`check_password(raw, hash)`）—— 这意味着密码必须在某个进程里以明文存在一瞬，**无法回避**。而 §4.2 的核心纪律是「**身份不进参数表，模型看不见也改不了**」。
+`Profile.check_payment_password()` 要**明文经手**（`check_password(raw, hash)`）—— 这意味着密码必须在某个进程里以明文存在一瞬，**无法回避**。而核心纪律是「**身份不进参数表，模型看不见也改不了**」。
 
-> **这两条不可调和 —— 但结论不是「所以助手不能代付」，而是「把密码放在「参数表之外」的载荷里」。**
+> **这两条不可调和 —— 但结论不是「所以助手不能代付」，而是「把密码放在『参数表之外』的载荷里」。**
 
 **三个「永不」**：
 
@@ -1516,17 +1449,13 @@ v3 = v2 全文 + **六处改写**（抬头 / 下单那一行 / 付款那一行 /
 - *「Django 侧自己校验、自己扣款，CharApp 只收一个『已确认』信号不行吗？」* → **支付动作就绕过了 agent** —— 而 HITL 的恢复路径正是「**补做那条欠着的工具调用**」，绕过等于把这条路径空掉，**挂起机制失去唯一的真实场景**。
 - *「密码存会话里不行吗？」* → 一个**长活的东西**比一个一次性载荷难守得多：要定义生命周期、要防泄漏、要处理「会话被软删了密码还在」。**而它换来的只是「不用重输」。**
 
-### 4.3 幂等先做、工具超时推后：我改判了一条设计判断
+### 4.3 幂等先做、工具超时推后 —— 依赖方向是单向的
 
-**怎么讲（先说被改判的那句话）**：
+**怎么讲（核心就一句）**：
 
-`DESIGN.md` §② 原本写着：
+`DESIGN.md` §② 里 #15（工具超时）与 #17（幂等）原本被写成「要么一起做、要么都不做」，理由是「超时造成『结果未知』，而『结果未知』必须先靠幂等或先查状态解决」。
 
-> 「#15（工具超时）与 #17（幂等）是一对，**要么一起做，要么都不做**」
-
-**理由**是「超时造成『结果未知』，而『结果未知』必须先靠幂等或先查状态解决」。
-
-**我说这句话只对了一半**：
+**而这句话只对了一半**：
 
 > 它说的是「**超时需要一个幂等的存储来解决自己的问题**」，即 **#15 依赖 #17**。**它从头到尾没有说 #17 依赖 #15。**
 
@@ -1534,22 +1463,22 @@ v3 = v2 全文 + **六处改写**（抬头 / 下单那一行 / 付款那一行 /
 
 > 重试只包**模型调用**；工具执行是「跑一次 → 失败文本回填 → **模型自己决定要不要再发一次**」，而**模型重发是一次新的调用，不是同一个动作的重放**。
 
-**HITL 的恢复正是它等的第一个调用方**，而且是原文自己点名的两条之一 —— **恢复被触发两次不是理论风险**：
+**HITL 的恢复正是它等的第一个调用方** —— 而且**恢复被触发两次不是理论风险**：
 
 > `POST /runs/{run_id}/resume` 是 HTTP 端点，**双击、网络重发、前端重试都会产生第二次，而第二次重放的是「给这一单付款」**。
 
 **面试官可能问**：
 
-- *「你怎么敢改一条已经写下来的设计判断？」* → 因为**判据变了**：原文的判据是「两个都没做」，而 HITL 让其中一个有了真实调用方。**「两个都没做」不是一条恒久的理由** —— 它是当时的事实。
+- *「改判的依据是什么？」* → **判据变了**：原文的判据是「两个都没做」（那是当时的事实），而 HITL 让幂等有了真实调用方。**「两个都没做」不是一条恒久的理由。**（两个框架的文档也印证了这个依赖方向：LangGraph 明确「`interrupt` 前的副作用必须幂等」—— 是挂起机制**依赖**幂等，不是反过来。）
 - *「持久化为什么不能推后？」* → 因为**两次恢复跨进程**（两次 HTTP 请求可能落在同一个进程，也可能不是；用户关掉浏览器隔天再点也不是没有可能），**内存实现在跨进程这个场景下等于没有**。
-- *「改判要落在几处？」* → **两处**：`DESIGN.md` 的 #17 硬骨头段，以及 `retry/idempotency.py` 的模块 docstring（它末尾抄了同一段话）。**两处不同步比不改更糟** —— **读代码的人会相信 docstring**。
+- *「改判要落在几处？」* → **两处**：`DESIGN.md` 的 #17 段，以及 `retry/idempotency.py` 的模块 docstring（它末尾抄了同一段话）。**两处不同步比不改更糟** —— **读代码的人会相信 docstring**。
 
 ### 4.4 那次安全修补：转发用户可控的载荷 = 转发身份
 
 **怎么讲（时间线版）**：
 
 1. 需求是「把浏览器输的密码转发给客服服务」；
-2. 最自然的写法：**把 `data` 原样转发**（毕竟这一层不该认识凭据的名字 —— 这是我自己刚写下的理由）；
+2. 最自然的写法：**把 `data` 原样转发**（毕竟这一层不该认识凭据的名字 —— 这是自己刚写下的理由）；
 3. 评审时发现：框架把 `data` **并进**运行上下文，而合并顺序是 `{**payload, **data}` —— **`data` 在后，覆盖得掉已有的键**；
 4. 而那份载荷里装着**这一趟运行的身份**（业务侧取买家 ID 正是从 `payload["user_id"]` 读的）；
 5. 于是：**买家在自己那次挂起上带一个 `data={"user_id": 别人的}`，恢复那一段就以别人的身份查订单与余额**；
@@ -1559,28 +1488,28 @@ v3 = v2 全文 + **六处改写**（抬头 / 下单那一行 / 付款那一行 /
 
 **面试官可能问**：
 
-- *「为什么是白名单不是黑名单？」* → 黑名单要求你枚举所有**危险**的键，而危险键的集合随业务长大；白名单只要求你枚举**这一个挂起声明缺的东西**，**它天然是短的、且由服务端给出**。
+- *「为什么是白名单不是黑名单？」* → 黑名单要求你枚举所有**危险**的键，而危险键的集合随业务长大；白名单只要求你枚举**这一个挂起声明缺的东西**，**它天然是短的、且由服务端给出**（对照 OpenAI SDK 文档那条：服务端只该向审批人暴露「他有权看的」+「不透明的标识」—— 同一个形状）。
 - *「怎么证明修好了？」* → 用例（塞 `user_id` / `tenant_id`，断言只转过去 `payment_password`）+ 真机（注入 `data={"user_id": 1}`，下成的订单属主仍是 `user=10` —— **而 `user_id=1` 这个买家压根不存在**）。**「不存在的那个人」是最强的对照**：没筛的话那一趟不可能成功。
 - *「为什么框架侧也要改？」* → 因为**两侧各有一半责任**：业务侧决定「放行哪些键」，框架侧决定「这些键能不能盖住已有的」。**只改一侧，另一边迟早被绕过。**
 
 ---
 
-## 5. 边界与欠账（「你哪里没做好」的标准答案）
+## 5. 边界与欠账
 
 ### 5.1 两条「核实后不做」（这一节本身就是答案）
 
 | 项 | 为什么不做的理由要说全 |
 |---|---|
-| **挂起超时** | 挂起的 run 就挂着，用户可以用 `POST /runs/{run_id}/cancel` 收掉（**本片把它扩到「挂起中」那一种**）。加超时要先有「超时了怎么办」的答案（降级？自动拒绝？），而那需要真实场景 —— **与 ADR-0017 对 #15 的处置同一条理由** |
+| **挂起超时** | 挂起的 run 就挂着，用户可以用 `POST /runs/{run_id}/cancel` 收掉（本片把它扩到「挂起中」那一种）。加超时要先有「超时了怎么办」的答案（降级？自动拒绝？），而那需要真实场景 —— **与 ADR-0017 对 #15 的处置同一条理由**。（对照面：Step Functions 用 `HeartbeatSeconds` 兜底 —— 无服务器那边挂着有成本与并发压力；本项目挂着不花钱、且给用户留了取消） |
 | **角色分离** | DESIGN #25 提过「发起方不得审批自己发起的挂起项」。**本项目的发起方是模型，确认人是买家本人 —— 不存在「自己批自己」。** 换成真人的多角色审批时才需要 |
 
 > **面试时的说法**：**「这两条我写进了路线图，而不是留在心里 —— 记录『不做』与记录『要做』同样重要，否则下一次读规划的人会以为漏了。」**
 
-### 5.2 一条要如实讲的「翻车」（§2.4.10）
+### 5.2 一条要如实讲的「翻车」（§2.4.12）
 
 **取消挂起后提问 → 模型 API 回 400**。根因是**会话内存**里那份历史停在「欠着那条调用的结果」的半路上，而 `MockLLM` **不校验消息配对**，所以它漏掉了这个 bug。
 
-> 这条要讲三层：**测试替身与真上游的差距** / **「状态对了」不等于「数据对了」** / **真机跑三遍不是浪费**（前两遍我把那条 traceback 当成了上一次尝试的残留）。
+> 这条要讲三层：**测试替身与真上游的差距** / **「状态对了」不等于「数据对了」** / **真机跑三遍不是浪费**（前两遍把那条 traceback 当成了上一次尝试的残留）。
 
 ### 5.3 一处自我失误（§2.8.2）
 
@@ -1592,14 +1521,14 @@ v3 = v2 全文 + **六处改写**（抬头 / 下单那一行 / 付款那一行 /
 
 | # | 项 | 为什么收不了 |
 |---|----|-------------|
-| 1 | **`trace` 的聚合入口**（按时间段 / 按工具） | 它是**新能力**不是欠账 —— 数据都在表里（一行 `GROUP BY tool_name` 就出分布），**缺的是入口** |
-| 2 | **框架 CLI 跑完打一次 `run_id`** | 要动 `ChatSession` 的对外面（`LoopResult` 是**循环层**的结果，不认识记录层的 `run_id`） |
+| 1 | **`trace` 的聚合入口**（按时间段 / 按工具） | 它是**新能力**不是欠账 —— 数据都在表里，**缺的是入口**（后来 `trace --summary` 补上了按工具聚合这半边，时间窗与告警仍缺） |
+| 2 | **框架 CLI 跑完打一次 `run_id`** | 要动 `ChatSession` 的对外面 —— 后来兑现（`last_run_id`，完成行能看到编号） |
 | 3 | **评估集（golden set + badcase 回流）** | 这是 L4 的**主体交付物**；本片真机只跑通几条路，够当第一批 seed |
-| 4 | **prompt A/B 与「prompt 层确认 vs 框架级确认」** | v2 时期**没有**实测数据（那条路线从未实现）—— 要对比得**先真写一版 v4 当对照**（比「拿 v2 当基线」更诚实） |
+| 4 | **prompt A/B 与「prompt 层确认 vs 框架级确认」** | v2 时期**没有**实测数据（那条路线从未实现）—— 要对比得**先真写一版带「下单前问一句」的提示词**当对照 |
 | 5 | **工具数量 A/B** | 要上面三条都齐 |
-| 6 | **`#15` 工具超时** | 触发场景至今没出现过（真机跑了几十次，没有一次工具卡住） |
+| 6 | **`#15` 工具超时** | 触发场景至今没出现过（真机跑了几十次，没有一次工具卡住）—— 后来（C06）按「超时即中断本次运行」落了地 |
 | 7 | **系统代理绕一跳** / **Django 访问日志写订单号** | 两条都是「一行改法 + 一个需要单独定的取舍」（L3a 记的） |
-| 8 | **前端迁移**（`agent.html` 已 **1605 行**） | 收口片不改机制。**注意顺序**：L4 的评估要跑真页面，**迁移与评估别同时开工** |
+| 8 | **前端迁移**（`agent.html` 已 **2020 行**） | 收口片不改机制。**注意顺序**：L4 的评估要跑真页面，**迁移与评估别同时开工** |
 
 ### 5.5 一条「故意不勾」的验收框
 
@@ -1607,26 +1536,34 @@ L4 开工前提里「`trace` 能按时间段 / 按工具聚合」—— **核实
 
 > **勾了就成了「已具备」，而它正是 L4 要补的那一片。** 验收清单是给自己看的，**勾错一个比不勾更糟**。
 
+### 5.6 对照行业形态仍缺的（复核 OpenAI SDK 文档之后新增的一节）
+
+| # | 缺什么 | 谁有 | 现状 / 为什么 |
+|---|--------|------|--------------|
+| 1 | **快照的版本化路由**（审批停留很久、模型 / prompt / 工具定义变了） | OpenAI SDK 文档明确建议「与序列化状态一起存版本标记」（"Versioning pending tasks"） | **未做**：演示尺度里挂起不会跨版本停留；`runs.prompt_version` 只记了版本，没有「按版本路由反序列化」那一层 |
+| 2 | **审批的部分决议**（一批挂起只批一部分，其余留在下次） | OpenAI SDK 支持 | **没这个场景**：本项目「一次挂起只挂一条」（ADR-0014），不存在部分决议 |
+| 3 | **审批人身份 / 防篡改审计** | 合规级要求 | `approved_by` / `approved_at` 有了（谁批的、什么时候）；「能证明没被改过」没有 —— 真接外部用户时要重看（同 ADR-0016 的触发条件） |
+| 4 | **粘性决定**（「这个工具以后都批准」） | OpenAI SDK 的 `always_approve` | **刻意不做**：一次性载荷的立场是「每次都问」；粘性决定会带来「什么时候失效」的复杂问题 |
+
+---
+
 ## 6. 可能被追问的问题与答法（速查）
 
 | 问题 | 一句话答法 |
 |------|-----------|
-| **你怎么知道模型不会自己把密码编出来？** | 因为它**根本不知道有密码这回事** —— `pay_my_order` 的 wire schema 里只有 `order_no`。**这是设计出来的，不是提示词要求的**：只要那个参数出现在 schema 里，模型就会编一个填进去，而编出来的值会走 `arguments` 落库。有一条用例守着「schema 里搜不到密码」（和「身份不在 schema 里」同一个判据）。 |
-| **用户点了两次确认会扣两次钱吗？** | 不会。**两道**：前端按钮当场禁用（体验）+ 服务端那把**幂等键**（事实）。键是三列 `(run_id, message_id, tool_call_id)`，认领靠一条 `INSERT ... ON CONFLICT DO UPDATE WHERE expires_at <= now RETURNING`。真机验过：同一个 `resume` 连发两遍，两次都 **404**，余额一分不多扣、工具一次不多跑。 |
-| **为什么不用一张审批表？** | **因为审批单在这个项目里没有独立生命周期** —— 它就是一个二元事实（批了没有、谁批的、什么时候），而天然宿主是那次工具调用自己。再开一张表等于把同一件事存两份，**两份必然漂移**，最可能的漂移是「库里有审批单、但调用行还是 `needs_approval`」，**而它没有任何一条路径能自愈**。 |
-| **挂起之后用户不管了呢？** | 我们**不做超时**（记在路线图里，理由是「加超时要先答『超时了怎么办』」，而那需要真实场景）。用户可以用取消按钮收掉它 —— 本片专门把 `cancel` 扩到「挂起中」那一种。**记录「不做」与记录「要做」同样重要。** |
-| **你怎么保证"绝不自动执行"？** | 三道：① 挂起那条**不 append tool 消息、不发 `tool_result` 事件**（「那一条还没有结果」就是挂起的全部内容）；② 恢复**必须带人的结论**，没有就 `LoopConfigError`（于是命令行 `--resume` 撞上挂起点**会被拦住**，而不是自动补做）；③ `_execute_parallel` 只在 `approved` 集合里那几条上抵消「需人工确认」，**护栏的拒绝照常生效**。 |
+| **你怎么知道模型不会自己把密码编出来？** | 因为它**根本不知道有密码这回事** —— `pay_my_order` 的 wire schema 里只有 `order_no`。**这是设计出来的，不是提示词要求的**：只要那个参数出现在 schema 里，模型就会编一个填进去，而编出来的值会走 `arguments` 落库。有一条用例守着「schema 里搜不到密码」。 |
+| **用户点了两次确认会扣两次钱吗？** | 不会。**两道**：前端按钮当场禁用（体验）+ 服务端那把**幂等键**（事实）。认领靠一条 `INSERT ... ON CONFLICT DO UPDATE WHERE expires_at <= now RETURNING`。真机验过：同一个 `resume` 连发两遍，两次都被挡在工具执行之前，余额一分不多扣。 |
+| **为什么不用一张审批表？** | **因为审批单在这个项目里没有独立生命周期** —— 它就是一个二元事实（批了没有、谁批的、什么时候），而天然宿主是那次工具调用自己。再开一张表等于把同一件事存两份，**两份必然漂移**，而漂移没有任何路径能自愈。 |
+| **挂起之后用户不管了呢？** | **不做超时**（记在路线图，理由是「加超时要先答『超时了怎么办』」，而那需要真实场景）。用户可以用取消按钮收掉它 —— 本片专门把 `cancel` 扩到「挂起中」那一种。**记录「不做」与记录「要做」同样重要。** |
+| **你怎么保证「绝不自动执行」？** | 三道：① 挂起那条**不 append tool 消息、不发 `tool_result` 事件**（「那一条还没有结果」就是挂起的全部内容）；② 恢复**必须带人的结论**，没有就 `LoopConfigError`（于是命令行 `--resume` 撞上挂起点**会被拦住**，而不是自动补做）；③ 恢复段只在 `approved` 集合里抵消「需人工确认」，**护栏的拒绝照常生效**。 |
 | **挂起期间用户能不能问别的？** | **不能**，而且是**两侧**都拦：前端锁输入区（体验），后端 `ThreadSuspendedError` → 409（事实）。**判据落在 PG**（`status = needs_approval AND approved_at IS NULL`），所以**进程重启也拦得住** —— 真机验过：挂着卡重启服务，直接 POST `chat/` 拿到 502 `thread_suspended`。 |
-| **为什么恢复端点不拆成 approve / reject 两个？** | **因为拒绝也要恢复** —— 把拒绝原因当**工具结果**回填，模型据此继续答（「这一单没有付款，你在确认卡上点了取消，所以没有扣钱」）。这与「当场拒绝」（不恢复，模型立刻换个说法）是两条路。**一个端点、两种结论。** |
-| **「你说你验过"搜不到密码"——怎么证明你搜对了地方？** | 靠**正对照**：同一个订单号在 `content` 里搜到 3 次、在 `arguments` 里 1 次 —— **搜索本身有效**；而 `payment_password` 这个名字全库只出现在 `approval_needs` 那一列（那是「要问什么」的清单，不是值）。日志那一半同理：那几条 `resume` 请求的 200 / 404 都在日志里，只是没有 body。 |
-| **`needs=()` 落库是 NULL 还是 `[]`？** | **NULL**（`approval_needs or None`）—— 空元组与「没记」在库里分不开。行为本身是对的（前端与 BFF 都把 NULL 当「无缺失项」，真机验过），但**要做「两种卡占比」这类统计时得知道这件事**。已记为 L4 备查。 |
-| **这功能上生产还缺什么？** | 三样：**真实支付网关**（现在是站内虚拟余额；网关的令牌化流程通常要求密码只在它自己页面里输，那时「密码经 CharApp 一段」要重新论证）· **多角色审批**（现在发起方是模型、确认人是买家本人，不存在「自己批自己」；换成真人多角色就要 `approved_by` 之外的表达）· **合规级审计**（谁批的一对列有了，但「能证明没被改过」是另一件事）。 |
+| **为什么恢复端点不拆成 approve / reject 两个？** | **因为拒绝也要恢复** —— 把拒绝原因当**工具结果**回填，模型据此继续答（「这一单没有付款，你在确认卡上点了取消，所以没有扣钱」）。这与「当场拒绝」（不恢复，模型立刻换个说法）是两条路。**一个端点、两种结论。**（OpenAI SDK 同构：拒绝走同一个 resume 流，还能自定义拒绝话术。） |
+| **「你说你验过搜不到密码」——怎么证明你搜对了地方？** | 靠**正对照**：同一个订单号在 `content` 里搜到 3 次、在 `arguments` 里 1 次 —— **搜索本身有效**；而 `payment_password` 这个名字只出现在 `approval_needs` 那一列（那是「要问什么」的清单，不是值）。日志同理：那几条 `resume` 请求的 200 / 404 都在日志里，只是没有 body。 |
+| **`needs=()` 落库是 NULL 还是 `[]`？** | **NULL**（`approval_needs or None`）—— 空元组与「没记」在库里分不开。行为本身是对的（前端与 BFF 都把 NULL 当「无缺失项」），但**要做「两种卡占比」这类统计时得知道这件事**。已记为备查。 |
+| **和 LangGraph / OpenAI SDK 的 HITL 比，你们差在哪、像在哪？** | **像**：都是「外部状态 + 恢复凭据」的骨架；都是每次调用级粒度；都认识到「恢复会重放」这件事（他们要求幂等 / 原子过渡，我们做成了一等公民的表）。**不同**：① 载体 —— 他们用框架的 checkpointer / 序列化 RunState，我们**不建审批表**、挂起态就在工具调用行上；② 粒度 —— 他们支持部分决议 / 粘性决定，我们**一次挂一条**、每次都问；③ 服务端审批的安全要求他们写成了文档条款（认证 / 授权 / 防重放），我们是**在真机上抓到同类漏洞并修掉**（载荷白名单 + 只增不覆盖）。**差**：快照版本化路由、合规级审计（§5.6）。 |
+| **这功能上生产还缺什么？** | 三样：**真实支付网关**（现在是站内虚拟余额；网关的令牌化流程通常要求密码只在它自己页面里输，那时「密码经 CharApp 一段」要重新论证）· **多角色审批**（现在发起方是模型、确认人是买家本人）· **合规级审计**（谁批的一对列有了，「能证明没被改过」是另一件事）。 |
 | **为什么要给挂起单独一个 `runs` 状态？** | 因为下游要能区分「这一轮答完了」与「这一轮挂着等人」—— 前者该收尾、后者不该。而「还没结束」由 **`finished_at IS NULL`** 表达：**一个状态列 + 一个时刻列，两件事各自有位。** |
-| **`agent.html` 为什么不用框架？** | 它是**零构建的原生模块**（`sessionStorage` + 手写 DOM），这条从 L1b 立到现在没破过。代价是它已经 **1605 行** —— 前端迁移押给 L4 了，而且**迁移与评估不能同时开工**（评估要跑真页面）。 |
-
----
-
-
+| **`agent.html` 为什么不用框架？** | 它是**零构建的原生模块**（`sessionStorage` + 手写 DOM），这条从 L1b 立到现在没破过。代价是它已经 **2020 行** —— 前端迁移押给 L4 了，而且**迁移与评估不能同时开工**（评估要跑真页面）。 |
 
 ---
 
@@ -1637,36 +1574,127 @@ L3b（人工确认）= issues 32–38，2026-09-25/26 落地，09-26 真机验�
 ADR-0014（挂起不建审批表）· ADR-0015（密码走一次性载荷）· ADR-0017（幂等先做）
 
 32 幂等        charagent_idempotency_keys（6 列）+ PgIdempotencyStore
-              claim 一条 SQL：INSERT ... ON CONFLICT DO UPDATE WHERE expires_at <= now RETURNING
+              claim 一条 SQL: INSERT ... ON CONFLICT DO UPDATE WHERE expires_at <= now RETURNING
               键 = (run_id, message_id, tool_call_id) 三列（call_0 每轮重编号）
               不做后台清理 / 默认不过期 / ttl<=0 构造期报错
-              并发用例第一版是假绿（同一事件循环里插不到一起）
 
-33 resume 记账 两种 resume 语义分开：CLI 开新账 · HITL 沿用同一行
-              resume(*, run_id=None) + finish_run 开关 + RunSettlement 打包
-              question 可选（不编 user 行 —— 那会让记录撒谎）
+33 记账        resume(run_id=None): 命令行=新运行 / HITL=同一次运行第二段
+              finish_run = run_id is None（一次否定说清一件事）
+              挂起段照常算钱, 恢复段按累计用量重算覆盖（重算不是累加）
 
-34 挂起-恢复    Decision 第三值 requires_approval(prompt, needs)
-              拒绝优先于挂起（顺序是装配的偶然事实）
-              一次挂起只挂一条（ADR-0014）· LoopOutcome.SUSPENDED → WAITING_USER
-              approval_required 是终局事件 · POST /runs/{id}/resume（一个端点，拒绝也要恢复）
-              闸门判据落 PG（重启也拦得住）· 三次「第二次 resume」时相分工
-              真机第三遍才发现：取消挂起后提问 → 400（内存历史没配对）
+34 挂起-恢复   Decision 第三值 requires_approval（拒绝=当场有结论/挂起=等着别人给结论）
+              拒绝优先于挂起（内容决定, 不看注册顺序）
+              挂起帧 CheckpointSource.APPROVAL; LoopOutcome.SUSPENDED → WAITING_USER
+              approval_required 是第三类终局事件（三处同步改）
+              恢复端点: 认证 → 查未决 → 认领键 → 占会话 → SSE
+              一次挂起只挂一条; 没有结论就不补做; 恢复时人批抵消、护栏拒绝照常
 
-35 代付        工具签名里只有 order_no（schema 无密码 —— 这是三个「永不」的前提）
-              密码从闭包取（一次性载荷）· 缺密码不执行 · 错密码不重试
-              顺手修：ASGI 下首个请求必 500（request_started 递 scope 不递 environ）
+35 代付        pay_my_order 签名只有 order_no; 密码从闭包(one_shot)取
+              schema 里没有 payment_password = 三个「永不」的前提
+              密码缺失不执行 / 密码错不重试（文案是给模型的处置指令）
 
-36 确认卡      body {conversation_id, decision, tool_call_id, data}（**不要 run_id**：同名不同物）
-              白名单筛 data（塞 user_id 就能冒充别人 —— 本片唯一一处安全修补）
-              两种形态同一套机制（有密码框 / 零输入框）· 刷新恢复走 /history
-              前端禁用 + 后端 409 两条都要有 · 卡片过期当场作废
+36 确认卡      BFF: data 走白名单（needs 点名的键）+ 框架侧只增不覆盖（安全修补）
+              刷新恢复走 /history 的 pending_approval（与事件同一形状）
+              未决期间锁输入: 前端（体验）+ 后端 409（事实）
 
-37 下单确认    一条裁决 + needs=() → 零输入框的卡
-              v3 改写六处（最要紧：v2 那句「不能替买家付款」已与事实相反）
-              prompt_version v2 → v3（L4 基线换人）
+37 下单确认    needs=() 的纯是非卡; prompt v2「不能替买家付款」已与事实相反 → 改写
+              真机: 全表七个场景模型一次都没反问「要不要下」
 
-38 收口        五条否定断言（配正对照）· 18 条欠账全部有归属 · 一处故意不勾的验收框
+38 收口        五条否定断言（密码 0 处 + 正对照）/ 欠账清点无「待定」
+              故意不勾一条验收框（勾错比不勾更糟）
 
-三句话：挂起不建审批表 / 密码走一次性载荷 / 幂等先做超时推后
+三句话：挂起不建审批表 / 密码走一次性载荷 / 幂等先做
+
+—— 行业侧的锚（被追问时用）——
+• LangGraph: interrupt() + checkpointer + Command(resume=); 恢复时节点从头重跑
+  → 官方要求「interrupt 前的副作用必须幂等」（幂等是挂起机制的依赖, 不是可选项）
+• OpenAI Agents SDK: needs_approval 标记工具; 参数无法安全解析时 fail closed 到人工
+  → RunState 序列化 + approve/reject + 粘性决定; 「Possession of a run ID is not authorization」
+  → 服务端四件事: 认证审批人 / 授权 / 校验提交标识 / 原子 owner-checked transition 防重放
+• AWS Step Functions: waitForTaskToken + SendTaskSuccess; HeartbeatSeconds 兜底 → States.Timeout
+• 共同骨架: 状态存外部 + 交一个拼回去的凭据; 凭据负责找到挂起, 不负责授权
 ```
+
+---
+
+## 8. 行业一手来源（原文摘录）
+
+> 2026-10-08 抓取。全部为官方文档，原文英文；「没抓到」的如实标注。
+
+### A1. LangGraph · Interrupts
+
+链接：<https://docs.langchain.com/oss/python/langgraph/interrupts>
+
+机制总述：
+
+> "Interrupts allow you to pause graph execution at specific points and wait for external input before continuing. […] When an interrupt is triggered, LangGraph saves the graph state using its **persistence** layer and waits indefinitely until you resume execution."
+>
+> "**`thread_id` is your pointer**: set `config={"configurable": {"thread_id": ...}}` to tell the checkpointer which state to load."
+
+**恢复时节点从头重跑**（这条决定了幂等要求）：
+
+> "The node restarts from the beginning of the node where the interrupt was called when resumed, so **any code before the `interrupt` runs again**."
+
+**副作用必须幂等**（与 ADR-0017 直接呼应）：
+
+> "**Side effects called before `interrupt` must be idempotent** […] As an example, you might have an API call to update a record inside of a node. If `interrupt` is called after that call is made, **it will be re-run multiple times when the node is resumed**, potentially overwriting the initial update or creating duplicate records."
+
+三条「不要」（规则即设计约束）：
+
+> "**Do not wrap `interrupt` calls in try/except**"（它靠抛特殊异常暂停）/ "**Do not reorder `interrupt` calls within a node**"（匹配是 **strictly index-based**）/ "**Do not return complex values in `interrupt` calls**"（要 JSON 可序列化）。
+>
+> 以及验证人输入的正确形状："call `interrupt()` **once per node invocation** […] **Avoid `while True` + `interrupt()` loops inside a single node**"（否则每次恢复会把之前每一轮重放，指数级重放）。
+
+### A2. OpenAI Agents SDK · Human-in-the-loop
+
+链接：<https://openai.github.io/openai-agents-python/human_in_the_loop/>
+
+机制总述：
+
+> "Use the human-in-the-loop (HITL) flow to **pause agent execution until a person approves or rejects sensitive tool calls**. Tools declare when they need approval, run results surface pending approvals as interruptions, and `RunState` lets you **serialize paused runs and resume them after decisions are made**."
+
+**fail closed**（参数无法安全检查时强制人工）：
+
+> "Callable approval rules **fail closed** when the SDK cannot safely inspect the arguments. If the arguments are missing, empty, contain only whitespace, are malformed JSON, are valid JSON but not an object […] or contain non-standard constants such as `NaN`, `Infinity`, or `-Infinity`, the callable is not invoked and **the call requires manual approval**."
+
+**服务端审批的安全要求**（本节最值钱的一段）：
+
+> "Serialized `RunState` contains execution state […] The SDK restores this state; `RunState.from_json()` and `RunState.from_string()` **do not authenticate the snapshot or the person submitting it**. Only deserialize snapshots from trusted storage […]
+>
+> When a decision arrives, the server must:
+> 1. **Authenticate the reviewer** […] Do not take the reviewer's identity from the approval request body.
+> 2. **Authorize that reviewer** to act on the stored run […]. **Possession of a run ID or decision ID is not authorization.**
+> 3. Validate the submitted decision identifiers […] against the pending requests stored on the server. […] **do not accept replacement tool calls, arguments, approval records, or serialized state from the client.**
+> 4. Apply `state.approve(...)` or `state.reject(...)` […] **use an atomic owner-checked transition before starting resumed execution.**"
+
+**版本化待办**：
+
+> "If approvals may sit for a while, **store a version marker for your agent definitions or SDK alongside the serialized state.** You can then route deserialization to the matching code path to avoid incompatibilities when models, prompts, or tool definitions change."
+
+**粘性决定与部分决议**：
+
+> "Per-call approvals are scoped to the specific call ID; pass `always_approve=True` or `always_reject=True` to **persist the same decision** for future calls to the same tool identity during the rest of the run." / "**You do not need to resolve every pending approval in the same pass.** […] unresolved ones remain in `interruptions` and pause the run again."
+
+### A3. AWS Step Functions · Wait for a Callback with Task Token
+
+链接：<https://docs.aws.amazon.com/step-functions/latest/dg/connect-to-resource.html>
+
+> "**Wait for a Callback with Task Token** — Call a service with a task token and have Step Functions **wait until that token is returned with a payload**."
+>
+> "A task might need to wait for a **human approval**, integrate with a third party, or call legacy systems. […] The task will pause until it receives that task token back with a `SendTaskSuccess` or `SendTaskFailure` call."
+>
+> "**A task that is waiting for a task token will wait until the execution reaches the one year service quota** […] To avoid stuck executions you can configure a heartbeat timeout interval […] If the waiting task doesn't receive a valid task token within that 10-minute period, **the task fails with a `States.Timeout` error name**."
+>
+> 一条边界："You must pass task tokens from principals **within the same AWS account**. The tokens won't work if you send them from principals in a different AWS account."
+
+---
+
+## 附：本份与其它几份的接口
+
+| 相关主题 | 在哪一份里更深 |
+|---------|--------------|
+| 挂起帧与压缩视图（恢复段重新装配时的视图重算） | [01 上下文压缩](./01-context-compaction.md) |
+| 轨迹表（挂起的 `needs_approval`、`approved_by` 两列住在哪张表） | [02 可观测](./02-observability.md)（§2.1 四拍） |
+| 幂等键与无状态化（恢复跨进程、单进程前提） | [04 无状态化与 graceful drain](./04-stateless-and-drain.md) |
+| 子 agent 要人工确认时挂哪儿（多 agent 的 HITL 交界） | [05 多智能体](./05-multiagent.md) |
+| ADR-0014 / 0015 / 0017 的原文 | `CharApp/docs/adr/` |
