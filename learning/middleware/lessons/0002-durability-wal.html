@@ -1,0 +1,396 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>第 2 课 · 说好了就一定要算数 — 中间件开发底座</title>
+<!-- ?v= 用于绕开浏览器缓存：这两个文件是全课程共用的，改动后旧副本会被一直用下去 -->
+<link rel="stylesheet" href="../assets/lesson.css?v=3">
+</head>
+<body>
+
+<header class="site-header">
+    <p class="lesson-meta">中间件开发底座 · 第 2 课 · 数据库线</p>
+</header>
+
+<div class="lesson-hero">
+    <h1>说好了就一定要算数</h1>
+    <p class="lesson-meta">
+        ACID 里的 <strong>D</strong>（Durability，持久性）。<br>
+        目标：被问「数据库怎么保证提交了就不丢」时，你能讲出一条<strong>三层存储的路径</strong>，
+        并说出 MySQL 和 PostgreSQL 各自的取舍旋钮。<br>
+        前置阅读：<a href="0001-isolation-levels.html">第 1 课 · 一次只答一个问题的并发</a>（不影响本课，但 D 和 I 合起来才是 ACID 的全貌）。<br>
+        预计用时：30 分钟（含模拟器）。主源：
+        <a href="https://dev.mysql.com/doc/refman/8.0/en/innodb-redo-log.html">MySQL 8.0 Manual · Redo Log</a> 与
+        <a href="https://www.postgresql.org/docs/current/wal-intro.html">PostgreSQL · Write-Ahead Logging</a>。
+    </p>
+</div>
+
+<h2>零、先清一笔旧账（两分钟，别跳过）</h2>
+
+<p>上一课讲的是「事务之间能看见对方多少」。现在换个方向，问一个更基础的问题：</p>
+
+<div class="recall">
+    <summary>不看第 1 课，用一句话说清「不可重复读」和「幻读」的分界线是什么？</summary>
+    <div class="recall__body">
+        <p>
+            <strong>变的是「某一行的值」还是「结果集的行数」。</strong>
+            同一行读了两次值不同 → 不可重复读；同一条件读了两次行数变了 → 幻读。
+        </p>
+        <p>
+            想不起来也正常 —— 这恰恰说明「需要提取而不是重读」。翻回
+            <a href="0001-isolation-levels.html">第 1 课</a>的测验做一遍，比把正文重看一遍有用得多。
+        </p>
+    </div>
+</div>
+
+<h2>一、先问一个反直觉的问题</h2>
+
+<p>你执行了 <code>COMMIT</code>，数据库回你「成功」。此刻 ——</p>
+
+<div class="callout callout--danger">
+    <span class="callout__label">问题</span>
+    <p><strong>此刻，这行数据被写进磁盘了吗？</strong></p>
+</div>
+
+<p>
+答案是 <strong>大概率没有</strong>。数据还在内存里。而且更反直觉的是：<strong>这不是 bug，这是设计。</strong>
+</p>
+
+<p>
+如果每次提交都要把数据行写到磁盘上它该在的位置，那你一生中大部分提交都会卡在磁盘的寻道上 ——
+数据行散落在表空间的各个位置，一次提交可能只改一个字段，却要随机写好几个页。
+<strong>那么问题就变成了：明明没写进去，它凭什么敢跟你保证？</strong>
+</p>
+
+<h2>二、答案是一条路径，不是一个开关</h2>
+
+<p>要讲清楚 D，你得先在脑子里画出<strong>三层存储</strong>。这三层的区别就是整节课的骨架：</p>
+
+<table>
+    <thead>
+        <tr><th>层</th><th>是什么</th><th>进程崩溃会丢吗</th><th>断电会丢吗</th></tr>
+    </thead>
+    <tbody>
+        <tr>
+            <td><strong>① 进程内存</strong></td>
+            <td>redo log buffer、数据页缓冲</td>
+            <td>丢</td>
+            <td>丢</td>
+        </tr>
+        <tr>
+            <td><strong>② OS page cache</strong></td>
+            <td>进程已经 <code>write()</code> 给操作系统了，但 OS 还没往盘片上送</td>
+            <td><strong>不丢</strong></td>
+            <td>丢</td>
+        </tr>
+        <tr>
+            <td><strong>③ 磁盘</strong></td>
+            <td><code>fsync()</code> 之后才算真正落地</td>
+            <td>不丢</td>
+            <td>不丢</td>
+        </tr>
+    </tbody>
+</table>
+
+<div class="callout callout--warn">
+    <span class="callout__label">这三层是整个「持久化」话题的地基</span>
+    <p>
+        <strong><code>write()</code> ≠ 落地。</strong> <code>write()</code> 只是把数据交给了操作系统 —— 它进了 page cache，
+        进程崩了没事，<strong>机器断电就没了</strong>。
+        只有 <code>fsync()</code>（或 <code>fdatasync()</code>）才是「把这份数据交给物理设备」。
+    </p>
+    <p>
+        面试里凡是问「会不会丢数据」，本质都在问同一句话：
+        <strong>「哪一层为止？用什么频率叫 <code>fsync</code>？」</strong>
+    </p>
+</div>
+
+<h2>三、Write-Ahead Log：把随机写换成顺序写</h2>
+
+<p>现在可以回答第一节那个问题了。数据库用的办法叫 <strong>WAL（Write-Ahead Log，预写日志）</strong>：</p>
+
+<div class="callout">
+    <span class="callout__label">一句话定义</span>
+    <p><strong>在把数据行写回它该在的位置之前，先把「我改了什么」顺序追加到一个日志的末尾。</strong></p>
+</div>
+
+<p>为什么这样就能快：</p>
+
+<ul>
+    <li><strong>数据行是随机写</strong> —— 表空间里 A 表第 3 页、B 表第 800 页，一次事务改几处就得跳几次，机械盘上每次都是寻道</li>
+    <li><strong>日志是顺序追加</strong> —— 永远往末尾写，不需要找位置。这是磁盘最喜欢的访问模式</li>
+    <li>而且<strong>日志可以攒一批再刷</strong> —— 一次 <code>fsync</code> 覆盖几十个事务，平摊下来每次提交的代价就很小了</li>
+</ul>
+
+<p>那数据行什么时候写？交给后台线程慢慢来（MySQL 的 page cleaner、PostgreSQL 的 checkpointer / background writer）。反正崩溃重启时，日志里有完整的记录，照着重放一遍就能把欠的补上。</p>
+
+<div class="callout callout--good">
+    <span class="callout__label">于是「提交成功」的真实含义是</span>
+    <p>
+        <strong>「我改了什么」这条日志，已经落到磁盘上了</strong> —— 而<strong>不是</strong>「数据已经写进它最终的位置」。
+        这是第 5 题那个空缺的标准答案，也是区分「背过 ACID」和「理解 ACID」的分界线。
+    </p>
+</div>
+
+<h2>四、关键转折：安全不是绝对的，是个旋钮</h2>
+
+<p>到这儿有个陷阱。你可能以为 D 是「要么保证要么不保证」的二值属性 —— 不是。</p>
+
+<p>
+<strong>「每次提交都叫一次 fsync」是可以关掉的。</strong> 关掉之后性能大涨，代价是崩溃时丢掉最近一小段。
+下面是两个库各自的旋钮：
+</p>
+
+<table>
+    <thead>
+        <tr><th></th><th>MySQL</th><th>PostgreSQL</th></tr>
+    </thead>
+    <tbody>
+        <tr>
+            <td><strong>旋钮名</strong></td>
+            <td><code>innodb_flush_log_at_trx_commit</code></td>
+            <td><code>synchronous_commit</code></td>
+        </tr>
+        <tr>
+            <td><strong>默认值</strong></td>
+            <td><code>1</code>（每次提交 fsync）</td>
+            <td><code>on</code>（每次提交 fsync）</td>
+        </tr>
+        <tr>
+            <td><strong>调松它</strong></td>
+            <td><code>2</code>：提交时只写到 OS page cache，每秒才 fsync 一次<br><code>0</code>：连 OS page cache 都不一定写，每秒一次</td>
+            <td><code>off</code> / <code>local</code>：提交时不 fsync，交给 WAL writer 稍后刷</td>
+        </tr>
+        <tr>
+            <td><strong>付出什么</strong></td>
+            <td>掉最近的 1 秒事务</td>
+            <td>掉最近的几十毫秒到一小段 WAL</td>
+        </tr>
+        <tr>
+            <td><strong>换来什么</strong></td>
+            <td colspan="2">大量小事务的吞吐（省掉每次提交那次同步 IO）</td>
+        </tr>
+    </tbody>
+</table>
+
+<p><strong>注意两个库的默认值不同：</strong>MySQL 默认就选最安全的那一档，PostgreSQL 把 <code>synchronous_commit</code> 的默认值定在 <code>on</code>，但<strong>整个 PostgreSQL 生态里大量部署把它调成 <code>off</code></strong> 换吞吐。这是刻意的设计取舍，不是谁的疏忽 —— 而你在面试里能说出「这两个默认值不一样、为什么」，比背 ACID 五个字强得多。</p>
+
+<h2>五、动手：亲手摔几次，看数据丢在哪一层</h2>
+
+<p>
+下面这个模拟器把第二节那三层画出来了。点「提交一笔」，看数据先落在哪；再点「摔一下」，看它有没有活下来。
+<strong>先按默认设置玩一遍，再把旋钮拨到「2」，重复同样的操作 —— 差别就是全部要点。</strong>
+</p>
+
+<div class="sim" data-sim>
+    <noscript><p>本模拟器需要 JavaScript。</p></noscript>
+</div>
+
+<script type="application/json" data-sim-config>
+{
+  "knobs": [
+    {
+      "id": "1",
+      "label": "flush_log_at_trx_commit = 1（MySQL 默认）",
+      "note": "每次提交立即 fsync —— 最安全，每次提交都要等一次同步 IO"
+    },
+    {
+      "id": "2",
+      "label": "flush_log_at_trx_commit = 2（很多生产环境这么调）",
+      "note": "提交时只写进 OS page cache，每秒才 fsync 一次 —— 快，但机器一断电就掉最近最多 1 秒"
+    }
+  ]
+}
+</script>
+
+<h2>六、为什么会有两个日志</h2>
+
+<p>你如果去翻 MySQL 的目录，会发现有两个日志在同时写：<strong>redo log</strong> 和 <strong>binlog</strong>。为什么不合并成一个？</p>
+
+<table>
+    <thead>
+        <tr><th></th><th>redo log</th><th>binlog</th></tr>
+    </thead>
+    <tbody>
+        <tr><td><strong>谁写的</strong></td><td>InnoDB 存储引擎</td><td>MySQL server 层</td></tr>
+        <tr><td><strong>内容</strong></td><td>物理层面的页改动 ——「第 N 页第 M 个偏移改了这几个字节」</td><td>逻辑层面的语句/行变更 —— 给复制用</td></tr>
+        <tr><td><strong>干什么用</strong></td><td><strong>崩溃恢复</strong>：重启后把没落盘的数据页补回来</td><td><strong>主从复制</strong>与基于时间点的恢复</td></tr>
+        <tr><td><strong>能循环用吗</strong></td><td>能 —— 数据页落盘后，这段日志就可以被覆盖</td><td>不能 —— 从库还没消费完就不能删</td></tr>
+    </tbody>
+</table>
+
+<p>
+它们职责不同，所以必须同时写。而「必须同时写」就带来一个新问题：<strong>两份日志怎么保证一致？</strong>
+如果 redo 写成功了、binlog 没写成功就崩了，重启后主库有这条数据、从库没有 —— 主从直接不一致。
+</p>
+
+<p>
+MySQL 的解法是<strong>两阶段提交</strong>（2PC）：redo log 先写 prepare 状态 → binlog 写 → redo log 写 commit 状态。
+崩溃恢复时，如果一个事务的 redo 是 prepare 但没有对应的 binlog，就回滚掉它。
+<strong>这个机制的名字值得记住，它是「跨组件一致性」的经典模板</strong> —— 后面讲消息队列的 outbox 模式时，你会看到同一个思路换个场景又出现一次。
+</p>
+
+<h2>七、留在你项目里的痕迹</h2>
+
+<div class="callout">
+    <span class="callout__label">你已经在不知不觉地做持久化取舍了</span>
+    <ul>
+        <li>
+            <strong>CharAgent 用 PostgreSQL 存快照</strong> —— 这个选择的隐含前提是「快照必须真的持久」，
+            也就是说你的 <code>synchronous_commit</code> <strong>不能关</strong>。如果哪天为了吞吐把它调成 <code>off</code>，
+            那就等于接受了「断电后最近几次 run 的断点信息可能丢」—— 而你还指望 <code>--resume</code> 能续上。
+        </li>
+        <li>
+            <strong>minimall 用 MySQL</strong> —— 走的是默认 <code>1</code>，也就是说订单、余额这类数据
+            在「提交成功」之后是真的算数的。这一档换来的是每次下单都付一次同步 IO 的代价 ——
+            在你自己跑的单机环境里看不出来，但它是真实存在的成本。
+        </li>
+        <li>
+            <strong>你的 Redis 缓存是故意不持久的</strong> —— 这是个「正确的取舍」，因为缓存丢了能重算。
+            但同样的道理，<strong>Redis 一旦被用来存不能重算的东西</strong>（比如你项目里的分布式锁、或者会话），
+            持久化配置就必须重新讨论。这条我们留到缓存那节课。
+        </li>
+    </ul>
+</div>
+
+<h2>八、测一下：这次不是背，是判断</h2>
+
+<p>四道题，全部是「给你一个配置，问你摔了之后还剩什么」。<strong>先在纸上推一遍再点。</strong></p>
+
+<div class="quiz" data-quiz>
+    <noscript><p>本课测验需要 JavaScript。</p></noscript>
+</div>
+
+<script type="application/json" data-quiz-data>
+[
+  {
+    "q": "MySQL 配置 innodb_flush_log_at_trx_commit = 1。一批事务提交成功之后，机房跳闸断电，重启后这些事务还在吗？",
+    "options": {
+      "都在，一条不丢": "都在，一条不丢",
+      "丢最近一秒的": "丢最近一秒的",
+      "全部都会丢": "全部都会丢",
+      "只丢最后提交的一条": "只丢最后提交的一条"
+    },
+    "answer": "都在，一条不丢",
+    "explain": "=1 的含义就是「每次提交都 fsync 到磁盘」。断电只能带走没到磁盘的东西，而这一档没有留下任何没到磁盘的提交。代价是每次提交都要等一次同步 IO —— 快和安全在这档上是不可兼得的。"
+  },
+  {
+    "q": "同一个库改成 innodb_flush_log_at_trx_commit = 2。事务都回报提交成功，此刻机器整体断电（不是 kill 进程），重启后最坏情况是什么？",
+    "options": {
+      "丢最近一秒左右的提交": "丢最近一秒左右的提交",
+      "丢最近一分钟的提交": "丢最近一分钟的提交",
+      "所有提交都没事": "所有提交都没事",
+      "所有提交全丢光": "所有提交全丢光"
+    },
+    "answer": "丢最近一秒左右的提交",
+    "explain": "=2 在提交时把日志写给了操作系统（进了 page cache），但真正落盘靠每秒一次的后台 fsync。page cache 在断电时一起消失 —— 所以最多丢失这最后一秒内的提交。注意区分：kill 掉 mysqld 进程不会丢，因为 page cache 属于操作系统，不属于那个进程。"
+  },
+  {
+    "q": "PostgreSQL 里 synchronous_commit = off，业务侧看到事务提交成功了。随后数据库进程崩溃，机器本身没事，重启后这些事务还在吗？",
+    "options": {
+      "可能丢，进程崩也一样": "可能丢，进程崩也一样",
+      "不会丢，进程崩不丢": "不会丢，进程崩不丢",
+      "必然全丢，写都没写": "必然全丢，写都没写",
+      "不会丢，会自动重放": "不会丢，会自动重放"
+    },
+    "answer": "可能丢，进程崩也一样",
+    "explain": "这是本题的陷阱所在。synchronous_commit = off 并不保证「WAL 已经离开进程内存」—— 它只保证进程不会为了提交日志而等待。既然数据可能还在进程内部，那么进程崩溃和断电在这一点上没有区别。对比上一题：MySQL 的 =2 至少把它交给了操作系统，所以进程崩不丢；PostgreSQL 的 off 连这一层都不保证。两个旋钮看起来都是为了吞吐让步，但让掉的层数并不相同。"
+  },
+  {
+    "q": "如果只能记住一句话来解释「数据库凭什么敢保证提交不丢」，下面哪一句最准确？",
+    "options": {
+      "提交时数据页还没落盘，但改动日志落盘了": "提交时数据页还没落盘，但改动日志落盘了",
+      "提交时数据页和数据页索引都写盘了": "提交时数据页和数据页索引都写盘了",
+      "数据一直放在内存里，靠 UPS 保住": "数据一直放在内存里，靠 UPS 保住",
+      "提交只是标记，真正落盘在关机时": "提交只是标记，真正落盘在关机时"
+    },
+    "answer": "提交时数据页还没落盘，但改动日志落盘了",
+    "explain": "WAL 的全部要义：先顺序写日志、后随机写数据页。所以「提交成功」承诺的是「改动的记录已经安全」，而不是「数据已经在最终位置」。理解了这一点，checkpoint 是什么、redo log 为什么能循环覆盖、崩溃恢复为什么要重放，就都能自己推出来了。"
+  }
+]
+</script>
+
+<h2>九、留下来反复看的东西</h2>
+
+<details class="recall">
+    <summary>60 秒口述：被问「你们的数据库怎么保证不丢数据」</summary>
+    <div class="recall__body">
+        <p>
+            「分两层说。第一层是机制：数据库不会在提交时把数据页写回它该在的位置，那样太慢，
+            它走 WAL —— 先把改动顺序追加到日志里并 fsync，数据页由后台线程慢慢刷，崩溃了就靠日志重放。
+            所以我们说的『提交成功』，准确含义是『改动日志已经落盘』。
+            第二层是旋钮：这个 fsync 是可以关的。MySQL 的 <code>innodb_flush_log_at_trx_commit</code> 默认是 1，
+            也就是每次提交都同步落盘，我们线上保持默认，因为订单和余额不能丢；
+            PostgreSQL 那边 <code>synchronous_commit</code> 也是 on，因为我们的快照层要支持断点续跑，丢了就白跑。」
+        </p>
+        <p><strong>结构</strong>：机制一层 + 取舍一层 + 我为什么这么选。三层缺一层都会显得像背的。</p>
+    </div>
+</details>
+
+<details class="recall">
+    <summary>三层存储的判据（先自己回忆再看）</summary>
+    <div class="recall__body">
+        <table>
+            <thead><tr><th>问题</th><th>答案</th></tr></thead>
+            <tbody>
+                <tr><td>进程崩溃还活着吗</td><td>看数据有没有离开进程内存（<code>write()</code> 过没有）</td></tr>
+                <tr><td>断电还活着吗</td><td>看数据有没有被 <code>fsync()</code> 送到物理设备</td></tr>
+                <tr><td>怎么知道该担心哪一层</td><td>问自己：这个旋钮是在「每次提交」还是「每秒」叫 fsync</td></tr>
+            </tbody>
+        </table>
+        <p class="lesson-meta">
+            这一套判据后面还会用两次：讲 Redis 的 RDB/AOF（<code>appendfsync</code> 就是同一族旋钮），
+            以及讲 Kafka 的 <code>acks=all</code> 与刷盘策略（同一个问题的消息队列版本）。
+        </p>
+    </div>
+</details>
+
+<details class="recall">
+    <summary>概念扩展：第 1 课的隔离级别，和本课的持久性怎么合起来记</summary>
+    <div class="recall__body">
+        <p>ACID 里的这四条，各自在问一个不同层的问题 —— 分开记才不糊：</p>
+        <table>
+            <thead><tr><th>字母</th><th>在问什么</th><th>由什么实现</th></tr></thead>
+            <tbody>
+                <tr><td><strong>A</strong> 原子性</td><td>一半成功一半失败怎么办</td><td>undo log（做错了怎么撤回）</td></tr>
+                <tr><td><strong>C</strong> 一致性</td><td>约束和业务规则前前后后成立吗</td><td>靠前面三条兜出来的结果，不是独立机制</td></tr>
+                <tr><td><strong>I</strong> 隔离性</td><td>并发事务之间能看见对方多少</td><td>MVCC + 锁（第 1 课）</td></tr>
+                <tr><td><strong>D</strong> 持久性</td><td>说成功了之后能不能扛住崩溃</td><td><strong>WAL</strong>（本课）</td></tr>
+            </tbody>
+        </table>
+        <p>
+            <strong>容易混的一对是 undo 和 redo</strong>：undo 是「反悔用的」（要回滚时照着它撤），
+            redo 是「补课用的」（崩了之后照着它重放）。一个往前翻，一个往后翻。
+        </p>
+    </div>
+</details>
+
+<article class="ask-teacher">
+    <span class="callout__label">我是你的老师，随时追问</span>
+    <p>这一课最容易卡住的地方，任何一个不清楚直接问：</p>
+    <ul>
+        <li><strong>「checkpoint 到底是什么、为什么它决定了 redo log 能循环用」</strong> —— 我在正文里只用了一句带过，这块值得展开。</li>
+        <li><strong>「双 1 配置是什么」</strong> —— 生产环境常提到的 <code>sync_binlog=1</code> + <code>innodb_flush_log_at_trx_commit=1</code>，讲清它需要先把 binlog 的角色说明白。</li>
+        <li><strong>「为什么 PostgreSQL 的 off 比 MySQL 的 2 更危险」</strong> —— 测验第 3 题只是点了一句，这背后是 WAL writer 的调度方式差异。</li>
+    </ul>
+</article>
+
+<footer class="lesson-footer">
+    <h2>下一课（你来定）</h2>
+    <ul>
+        <li><strong>MQ 的四个失败场景</strong> —— 重复、丢失、顺序、积压。你的起点比自评高，可以直接上强度；而且「丢失」这一题正好接着本课讲（<code>acks</code> 就是 MQ 版的 <code>synchronous_commit</code>）。</li>
+        <li><strong>缓存持久化与内存管理</strong> —— 第 3 题。RDB/AOF 与 <code>appendfsync</code>，和本课是同一族旋钮，学起来会很快。</li>
+        <li><strong>为什么需要分布式锁、Pub/Sub 那一环干什么</strong> —— 第 2 题。会直接读你自己的 <code>cache.py</code>。</li>
+    </ul>
+    <p class="lesson-meta">
+        复习建议：今天做完就停。明天先做本课第八节的四道题 —— 别重读正文。
+        上面这套「三层 + 旋钮」的判据，在 Redis 和 Kafka 那两课还会各用一次，记不牢不怕，会反复遇到。
+    </p>
+</footer>
+
+<script src="../assets/quiz.js?v=3"></script>
+<script src="../assets/simulator.js?v=3"></script>
+
+</body>
+</html>

@@ -1,0 +1,628 @@
+/* ============================================================
+   中间件课程 — 共享样式表
+   所有 lesson-*.html 都链接这一份，保证整个课程观感统一。
+   设计取向：Tufte 式正文优先，可打印（打印时自动去噪）。
+   ============================================================ */
+
+/* ---------- 主题变量 ---------- */
+:root {
+    --ink: #1a1a1a;
+    --ink-soft: #4a4a4a;
+    --ink-faint: #6b6b6b;
+    --rule: #d8d4cc;
+    --rule-soft: #ebe8e1;
+    --paper: #fdfcfa;
+    --accent: #0f5c6b;
+    --accent-soft: #e8f2f4;
+    --good: #1f6b3a;
+    --good-bg: #eef6f0;
+    --bad: #a33a2a;
+    --bad-bg: #fbeeea;
+    --warn: #8a5b00;
+    --warn-bg: #fdf4e3;
+    --code-bg: #f4f2ee;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --ink: #e8e6e1;
+        --ink-soft: #c4c0b8;
+        --ink-faint: #9a958c;
+        --rule: #3a3a38;
+        --rule-soft: #2a2a28;
+        --paper: #16181a;
+        --accent: #6fc4d6;
+        --accent-soft: #1c2f34;
+        --good: #7fc79a;
+        --good-bg: #16271c;
+        --bad: #e08a79;
+        --bad-bg: #2a1a16;
+        --warn: #dfb469;
+        --warn-bg: #2a2113;
+        --code-bg: #22242a;
+    }
+}
+
+/* ---------- 重置与正文 ---------- */
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+}
+
+html {
+    -webkit-text-size-adjust: 100%;
+}
+
+body {
+    max-width: 44rem;
+    margin: 0 auto;
+    padding: 3rem 1.5rem 6rem;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Charter,
+        "Noto Serif SC", "Source Han Serif SC", "Songti SC", Georgia, serif;
+    font-size: 1.0625rem;
+    line-height: 1.72;
+    text-rendering: optimizeLegibility;
+    hyphens: auto;
+}
+
+/* ---------- 标题 ---------- */
+h1,
+h2,
+h3 {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC",
+        "PingFang SC", "Microsoft YaHei", sans-serif;
+    letter-spacing: -0.011em;
+    line-height: 1.25;
+    font-weight: 650;
+}
+
+h1 {
+    margin: 0 0 0.6rem;
+    font-size: 1.9rem;
+}
+
+h2 {
+    margin: 3.2rem 0 0.9rem;
+    padding-top: 0.9rem;
+    border-top: 1px solid var(--rule);
+    font-size: 1.28rem;
+}
+
+h3 {
+    margin: 2rem 0 0.55rem;
+    font-size: 1.06rem;
+}
+
+h2 + h3 {
+    margin-top: 1.2rem;
+}
+
+/* ---------- 文本元素 ---------- */
+p {
+    margin: 0 0 1.05rem;
+}
+
+a {
+    color: var(--accent);
+    text-decoration-thickness: 1px;
+    text-underline-offset: 0.16em;
+}
+
+a:hover {
+    text-decoration-thickness: 2px;
+}
+
+small,
+.lesson-meta {
+    color: var(--ink-faint);
+    font-size: 0.86rem;
+    line-height: 1.5;
+}
+
+hr {
+    height: 1px;
+    margin: 2.6rem 0;
+    border: 0;
+    background: var(--rule);
+}
+
+ul,
+ol {
+    padding-left: 1.35rem;
+    margin: 0 0 1.05rem;
+}
+
+li {
+    margin-bottom: 0.42rem;
+}
+
+li > ul,
+li > ol {
+    margin-top: 0.42rem;
+}
+
+strong {
+    font-weight: 650;
+}
+
+/* ---------- 代码 ---------- */
+code,
+kbd,
+pre {
+    font-family: "Cascadia Mono", "SF Mono", Menlo, Consolas, "Liberation Mono",
+        monospace;
+    font-size: 0.875em;
+}
+
+:not(pre) > code {
+    padding: 0.1em 0.32em;
+    border-radius: 3px;
+    background: var(--code-bg);
+}
+
+pre {
+    margin: 0 0 1.2rem;
+    padding: 0.9rem 1rem;
+    overflow-x: auto;
+    border: 1px solid var(--rule-soft);
+    border-radius: 5px;
+    background: var(--code-bg);
+    line-height: 1.55;
+}
+
+pre code {
+    padding: 0;
+    background: none;
+}
+
+kbd {
+    padding: 0.1em 0.35em;
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    background: var(--paper);
+    font-size: 0.82em;
+}
+
+/* ---------- 引用与外框 ---------- */
+blockquote {
+    margin: 0 0 1.2rem;
+    padding: 0 0 0 1rem;
+    border-left: 3px solid var(--rule);
+    color: var(--ink-soft);
+}
+
+blockquote p:last-child {
+    margin-bottom: 0;
+}
+
+.site-header {
+    margin-bottom: 2.6rem;
+    padding-top: 0.7rem;
+    border-top: 3px solid var(--accent);
+}
+
+/* ---------- 提示块 ---------- */
+.callout {
+    margin: 1.4rem 0;
+    padding: 0.85rem 1.05rem;
+    border-left: 3px solid var(--rule);
+    border-radius: 0 4px 4px 0;
+    background: var(--accent-soft);
+}
+
+.callout > :last-child {
+    margin-bottom: 0;
+}
+
+.callout--warn {
+    border-left-color: var(--warn);
+    background: var(--warn-bg);
+}
+
+.callout--danger {
+    border-left-color: var(--bad);
+    background: var(--bad-bg);
+}
+
+.callout--good {
+    border-left-color: var(--good);
+    background: var(--good-bg);
+}
+
+.callout__label {
+    display: block;
+    margin-bottom: 0.3rem;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC",
+        "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--accent);
+}
+
+.callout--warn .callout__label {
+    color: var(--warn);
+}
+
+.callout--danger .callout__label {
+    color: var(--bad);
+}
+
+.callout--good .callout__label {
+    color: var(--good);
+}
+
+/* ---------- 表格 ---------- */
+table {
+    width: 100%;
+    margin: 1.4rem 0;
+    border-collapse: collapse;
+    font-size: 0.93rem;
+}
+
+th,
+td {
+    padding: 0.5rem 0.65rem;
+    border-bottom: 1px solid var(--rule-soft);
+    text-align: left;
+    vertical-align: top;
+}
+
+thead th {
+    border-bottom: 1px solid var(--rule);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC",
+        "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-size: 0.82rem;
+    font-weight: 650;
+    color: var(--ink-soft);
+}
+
+tbody tr:hover {
+    background: var(--accent-soft);
+}
+
+/* ---------- 对照面板（并排比较） ---------- */
+.compare {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+    gap: 1rem;
+    margin: 1.4rem 0;
+}
+
+.compare > * {
+    padding: 0.85rem 1rem;
+    border: 1px solid var(--rule-soft);
+    border-radius: 5px;
+}
+
+.compare > * > :last-child {
+    margin-bottom: 0;
+}
+
+/* ---------- 诊断测验 ---------- */
+.quiz {
+    margin: 1.6rem 0;
+    padding: 1.05rem 1.15rem;
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    background: var(--paper);
+}
+
+.quiz__question {
+    margin-bottom: 0.75rem;
+    font-weight: 650;
+}
+
+.quiz__options {
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+}
+
+.quiz__option {
+    padding: 0.55rem 0.75rem;
+    border: 1px solid var(--rule-soft);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: border-color 0.12s, background 0.12s;
+}
+
+.quiz__option:hover {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+}
+
+.quiz__option[data-state="correct"] {
+    border-color: var(--good);
+    background: var(--good-bg);
+}
+
+.quiz__option[data-state="wrong"] {
+    border-color: var(--bad);
+    background: var(--bad-bg);
+}
+
+.quiz__feedback {
+    display: none;
+    margin: 0.85rem 0 0;
+    padding-top: 0.75rem;
+    border-top: 1px dashed var(--rule);
+    color: var(--ink-soft);
+    font-size: 0.94rem;
+}
+
+.quiz__feedback[data-visible="true"] {
+    display: block;
+}
+
+/* ---------- 写路径 / 持久化模拟器 ---------- */
+.sim {
+    margin: 1.6rem 0;
+    padding: 1.05rem 1.15rem;
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+}
+
+.sim > :last-child {
+    margin-bottom: 0;
+}
+
+.sim__controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+}
+
+.sim__knob,
+.sim__action {
+    padding: 0.42rem 0.8rem;
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    background: var(--paper);
+    color: var(--ink);
+    cursor: pointer;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC",
+        "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-size: 0.86rem;
+}
+
+.sim__knob:hover,
+.sim__action:hover {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+}
+
+.sim__knob--active {
+    border-color: var(--accent);
+    background: var(--accent);
+    font-weight: 650;
+}
+
+@media (prefers-color-scheme: dark) {
+    .sim__knob--active {
+        color: var(--paper);
+    }
+}
+
+.sim__action--danger:hover {
+    border-color: var(--bad);
+    background: var(--bad-bg);
+}
+
+.sim__note {
+    flex-basis: 100%;
+    margin: 0.35rem 0 0;
+    color: var(--ink-faint);
+    font-size: 0.86rem;
+}
+
+.sim__layers {
+    margin: 1.1rem 0;
+}
+
+.sim__layer {
+    padding: 0.7rem 0.85rem;
+    margin-bottom: 0.5rem;
+    border: 1px solid var(--rule-soft);
+    border-radius: 5px;
+}
+
+.sim__layer-head {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC",
+        "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-size: 0.9rem;
+    font-weight: 650;
+}
+
+.sim__layer-sub {
+    margin-top: 0.1rem;
+    color: var(--ink-faint);
+    font-size: 0.8rem;
+}
+
+.sim__cells {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.38rem;
+    margin-top: 0.6rem;
+    min-height: 1.9rem;
+}
+
+.sim__cell {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.28rem;
+    padding: 0.24rem 0.5rem;
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    background: var(--paper);
+    font-family: "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.8rem;
+}
+
+.sim__cell-flag {
+    font-size: 0.75rem;
+    color: var(--ink-faint);
+}
+
+.sim__cell--doomed {
+    border-color: var(--bad);
+    color: var(--bad);
+}
+
+.sim__cell--pending {
+    border-color: var(--warn);
+    border-style: dashed;
+    background: var(--warn-bg);
+}
+
+.sim__cell--survivor {
+    border-color: var(--good);
+    background: var(--good-bg);
+}
+
+.sim__empty {
+    color: var(--ink-faint);
+    font-size: 0.86rem;
+}
+
+.sim__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    margin-bottom: 0.9rem;
+}
+
+.sim__status {
+    padding: 0.75rem 0.9rem;
+    border-left: 3px solid var(--accent);
+    border-radius: 0 4px 4px 0;
+    background: var(--accent-soft);
+    font-size: 0.92rem;
+}
+
+/* ---------- 回忆卡（先自己想，再展开） ---------- */
+.recall {
+    margin: 1.4rem 0;
+    border: 1px dashed var(--rule);
+    border-radius: 6px;
+}
+
+.recall > summary {
+    padding: 0.7rem 0.95rem;
+    cursor: pointer;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC",
+        "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-size: 0.92rem;
+    font-weight: 650;
+    color: var(--accent);
+    list-style: none;
+}
+
+.recall > summary::-webkit-details-marker {
+    display: none;
+}
+
+.recall > summary::before {
+    content: "▸ ";
+}
+
+.recall[open] > summary::before {
+    content: "▾ ";
+}
+
+.recall__body {
+    padding: 0 0.95rem 0.8rem;
+    border-top: 1px solid var(--rule-soft);
+}
+
+.recall__body > :first-child {
+    margin-top: 0.8rem;
+}
+
+/* ---------- 页脚导航 ---------- */
+.lesson-footer {
+    margin-top: 3.6rem;
+    padding-top: 1.2rem;
+    border-top: 1px solid var(--rule);
+    font-size: 0.9rem;
+    color: var(--ink-soft);
+}
+
+.lesson-footer h2 {
+    margin-top: 0;
+    padding-top: 0;
+    border-top: 0;
+    font-size: 1.05rem;
+}
+
+/* 提问提示：每课都要有 */
+.ask-teacher {
+    margin: 1.6rem 0 0;
+    padding: 0.85rem 1rem;
+    border: 1px solid var(--accent);
+    border-radius: 5px;
+    background: var(--accent-soft);
+    font-size: 0.94rem;
+}
+
+.ask-teacher > :last-child {
+    margin-bottom: 0;
+}
+
+/* ---------- 打印 ---------- */
+@media print {
+    :root {
+        --paper: #fff;
+        --ink: #000;
+        --ink-soft: #333;
+        --ink-faint: #555;
+        --rule: #bbb;
+        --rule-soft: #ddd;
+        --accent: #0f5c6b;
+        --accent-soft: #f2f7f8;
+        --good-bg: #f2f8f4;
+        --bad-bg: #fdf3f0;
+        --warn-bg: #fdf8ee;
+        --code-bg: #f6f5f2;
+    }
+
+    body {
+        max-width: none;
+        padding: 0;
+        font-size: 10.5pt;
+        line-height: 1.5;
+    }
+
+    h2 {
+        break-after: avoid;
+    }
+
+    pre,
+    table,
+    .callout,
+    .quiz,
+    .compare {
+        break-inside: avoid;
+    }
+
+    .quiz__option {
+        cursor: default;
+    }
+
+    a {
+        color: var(--ink);
+        text-decoration: underline;
+    }
+
+    a[href^="http"]::after {
+        content: " (" attr(href) ")";
+        font-size: 8.5pt;
+        color: var(--ink-faint);
+        word-break: break-all;
+    }
+}

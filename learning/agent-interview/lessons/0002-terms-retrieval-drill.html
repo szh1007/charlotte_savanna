@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>第 2 课 · 反查训练：把机制换成行业词</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+</head>
+<body>
+<main class="lesson" data-lesson="0002-terms-retrieval-drill">
+
+  <p class="lesson__kicker">Lesson 02 · 反查训练</p>
+  <h1>把机制换成行业词</h1>
+  <p class="lede">
+    这一课<b>不教新东西</b> —— 它是纯产出练习。首课诊断出的卡点很具体：
+    你<b>认识</b> harness、能选对它的定义，但<b>说不出</b>它。
+    识别和产出是两套神经通路，只能分开练。
+  </p>
+
+  <div class="meta">
+    <span>2026-10-10</span>
+    <span>约 20 分钟</span>
+    <span>配套底稿：<a href="../reference/terms-and-calibration.md">术语与口径 · 话术底稿</a></span>
+    <span><a href="../MISSION.md">Mission</a></span>
+  </div>
+
+  <div class="callout callout--key">
+    <span class="callout__label">怎么用这一课</span>
+    <ul>
+      <li><b>每题都必须先出声</b>。默念一遍不算 —— 面试考的是嘴巴，不是眼睛。</li>
+      <li>答案没把握就<b>直接点「答漏了」</b>，别给面子分。自评的数据是下一课的依据。</li>
+      <li>背不下来不用慌 —— 说明白去看底稿，隔天再回来做一遍。这才是间隔重复。</li>
+    </ul>
+  </div>
+
+  <div class="progress" data-progress></div>
+
+  <!-- ============================================ -->
+  <h2 id="round1"><span class="num">1</span>第一轮：给机制，说行业词</h2>
+
+  <p>
+    每题是一段<b>不带任何术语</b>的机制描述 —— 你要说出它<b>在行业里叫什么</b>，
+    并且补一句「我这边对应的是什么」。
+  </p>
+
+  <div class="quiz">
+
+    <div class="recall" data-qid="d1">
+      <p class="recall__prompt">反查 1 · 「上下文越长，模型对中间内容的召回反而越差 —— 因为注意力是一种预算，token 越多越被稀释」</p>
+      <p class="recall__hint">这个现象的行业名是什么？出自哪家？</p>
+      <button class="btn btn--reveal" type="button">先说出口，再展开参考</button>
+      <div class="recall__answer">
+        <p><b>Context rot</b>（上下文腐化）。出处：Anthropic《Effective context engineering for AI agents》。</p>
+        <p>
+          它给出的机制解释是 <b>n² 注意力 + 训练分布偏好短序列</b>，所以结论是
+          「上下文是<b>递减边际收益</b>的有限资源」。相关的一手研究是
+          <a href="https://arxiv.org/abs/2307.03172">Lost in the Middle</a>（信息位置呈 <b>U 型</b>，放中间最容易被忽略）
+          与 <a href="https://arxiv.org/abs/2502.05167">NoLiMa</a>（去掉字面匹配后，11 个模型在 32K 处普遍跌破短上下文基线的 50%）。
+        </p>
+        <p>
+          <b>「我这边对应什么」</b>：我压缩的触发判据量的是<b>投影</b>而不是账本 ——
+          如果拿账本判，压完一次就永远超线。这条设计的目标正是别让 token 无谓地堆上去。
+        </p>
+      </div>
+      <div class="recall__grade">
+        <button class="grade-btn" data-grade="hit" type="button">答稳了</button>
+        <button class="grade-btn" data-grade="miss" type="button">答漏了</button>
+        <button class="grade-btn" data-grade="lost" type="button">没答上</button>
+      </div>
+    </div>
+
+    <div class="recall" data-qid="d2">
+      <p class="recall__prompt">反查 2 · 「上下文快到上限时，模型开始敷衍、急着收尾，质量明显下降」</p>
+      <p class="recall__hint">这个现象的行业名是什么？它后来怎么样了？</p>
+      <button class="btn btn--reveal" type="button">先说出口，再展开参考</button>
+      <div class="recall__answer">
+        <p><b>Context Anxiety</b>。出处：Anthropic《Scaling Managed Agents》。</p>
+        <p>
+          <b>关键是要说出后续</b>：Anthropic 记录它「在 Sonnet 4.5 上明显，到 Opus 4.5 消失了，
+          于是 context reset 反而成了负担」。由此得出的那句话才是这条的价值 ——
+          <b>「工程手段会随模型换代失效。」</b>
+        </p>
+        <p>
+          <b>「我这边对应什么」</b>：`finish_reason` <b>六态分流</b> —— 尤其是 `length` 截断走续写或精简，
+          <b>上游中断绝不当答案返回</b>。这是把「一次收尾」的信号接住而不是放过去。
+        </p>
+      </div>
+      <div class="recall__grade">
+        <button class="grade-btn" data-grade="hit" type="button">答稳了</button>
+        <button class="grade-btn" data-grade="miss" type="button">答漏了</button>
+        <button class="grade-btn" data-grade="lost" type="button">没答上</button>
+      </div>
+    </div>
+
+    <div class="recall" data-qid="d3">
+      <p class="recall__prompt">反查 3 · 「压缩不够的时候，干脆把上下文重置掉，把状态挪到外部存储」</p>
+      <p class="recall__hint">这个名字是什么？你项目里和它最像的一条 ADR 是哪条？</p>
+      <button class="btn btn--reveal" type="button">先说出口，再展开参考</button>
+      <div class="recall__answer">
+        <p><b>Context Reset</b>。出处：Anthropic《Scaling Managed Agents》与《Effective harnesses for long-running agents》。</p>
+        <p>
+          <b>「我这边对应什么」</b>：<b>ADR-0012「摘要失败不切刀，只有上游报超窗口才允许硬裁」</b>。
+          措辞上要说清差别：行业做法把 reset 当<b>兜底动作</b>，我做成了<b>有判据的规则</b> ——
+          代价是压缩压力更大，收益是绝不因为自己的判断失误丢历史。
+        </p>
+        <p>这是这一轮里最该背熟的一条 —— 它同时覆盖「行业词」和「我的独到之处」。</p>
+      </div>
+      <div class="recall__grade">
+        <button class="grade-btn" data-grade="hit" type="button">答稳了</button>
+        <button class="grade-btn" data-grade="miss" type="button">答漏了</button>
+        <button class="grade-btn" data-grade="lost" type="button">没答上</button>
+      </div>
+    </div>
+
+    <div class="recall" data-qid="d4">
+      <p class="recall__prompt">反查 4 · 「子 agent 自己攒上下文，跑完只把结论交回来，中间过程父 agent 看不到」</p>
+      <p class="recall__hint">机制名 + 两种模式的官方叫法分别是什么？</p>
+      <button class="btn btn--reveal" type="button">先说出口，再展开参考</button>
+      <div class="recall__answer">
+        <p><b>Context quarantine（上下文隔离）</b>。官方出处：LangChain Deep Agents 的 subagents 文档，
+          两种模式叫 <b>isolate</b>（默认，子 agent 只看到被委派的那句任务）/ <b>fork</b>（继承父对话与 system prompt）。</p>
+        <p>
+          <b>为什么它重要</b>：这是「subagent 为什么省 token」的标准答案 ——
+          Anthropic 给的具体数字是<b>子 agent 探索数万 token，只回传 1,000–2,000 token 的蒸馏摘要</b>。
+        </p>
+        <p>
+          <b>「我这边对应什么」</b>：`project/deep_search` 的 Supervisor + 私有记忆 —— 用的就是 isolate。
+          代价要说出来：<b>父看不到中间过程</b>，所以子 agent 回传的结论必须自带证据。
+        </p>
+      </div>
+      <div class="recall__grade">
+        <button class="grade-btn" data-grade="hit" type="button">答稳了</button>
+        <button class="grade-btn" data-grade="miss" type="button">答漏了</button>
+        <button class="grade-btn" data-grade="lost" type="button">没答上</button>
+      </div>
+    </div>
+
+    <div class="recall" data-qid="d5">
+      <p class="recall__prompt">反查 5 · 「能力描述和指令不要一次性全塞进上下文，用到哪一层加载哪一层」</p>
+      <p class="recall__hint">这个名字是什么？它出现得比你想象的早 —— 在你自己的哪份文件里？</p>
+      <button class="btn btn--reveal" type="button">先说出口，再展开参考</button>
+      <div class="recall__answer">
+        <p><b>Progressive disclosure（渐进式披露）</b>。出处：Anthropic context engineering 文 + Claude Code 文档。</p>
+        <p>
+          <b>你最该记住的一句</b>：这不是新东西 —— <code>DESIGN #51</code> 里你自己写过
+          「<b>三级渐进披露 + 三级路由；description 是路由的索引</b>」。
+          首课那道校准选择题你答对了，说明你知道它；这一张卡要练的是<b>能在口述里主动用它</b>。
+        </p>
+        <p>
+          <b>加分延展</b>：MCP 侧有对应的官方 extension（<code>Skills over MCP</code>）；Claude Code 的经验值是把
+          <code>AGENTS.md</code> / <code>CLAUDE.md</code> 控制在约 100 行 —— 超了效果变差。
+        </p>
+      </div>
+      <div class="recall__grade">
+        <button class="grade-btn" data-grade="hit" type="button">答稳了</button>
+        <button class="grade-btn" data-grade="miss" type="button">答漏了</button>
+        <button class="grade-btn" data-grade="lost" type="button">没答上</button>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ============================================ -->
+  <h2 id="round2"><span class="num">2</span>第二轮：给行业词，说你的东西</h2>
+
+  <p>方向反过来 —— 面试官先抛一个行业词，你要立刻接上「我这边对应什么」。这一轮考的是<b>映射速度</b>。</p>
+
+  <div class="quiz">
+
+    <div class="recall" data-qid="r2-1">
+      <p class="recall__prompt">对位 1 · 面试官问：「你做的是 harness 还是 agent 应用？」</p>
+      <p class="recall__hint">一两句话，要素齐就行：定位 + 为什么这么分 + 最薄的是哪层</p>
+      <button class="btn btn--reveal" type="button">先说出口，再展开参考</button>
+      <div class="recall__answer">
+        <p>
+          <b>Harness。</b>「我做的全程在 harness 层 —— 循环、事件、状态与上下文管理、权限、脱敏都是自研的；
+          <b>模型接口是其中最薄的一层</b>，这也是刻意的：这样模型换代时我的工作量接近零。
+          业务应用是另一个项目（CharApp），它建在这套 harness 上。」
+        </p>
+        <p>
+          <b>为什么要强调「最薄」</b>：它在回答一个没说出口的问题 ——
+          「你造这个轮子，模型一升级不就废了？」主动把这个问题答掉，后面就没人再问。
+        </p>
+      </div>
+      <div class="recall__grade">
+        <button class="grade-btn" data-grade="hit" type="button">答稳了</button>
+        <button class="grade-btn" data-grade="miss" type="button">答漏了</button>
+        <button class="grade-btn" data-grade="lost" type="button">没答上</button>
+      </div>
+    </div>
+
+    <div class="recall" data-qid="r2-2">
+      <p class="recall__prompt">对位 2 · 面试官问：「pass@k 和 pass^k 有什么区别？你的评测是哪种？」</p>
+      <p class="recall__hint">这题你很可能没准备过，但你的跑批方式恰好就是其中一种</p>
+      <button class="btn btn--reveal" type="button">先说出口，再展开参考</button>
+      <div class="recall__answer">
+        <p>
+          <b>pass@k</b> = 给 k 次机会，能不能做对<b>一次</b> —— 测的是<b>能力上限</b>。
+          <b>pass^k</b> = k 次<b>全都</b>做对 —— 测的是<b>可靠性</b>。
+          <b>同一份数据上，两个口径可以给出相反的结论</b>（这是被点名的经典坑）。
+          出处：Anthropic《Demystifying evals for AI agents》。
+        </p>
+        <p>
+          <b>「我这边对应什么」</b>：我的跑批是<b>每题跑 3 次取分布</b> ——
+          这在方法论上就是走 <b>pass^k 那一侧</b>（关心稳定性而非某次撞对）。
+          缺的只是把这个名字说出口。
+        </p>
+        <p>
+          <b>顺带能讲的一句</b>：Agent 场景更该看 pass^k —— 因为多步任务的错误是<b>复合</b>的，
+          单步 95% 正确、20 步后只剩约 36%。
+        </p>
+      </div>
+      <div class="recall__grade">
+        <button class="grade-btn" data-grade="hit" type="button">答稳了</button>
+        <button class="grade-btn" data-grade="miss" type="button">答漏了</button>
+        <button class="grade-btn" data-grade="lost" type="button">没答上</button>
+      </div>
+    </div>
+
+    <div class="recall" data-qid="r2-3">
+      <p class="recall__prompt">对位 3 · 面试官问：「LangGraph 的 checkpointer 和 Store 什么区别？你的对应物是什么？」</p>
+      <p class="recall__hint">这题是纯对比题，标准答法是三段：对方是什么 / 我的是什么 / 差异的代价</p>
+      <button class="btn btn--reveal" type="button">先说出口，再展开参考</button>
+      <div class="recall__answer">
+        <p>
+          <b>对方</b>：checkpointer 是 <b>thread 级短期</b>（存单个会话的图状态，支撑断点续跑与 HITL），
+          Store 是<b>跨 thread 长期</b>（跨会话的共享记忆）。两个概念是<b>分开</b>的。
+        </p>
+        <p>
+          <b>我的</b>：同一套区分，换了名字 —— <b>快照</b>（每 Turn 一帧、按 `thread_id` 分区）
+          vs <b>`charagent_memories`</b>（跨会话长期记忆）。
+        </p>
+        <p>
+          <b>分开的理由（这是那三段里的第三段）</b>：它们回答两个不同问题 ——
+          快照答「<b>这次跑到哪了</b>」，长期记忆答「<b>这个人是谁</b>」。
+          合并的话，一次会话的中间状态会污染长期画像。
+        </p>
+      </div>
+      <div class="recall__grade">
+        <button class="grade-btn" data-grade="hit" type="button">答稳了</button>
+        <button class="grade-btn" data-grade="miss" type="button">答漏了</button>
+        <button class="grade-btn" data-grade="lost" type="button">没答上</button>
+      </div>
+    </div>
+
+    <div class="recall" data-qid="r2-4">
+      <p class="recall__prompt">对位 4 · 面试官问：「trajectory eval 和 outcome eval 怎么分工？」</p>
+      <p class="recall__hint">你有一整套现成的对应物，而且是同行少有的一档</p>
+      <button class="btn btn--reveal" type="button">先说出口，再展开参考</button>
+      <div class="recall__answer">
+        <p>
+          <b>定义</b>：outcome（轨迹之外）看最终结果对不对；trajectory（轨迹）看<b>过程</b> ——
+          调了哪些工具、几步、花多少。适合诊断「为什么错」。
+        </p>
+        <p>
+          <b>分工口径（可直接背）</b>：<b>结果做回归门禁，轨迹做归因。</b>
+        </p>
+        <p>
+          <b>「我这边对应什么」</b>：`judges.py` 里两条正好分开 ——
+          <b>工具选择、参数正确率</b>属轨迹判据；<b>回答合规（有没有复述敏感值）、markdown 格式</b>属结果判据。
+          并且这个拆分是<b>刻意的</b>：两张文本判据分开，是因为「说了不该说的」和「写出了会显示成星号的记号」
+          要改的地方根本不是同一处。
+        </p>
+      </div>
+      <div class="recall__grade">
+        <button class="grade-btn" data-grade="hit" type="button">答稳了</button>
+        <button class="grade-btn" data-grade="miss" type="button">答漏了</button>
+        <button class="grade-btn" data-grade="lost" type="button">没答上</button>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ============================================ -->
+  <h2 id="calibration"><span class="num">3</span>第三轮：口径判断（首课失分的那类）</h2>
+
+  <div class="quiz">
+
+    <div class="q" data-type="mcq" data-qid="c1">
+      <p class="q__prompt"><span class="q__tag">口径</span>面试官问「你这次优化提升了多少」。你确实有 A/B 数据，但差异落在噪声范围内。哪种答法最好？</p>
+      <ul class="options">
+        <li class="opt" data-correct="false">报出最好那一趟的数字，并说明这是三次里表现最好的一次</li>
+        <li class="opt" data-correct="false">报三次的平均值，不提离散程度，避免把回答说得太复杂</li>
+        <li class="opt" data-correct="true">照实说差异落在臂内极差以内，据此判断这批题上没测出提升</li>
+        <li class="opt" data-correct="false">把话题转到同一批 A/B 里另一个确实出现了差异的指标上</li>
+      </ul>
+      <div class="feedback">
+        <strong>对：照实说「没测出差异」。</strong>
+        这比任何涨幅都值钱 —— 它同时证明三件事：你做过 A/B、你会读离散程度、<b>你不会挑对自己有利的数字</b>。
+        面试官对数字的信任是一次性的：发现一个数字是挑出来的，后面全部存疑。
+        <br><br>
+        第 1 项是「挑最好一趟」，第 2 项是「藏离散程度」，两者都是同一个问题的两种变体；
+        第 4 项换指标回避问题，会被立刻追回原题。
+        <br><span style="font-size:0.85em">你自己的真实例证：工具数量 A/B 的结论就是「差都落在臂内极差以内」—— 这话你已经在 PLAN 里写过了，只需要在面试里说得一样直。</span>
+      </div>
+    </div>
+
+    <div class="q" data-type="mcq" data-qid="c2">
+      <p class="q__prompt"><span class="q__tag">口径</span>被问「你这套东西有多少人在用」时，哪种开场最稳？</p>
+      <ul class="options">
+        <li class="opt" data-correct="false">先说使用规模的估算区间，并说明这个区间是怎么推算出来的</li>
+        <li class="opt" data-correct="true">先说这是自建作品、没有对外用户量，再给出等价的评测规模</li>
+        <li class="opt" data-correct="false">先说技术架构，把话题从使用规模引向系统本身的设计难度</li>
+        <li class="opt" data-correct="false">先说未来如果有用户量的预期目标，再回到当前的技术实现</li>
+      </ul>
+      <div class="feedback">
+        <strong>对：先承认性质，再给等价的量化替代。</strong>
+        面试官问使用规模的<b>真实意图是「你有没有度量意识」</b>，不是要招一个真有流量的产品。
+        承认边界 + 给替代口径，两个诉求一次满足。
+        <br><br>
+        第 1 项最危险：编一个区间比直接说「没有」伤得多 —— 面试官一旦发现一个数字是编的，会怀疑所有数字。
+        第 3 项是回避，第 4 项是画饼，都不如第 2 项干净。
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ============================================ -->
+  <h2 id="followup"><span class="num">4</span>被追问三层</h2>
+
+  <div class="followup">
+    <h3>做完把这几个数告我，我据此出第 3 课</h3>
+    <ol>
+      <li><b>第一轮哪几张卡答不上？</b>如果「给机制说词」失分多，说明术语还没进长期记忆 —— 第 3 课会加间隔复习；如果集中在对位卡，说明是映射不熟，方向完全不同。</li>
+      <li><b>「对位 2 」（pass@k）答得上吗？</b>这张卡是你<b>最可能没准备过</b>的 —— 因为你的做法对了，但名字是新的。它是下一个大主题（评测口径）的入口，答不上我就把第 3 课整个放在评测上。</li>
+      <li><b>第三轮两道口径题，你选的时候有没有犹豫？</b>如果犹豫了但你选的答案是对的，说明判断标准还没内化 —— 这会在真实面试里被追穿的，因为面试官会加压。</li>
+    </ol>
+    <p class="followup__note">
+      另外：这一课有没有哪张卡你觉得「参考答法不对/不像我说话」？告诉我，我改成你的口径 ——
+      背别人的句式记不牢。
+    </p>
+  </div>
+
+  <!-- ============================================ -->
+  <h2 id="primary-source"><span class="num">5</span>本课的一手来源</h2>
+
+  <div class="source-primary">
+    <span class="callout__label">首推精读</span>
+    <p>
+      <a href="https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents">Anthropic《Effective context engineering for AI agents》</a>
+    </p>
+    <p>
+      第一轮五张卡里有三张（context rot / progressive disclosure / JIT retrieval）出在这一篇。读它要带一个具体问题：
+      <b>「它讲的四件事分别对应我项目里的哪一处？」</b> —— 找到四处的过程，就是把你的项目摆进坐标系的过程。约 25 分钟。
+    </p>
+  </div>
+
+  <div class="ask-teacher">
+    <strong>背不下来不用自己扛。</strong>
+    告诉我哪几条记不住，我给你做<b>记忆钩子</b>（比如把 context rot / anxiety / reset 三个词串成一条因果链，
+    比散着背牢得多）。也可以让我换成追问的形式练 —— 我抛词你答，比看卡快。
+  </div>
+
+  <nav class="lesson-nav">
+    <span><a href="0001-the-battlefield-map.html">← 第 1 课 · 战场地图</a></span>
+    <span><a href="../reference/terms-and-calibration.md">话术底稿（背诵用）→</a></span>
+  </nav>
+
+</main>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

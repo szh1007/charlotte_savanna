@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>第 3 课 · 评测与口径：预判下一句追问</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+</head>
+<body>
+<main class="lesson" data-lesson="0003-eval-and-calibration">
+
+  <p class="lesson__kicker">Lesson 03 · 评测与口径</p>
+  <h1>预判下一句追问</h1>
+  <p class="lede">
+    口径能力不是「报数字时加一句说明」，而是<b>在面试官开口之前就知道他会追什么</b>。
+    这一课把它练成一个可预测的动作 —— 而练的素材是你自己的真实数字。
+  </p>
+
+  <div class="meta">
+    <span>2026-10-10</span>
+    <span>约 30 分钟</span>
+    <span>配套：<a href="../reference/terms-and-calibration.md">话术底稿</a>（新增 §2.4 四个易忘词的记忆钩子）</span>
+    <span><a href="../MISSION.md">Mission</a></span>
+  </div>
+
+  <div class="callout callout--key">
+    <span class="callout__label">为什么整课都放在评测上</span>
+    <p>三个<b>互相独立</b>的信号指向同一处：</p>
+    <ol>
+      <li>首课的选择题里，<b>判断力题</b>（怎么证明新版本更好）是唯一失分的</li>
+      <li>第 2 课的四张失分卡里，<b>两张是评测术语</b>（pass@k / trajectory vs outcome）</li>
+      <li>第 2 课两道口径题<b>选对了但有犹豫</b> —— 标准还没内化</li>
+    </ol>
+    <p>
+      而中文侧与英文侧两路调研是<b>分开做的</b>，却都判定：<b>评测是市场区分度最高的一簇</b>
+      （英文侧直接叫它 <i>the differentiator</i>）。
+      <b>你最弱的地方，正好是市场最看重的地方</b> —— 这是这门课开到现在最该投入的一课。
+    </p>
+  </div>
+
+  <div class="progress" data-progress></div>
+
+  <!-- ============================================ -->
+  <h2 id="spaced"><span class="num">1</span>先花两分钟：四个词重测</h2>
+
+  <p>
+    上次没答上的四个词 —— 现在隔了一轮再测。<b>能想起来说明进长期记忆了</b>；
+    想不起来就再背一次 §2.4 的钩子，这个反复本身就是方法。
+  </p>
+
+  <div class="quiz">
+
+    <div class="recall" data-qid="s1">
+      <p class="recall__prompt">重测 · 「模型快满上下文时开始敷衍、急着收尾」叫什么？</p>
+      <button class="btn btn--reveal" type="button">先答再看</button>
+      <div class="recall__answer">
+        <p><b>Context Anxiety</b>。因果链记法：<b>rot 是机制 → anxiety 是症状 → reset 是处方</b>。</p>
+      </div>
+      <div class="recall__grade">
+        <button class="grade-btn" data-grade="hit" type="button">想起来了</button>
+        <button class="grade-btn" data-grade="miss" type="button">差一点</button>
+        <button class="grade-btn" data-grade="lost" type="button">还是没想起来</button>
+      </div>
+    </div>
+
+    <div class="recall" data-qid="s2">
+      <p class="recall__prompt">重测 · 「子 agent 自行积累上下文、只回传结论」的机制名 + 两种模式名？</p>
+      <button class="btn btn--reveal" type="button">先答再看</button>
+      <div class="recall__answer">
+        <p><b>Context quarantine</b>；模式是 <b>isolate</b>（默认）/ <b>fork</b>。quarantine = 检疫隔离，回来只带结论。</p>
+      </div>
+      <div class="recall__grade">
+        <button class="grade-btn" data-grade="hit" type="button">想起来了</button>
+        <button class="grade-btn" data-grade="miss" type="button">差一点</button>
+        <button class="grade-btn" data-grade="lost" type="button">还是没想起来</button>
+      </div>
+    </div>
+
+    <div class="recall" data-qid="s3">
+      <p class="recall__prompt">重测 · 「k 次机会里至少中一次」vs「k 次全都得中」，分别叫什么？你的跑批是哪一种？</p>
+      <button class="btn btn--reveal" type="button">先答再看</button>
+      <div class="recall__answer">
+        <p><b>pass@k</b>（能力上限）vs <b>pass^k</b>（可靠性）。符号提示：<code>@</code> = 至少一次，<code>^</code> = 全都要中。</p>
+        <p>你<b>每题跑 3 次取分布 → 走的是 pass^k 那一侧</b>。</p>
+      </div>
+      <div class="recall__grade">
+        <button class="grade-btn" data-grade="hit" type="button">想起来了</button>
+        <button class="grade-btn" data-grade="miss" type="button">差一点</button>
+        <button class="grade-btn" data-grade="lost" type="button">还是没想起来</button>
+      </div>
+    </div>
+
+    <div class="recall" data-qid="s4">
+      <p class="recall__prompt">重测 · 「轨迹评估」和「结果评估」一句话怎么分？分工口径是什么？</p>
+      <button class="btn btn--reveal" type="button">先答再看</button>
+      <div class="recall__answer">
+        <p><b>轨迹答「怎么走的」，结果答「到没到」。</b>分工口径：<b>结果做回归门禁，轨迹做归因。</b></p>
+        <p>对应物：`judges.py` 的工具选择 / 参数正确率 = 轨迹；回答合规 / markdown 格式 = 结果。</p>
+      </div>
+      <div class="recall__grade">
+        <button class="grade-btn" data-grade="hit" type="button">想起来了</button>
+        <button class="grade-btn" data-grade="miss" type="button">差一点</button>
+        <button class="grade-btn" data-grade="lost" type="button">还是没想起来</button>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ============================================ -->
+  <h2 id="principle"><span class="num">2</span>一条原则，解释你为什么会犹豫</h2>
+
+  <div class="quiz">
+    <div class="q" data-type="mcq" data-qid="p1">
+      <p class="q__prompt"><span class="q__tag">原则</span>面试官对你报出的数字的信任，属于哪一种？</p>
+      <ul class="options">
+        <li class="opt" data-correct="false">可累积的：报对几个就开始建立信任，越报越可信</li>
+        <li class="opt" data-correct="true">一次性的：发现一个数字是挑出来的，后面全部存疑</li>
+        <li class="opt" data-correct="false">看岗位的：技术岗对数字更宽容，产品岗更严格</li>
+        <li class="opt" data-correct="false">看类型的：性能数字严格，业务数字可以概略一些</li>
+      </ul>
+      <div class="feedback">
+        <strong>对：一次性的。</strong>
+        这就是你犹豫的根源 —— 安全答法要求你<b>主动放弃一个对自己有利的数字</b>，
+        而这在面试压力下反直觉。想清楚这条原则，犹豫就没了：
+        <b>你放弃的不是一个数字，是一个会被追穿的位置。</b>
+        <br><br>
+        后两项之所以错，是因为它们都假设「存在一种可以宽松的场景」—— 不存在。
+        面试官不会因为岗位或数字类型改变核查方式，只会因为<b>你已经把口径说了</b>而跳过这一问。
+      </div>
+    </div>
+  </div>
+
+  <div class="callout callout--key">
+    <span class="callout__label">由这条原则推出的动作</span>
+    <p>
+      既然信任是一次性的，那正确策略不是「被问到时再解释」，而是<b>预判并提前答掉</b>。
+      也就是：<b>每报一个数字，主动带三件套，让追问无处可落。</b>
+    </p>
+    <table>
+      <thead><tr><th style="width:8rem">三件套</th><th>回答什么</th><th>防住哪句追问</th></tr></thead>
+      <tbody>
+        <tr><td><b>被测对象</b></td><td>在什么场景、什么问题类型上测的</td><td>「所有情况都这样吗」</td></tr>
+        <tr><td><b>样本量</b></td><td>几道题 / 几条轨迹</td><td>「跑了几条」</td></tr>
+        <tr><td><b>重复次数</b></td><td>跑几次、怎么处理离散</td><td>「是不是挑的最好那次」</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- ============================================ -->
+  <h2 id="predict"><span class="num">3</span>训练：预判下一句追问</h2>
+
+  <p>
+    每题给一句<b>你自己项目里的真实陈述</b>。你要先说出：<b>面试官下一句会追什么？</b>
+    然后展开对照。练的是<b>预测能力</b> —— 预测准了，就能提前答掉。
+  </p>
+
+  <div class="quiz">
+
+    <div class="recall" data-qid="y1">
+      <p class="recall__prompt">预判 1 · 你说：「增量渲染把长答复的首字从 16.0s 降到了 1.4s。」</p>
+      <p class="recall__hint">面试官下一句会追什么？你要提前补上哪两样？</p>
+      <button class="btn btn--reveal" type="button">先说出你的预判</button>
+      <div class="recall__answer">
+        <p><b>会追：「所有问题都这样吗？」</b> —— 因为「长答复」这个限定一旦被忽略，数字就变成了对整个系统的承诺。</p>
+        <p><b>提前补上：场景限定 + 测量起止点。</b></p>
+        <p>
+          <b>你的成稿</b>：「在<b>长答复场景</b>上，『答复区开始出字』这个时刻从 16.0s 压到 1.4s。
+          但要补一句边界：<b>检索类题目首字差别很小</b> —— 那几秒都花在检索上，不在渲染上。
+          所以这个优化动的是<b>答复生成到渲染</b>这一段，不是整条链路。」
+        </p>
+        <p>
+          <b>为什么主动说边界反而更强</b>：它证明你测过、并且知道自己优化的是什么。
+          只说 16→1.4 的人，被问「检索题呢」时会卡住；主动说的人，直接把那问题关掉了。
+        </p>
+      </div>
+      <div class="recall__grade">
+        <button class="grade-btn" data-grade="hit" type="button">预判对了</button>
+        <button class="grade-btn" data-grade="miss" type="button">漏了一项</button>
+        <button class="grade-btn" data-grade="lost" type="button">没想到</button>
+      </div>
+    </div>
+
+    <div class="recall" data-qid="y2">
+      <p class="recall__prompt">预判 2 · 你说：「工具数量裁剪之后，token 降了 35~38%。」</p>
+      <p class="recall__hint">这一条的追问你有现成答案，而且是反直觉的 —— 主动说出来</p>
+      <button class="btn btn--reveal" type="button">先说出你的预判</button>
+      <div class="recall__answer">
+        <p><b>会追：「那钱降了多少？」</b></p>
+        <p>
+          <b>你的成稿（这条是你的强项，一定要主动说）</b>：
+          「token 确实降了 35~38%，但<b>钱几乎没变</b> —— 缓存让长前缀近乎免费。
+          所以裁剪真正省下的是<b>窗口余量</b>，不是账单。
+          另外工具选择的各项指标差异<b>都落在臂内极差以内</b>，也就是说<b>这批题上没测出『工具越多越容易选错』</b>。」
+        </p>
+        <p>
+          <b>为什么这条特别值钱</b>：行业普遍相信「工具越多越容易选错」，你有 A/B 数据说「这批题上没测出来」。
+          一个敢报<b>阴性结果</b>的候选人，比一个报涨幅的候选人可信得多。
+        </p>
+      </div>
+      <div class="recall__grade">
+        <button class="grade-btn" data-grade="hit" type="button">预判对了</button>
+        <button class="grade-btn" data-grade="miss" type="button">漏了一项</button>
+        <button class="grade-btn" data-grade="lost" type="button">没想到</button>
+      </div>
+    </div>
+
+    <div class="recall" data-qid="y3">
+      <p class="recall__prompt">预判 3 · 你说：「我做了两组 A/B 来验证改动。」</p>
+      <p class="recall__hint">「A/B」这三个字本身会引出哪三个追问？</p>
+      <button class="btn btn--reveal" type="button">先说出你的预判</button>
+      <div class="recall__answer">
+        <p><b>会追三连：多少题？跑几次？怎么判对错？</b>—— 缺任何一个，「A/B」就只是个说法。</p>
+        <p>
+          <b>你的成稿</b>：「题集是 <b>20 题、6 个场景</b>，每题场景一个 YAML 文件；
+          <b>每题跑 3 次</b>取分布；判对错用的是<b>纯函数判据</b> ——
+          不碰网络、不碰库、不看时钟，同一份事实喂两次结论一定一样。」
+        </p>
+        <p>
+          <b>提前答第三问的额外收益</b>：一旦你说出「纯函数判据」，面试官立刻就有一个新问题 ——
+          见预判 6，先把答案准备好。
+        </p>
+      </div>
+      <div class="recall__grade">
+        <button class="grade-btn" data-grade="hit" type="button">预判对了</button>
+        <button class="grade-btn" data-grade="miss" type="button">漏了一项</button>
+        <button class="grade-btn" data-grade="lost" type="button">没想到</button>
+      </div>
+    </div>
+
+    <div class="recall" data-qid="y4">
+      <p class="recall__prompt">预判 4 · 你说：「期望零调用的题，我的准确率是 100%。」</p>
+      <p class="recall__hint">这句话哪里危险？危险在哪一层 —— 数字本身，还是它的口径？</p>
+      <button class="btn btn--reveal" type="button">先说出你的预判</button>
+      <div class="recall__answer">
+        <p><b>会追：「分母是什么？」</b>—— 因为「100%」在评测里几乎总是口径问题，不是能力问题。</p>
+        <p>
+          <b>你的成稿（这条展示的是口径推导能力，同行少有）</b>：
+          「准确率 = 实际 ∩ 期望 / 实际。期望集为空的题<b>没有分母</b> ——
+          也就是『一个工具都没调』对纯咨询题是满分，所以这类题在汇总里<b>单列『不适用』</b>而不是按 0 分算。
+          同理召回率在期望集为空时也没有分母。两条指标<b>分开池化</b>：『名字选错了』和『名字对了参数传错』是两种修法。」
+        </p>
+        <p>
+          <b>为什么这段话杀伤力大</b>：大部分候选人报指标只有分子分母一句话。
+          能主动讲<b>分母缺失怎么处理</b>的人，说明他设计过判据而不只是用了判据。
+        </p>
+      </div>
+      <div class="recall__grade">
+        <button class="grade-btn" data-grade="hit" type="button">预判对了</button>
+        <button class="grade-btn" data-grade="miss" type="button">漏了一项</button>
+        <button class="grade-btn" data-grade="lost" type="button">没想到</button>
+      </div>
+    </div>
+
+    <div class="recall" data-qid="y5">
+      <p class="recall__prompt">预判 5 · 你说：「代付的恢复请求重放两次，一分钱没多扣、工具一次没多跑。」</p>
+      <p class="recall__hint">这是个强结论。面试官会追什么？你的证据链有几环？</p>
+      <button class="btn btn--reveal" type="button">先说出你的预判</button>
+      <div class="recall__answer">
+        <p><b>会追：「凭什么保证？少一环会怎样？」</b></p>
+        <p>
+          <b>你的成稿（三环，缺一不可）</b>：
+          ① 幂等键取<b>三列</b> <code>(run_id, message_id, tool_call_id)</code> ——
+          上游每轮从 <code>call_0</code> 重新编号，<b>少一列必撞</b>；
+          ② 键<b>持久化在 PG</b>，进程重启也拦得住；
+          ③ 恢复时<b>只补做欠着的调用</b>，已完成轮次一步不重跑，<b>没有人的结论就报错绝不自动执行</b>。
+        </p>
+        <p>
+          <b>预判的延伸</b>：面试官很可能接着问「这和 HITL 的关系是什么」——
+          答：一次工具调用的行状态<b>就是审批单</b>（<code>needs_approval</code> + <code>approved_by/at</code>），
+          所以<b>挂起不建审批表</b>，没有两张表要同步。
+        </p>
+      </div>
+      <div class="recall__grade">
+        <button class="grade-btn" data-grade="hit" type="button">预判对了</button>
+        <button class="grade-btn" data-grade="miss" type="button">漏了一项</button>
+        <button class="grade-btn" data-grade="lost" type="button">没想到</button>
+      </div>
+    </div>
+
+    <div class="recall" data-qid="y6">
+      <p class="recall__prompt">预判 6 · 你说：「我的判据是纯函数，刻意不用 LLM-as-judge。」</p>
+      <p class="recall__hint">这句话是主动亮出来的立场，所以一定会被反问。反问答不好会显得是回避</p>
+      <button class="btn btn--reveal" type="button">先说出你的预判</button>
+      <div class="recall__answer">
+        <p><b>会追：「那语气、说服力、多轮策略这些你怎么评？」</b>—— 这是这套判据真实的边界，回避就输了。</p>
+        <p>
+          <b>你的成稿（先给方法论坐标，再给边界，最后给判据）</b>：
+          「LLM-as-judge 有三种已知偏差 —— 位置、长度、自我偏好，缓解手段是多 judge 交叉、交换候选顺序、结构化 rubric。
+          <b>我刻意不用它</b>，因为我要证的两件事都能规则化，而引 judge 会把<b>非确定性引进判据本身</b> ——
+          那『这次比上次好』这句话就不再可复现了。
+          <b>边界我也清楚</b>：语气、说服力、多轮策略这类过程质量，我这套判据量不了。
+          真需要评那类质量时，才该上 judge，并且按上面三条偏差做缓解。」
+        </p>
+        <p>
+          <b>为什么这样答不会被追穿</b>：你<b>先说出了对方的立场</b>（三偏差 + 三缓解），
+          再给出自己不用的理由，最后主动划边界。
+          顺序很重要 —— 先讲对方的优点再讲自己的取舍，听起来是判断；反过来听起来是偏见。
+        </p>
+      </div>
+      <div class="recall__grade">
+        <button class="grade-btn" data-grade="hit" type="button">预判对了</button>
+        <button class="grade-btn" data-grade="miss" type="button">漏了一项</button>
+        <button class="grade-btn" data-grade="lost" type="button">没想到</button>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ============================================ -->
+  <h2 id="coords"><span class="num">4</span>把你摆进评测的坐标系</h2>
+
+  <p>四组词，每组都是「一对容易混的概念」。被问到时，先说区分，再说你落在哪边。</p>
+
+  <table>
+    <thead><tr><th style="width:11rem">一组词</th><th>区分</th><th>你落在哪边</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><b>trajectory</b><br>vs <b>outcome</b></td>
+        <td>怎么走的 vs 到没到</td>
+        <td><b>两条都有</b>：工具选择 / 参数正确率是轨迹，回答合规 / markdown 是结果</td>
+      </tr>
+      <tr>
+        <td><b>pass@k</b><br>vs <b>pass^k</b></td>
+        <td>至少中一次 vs 全都得中（能力上限 vs 可靠性）</td>
+        <td><b>pass^k 侧</b>：每题跑 3 次取分布</td>
+      </tr>
+      <tr>
+        <td><b>capability</b><br>vs <b>regression</b></td>
+        <td>探能力边界 vs 防退化</td>
+        <td>两组 A/B 是 <b>capability</b>；同批题重跑是 <b>regression</b></td>
+      </tr>
+      <tr>
+        <td><b>grader / trial / transcript</b></td>
+        <td>判分器 / 一次跑 / 完整记录（Anthropic 的标准词汇表）</td>
+        <td><code>judges.py</code> / 一次跑批 / 报告里的逐题表</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="callout callout--warn">
+    <span class="callout__label">一条要主动讲的边界（诚实 = 加分）</span>
+    <p>
+      Anthropic 那篇给的标准词汇表里，<b>harness</b> 指「被测装置」——
+      也就是<b>模型 + 你这一整套工程</b>一起被评。
+      你的离线评估也是这个口径：<b>评的是「CharApp + 模型」这个整体，不是模型本身</b>。
+      主动说这一句，等于告诉面试官你知道自己在测什么。
+    </p>
+  </div>
+
+  <!-- ============================================ -->
+  <h2 id="followup"><span class="num">5</span>被追问三层</h2>
+
+  <div class="followup">
+    <h3>三个问题，答完我出第 4 课</h3>
+    <ol>
+      <li>
+        <b>六个预判里，你有没有「预判得比参考答案更狠」的？</b>
+        如果有，说明你的直觉比这张表好，那就按你的说法改 —— 底稿要用你自己的句式才背得牢。
+      </li>
+      <li>
+        <b>「数字乘以场景」这条心理阻力还在吗？</b>
+        具体感受一下：下次你说 16→1.4 的时候，<b>会不会主动加上「但检索类题目差别很小」？</b>
+        会，说明原则内化了；还需要提醒，我就再做一组更狠的反例训练。
+      </li>
+      <li>
+        <b>现在看「评测」这一簇，你觉得自己是稳 / 中 / 弱？</b>
+        你的实现是同行里强的一档，但这轮之前你答不出它的术语 —— 我想知道你现在怎么评估自己，
+        因为这个自我评估本身会影响你面试时的语气（心虚和笃定，面试官听得出来）。
+      </li>
+    </ol>
+    <p class="followup__note">
+      另外：这一课的六段「成稿」我写的是<b>可以照说的句子</b>。哪段你觉得不像自己说话，指出来我重写。
+    </p>
+  </div>
+
+  <!-- ============================================ -->
+  <h2 id="primary-source"><span class="num">6</span>本课的一手来源</h2>
+
+  <div class="source-primary">
+    <span class="callout__label">首推精读</span>
+    <p>
+      <a href="https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents">Anthropic《Demystifying evals for AI agents》（2026-01-09）</a>
+    </p>
+    <p>
+      你缺的四组词有三组出在这一篇。<b>读的时候带具体问题</b>：
+      「<code>pass@k</code> 和 <code>pass^k</code> 分别在什么场景下该用哪个？」
+      「他们说 <i>harness</i> 的时候，比我说的『被测装置』多了什么？」
+      读完你应该能<b>用它的词汇重讲一遍自己的评测</b> —— 那才是这一课真正要的结果。约 25 分钟。
+    </p>
+  </div>
+
+  <div class="ask-teacher">
+    <strong>口径这件事，我可以陪你练。</strong>
+    你报一个数字给我，我当面试官追问 —— 追到你说不下去为止，然后告诉你<b>哪一环本该提前补</b>。
+    这比看卡片快得多，因为压力下的表现和安静地看卡片完全是两回事。想练就说一声。
+  </div>
+
+  <nav class="lesson-nav">
+    <span><a href="0002-terms-retrieval-drill.html">← 第 2 课 · 反查训练</a></span>
+    <span><a href="../reference/terms-and-calibration.md">话术底稿 →</a></span>
+  </nav>
+
+</main>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

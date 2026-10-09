@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>参考 · 存量底稿索引（哪个问题去哪份文件查）</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+</head>
+<body>
+<main class="lesson">
+
+  <p class="lesson__kicker">Reference · 存量索引</p>
+  <h1>存量底稿索引：哪个问题，去哪份文件查</h1>
+  <p class="lede">
+    本工作区<b>不重写</b>已有材料 —— 已有的是纵向深挖，这里补横向地图。
+    这份索引的作用是反查：面试前想快速复习某一主题时，直接定位到具体文件的第几段。
+  </p>
+
+  <div class="meta">
+    <span>建区盘点：2026-10-10</span>
+    <span>5 份专题底稿 · 30 题</span>
+    <span>3 份对话归档 · 49 轮</span>
+    <span><a href="../MISSION.md">← Mission</a></span>
+  </div>
+
+  <div class="callout callout--key">
+    <span class="callout__label">怎么用这份索引</span>
+    <p>两条路径，看你处于哪种状态：</p>
+    <ul>
+      <li><b>「我要复习某个主题」</b> → 查 <a href="#by-topic">§3 主题反查表</a>，一步定位文件与题号。</li>
+      <li><b>「我要知道哪块还空着」</b> → 查 <a href="#gaps">§4 缺口清单</a>（标注了「待外部调研校准」的部分）。</li>
+    </ul>
+  </div>
+
+  <!-- ===================== 1 ===================== -->
+  <h2 id="dossiers"><span class="num">1</span>五份专题底稿（`.scratch/CharApp/interview/`）</h2>
+
+  <p>
+    五份用的是同一套模板：<code>§0 五分钟版 / §1 行业全景（含一手来源）/ §2 本项目实现（带源码行号）/
+    §3 面试题演练 / §4 能讲深的设计 / §5 边界与欠账 / §6 可能被追问的点</code>。
+    §3 的每道题含 <b>考点 · 知识点 · 类比 · mermaid 图 · 话术 · 我项目里的做法</b> 六段 ——
+    其中「话术」段是可以直接脱稿复述的成品。
+  </p>
+
+  <table>
+    <thead>
+      <tr><th style="width:9rem">文件</th><th style="width:3rem">题号</th><th>题目</th></tr>
+    </thead>
+    <tbody>
+      <tr><td rowspan="7"><code>01-context-compaction.md</code><br><span style="color:var(--ink-faint)">上下文压缩</span></td>
+          <td>Q1</td><td>Agent 的对话越来越长，上下文快撑满了怎么办？<span class="cite">通用</span></td></tr>
+      <tr><td>Q2</td><td>为什么摘要压缩和滑动窗口要一起用？单独用的缺陷是什么？</td></tr>
+      <tr><td>Q3</td><td>一个跑几十轮工具调用的生产级 Agent，上下文治理怎么设计？</td></tr>
+      <tr><td>Q4</td><td>压缩会带来什么代价？为什么说 KV-cache 命中率是生产环境第一个指标？</td></tr>
+      <tr><td>Q5</td><td>摘要模型调用失败了，这一轮怎么处理？</td></tr>
+      <tr><td>Q6</td><td>怎么让上下文压缩「可恢复」？</td></tr>
+      <tr><td>Q7</td><td>压缩切点为什么不能落在 <code>assistant(tool_calls)</code> 与它的 <code>tool</code> 结果之间？</td></tr>
+
+      <tr><td rowspan="6"><code>02-observability.md</code><br><span style="color:var(--ink-faint)">可观测 · 成本</span></td>
+          <td>Q1</td><td>LLM 应用的可观测，和普通 Web 有什么不同？</td></tr>
+      <tr><td>Q2</td><td>Agent 的成本怎么算准？</td></tr>
+      <tr><td>Q3</td><td>日志里不能出现用户隐私，脱敏怎么做？</td></tr>
+      <tr><td>Q4</td><td>一条工具调用轨迹怎么设计？（表结构 + 写入时机）</td></tr>
+      <tr><td>Q5</td><td>首字延迟的大头在哪？怎么定位和优化？</td></tr>
+      <tr><td>Q6</td><td>你的可观测和行业标准（OTel 三支柱）是什么关系？</td></tr>
+
+      <tr><td rowspan="5"><code>03-hitl-approval.md</code><br><span style="color:var(--ink-faint)">人机确认</span></td>
+          <td>Q1</td><td>HITL 怎么实现？把挂起-恢复的完整机制讲一遍</td></tr>
+      <tr><td>Q2</td><td>用户确认后重放，怎么保证不重复执行？</td></tr>
+      <tr><td>Q3</td><td>密码这类敏感值，怎么处理才不进模型上下文？</td></tr>
+      <tr><td>Q4</td><td>挂起状态存在哪？进程重启、多实例怎么办？</td></tr>
+      <tr><td>Q5</td><td>哪些操作值得加人工闸？哪些不该加？</td></tr>
+
+      <tr><td rowspan="7"><code>04-stateless-and-drain.md</code><br><span style="color:var(--ink-faint)">无状态化</span></td>
+          <td>Q1</td><td>Agent 的无状态化为什么比普通 Web 难？</td></tr>
+      <tr><td>Q2</td><td>graceful drain 的完整流程是什么？为什么「超时兜底」不能省？</td></tr>
+      <tr><td>Q3</td><td>sticky session 与状态外置怎么取舍？</td></tr>
+      <tr><td>Q4</td><td>有了 checkpoint，drain 还需要多「完美」？</td></tr>
+      <tr><td>Q5</td><td>进程内队列 → 多实例，要补哪几件？</td></tr>
+      <tr><td>Q6</td><td>为什么说幂等才是「正确性」那一层？</td></tr>
+      <tr><td>Q7</td><td>SSE 的跨实例路由怎么做？run 的「归属」为什么是真难点？</td></tr>
+
+      <tr><td rowspan="6"><code>05-multiagent.md</code><br><span style="color:var(--ink-faint)">多智能体</span></td>
+          <td>Q1</td><td>多智能体的拓扑与状态共享怎么选？</td></tr>
+      <tr><td>Q2</td><td>多 agent 的三条控制流风险怎么处理？<span class="cite">必答</span></td></tr>
+      <tr><td>Q3</td><td>子 agent 最大的价值是什么？为什么它和「上下文压缩」是一回事？</td></tr>
+      <tr><td>Q4</td><td>Critic 模式什么时候值得？</td></tr>
+      <tr><td>Q5</td><td>什么时候<b>不该</b>用多智能体？<span class="cite">最值钱</span></td></tr>
+      <tr><td>Q6</td><td>多 agent 系统怎么评估与观测？</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout callout--warn">
+    <span class="callout__label">两份「设计储备未做」的底稿</span>
+    <p>
+      <code>04-stateless-and-drain.md</code> 与 <code>05-multiagent.md</code> 讲的是<b>取舍判断</b>，不是<b>落地实现</b> ——
+      CharAgent 主线没做这两件事（不做是有判据的主动决策）。这意味着这两块被追问到底时的正确姿势是
+      「我判过、为什么不做、触发条件是什么」，而<b>不是</b>假装做过。
+      详见两份底稿各自的 §5 边界与欠账。
+    </p>
+  </div>
+
+  <!-- ===================== 2 ===================== -->
+  <h2 id="archives"><span class="num">2</span>三份对话归档（`.scratch/Charlotte/interview/`）</h2>
+
+  <p>
+    对话归档是<b>过程</b>（面试官问 → 我答的逐轮记录），专题底稿是<b>结果</b>（按主题压缩过的成品）。
+    引用题目以底稿为准，引用「当时怎么答的」以归档为准。
+  </p>
+
+  <h3>2.1 <code>CharAgent+CharApp.md</code> —— 主线两项目，24 轮</h3>
+  <table>
+    <thead><tr><th style="width:3rem">轮次</th><th>话题</th></tr></thead>
+    <tbody>
+      <tr><td>Q1</td><td>项目整体介绍（主要做什么）</td></tr>
+      <tr><td>Q2</td><td>工具调用的设计（四层）</td></tr>
+      <tr><td>Q3</td><td>身份不进参数表的具体机制 + 其他隔离与安全设计</td></tr>
+      <tr><td>Q4</td><td>上下文工程的设计（账本 / 视图分离）</td></tr>
+      <tr><td>Q5</td><td>滚动摘要流程举例</td></tr>
+      <tr><td>Q6</td><td>摘要输入上界「具体怎么砍」</td></tr>
+      <tr><td>Q7–Q8</td><td><code>summary_covers</code> 与 <code>dropped</code> 的区别（位置 vs 动作）</td></tr>
+      <tr><td>Q9–Q11</td><td>记忆模块 / 短期记忆 / 长期记忆</td></tr>
+      <tr><td>Q12</td><td>如何确保敏感值一定拒写</td></tr>
+      <tr><td>Q13–Q15</td><td>中断类型盘点 / HITL 与断点续跑流程 / 关键节点精简版</td></tr>
+      <tr><td>Q16–Q17</td><td>幂等键的设计与防重放演示 / 八步流程复盘</td></tr>
+      <tr><td>Q18–Q20</td><td>agent loop 的设计 / 状态机 / 状态机精简版</td></tr>
+      <tr><td>Q21</td><td>CharApp 如何对接 CharAgent（模块划分）</td></tr>
+      <tr><td>Q22</td><td>MCP 两侧设计（消费侧 / 暴露侧）</td></tr>
+      <tr><td>Q23</td><td>Skill 的理解与在 CharAgent / CharApp 的设计落地</td></tr>
+      <tr><td>Q24</td><td>最难的经历、解决过程与收获（收尾题）</td></tr>
+    </tbody>
+  </table>
+
+  <h3>2.2 <code>RAG+NL2SQL.md</code> —— 「RAG 工程」一条经历，9 轮</h3>
+  <table>
+    <thead><tr><th style="width:3rem">轮次</th><th>话题</th></tr></thead>
+    <tbody>
+      <tr><td>Q1</td><td>主流 RAG 架构 vs 朴素 RAG 的改进 + 对 RAG 的理解</td></tr>
+      <tr><td>Q2</td><td><code>rag_knowledge</code> 的节点划分与作用（按顺序）</td></tr>
+      <tr><td>Q3</td><td>各节点怎么保证召回率 / 精确率</td></tr>
+      <tr><td>Q4</td><td>节点里的参数都是怎么确定的</td></tr>
+      <tr><td>Q5</td><td>测试运行调参过程中遇到的问题与取舍</td></tr>
+      <tr><td>Q6</td><td><code>rag_text2sql</code> 的节点划分 + 各节点如何保证召回 / 精确</td></tr>
+      <tr><td>Q7</td><td><code>rag_knowledge</code> 没设计好的地方与改进方向</td></tr>
+      <tr><td>Q8–Q9</td><td>六项技术选型的理由（Milvus / Mongo / BGE-M3 / Qdrant / ES / bge-large-zh）+ 精简版</td></tr>
+    </tbody>
+  </table>
+
+  <h3>2.3 <code>Charplot.md</code> —— 「用主流框架落产品」，16 轮</h3>
+  <table>
+    <thead><tr><th style="width:3rem">轮次</th><th>话题</th></tr></thead>
+    <tbody>
+      <tr><td>Q1</td><td>双后端各服务职责划分</td></tr>
+      <tr><td>Q2</td><td>FastAPI 端框架设计 + 从输入到题库的全流程（3 图）</td></tr>
+      <tr><td>Q3</td><td>RAG 全链路：是什么 / 怎么运行 / 服务什么模块</td></tr>
+      <tr><td>Q4</td><td><b>为什么用 DeepAgents 而不是 LangChain agent / 裸模型调用</b><span class="cite">框架选型</span></td></tr>
+      <tr><td>Q5–Q6</td><td>LangGraph 全流程图 / pipeline 与 LangGraph 的分工</td></tr>
+      <tr><td>Q7</td><td>一张图串起全项目运行路线</td></tr>
+      <tr><td>Q8–Q9</td><td>search 阶段为什么走 RAG / 知识库的使用范围</td></tr>
+      <tr><td>Q10–Q14</td><td>出题逻辑 / 出题一次即定 / 主题卡片 / 出题七环节两道门 / 快照语义</td></tr>
+      <tr><td>Q15</td><td>项目过程中的技术设计难点（五个）</td></tr>
+      <tr><td>Q16</td><td>体现亲身参与深度设计的说辞</td></tr>
+    </tbody>
+  </table>
+
+  <!-- ===================== 3 ===================== -->
+  <h2 id="by-topic"><span class="num">3</span>主题反查表</h2>
+
+  <p>面试时被问到某个主题，先用这张表定位，再翻对应文件。</p>
+
+  <table>
+    <thead><tr><th style="width:14rem">被问到</th><th>去哪查</th></tr></thead>
+    <tbody>
+      <tr><td>Agent loop / 状态机 / 循环防护</td><td><code>CharAgent+CharApp.md</code> Q18–Q20</td></tr>
+      <tr><td>工具调用设计 / 并行工具调用</td><td><code>CharAgent+CharApp.md</code> Q2；框架侧 <code>05-multiagent.md</code> §2</td></tr>
+      <tr><td>上下文压缩 / 滚动摘要</td><td><code>01-context-compaction.md</code> 全篇；归档 Q4–Q8</td></tr>
+      <tr><td>记忆（短期 / 长期）</td><td><code>CharAgent+CharApp.md</code> Q9–Q11</td></tr>
+      <tr><td>HITL / 人工审批 / 挂起-恢复</td><td><code>03-hitl-approval.md</code> 全篇；归档 Q13–Q15</td></tr>
+      <tr><td>幂等 / 防重复执行</td><td><code>03-hitl-approval.md</code> Q2 · <code>04-stateless-and-drain.md</code> Q6 · 归档 Q16</td></tr>
+      <tr><td>断点续跑 / checkpoint</td><td>归档 Q13–Q15 · <code>04-stateless-and-drain.md</code> Q4</td></tr>
+      <tr><td>可观测 / trace / 成本 / 延迟</td><td><code>02-observability.md</code> 全篇</td></tr>
+      <tr><td>脱敏 / 隐私 / 敏感值</td><td><code>02-observability.md</code> Q3 · <code>03-hitl-approval.md</code> Q3 · 归档 Q12</td></tr>
+      <tr><td>无状态化 / 多实例 / drain</td><td><code>04-stateless-and-drain.md</code> 全篇</td></tr>
+      <tr><td>多智能体 / subagent / 拓扑</td><td><code>05-multiagent.md</code> 全篇</td></tr>
+      <tr><td>MCP（消费侧 / 暴露侧）</td><td>归档 Q22</td></tr>
+      <tr><td>Skill 机制</td><td>归档 Q23</td></tr>
+      <tr><td>RAG 全链路 / 召回 / 重排 / 参数</td><td><code>RAG+NL2SQL.md</code> 全篇</td></tr>
+      <tr><td>RAG 技术选型（向量库 / 模型 / 存储）</td><td><code>RAG+NL2SQL.md</code> Q8–Q9</td></tr>
+      <tr><td>Text2SQL / NL2SQL</td><td><code>RAG+NL2SQL.md</code> Q6</td></tr>
+      <tr><td>双后端架构 / 服务间契约</td><td><code>Charplot.md</code> Q1–Q2 · 归档 <code>CharAgent+CharApp.md</code> Q21</td></tr>
+      <tr><td>框架选型（为什么用 X 不用 Y）</td><td><code>Charplot.md</code> Q4 · <code>05-multiagent.md</code> §1</td></tr>
+      <tr><td>LangGraph 用法 / 分工</td><td><code>Charplot.md</code> Q5–Q7</td></tr>
+      <tr><td>项目整体介绍 / 自我介绍</td><td>三份归档各自的「一、简历项目经历描述」</td></tr>
+      <tr><td>最难的项目经历</td><td>归档 <code>CharAgent+CharApp.md</code> Q24 · <code>Charplot.md</code> Q15</td></tr>
+    </tbody>
+  </table>
+
+  <!-- ===================== 4 ===================== -->
+  <h2 id="gaps"><span class="num">4</span>缺口清单（核实版）</h2>
+
+  <div class="callout callout--key">
+    <span class="callout__label">建区时的假设，大部分被自己的项目推翻了</span>
+    <p>
+      建档时按「文件目录里没看到」列了七条缺口，随后逐条核实了
+      <code>CharAgent/docs/DESIGN.md</code>（70 个难点地图）、
+      <code>CharAgent/README.md</code>（已实现 vs 已设计未实现对照表）、
+      <code>CharApp/eval/judges.py</code>。
+      结论翻转：<b>概念层几乎不缺 —— 缺的是事实层与市场层。</b>
+      下表是核实后的版本，原假设的推翻记录见 <code>learning-records/0002</code> 与 <code>0003</code>。
+    </p>
+  </div>
+
+  <h3>4.1 真缺口（本地文件里真的没有）</h3>
+  <table>
+    <thead><tr><th style="width:11rem">缺口</th><th>具体是什么</th><th style="width:6rem">性质</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><b>市场情报</b></td>
+        <td>外面在问什么、原话怎么说的、哪些题反复出现、非大厂与 AI 公司在问什么。这是<b>信息缺口</b>，不是知识缺口 —— 本地任何文件都不可能回答它，只能向外部检索与面经要。</td>
+        <td>市场</td>
+      </tr>
+      <tr>
+        <td><b>框架的操作面事实</b></td>
+        <td>
+          <code>DESIGN.md #57</code> 已经把判断标准说清了（「能讲清框架替你做了什么、为什么那么设计」是分水岭），缺的是<b>对方的事实</b>：
+          当前版本下 LangGraph 的 checkpointer / interrupt / store 准确语义、其他框架（LlamaIndex / CrewAI / AutoGen / Agents SDK / Google ADK）的核心抽象。
+          <b>为什么这对你是刚需</b>：你有自己的挂起-恢复实现，对比题（「和 LangGraph 的 interrupt 有什么不同」）问的就是两者的事实对照 —— 只知道自己那一半答不全。
+        </td>
+        <td>事实</td>
+      </tr>
+      <tr>
+        <td><b>模型侧机制事实</b></td>
+        <td>
+          <code>DESIGN #68</code> 有<b>实测</b>（temperature 被忽略、top_p 下限 0.95、思维链与正文共享 max_tokens 配额、缓存让长前缀近乎免费），
+          但缺<b>机制解释</b>：function calling 的协议层细节、structured output 的约束解码、prompt caching 的命中条件、长上下文的真实退化表现。
+          实测数据是「我知道」的证据，机制是「我懂为什么」的证据 —— 面试问的是后者。
+        </td>
+        <td>事实</td>
+      </tr>
+      <tr>
+        <td><b>行业共同语言</b></td>
+        <td>
+          概念你都有，但叫法可能对不上：轨迹评估 vs 结果评估（trajectory / outcome）、行业基准名（τ-bench / SWE-bench / GAIA / WebArena）、
+          RAG 评估指标名（faithfulness / context precision / RAGAS）、五个 workflow 模式（prompt chaining / routing / parallelization / orchestrator-workers / evaluator-optimizer）。
+          面试官用行业词提问时，答不出「哦，我做的就是这个」会被误判为没概念。
+        </td>
+        <td>市场</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>4.2 假缺口（曾以为是空白，核实后推翻）</h3>
+  <table>
+    <thead><tr><th style="width:11rem">曾以为缺</th><th>核实结果</th><th style="width:8rem">出处</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>评测方法论</td>
+        <td>
+          <code>judges.py</code> 是纯函数判据集，含口径推导（期望集为空则无分母、参数正确率只在真调到的工具上算、截断/挂起跑次不进汇总）；
+          <code>DESIGN #58</code> 已写明 <b>LLM-as-judge 的三种系统性偏差与三种缓解</b>，并写清了「本项目为什么刻意不做 judge」的判据（引 judge 会把非确定性引进判据本身）；
+          <code>#59</code> trace 回放而非复现；<code>#60</code> 数据飞轮四步并诚实标注了「题集回流从未发生」。
+        </td>
+        <td>#58-60<br>judges.py</td>
+      </tr>
+      <tr>
+        <td>多智能体编排</td>
+        <td>
+          <code>DESIGN #42-44</code> + <code>05-multiagent.md</code> 底稿：拓扑与状态是两个独立决策、三条控制流风险、框架兜底阈值实测
+          （langgraph 的 <code>DEFAULT_RECURSION_LIMIT = 10007</code> 拦不住浪费）。实现是<b>主动不做且有判据</b>（README 标 ⬜），不是没想过。
+        </td>
+        <td>#42-44</td>
+      </tr>
+      <tr>
+        <td>提示工程 / 上下文工程</td>
+        <td><code>DESIGN #69</code> 覆盖 system prompt / few-shot / CoT / 版本化与 A/B，并给出与上下文工程的区分（「面试常考」由原作者自己标注）；<code>#70</code> 工具设计三条 tradeoff，且带真实 A/B 结论。</td>
+        <td>#68-70</td>
+      </tr>
+      <tr>
+        <td>MCP / A2A 协议</td>
+        <td><code>#50</code> 三类能力 + 生命周期 + <code>sampling</code> + transport 从 SSE 到 Streamable HTTP；<code>#52</code> Agent Card + 任务与消息。概念层已覆盖（实现是消费侧 tools 一路，README 标 🟡）。</td>
+        <td>#50 / #52</td>
+      </tr>
+      <tr>
+        <td>Planning 范式</td>
+        <td><code>#55</code> ReAct / Plan-and-Execute / Reflection / Replan 的区分点在「计划何时产生、何时修正」；<code>#56</code> workflow vs agent 的实践原则（骨架用 workflow、局部不确定才用 agent）。</td>
+        <td>#55-56</td>
+      </tr>
+      <tr>
+        <td>RAG 通用八股</td>
+        <td><code>#45</code> RAG / 微调 / 长上下文是三者的分工而非二选一；<code>#46</code> 摄取质量决定检索上限；<code>#47</code> 七个可单独优化的环节 + embedding 升级不兼容的坑；<code>#48</code> 三层排查（召回 / 排序 / 生成）。</td>
+        <td>#45-49</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="callout">
+    <span class="callout__label">这张表改变了课程的重心</span>
+    <p>
+      如果缺口是概念，课程就该是「讲课」。但核实下来概念几乎不缺，所以<b>主战场是三件事</b>：
+    </p>
+    <ol>
+      <li><b>市场对标</b> —— 拿到外面的真题与措辞，跟你已有的弹药做映射（哪道题你能用 CharAgent 的哪个机制接住）</li>
+      <li><b>压力下检索</b> —— 知识在代码里、在 70 个难点里，但面试是<b>说出来</b>的。这是技能，要靠自测与追问练</li>
+      <li><b>少量事实补丁</b> —— 上面 4.1 那四条，量不大但必须有</li>
+    </ol>
+    <p>
+      但注意：<b>「以为知道」和「真答得上」不是一回事</b>。这张表是<b>读码</b>得出的，不是<b>答题</b>得出的 ——
+      首课的自测就是拿来验证它的（可能又推翻一次）。
+    </p>
+  </div>
+
+  <nav class="lesson-nav">
+    <span><a href="../MISSION.md">← Mission</a></span>
+    <span><a href="../NOTES.md">教学笔记 →</a></span>
+  </nav>
+
+</main>
+</body>
+</html>

@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>第 1 课 · 一次只答一个问题的并发 — 中间件开发底座</title>
+<!-- ?v= 用于绕开浏览器缓存：这两个文件是全课程共用的，改动后旧副本会被一直用下去 -->
+<link rel="stylesheet" href="../assets/lesson.css?v=3">
+<style>
+/* 本课专用的两个小样式；可复用的部分都留在 lesson.css 里 */
+.lesson-hero {
+    margin: 0 0 2.2rem;
+    padding: 0 0 1.4rem;
+    border-bottom: 1px solid var(--rule);
+}
+.lesson-hero h1 {
+    margin-bottom: 0.5rem;
+}
+.scenario {
+    margin: 1.4rem 0;
+    padding: 0.9rem 1.05rem;
+    border: 1px solid var(--rule-soft);
+    border-radius: 5px;
+    background: var(--code-bg);
+}
+.scenario > :last-child {
+    margin-bottom: 0;
+}
+.scenario__label {
+    display: block;
+    margin-bottom: 0.35rem;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC",
+        "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+}
+</style>
+</head>
+<body>
+
+<header class="site-header">
+    <p class="lesson-meta">中间件开发底座 · 第 1 课 · 数据库线</p>
+</header>
+
+<div class="lesson-hero">
+    <h1>一次只答一个问题的并发</h1>
+    <p class="lesson-meta">
+        目标：面对「你们用的什么隔离级别、为什么」这类问题时，你能讲出<strong>原理 + 你项目里的真实答案</strong>，
+        而不是背四个名字。<br>
+        前置阅读：无。本课从零开始。<br>
+        预计用时：25 分钟（含测验）。主源：
+        <a href="https://dev.mysql.com/doc/refman/8.0/en/innodb-locking-transaction-model.html">MySQL 8.0 Manual · 17.7 InnoDB Locking and Transaction Model</a>。
+    </p>
+</div>
+
+<h2>一、先看一个你会遇到的现象</h2>
+
+<p>不看定义，先看现场。下面这段代码是<strong>真实项目里会出现</strong>的东西，和隔离级别有关：</p>
+
+<pre><code class="language-sql">-- 事务 A
+BEGIN;
+SELECT balance FROM wallet WHERE user_id = 42;   -- 读出来：100
+
+-- 此刻事务 B 提交：给 42 号转了 50 块
+
+SELECT balance FROM wallet WHERE user_id = 42;   -- 再读一次，读到多少？
+COMMIT;</code></pre>
+
+<p>第二次 <code>SELECT</code> 读到 <code>100</code> 还是 <code>150</code>？</p>
+
+<p>
+<strong>答案取决于你在哪个数据库上跑</strong> —— MySQL 默认读到 <code>100</code>，PostgreSQL 默认读到 <code>150</code>。
+两个库都在你项目里跑着（MySQL 是 minimall，PostgreSQL 是 CharAgent 的快照层），所以这不是学术问题，是你代码里正在发生的事。
+</p>
+
+<p>
+这就是隔离级别。它的定义只有一句话：
+</p>
+
+<div class="callout">
+    <span class="callout__label">一句话定义</span>
+    <p><strong>隔离级别 = 并发事务之间「能看见对方多少」的约定。</strong></p>
+    <p>它不是「越严越好」—— 每往上加一层隔离，你就要多付一层代价（锁更多、冲突更多、甚至要重试）。面试问这个，考的是你能不能说清<strong>那条取舍线画在哪、为什么画在那儿</strong>。</p>
+</div>
+
+<h2>二、先把出问题的现象认全</h2>
+
+<p>你要背的不是级别，是<strong>异常</strong>。级别只是「容忍哪些异常」的组合。三个异常，全部用同一个例子讲：</p>
+
+<div class="scenario">
+    <span class="scenario__label">场景</span>
+    <p>你去柜台取号，柜员查你的账户余额，然后你问「能不能给我打个余额证明」，柜员再查一次 —— <strong>两次查询之间，你老婆在另一个窗口转走了 400 万</strong>。</p>
+</div>
+
+<h3>① 脏读（Dirty Read）—— 读到了别人还没提交的东西</h3>
+
+<p>
+柜员读了另一个窗口<strong>正在操作但还没确认</strong>的余额，告诉你「你有 500 万」。然后那个操作被<strong>撤销</strong>了 ——
+你依据一个从未真实存在过的数字做了决定。
+</p>
+<p><strong>危险在哪</strong>：你看到的数据从来没被系统承认过。这是三个异常里唯一一个「看到不存在的世界」的。</p>
+
+<h3>② 不可重复读（Non-Repeatable Read）—— 同一条记录，读了两次，值不一样</h3>
+
+<p>
+柜员第一次查是 500 万，第二次查是 100 万。两次读的是<strong>同一行</strong>，中间被别人改了并提交了。
+</p>
+<p><strong>危险在哪</strong>：一个事务内部自相矛盾。如果你拿第一次的读数去算利息、拿第二次的读数去扣款，结果就是错的。</p>
+
+<h3>③ 幻读（Phantom Read）—— 同一组条件，查了两次，行数变了</h3>
+
+<p>
+柜员查「余额大于 100 万的所有账户」，第一次查出 3 个。她再查一次 —— 4 个。多出来的那一个，是别人<strong>新插入</strong>的。
+</p>
+<p><strong>和②的区别</strong>：②是<strong>已有行被改</strong>，③是<strong>结果集里凭空多出/少了行</strong>。这个区别是理解 InnoDB 间隙锁的唯一入口，别跳过。</p>
+
+<h2>三、四个级别 = 四种「容忍哪些异常」的选择</h2>
+
+<p>SQL 标准定义了四个级别。它们不是四套不同机制，而是<strong>同一条光谱上的四档</strong>：</p>
+
+<table>
+    <thead>
+        <tr>
+            <th>隔离级别</th>
+            <th>脏读</th>
+            <th>不可重复读</th>
+            <th>幻读</th>
+            <th>直觉</th>
+        </tr>
+    </thead>
+    <tbody>
+        <tr>
+            <td><code>READ UNCOMMITTED</code></td>
+            <td>可能</td><td>可能</td><td>可能</td>
+            <td>几乎不做隔离</td>
+        </tr>
+        <tr>
+            <td><code>READ COMMITTED</code></td>
+            <td><strong>不可能</strong></td><td>可能</td><td>可能</td>
+            <td>只看别人已提交的；每条语句重新取一次快照</td>
+        </tr>
+        <tr>
+            <td><code>REPEATABLE READ</code></td>
+            <td><strong>不可能</strong></td><td><strong>不可能</strong></td><td>标准允许可能（MySQL 用间隙锁消除）</td>
+            <td>整个事务一个快照</td>
+        </tr>
+        <tr>
+            <td><code>SERIALIZABLE</code></td>
+            <td><strong>不可能</strong></td><td><strong>不可能</strong></td><td><strong>不可能</strong></td>
+            <td>等价于串行执行</td>
+        </tr>
+    </tbody>
+</table>
+
+<div class="callout callout--warn">
+    <span class="callout__label">面试的坑就在最后一行</span>
+    <p>
+        「<code>REPEATABLE READ</code> 防止幻读」这句话，<strong>在 MySQL 上成立、在 PostgreSQL 上要小心</strong>。
+        PostgreSQL 的 RR 在官方文档里叫 <strong>snapshot isolation</strong>（快照隔离），它不阻塞写入 ——
+        两个事务各读各的快照、各自写入，不一定有谁来报错。<strong>仍有异常能漏过去（写偏斜）</strong>，
+        要彻底解决得用 <code>SERIALIZABLE</code>（PG 的实现叫 SSI）。
+    </p>
+    <p>MySQL 的 RR 则通过 <strong>next-key lock（记录锁 + 间隙锁）</strong> 把间隙也锁住，所以插入会被挡住，幻读在 MySQL 的 RR 下确实被压掉了。</p>
+    <p><strong>一句话记住</strong>：MySQL 的 RR ≈ 快照读 + 间隙锁堵幻读；PostgreSQL 的 RR = 纯快照隔离，更接近标准的 SERIALIZABLE 由 SSI 兜底。</p>
+</div>
+
+<h2>四、回到你的 Django 项目</h2>
+
+<p>上面那个 100 还是 150 的问题，在你项目里的样子：</p>
+
+<pre><code class="language-python">from django.db import transaction
+
+with transaction.atomic():
+    a = Profile.objects.get(user_id=42).balance      # 第一次读
+
+    # ……这中间，另一个进程/请求改了并提交了（比如充值到账）
+
+    b = Profile.objects.get(user_id=42).balance      # 第二次读
+    print(a, b)</code></pre>
+
+<ul>
+    <li>跑在 <strong>MySQL</strong>（你的 <code>app.minimall</code>）上 —— 默认 <code>REPEATABLE READ</code>，<strong><code>a == b</code></strong></li>
+    <li>跑在 <strong>PostgreSQL</strong>（你的 <code>CharAgent</code> 快照层）上 —— 默认 <code>READ COMMITTED</code>，<strong><code>a != b</code></strong></li>
+</ul>
+
+<p>
+<strong>同一个 <code>transaction.atomic()</code>，两个数据库给出不同结果。</strong>
+Django 不会替你屏蔽这个差异 —— <code>atomic()</code> 管的是「要么全做要么全不做」（原子性），
+<strong>不管「事务内两次读之间别人能不能改」</strong>（隔离性）。这两件事经常被混在一起，面试里说出来就是区分度。
+</p>
+
+<div class="callout callout--good">
+    <span class="callout__label">可以查一下你自己的库</span>
+    <pre><code class="language-sql">-- MySQL
+SELECT @@transaction_isolation;
+
+-- PostgreSQL
+SHOW transaction_isolation;</code></pre>
+</div>
+
+<h2>五、趁热测一下（不只是记，是「认得出场景」）</h2>
+
+<p>下面四题按同一个概念换场景出。每一题都要你先<strong>说出判据</strong>再点 —— 点之前先在脑子里答一遍。四道全部做完再回头看第二节的表格。</p>
+
+<div class="quiz" data-quiz>
+    <noscript><p>本课测验需要 JavaScript。</p></noscript>
+</div>
+
+<script type="application/json" data-quiz-data>
+[
+  {
+    "q": "事务 A 读到事务 B「改了但还没 COMMIT」的行，B 随后 ROLLBACK。A 依据这个值做了业务决策。属于哪种异常？",
+    "options": {
+      "脏读": "脏读",
+      "不可重复读": "不可重复读",
+      "幻读": "幻读",
+      "这不是异常": "这不是异常"
+    },
+    "answer": "脏读",
+    "explain": "判据是「对方未提交」。脏读是三个异常里唯一一个「看到的数据从未被系统承认过」的 —— 对方回滚之后，那条世界线根本不存在。不可重复读要求对方已提交；幻读的判据是行数变化，不是值变化。"
+  },
+  {
+    "q": "事务 A 第一次 SELECT 某行得到 100，事务 B 更新该行并提交，A 第二次 SELECT 同一行得到 150。属于哪种异常？",
+    "options": {
+      "不可重复读": "不可重复读",
+      "脏读": "脏读",
+      "幻读": "幻读",
+      "这不是异常": "这不是异常"
+    },
+    "answer": "不可重复读",
+    "explain": "三个条件同时成立才是它：同一行、读了两次、值不同，且中间那次修改是「已提交」的。和脏读的唯一分界线就是最后那条 —— 对方提交了没有。"
+  },
+  {
+    "q": "事务 A 用同一条件两次 SELECT「state = 待发货」，第一次 3 行，第二次 4 行 —— 每次都读完了、读的是已提交数据，中间也没有别人改这 3 行。属于哪种异常？",
+    "options": {
+      "幻读": "幻读",
+      "脏读": "脏读",
+      "不可重复读": "不可重复读",
+      "这不是异常": "这不是异常"
+    },
+    "answer": "幻读",
+    "explain": "已有行一个没被改，凭空多出来一个「之前不满足条件的行」—— 变的是结果集的规模，不是某一行的值。这条判据直接推出 InnoDB 为什么要在 RR 下加间隙锁：光锁住已有的行，挡不住新插入。"
+  },
+  {
+    "q": "同一段「事务内读两次同一行、中间别人提交了修改」的代码，分别跑在各自默认隔离级别下，结果如何？",
+    "options": {
+      "两者相同，MySQL 两次都一样": "两者相同，MySQL 两次都一样",
+      "两者不同，MySQL 两次都一样": "两者不同，MySQL 两次都一样",
+      "两者相同，MySQL 两次不一样": "两者相同，MySQL 两次不一样",
+      "两者不同，MySQL 两次不一样": "两者不同，MySQL 两次不一样"
+    },
+    "answer": "两者不同，MySQL 两次都一样",
+    "explain": "MySQL 默认 RR：快照在事务第一次读时定下，之后同事务内反复读的是同一个版本，所以两次相同。PostgreSQL 默认 RC：每条语句重新取一次快照，所以第二次能看到别人已提交的修改。这就是你项目里两个库同时跑着、行为却不一致的根源。"
+  }
+]
+</script>
+
+<h2>六、留下来反复看的东西</h2>
+
+<details class="recall">
+    <summary>参考答案：面试被问「你们用的什么隔离级别」的 60 秒口述</summary>
+    <div class="recall__body">
+        <p>
+            「我们 MySQL 侧走 InnoDB 默认的 <strong>REPEATABLE READ</strong>，也就是说一个事务里的多次读看到同一个快照，
+            MySQL 还会用 next-key lock 把范围间隙也锁住，所以幻读在我们的读路径上基本不出现。
+            代价是并发写同一范围时会互相等，我们的写操作<strong>都用 <code>select_for_update()</code> 显式加锁</strong>，
+            而不是依赖隔离级别的隐式锁 —— 因为隐式锁的行为在不同版本和不同索引设计下不一样，显式的更好推理。
+            PostgreSQL 侧（快照层）走的是默认的 <strong>READ COMMITTED</strong>，因为那块不需要跨语句一致性，
+            反而更在意并发度，RC 的锁更少。」
+        </p>
+        <p><strong>注意这段话的结构</strong>：级别 → 它带来什么保证 → 代价 → 我怎么处理代价。面试官要的是这条链，不是名字。</p>
+    </div>
+</details>
+
+<details class="recall">
+    <summary>三个异常的最小判据（先自己回忆再看）</summary>
+    <div class="recall__body">
+        <table>
+            <thead>
+                <tr><th>异常</th><th>一句话判据</th><th>关键差异</th></tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>脏读</td>
+                    <td>对方<strong>没提交</strong>我就读到了</td>
+                    <td>唯一一个「数据从未存在过」的</td>
+                </tr>
+                <tr>
+                    <td>不可重复读</td>
+                    <td>同一行读了两次，<strong>值</strong>不一样，中间对方<strong>已提交</strong></td>
+                    <td>对方已提交</td>
+                </tr>
+                <tr>
+                    <td>幻读</td>
+                    <td>同一条件读了两次，<strong>行数</strong>不一样</td>
+                    <td>变的是集合，不是值</td>
+                </tr>
+            </tbody>
+        </table>
+        <p>记忆锚：<strong>脏读 = 未提交 · 不可重复读 = 同一行 · 幻读 = 结果集</strong>。</p>
+    </div>
+</details>
+
+<details class="recall">
+    <summary>概念扩展：缓存三兄弟的对照卡（矫正诊断里那次术语错位）</summary>
+    <div class="recall__body">
+        <table>
+            <thead>
+                <tr><th>名字</th><th>它到底是什么</th><th>解法</th><th>你项目里的对应</th></tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><strong>穿透</strong></td>
+                    <td>查的数据<strong>根本不存在</strong>，缓存和数据库都没有 → 每次都打到库</td>
+                    <td>空值缓存（+ 布隆过滤器）</td>
+                    <td><code>cache.py</code> 里缓存空结果那段</td>
+                </tr>
+                <tr>
+                    <td><strong>击穿</strong></td>
+                    <td><strong>单个热点 key</strong> 过期瞬间，大量并发同时去重建它</td>
+                    <td>分布式锁，只让一个请求去查库回填</td>
+                    <td><code>cache.py:_lock_and_load()</code> 的 SETNX + Pub/Sub</td>
+                </tr>
+                <tr>
+                    <td><strong>雪崩</strong></td>
+                    <td><strong>大批 key 同时失效</strong>（或缓存整个挂了），请求一起涌向数据库</td>
+                    <td>TTL 加随机抖动、多级缓存、熔断</td>
+                    <td><code>cache.py</code> 里的 TTL 随机化 ±20%</td>
+                </tr>
+            </tbody>
+        </table>
+        <p><strong>区分口诀</strong>：穿透 = <strong>数据不存在</strong>；击穿 = <strong>一个 key 过期</strong>；雪崩 = <strong>一批 key 同时过期</strong>。</p>
+        <p class="lesson-meta">更系统的内容见 <code>learning-records/0001-cache-terms-inverted.md</code>。</p>
+    </div>
+</details>
+
+<article class="ask-teacher">
+    <span class="callout__label">我是你的老师，随时追问</span>
+    <p>
+        这一课最容易卡住的三个地方，任何一个不清楚都直接问，不用赶进度：
+    </p>
+    <ul>
+        <li><strong>「写偏斜到底是什么」</strong> —— 我在上面只点了一句。这个如果想深挖，值得单独一课。</li>
+        <li><strong>「间隙锁怎么个锁法」</strong> —— next-key lock 的具体行为在 MySQL 8.0 有变化（插入意向锁等），可以展开。</li>
+        <li><strong>「为什么 PostgreSQL 选 RC 当默认」</strong> —— 设计动机层面的话题，我更倾向于引导你读官方或社区讨论，而不是我替你下结论。</li>
+    </ul>
+</article>
+
+<footer class="lesson-footer">
+    <h2>下一课（候选，你来定）</h2>
+    <ul>
+        <li><strong>ACID 里的 D 到底做了什么</strong> —— 第 5 题那道空缺。WAL、fsync、崩溃恢复。会连回你 CharAgent 的 PG 快照层。</li>
+        <li><strong>缓存持久化与内存管理</strong> —— 第 3 题。RDB/AOF、TTL 重启后到底怎样、淘汰策略。</li>
+        <li><strong>为什么需要分布式锁，Pub/Sub 那一环干什么</strong> —— 第 2 题。会直接读你自己的 <code>cache.py</code>。</li>
+        <li><strong>MQ 的四个失败场景</strong> —— 重复、丢失、顺序、积压。你的 MQ 起点比你以为的高，可以直接上强度。</li>
+    </ul>
+    <p class="lesson-meta">
+        复习建议：明天不看内容，只看上面的测验题，先在脑子里答一遍再对答案。
+        只重读、不提取，是产生「以为自己会了」错觉最快的方式。
+    </p>
+</footer>
+
+<!-- 可复用组件：交互测验。契约见 assets/quiz.js 顶部注释，后续课程直接引用。 -->
+<script src="../assets/quiz.js?v=3"></script>
+
+</body>
+</html>

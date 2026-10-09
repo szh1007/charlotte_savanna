@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>参考 · Agent 生态事实速查（截至 2026-10-10）</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+</head>
+<body>
+<main class="lesson">
+
+  <p class="lesson__kicker">Reference · 生态事实</p>
+  <h1>Agent 生态事实速查</h1>
+  <p class="lede">
+    面试里被问「你了解哪些框架 / 协议 / 基准」时，答得出<b>名字 + 一句话定位 + 版本</b>比说「都用过」可信得多。
+    这份卡片的每一条都标注了抓取日期与来源，方便你复核。
+  </p>
+
+  <div class="meta">
+    <span><b>全部事实截至 2026-10-10</b></span>
+    <span>版本号经 PyPI / 官方站点实抓</span>
+    <span><a href="../MISSION.md">Mission</a> · <a href="existing-corpus-index.html">存量索引</a></span>
+  </div>
+
+  <div class="callout callout--warn">
+    <span class="callout__label">引用纪律（比事实本身更重要）</span>
+    <p>
+      这份卡片的数字<b>全部有保质期</b>。面试时凡报版本、报基准分数，必须带上「截至某日」——
+      这本身就是 2026 面试里被考察的一项能力。厂商自报的 benchmark 数字（尤其记忆类）<b>不可横向比较</b>，
+      主动指出这一点是加分项。
+    </p>
+  </div>
+
+  <!-- ============================================ -->
+  <h2 id="map"><span class="num">1</span>分层心智地图</h2>
+
+  <p>用这张图开场，比罗列框架名字高一个层次。</p>
+
+  <table>
+    <thead><tr><th style="width:8rem">层</th><th>2026-10 状态一句话</th><th style="width:11rem">代表</th></tr></thead>
+    <tbody>
+      <tr><td><b>模型层</b></td><td>function calling / structured output 已是标配；prompt caching 成为成本工程核心；长上下文「有窗口 ≠ 能利用」</td><td>Claude / GPT / Gemini / DeepSeek / Qwen</td></tr>
+      <tr><td><b>API 能力层</b></td><td>服务端开始接管上下文：compaction、conversation state、显式 cache breakpoint</td><td>Responses API、Anthropic context editing</td></tr>
+      <tr><td><b>协议层</b></td><td>收敛为「<b>MCP（垂直：agent↔工具）+ A2A（水平：agent↔agent）</b>」双协议；MCP 2026-07-28 是无状态化大改版</td><td>MCP、A2A、AP2</td></tr>
+      <tr><td><b>框架层</b></td><td>「框架之争」已转化为「<b>harness 之争</b>」——各家都在卖 harness（循环 + 上下文 + 权限 + 可观测），而不是单纯的编排库</td><td>LangGraph、OpenAI Agents SDK、Claude Agent SDK、ADK</td></tr>
+      <tr><td><b>运行时 / Harness</b></td><td>2026 最热的新词；手写 agent loop 从「造轮子」变成<b>被公认的正确做法之一</b></td><td>Mitchell Hashimoto「Engineer the Harness」</td></tr>
+      <tr><td><b>平台层</b></td><td>评估与可观测独立成层，且是面试区分度最高的一簇；厂商开始互相收购整合</td><td>LangSmith、Langfuse（已被 ClickHouse 收购）、Braintrust、Phoenix</td></tr>
+      <tr><td><b>记忆与上下文</b></td><td>记忆从「向量库 + 摘要」进化到专门产品；上下文工程有各家官方方法论</td><td>Mem0 / Zep / Letta，见 §4</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout callout--key">
+    <span class="callout__label">最好用的一句：框架厂商自己承认了</span>
+    <p>
+      LangChain 官方文档的分层口径是：<b>Deep Agents = batteries-included harness · LangChain = customizable harness ·
+      LangGraph = low-level orchestration · LangSmith = trace/debug/evaluate/monitor</b>。
+      也就是说「2026 是 harness 之争」不是我编的叙事 —— 是厂商自己的产品命名。
+      <span class="cite">[<a href="https://docs.langchain.com/oss/python/langchain/overview">docs.langchain.com</a>]</span>
+    </p>
+    <p>
+      <b>你的定位话术</b>：「2026 年框架之争的本质是 harness 之争 —— LLM 负责推理，harness 负责循环、上下文、权限、可观测。
+      我手写过一套零依赖的 loop，所以看各家的 harness 设计，是看它们怎么解决我踩过的坑。」
+    </p>
+  </div>
+
+  <!-- ============================================ -->
+  <h2 id="frameworks"><span class="num">2</span>框架：版本与定位</h2>
+
+  <table>
+    <thead><tr><th style="width:10rem">框架</th><th style="width:6rem">版本（2026-10-10）</th><th>一句话定位与必考的机制</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><b>LangGraph</b></td><td><code>1.2.14</code></td>
+        <td>
+          low-level orchestration。<b>必考三件套</b>：① <code>StateGraph</code> + <code>Annotated</code> reducer（状态字段的合并规则，
+          如 <code>Annotated[list, operator.add]</code> 供并行节点追加）；② <b>checkpointer（短期，thread 级）vs Store（长期，跨 thread）</b> ——
+          这个区分几乎每场必问；③ <code>interrupt()</code> + <code>Command(resume=…)</code> 做 HITL。
+          <b>坑</b>：官方明确「最新图定义会立即作用到所有已存在的 thread 状态」—— 改了图代码，跑了一半的旧 thread 会用新逻辑重新解释。
+        </td>
+      </tr>
+      <tr>
+        <td><b>LangChain</b></td><td><code>1.4.4</code></td>
+        <td>
+          1.0 GA 于 2025-10。抽象从 Chain 收敛为 <code>create_agent</code>（建在 LangGraph runtime 上）+ <b>middleware</b> 做横切关注点：
+          <code>SummarizationMiddleware(trigger={"tokens":4000}, keep=("messages",20))</code>、
+          <code>PIIMiddleware</code>（redact / mask / block）、<code>HumanInTheLoopMiddleware</code>。
+          旧栈 <code>AgentExecutor</code> 进维护轨道。<b>对手写者的对照</b>：middleware ≈ 你的 hooks 注册表 + 上下文压缩，厂商把它做成了声明式配置。
+        </td>
+      </tr>
+      <tr>
+        <td><b>Deep Agents</b></td><td><code>0.7.23</code></td>
+        <td>
+          batteries-included harness。<code>create_deep_agent</code> 默认给 planning tool + subagents + 虚拟文件系统（含 grep/glob，可选 sandbox）。
+          <b>subagent 的核心价值是 context quarantine</b>，两种模式：<b>isolate</b>（自成上下文，只回结论）/ <b>fork</b>（复制父上下文再独立探索）。
+          自动注入 prompt cache breakpoint。
+        </td>
+      </tr>
+      <tr>
+        <td><b>OpenAI Agents SDK</b></td><td><code>0.23.1</code></td>
+        <td>
+          四件套：Agents / <b>Handoffs</b> / Guardrails / Sessions。
+          <b>高频区分</b>：<code>handoff()</code> 移交控制权 vs <code>Agent.as_tool()</code> 保留控制权。
+          护栏三类（input / output / tool）+ <b>tripwire</b>（触发即终止 run 并抛异常，<b>不是</b>让模型重试）。
+          Sessions 不能与 <code>conversation_id</code> / <code>previous_response_id</code> 混用（客户端托管与服务端托管二选一）。
+        </td>
+      </tr>
+      <tr>
+        <td><b>Claude Agent SDK</b></td><td><code>0.2.165</code></td>
+        <td>
+          <code>query()</code> + <code>ClaudeAgentOptions</code>；<code>agents=</code> 接子代理定义。
+          官方 loop 三段论：<b>gather context → take action → verify work</b>；agentic search 优先于语义搜索；验证三法（规则 / 视觉 / LLM）。
+          <b>与 Messages API 的区别</b>：SDK 交付完整 harness（循环 / 权限 / hooks / 子代理 / 会话），API 只给原子能力。
+        </td>
+      </tr>
+      <tr>
+        <td><b>Google ADK</b></td><td><code>2.11.0</code></td>
+        <td>
+          <code>LlmAgent</code> + workflow agents（Sequential / Parallel / Loop）；<b>LoopAgent 用 tool 内 <code>exit_loop</code> 退出、<code>escalate=True</code> 升级</b>（记忆点）。
+          <b>A2A 原生</b>：<code>to_a2a(root_agent, port=…)</code> 一行暴露成 A2A server。
+          上下文管理：<code>EventsCompactionConfig</code> + <code>ContextCacheConfig</code>。
+        </td>
+      </tr>
+      <tr>
+        <td><b>LlamaIndex</b></td><td><code>0.14.25</code></td>
+        <td><code>AgentWorkflow</code> + <code>FunctionAgent</code>，建在 event-driven workflows 1.0 之上（<code>@step</code> / <code>ctx.store</code> / <code>collect_events</code>）。RAG 仍是主场。</td>
+      </tr>
+      <tr>
+        <td><b>CrewAI</b></td><td><code>1.15.26</code></td>
+        <td>
+          双形态：<b>Crews</b>（role/goal/backstory 角色协作）vs <b>Flows</b>（<code>@start</code>/<code>@listen</code> 事件流 + Pydantic state）。
+          官方口径：能用 Flow 控流程就用 Flow，纯协作才用 Crew。记忆有 scope 概念（<code>memory.scope("/agent/researcher")</code>）。
+        </td>
+      </tr>
+      <tr>
+        <td><b>AutoGen 系</b></td><td><code>autogen-agentchat 0.7.5</code></td>
+        <td>
+          <b>微软主线 AutoGen 已进维护模式</b>（README banner 更新于 2026-04-06），新项目重定向到
+          <b>Microsoft Agent Framework</b>（AutoGen + Semantic Kernel 合流，2025-10 preview → <b>1.0 GA 2026-04-03</b>）。
+          社区分叉 <b>AG2</b>（<code>1.1.2</code>）把 GroupChat 升级为 network / TransitionGraph。
+          <b>答法</b>：说得出「AutoGen 在其维护模式 + 微软官方路线是 MAF」即为标准答案。
+        </td>
+      </tr>
+      <tr>
+        <td><b>其他</b></td><td>—</td>
+        <td>
+          <b>AWS Strands</b> 1.59.0（AWS 系 model-driven）· <b>Pydantic AI</b> 2.55.0（类型安全）· <b>Agno</b> 3.1.2（全栈平台）·
+          <b>smolagents</b> 1.26.0（HuggingFace，code-as-action）· <b>AgentScope</b> 2.0.9 与 <b>Qwen-Agent</b> 0.0.34（中国生态）。
+        </td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="callout callout--warn">
+    <span class="callout__label">时效性考点（2026 下半年）</span>
+    <p>
+      <b>OpenAI AgentKit 的 Agent Builder 已弃用</b>：2026-06-03 宣布 → <b>2026-11-30 关停</b>；Evals 平台同样走向关停
+      （2026-10-31 起只读 → 11-30 关闭，迁移到 workspace evals / graders）。<b>ChatKit 保留</b>。
+      说得出这个日期即领先 —— 但也注意：此条来自官方 deprecations 页与多来源一致，未见首页公告逐字核对。
+    </p>
+  </div>
+
+  <h3>选型速查</h3>
+  <table>
+    <thead><tr><th style="width:14rem">需求</th><th style="width:12rem">选择</th><th>理由</th></tr></thead>
+    <tbody>
+      <tr><td>复杂状态图 / 断点续跑 / HITL</td><td>LangGraph</td><td>checkpointer + interrupt 语义最完整</td></tr>
+      <tr><td>要开箱即用的 harness</td><td>Deep Agents / Claude Agent SDK</td><td>planning + 子代理 + 文件系统 / 权限内建</td></tr>
+      <tr><td>全 OpenAI 栈、要 handoffs + guardrails</td><td>OpenAI Agents SDK</td><td>与 Responses API 能力直通</td></tr>
+      <tr><td>GCP / 要 A2A</td><td>Google ADK</td><td>A2A 原生 + 企业部署路径</td></tr>
+      <tr><td>RAG 为主的 agent</td><td>LlamaIndex</td><td>检索层最厚</td></tr>
+      <tr><td>角色协作快速原型</td><td>CrewAI</td><td>Crews 上手最快</td></tr>
+      <tr><td>.NET / 微软栈</td><td>Microsoft Agent Framework</td><td>AutoGen + SK 已合流，1.0 GA</td></tr>
+      <tr><td>只想学循环本质 / 不被框架锁</td><td><b>手写 loop</b></td><td><b>2026 的 harness 叙事里，这反而加分</b></td></tr>
+    </tbody>
+  </table>
+
+  <!-- ============================================ -->
+  <h2 id="protocols"><span class="num">3</span>协议层</h2>
+
+  <h3>3.1 MCP —— 当前规范 <code>2026-07-28</code>（无状态化大改版）</h3>
+
+  <p>版本序列：2024-11-05 → 2025-03-26 → 2025-06-18 → 2025-11-25 → <b>2026-07-28（当前）</b>。</p>
+
+  <p><b>核心变化（被问「最新版本有什么变化」时答这五连）：</b></p>
+  <ol>
+    <li><b>无状态化</b>：每个请求用 <code>_meta</code> 携带 <code>protocolVersion</code> / <code>clientCapabilities</code> / <code>clientInfo</code>；
+      新增 <b><code>server/discover</code></b> 取代 initialize 握手；不再有 <code>Mcp-Session-Id</code>。
+      <b>这才是「MCP 能不能上云、过负载均衡」的答案。</b></li>
+    <li><b>MRTR（Multi Round-Trip Requests）</b>：<code>resultType: "input_required"</code> + <code>inputRequests</code> / <code>inputResponses</code> —— 服务端中途要用户补输入的标准机制。</li>
+    <li><b><code>subscriptions/listen</code></b>：取代 GET stream 做服务端推送。</li>
+    <li>JSON-RPC 无 batch；HTTP 头 <code>Mcp-Method</code> / <code>Mcp-Name</code> 支持路由层鉴权；列表结果可缓存（<code>ttlMs</code> / <code>cacheScope</code>）。</li>
+    <li><b>弃用清单</b>（12 个月窗口）：roots / sampling / logging、DCR 动态客户端注册（→ CIMD）、
+      <b>HTTP+SSE 传输（传输只剩 stdio + Streamable HTTP）</b>。</li>
+  </ol>
+
+  <p>
+    <b>原语</b>：tools / resources / prompts + <b>elicitation</b>（form / URL 两模式，accept / decline / cancel）。
+    <b>授权</b>：OAuth 2.1 + RFC 9728 / 8414 / 8707，CIMD 替代 DCR。
+    <b>治理</b>：2025-12-09 捐给 <b>AAIF</b>（Agentic AI Foundation，Linux Foundation 旗下）。
+    <b>Extensions（默认关闭、opt-in）</b>：Tasks、MCP Apps（<code>io.modelcontextprotocol/ui</code>）、Skills over MCP。
+    <span class="cite">[<a href="https://modelcontextprotocol.io/specification/2026-07-28">规范</a> · <a href="https://modelcontextprotocol.io/specification/2026-07-28/deprecated">弃用清单</a>]</span>
+  </p>
+
+  <h3>3.2 A2A —— v1.0 已发布</h3>
+
+  <ul>
+    <li><b>v1.0.0 发布于 2026-03-12</b>（v1.0.1 为 2026-05-28 patch）；2026-08-27 加入 AAIF。</li>
+    <li>TSC 八家：Google / Microsoft / AWS / Cisco / Salesforce / ServiceNow / SAP / IBM；170+ 合作伙伴。</li>
+    <li><code>AgentCard</code> 支持 <code>supported_interfaces</code>（JSONRPC / GRPC / HTTP+JSON 三种绑定）；新增 <code>A2A-Version</code> 请求头；<code>spec/a2a.proto</code> 为唯一权威定义。</li>
+    <li><b>官方定位一句话（面试直接用）</b>：<b>MCP = vertical（agent 到工具），A2A = horizontal（agent 到 agent）</b>，互补不竞争。</li>
+  </ul>
+
+  <h3>3.3 其他协议</h3>
+  <table>
+    <thead><tr><th style="width:12rem">协议</th><th>状态</th><th>一句话</th></tr></thead>
+    <tbody>
+      <tr><td><b>AP2</b>（Agent Payments）</td><td>v0.2（2026-04-28），同日捐 FIDO Alliance</td><td>支付层：Mandates + VDC，支持 Human Not Present</td></tr>
+      <tr><td><b>ACP</b>（IBM / BeeAI）</td><td><b>已归档</b>：2025-08-29 并入 A2A</td><td>曾有独立 agent 通信协议，已收编</td></tr>
+      <tr><td><b>AG-UI</b></td><td>活跃（日期 tag，latest 2026-10-09）</td><td>agent ↔ 前端事件协议</td></tr>
+      <tr><td><b>MCP-UI → MCP Apps</b></td><td>演进为 MCP 官方 extension</td><td>agent 输出 UI 组件</td></tr>
+      <tr><td><b>A2UI</b>（Google）</td><td>v0.9.1 生产可用；v1.0 RC</td><td>声明式 JSON UI，Web / Flutter renderer</td></tr>
+      <tr><td><b>UCP</b>（Google 系）</td><td>Shopping 可用；Lodging draft</td><td>统一电商协议，与 MCP / A2A / AP2 分层协作</td></tr>
+    </tbody>
+  </table>
+  <p>
+    <b>结论句</b>：除了 MCP / A2A 还知道「AP2 管支付、AG-UI 管前端事件、ACP 已归档并入 A2A」即是加分 ——
+    而真正的结论是<b>协议地在收敛，不是发散</b>。微软与 OpenAI 均无自有替代协议，双向下注 MCP + A2A。
+  </p>
+
+  <!-- ============================================ -->
+  <h2 id="memory"><span class="num">4</span>记忆方案</h2>
+
+  <p>回答框架：<b>先分层，再选方案</b> —— 比直接说「用向量库存摘要」高一档。</p>
+
+  <table>
+    <thead><tr><th style="width:8rem">层</th><th style="width:10rem">生命周期</th><th>代表机制</th></tr></thead>
+    <tbody>
+      <tr><td>会话内短期</td><td>单 thread / session</td><td>LangGraph checkpointer、Agents SDK Sessions、服务端 compaction / context editing</td></tr>
+      <tr><td>跨会话长期</td><td>跨 thread，持久化</td><td>LangGraph Store、Mem0、Zep、Letta memory blocks、Anthropic memory tool</td></tr>
+      <tr><td>压缩</td><td>上下文超限时</td><td>摘要（<code>SummarizationMiddleware</code>）、服务端 compaction</td></tr>
+    </tbody>
+  </table>
+
+  <p><b>逐个方案（含论文与数字来源）：</b></p>
+  <ul>
+    <li>
+      <b>Mem0</b> —— ADD-only <b>单遍提取</b>（不重写旧记忆）+ multi-signal 检索；厂商自报 LoCoMo 92.5 / LongMemEval 94.4；
+      论文 <a href="https://arxiv.org/abs/2504.19413">arXiv 2504.19413</a>；开源 benchmark 集 <code>mem0ai/memory-benchmarks</code>。
+    </li>
+    <li>
+      <b>Zep / Graphiti</b> —— <b>bi-temporal（四时间戳）知识图</b> + <b>edge invalidation</b>（旧事实失效而非删除）+ <b>召回链不调 LLM</b>（纯图检索，低延迟）；
+      论文 <a href="https://arxiv.org/abs/2501.13956">arXiv 2501.13956</a>；产品页自报 LoCoMo 94.7%。
+    </li>
+    <li>
+      <b>Letta</b>（原 MemGPT 团队）—— memory blocks（有结构、先审后写）+ MemFS + 「Dreaming」睡眠期整理。
+    </li>
+    <li>
+      <b>LangMem / LangGraph Store</b> —— 官方双路径：hot path（agent 主动调 remember 工具）vs background manager（离线整理）。
+    </li>
+    <li>
+      <b>Anthropic memory tool</b> —— <code>memory_20250818</code>，<b>client-side</b>（工具调用走你自己的存储），
+      操作 <code>view / create / str_replace / insert / delete / rename</code>，路径强制 <code>/memories</code> 前缀，支持 multisession。
+      <b>语义上接近你的 <code>charagent_memories</code> + remember/forget 那一套。</b>
+    </li>
+    <li>
+      <b>其他</b>：memobase（profile 派，buffer 批处理约 1024 token / 1h 触发）· Cognee（<code>remember/recall/improve/forget</code> 四动词，
+      单 Postgres 部署）· MIRIX（六分区：core / episodic / semantic / procedural / resource / knowledge vault）。
+    </li>
+  </ul>
+
+  <div class="callout callout--key">
+    <span class="callout__label">三个 take-away（可直接讲）+ 一条口径警告</span>
+    <ol>
+      <li><b>写入侧趋势</b>：从「LLM 多轮整理」转向<b>单遍 / 批处理</b>（Mem0 单遍、memobase 批处理）—— 成本驱动。</li>
+      <li><b>检索侧最大分歧</b>：<b>召回链里有没有 LLM</b>（Zep 明确不调，省延迟省成本；Mem0 是多信号融合）。</li>
+      <li><b>遗忘与冲突</b>：delete / invalidate / merge 三选一，产品化程度最高的是 Zep 的 edge invalidation。</li>
+    </ol>
+    <p>
+      <b>口径警告（必须主动说）</b>：记忆类 benchmark（LoCoMo / LongMemEval / BEAM）<b>没有统一裁判</b>，
+      各厂商在自家 pipeline 上自报数字，<b>不可横向比较</b>。主动指出这一点本身就是加分项。
+    </p>
+    <p>
+      <b>「记忆和 RAG 什么区别」</b>：记忆是「关于用户的、会变的、<b>要遗忘的</b>」，RAG 是「关于知识的、静态的、只增不减」——
+      遗忘与冲突管理正是记忆独有、RAG 没有的。
+    </p>
+  </div>
+
+  <!-- ============================================ -->
+  <h2 id="evals"><span class="num">5</span>评测：平台 · 基准 · 方法论</h2>
+
+  <h3>5.1 平台</h3>
+  <table>
+    <thead><tr><th style="width:10rem">平台</th><th style="width:8rem">模式</th><th>要点</th></tr></thead>
+    <tbody>
+      <tr><td><b>LangSmith</b></td><td>商业（LangChain）</td><td>LangGraph Platform 改名整合为 LangSmith Deployment；<b>trajectory evals 三层模型</b>（final response / trajectory / single-step + subsequence scoring）</td></tr>
+      <tr><td><b>Langfuse</b></td><td>MIT open-core</td><td><b>2026-01-16 被 ClickHouse 收购</b>；v4；OTel 原生；自托管免费</td></tr>
+      <tr><td><b>Braintrust</b></td><td>商业，eval 轴心</td><td>Brainstore 自研存储（官方称 80x faster）；SDK MIT</td></tr>
+      <tr><td><b>Arize Phoenix</b></td><td>开源 ELv2</td><td>OTel-native（OpenInference）；其「AI Agent Handbook」把评估分四 scope 并强调 <b>encode invariants</b></td></tr>
+    </tbody>
+  </table>
+  <p>
+    <b>OTel GenAI semconv</b>：2026-05-05 迁到独立仓库，全部标记 <b>Development（未稳定）</b>；
+    agent spans 含 <code>create_agent</code> / <code>invoke_agent</code> / <code>invoke_workflow</code> / <code>plan</code> / <code>execute_tool</code>。
+    <b>答题加分句</b>：「semconv 还没稳定，我们按现有 Development 字段实现」—— 准确且显专业。
+  </p>
+
+  <h3>5.2 方法论（区分度最高的簇）</h3>
+  <ul>
+    <li>
+      <b>结果评估 vs 轨迹评估</b>：结果（final output 对不对）适合有明确答案的任务；轨迹（tool 调用序列、步数、成本）适合诊断「为什么错」。
+      <b>分工口径</b>：结果做回归门禁，轨迹做归因。
+    </li>
+    <li>
+      <b>标准词汇表</b>（Anthropic《Demystifying evals for AI agents》2026-01-09）：
+      task / trial / grader / transcript / <b>harness</b>；<b>pass@k（能力上限）vs pass^k（可靠性）</b>；capability evals vs regression evals。
+      <span class="cite">[<a href="https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents">anthropic.com</a>]</span>
+    </li>
+    <li>
+      <b>LLM-as-judge 的已知偏差</b>：MT-Bench 论文列 <b>position bias / verbosity bias / self-enhancement bias</b>，
+      同时给出「GPT-4 judge 与人类偏好一致率 &gt;80%，与人类间一致率同级」的结论
+      <span class="cite">[<a href="https://arxiv.org/abs/2306.05685">arXiv 2306.05685</a>]</span>。
+      缓解：pairwise + 位置轮换 + 长度控制 + 结构化 rubric。实战方法论见 Hamel Husain《Your AI Product Needs Evals》。
+    </li>
+    <li>
+      <b>工程要点</b>：环境要可复现（container + seed）、工具 mock 与真环境分离、隐藏测试防作弊、每题报成本。
+    </li>
+  </ul>
+
+  <h3>5.3 基准现状（带日期的快照，务必标注）</h3>
+
+  <table>
+    <thead><tr><th style="width:11rem">基准</th><th>口径与快照</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><b>τ-bench 家族</b></td>
+        <td>
+          考<b>工具使用的对话</b>。τ² Text Pass^1：Qwen3.5-397B-A17B 87.9% / Gemini 3.0 Pro 85.4% / Claude Opus 4.5 85.3%；
+          τ³ 有 Banking / Voice 分支。<b>注意</b>：v1.0.1（2026-07）修复了 banking_knowledge 任务错误，<b>旧分不可比</b>。
+        </td>
+      </tr>
+      <tr><td><b>SWE-bench Verified</b></td><td>考<b>真实仓库修复</b>。榜上已带<b>每题成本</b>的批次（2026-02 起）—— 这是面试加分点。</td></tr>
+      <tr><td><b>SWE-bench Pro</b></td><td>1865 题（Public 731 / Held-out 858 / Private 276）；发布时 GPT-5 仅 23.3%。</td></tr>
+      <tr><td><b>GAIA / GAIA2</b></td><td>考<b>多步检索</b>。GAIA2 配 ARE 平台，GPT-5 high 仅 42% pass@1 —— 差距最直观的一个。</td></tr>
+      <tr><td><b>WebArena / VisualWebArena</b></td><td>910 题；2024 基线 GPT-4o + SoM 19.78% vs 人类 88.70%。</td></tr>
+      <tr><td><b>Terminal-Bench 4.0</b></td><td>终端操作。Opus 5.5 + Claude Code 64.8%。</td></tr>
+      <tr><td><b>BFCL</b>（函数调用）</td><td><b>榜停更于 2026-04-12</b> —— 时效硬伤，<b>引用时必须注明</b>。</td></tr>
+      <tr><td><b>hyper-tau-bench</b></td><td>「模型造 agent」：Claude Opus 5 23.9% vs 人类 82.2% —— 自动化差距的量化证据。</td></tr>
+    </tbody>
+  </table>
+
+  <p>
+    <b>答法</b>：报 2–3 个 + 各自口径（τ-bench 考工具使用的对话；SWE-bench 考真实仓库修复；GAIA2 考多步检索）+
+    一句「<b>报数字必须带抓取日期与 harness 口径，否则不可比</b>」。能提「SWE-bench Pro 已出到 1865 题」「τ³ 有 Banking / Voice 分支」＝明显领先。
+  </p>
+
+  <!-- ============================================ -->
+  <h2 id="models"><span class="num">6</span>模型侧事实</h2>
+
+  <h3>6.1 Function calling / structured output</h3>
+  <table>
+    <thead><tr><th style="width:8rem">厂商</th><th>关键事实</th></tr></thead>
+    <tbody>
+      <tr><td><b>Anthropic</b></td><td>client vs server tools；<code>tool_choice: auto/any/tool</code>；<b><code>strict: true</code> = grammar-constrained sampling</b>（约束解码级保证）；structured output 走 <code>output_config.format</code>；schema 复杂度有 400 上限</td></tr>
+      <tr><td><b>OpenAI</b></td><td>新旗舰的工具调用<b>必须走 Responses API</b>（Chat Completions 不带）；<code>tool_search</code> 按需发现工具；Structured Outputs strict 模式</td></tr>
+      <tr><td><b>Gemini</b></td><td>模式 <code>auto / any / none / validated</code>；thought signatures（思维链签名跨调用传递）</td></tr>
+      <tr><td><b>DeepSeek</b></td><td>OpenAI 兼容；<b>Chat Completions 不支持对话中途插入 tool calls</b>（多轮工具对话要小心）；strict 为 beta</td></tr>
+    </tbody>
+  </table>
+  <p>
+    <b>被问「structured output 怎么保证不违反 schema」</b>：答两条路线 —— <b>grammar-constrained sampling（约束解码）</b> vs
+    事后校验重试，并知道哪些厂商用哪种。
+  </p>
+
+  <h3>6.2 Prompt caching（机制与折扣）</h3>
+  <table>
+    <thead><tr><th style="width:8rem">厂商</th><th style="width:10rem">机制</th><th>折扣 / 最小长度 / TTL</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><b>Anthropic</b></td>
+        <td>前缀匹配，顺序 tools → system → messages；<b>显式 breakpoint</b></td>
+        <td>写 1.25x(5m) / 2x(1h)；读 <b>0.1x</b>。最小 <b>512 token</b>（不足静默不缓存）。TTL 5m 默认、1h 可选</td>
+      </tr>
+      <tr>
+        <td><b>OpenAI</b></td>
+        <td>自动（≥1024 visible token 前缀）</td>
+        <td>写 1.25x / 读 <b>0.1x</b>（官方口径「up to 95% 折扣」）；TTL 仅 <code>"30m"</code></td>
+      </tr>
+      <tr>
+        <td><b>Gemini</b></td>
+        <td>implicit（无保证）+ explicit CachedContent</td>
+        <td>存储费 $0.50 / 1M token/hour；最小 4,096 / 2,048；默认 1h</td>
+      </tr>
+      <tr>
+        <td><b>DeepSeek</b></td>
+        <td>磁盘 KV cache，<b>默认开、无写费</b></td>
+        <td>命中价约为未命中 <b>1/50</b>；off-peak 再 5 折</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    <b>Anthropic 缓存失效的四条件（高频考点）</b>：<code>tool_choice</code> 变化、图片有无、key 顺序、时间戳 ——
+    <b>任何前缀消息的改动都会击穿</b>。
+  </p>
+  <p>
+    <b>「agent 场景怎么设计才命中」</b>：<b>系统提示与工具定义放最前且保持稳定</b> —— 与 Manus 的「mask, don't remove」同源
+    （工具变更时遮蔽而非删除，保住 cache 前缀）。
+  </p>
+
+  <h3>6.3 长上下文：「有窗口 ≠ 能利用」</h3>
+  <ul>
+    <li>
+      <b>Lost in the Middle</b>（<a href="https://arxiv.org/abs/2307.03172">arXiv 2307.03172</a>）：
+      信息位置呈 <b>U 型</b> —— 放中间最容易被忽略。
+    </li>
+    <li>
+      <b>NoLiMa</b>（<a href="https://arxiv.org/abs/2502.05167">arXiv 2502.05167</a>）：去掉字面匹配、要隐含推理时，
+      11 个模型在 32K 处普遍跌破其短上下文基线的 50%（GPT-4o 99.3% → 69.7%）。
+    </li>
+    <li>
+      <b>成本维度</b>：有厂商对长输入整体加倍计费（如超过某阈值后 2x 输入 / 1.5x 输出）。
+    </li>
+  </ul>
+  <p>
+    <b>「1M 上下文能替代 RAG 吗」</b>：NoLiMa 证据 + 成本 + 注意力稀释 → 结论
+    <b>「长上下文改变 RAG 的性价比边界，但不消除它」</b>。
+  </p>
+
+  <!-- ============================================ -->
+  <h2 id="context"><span class="num">7</span>上下文工程：各家官方做法对照</h2>
+
+  <table>
+    <thead><tr><th style="width:8rem">厂商</th><th>压缩</th><th>隔离</th><th>缓存</th><th>外部化</th></tr></thead>
+    <tbody>
+      <tr><td><b>Anthropic</b></td><td>compaction + context editing</td><td>sub-agent</td><td>prompt caching（显式 breakpoint）</td><td>memory tool / notes</td></tr>
+      <tr><td><b>OpenAI</b></td><td>服务端 compaction + session</td><td>handoffs</td><td>自动 + explicit 模式</td><td>file search / sessions</td></tr>
+      <tr><td><b>LangChain</b></td><td><code>SummarizationMiddleware</code></td><td>Deep Agents quarantine</td><td>自动注入</td><td>虚拟文件系统</td></tr>
+      <tr><td><b>Google ADK</b></td><td><code>EventsCompactionConfig</code></td><td><code>ParallelAgent</code></td><td><code>ContextCacheConfig</code></td><td>Artifacts</td></tr>
+    </tbody>
+  </table>
+
+  <p><b>LangChain 的四策略（write / select / compress / isolate）落地件：</b>write = scratchpad / 笔记；
+    select = 检索与规则过滤；compress = 摘要与裁剪；isolate = 子代理与沙箱。</p>
+
+  <div class="callout callout--key">
+    <span class="callout__label">Manus 的六条实战经验（面试很好用）</span>
+    <ol>
+      <li><b>KV-cache 命中率是 agent 第一指标</b>（成本差异可达 10x）</li>
+      <li><b>mask, don't remove</b> —— 工具变更时遮蔽而非删除，保 cache 前缀</li>
+      <li><b>file system as context</b> —— 大内容落盘，上下文只放引用</li>
+      <li><b>recitation</b> —— 把计划 / 目标反复写入上下文尾部，防跑偏</li>
+      <li><b>keep the wrong stuff in</b> —— 把失败留在上下文里，模型才会不重犯</li>
+      <li><b>don't get few-shotted</b> —— 上下文里重复的模式会诱导模型机械模仿</li>
+    </ol>
+    <p>
+      <span class="cite">[<a href="https://manus.im/blog/Context-Engineering-for-AI-Agents-Lessons-from-Building-Manus">manus.im</a>]</span>
+      <b>注意</b>：第 1 条与你自己底稿 <code>01-context-compaction.md</code> 的 Q4（「为什么说 KV-cache 命中率是生产环境第一个指标」）
+      完全同源 —— 这条你已有准备，只是缺「Manus 也这么说」这个外部背书。
+    </p>
+  </div>
+
+  <nav class="lesson-nav">
+    <span><a href="existing-corpus-index.html">← 存量索引</a></span>
+    <span><a href="../RESOURCES.md">完整来源清单 →</a></span>
+  </nav>
+
+</main>
+</body>
+</html>

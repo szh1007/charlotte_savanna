@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>第 1 课 · 战场地图：外面在问什么，你手里有什么</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+</head>
+<body>
+<main class="lesson" data-lesson="0001-the-battlefield-map">
+
+  <p class="lesson__kicker">Lesson 01 · 战场地图</p>
+  <h1>外面在问什么，你手里有什么</h1>
+  <p class="lede">
+    这一课不教知识 —— 它交付一张<b>对齐表</b>：市场侧的高频题簇，逐条对上你已有的弹药。
+    读完你要能说出「哪几块我稳、哪几块要补、哪几块只是缺个名字」。
+  </p>
+
+  <div class="meta">
+    <span>2026-10-10</span>
+    <span>约 25 分钟</span>
+    <span>市场侧依据：23 个来源 · 12 个主题簇</span>
+    <span><a href="../MISSION.md">Mission</a> · <a href="../reference/existing-corpus-index.html">存量索引</a></span>
+  </div>
+
+  <div class="callout callout--key">
+    <span class="callout__label">先记住这一句</span>
+    <p>
+      建区时我以为你要补的是<b>知识</b>。核实你的项目后结论翻转：概念层几乎不缺，
+      缺的是<b>市场层的对齐</b> —— 外面用什么词问、按什么顺序追、以及少数你确实没有的事实。
+      所以这门课的主体不是「讲」，是<b>把你已有的东西翻译成面试官的语言</b>。
+    </p>
+  </div>
+
+  <!-- ============================================ -->
+  <h2 id="three-layers"><span class="num">1</span>面试官怎么挖：三层追问结构</h2>
+
+  <p>
+    2026 年这类岗位的面试结构已经是<b>项目深挖为主、八股为辅</b>。多个一手面经里反复出现同一个动作 ——
+    面试官围着简历上的每个名词往下追三层<span class="cite">[S15][S10]</span>：
+  </p>
+
+  <table>
+    <thead><tr><th style="width:7rem">层</th><th>面试官在问什么</th><th>答不好的后果</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><b>第一层</b><br>为什么这么设计</td>
+        <td>取舍判断。你做这个决定时，另一个选项是什么、代价是什么。</td>
+        <td>像抄的 —— 说不出别的选项说明没参与决策。</td>
+      </tr>
+      <tr>
+        <td><b>第二层</b><br>怎么实现的</td>
+        <td>机制。不满足于「我用了 X」，要听到 X 里面发生了什么。</td>
+        <td>像调包 —— 这是纯应用岗最常见的失分点。</td>
+      </tr>
+      <tr>
+        <td><b>第三层</b><br>怎么证明有效</td>
+        <td><b>2026 的分水岭</b>。原话是「优化了多少，怎么测的，有多少人用」<span class="cite">[S15]</span>、<br>「怎么证明新版本真的比旧版本更好」<span class="cite">[S2]</span>。</td>
+        <td><b>答不出就从「做过」降级为「试过」</b> —— 这层的区分度最高。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="callout callout--warn">
+    <span class="callout__label">第三层的坑（来自平台侧的原话）</span>
+    <p>
+      「简历上写的每个数字都要能讲清楚是<b>怎么算出来的</b> —— 只报结论不报<b>口径</b>，基本会被一路追到底。」<span class="cite">[S10]</span>
+    </p>
+    <p>
+      对你的具体含义：你有大量真机数字（首字延迟 16.0s → 1.4s、裁剪省 35–38% token、恢复重放两次一分钱没多扣）。
+      这些是<b>弹药</b>，但每个都要能当场说清「怎么测的、样本几条、和什么比」。
+    </p>
+  </div>
+
+  <!-- ============================================ -->
+  <h2 id="clusters"><span class="num">2</span>十一个高频簇 × 你的弹药</h2>
+
+  <p>
+    「判定」一列按你的<b>可答性</b>分档：<b>稳</b> = 有实现 + 有数字，练口述即可 ·
+    <b>中</b> = 有实现或有权衡，但缺市场的问法 · <b>弱</b> = 真的缺东西。
+  </p>
+
+  <table>
+    <thead>
+      <tr><th style="width:9rem">簇</th><th>外面怎么问（代表原话）</th><th style="width:11rem">你的弹药</th><th style="width:3rem">判定</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><b>Agent 架构<br>与循环</b></td>
+        <td>「ReAct 不就是个 while 循环吗，有什么好讲的」「Agent 的最小可行版本应包含哪些核心组成部分」「为什么很多 Agent 最终以 Workflow 形式实现，而非完全自由规划」<span class="cite">[S16][S7]</span></td>
+        <td>核心循环 + <code>finish_reason</code> 六态 + 三种软限制<br><code>DESIGN #55/#56</code></td>
+        <td>稳</td>
+      </tr>
+      <tr>
+        <td><b>上下文工程</b></td>
+        <td>「上下文压缩时如果模型能力不够、压缩质量有问题怎么解决」「最近保留的 8 条消息本身已超窗口怎么办」「怎么区分上下文污染和工具污染」<span class="cite">[S1][S2][S10]</span></td>
+        <td><a href="../../.scratch/CharApp/interview/01-context-compaction.md"><code>01-context-compaction.md</code></a> 全篇 + ADR-0008/0011/0012</td>
+        <td>稳</td>
+      </tr>
+      <tr>
+        <td><b>记忆系统</b></td>
+        <td>「用户先说喜欢简短回答、后说喜欢详细回答，两条长期记忆冲突怎么办」「记忆如何召回、如何评估召回效果、如何避免相互污染」「有没有做记忆衰退」<span class="cite">[S2][S10]</span></td>
+        <td><code>charagent_memories</code> + <code>remember/recall/forget</code> + 软删 + 时间衰减 + 容量淘汰（C12/C13/C30）</td>
+        <td>稳<br><span style="color:var(--ink-faint);font-size:0.85em">缝隙：记忆冲突</span></td>
+      </tr>
+      <tr>
+        <td><b>工具与协议</b><br>FC / MCP / Skills</td>
+        <td>「MCP 和 Function Call 有什么区别」「说说 MCP、Function、Skills 三者的区别」「如果让你设计一套 Agent Skill 系统，你会怎么设计」「注册了上百个 Skill 该怎么处理」<span class="cite">[S1][S10]</span></td>
+        <td><code>DESIGN #50/#51/#52</code> + 归档 Q22（MCP 两侧）+ 工具重名 fail fast（ADR-0031）</td>
+        <td>稳<br><span style="color:var(--ink-faint);font-size:0.85em">缝隙：Skill 体系设计</span></td>
+      </tr>
+      <tr>
+        <td><b>多智能体<br>与编排</b></td>
+        <td>「如果子 Agent 还能调用子 Agent，怎么保证不会挤爆 Token」「多个 Agent 的 system/user/assistant/tool 消息怎么编排，怎么保证不乱序」「子 Agent 回复不对怎么办、跳不出去怎么办」<span class="cite">[S15][S11]</span></td>
+        <td><a href="../../.scratch/CharApp/interview/05-multiagent.md"><code>05-multiagent.md</code></a> + <code>DESIGN #42-44</code>（拓扑 / 状态共享 / 三条控制流风险）</td>
+        <td>中<br><span style="color:var(--ink-faint);font-size:0.85em">实现是主动不做；工程细节缺</span></td>
+      </tr>
+      <tr>
+        <td><b>RAG 全链路</b></td>
+        <td>「混合检索已经分组、排序、去重了，为什么还要再精排」「召回了 30 条但上下文只放得下 6 条，你怎么取舍」「带权限的知识库是先过滤再召回还是反过来」<span class="cite">[S1][S10]</span></td>
+        <td><code>RAG+NL2SQL.md</code> 全篇 + <code>DESIGN #45-49</code></td>
+        <td>稳</td>
+      </tr>
+      <tr>
+        <td><b>评测<br>与可观测</b></td>
+        <td>「怎么证明新版本真的比旧版本更好」「过程指标怎么评价 —— Token 消耗、工具调用是否合理、执行路径有没有跑偏」「如果有一万个 Case，总不能人工评估吧」<span class="cite">[S2]</span></td>
+        <td><a href="../../CharApp/eval/judges.py"><code>judges.py</code></a> 纯函数判据 + 两组 A/B 报告 + <a href="../../.scratch/CharApp/interview/02-observability.md"><code>02-observability.md</code></a> + <code>DESIGN #58-60</code></td>
+        <td>稳<br><span style="color:var(--ink-faint);font-size:0.85em">缝隙：口径术语</span></td>
+      </tr>
+      <tr>
+        <td><b>安全 / 权限 /<br>HITL / 一致性</b></td>
+        <td>「HITL 触发人工确认时 Agent Loop 处于什么状态？怎么暂停、暂存、恢复」「如何防止用户恶意引导模型传入其他用户 ID」「Agent 生成的操作指令如何保证幂等」<span class="cite">[S10][S4]</span></td>
+        <td><a href="../../.scratch/CharApp/interview/03-hitl-approval.md"><code>03-hitl-approval.md</code></a> + 身份不进参数表 + 三列幂等键 + 脱敏在写之前（ADR-0014/0019/0030）</td>
+        <td>稳</td>
+      </tr>
+      <tr>
+        <td><b>工程化<br>与非功能</b></td>
+        <td>「SSE 断线续传做没做过」「任务队列在 K8S 重启后会不会丢」「任务中断如何断点续跑」「Token 成本怎么治理、降了多少」<span class="cite">[S1][S10]</span></td>
+        <td>增量渲染（ADR-0029）+ 成本在收尾算好写死（ADR-0018）+ 三条软限制 + kill switch</td>
+        <td>中<br><span style="color:var(--ink-faint);font-size:0.85em">队列与多实例是「核实后不做」</span></td>
+      </tr>
+      <tr>
+        <td><b>框架与生态</b></td>
+        <td>「为什么用 LangGraph，它比较老了有没有考虑新思路」「为什么不用 Deep Agents 而选 LangGraph」「LangGraph 的状态快照机制怎么实现」「你了解哪些能统一适配 Agent Runtime 的方案」<span class="cite">[S3][S10]</span></td>
+        <td><code>Charplot.md</code> Q4/Q5 + <code>DESIGN #57</code></td>
+        <td><b>弱</b><br><span style="color:var(--ink-faint);font-size:0.85em">只有理念，缺当前事实</span></td>
+      </tr>
+      <tr>
+        <td><b>模型侧基础</b></td>
+        <td>「Function Call 是怎么训练的」「KV Cache 是什么，如何评估缓存命中效果」「温度 / top-p / top-k 各场景怎么设」「你们用的哪个模型、部署多少卡」<span class="cite">[S8/S9][S10]</span></td>
+        <td><code>DESIGN #68</code> 的真实实测（temperature 被忽略、top_p 下限、thinking 配额、缓存让长前缀近乎免费）</td>
+        <td><b>弱</b><br><span style="color:var(--ink-faint);font-size:0.85em">有现象，缺机制</span></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="callout callout--key">
+    <span class="callout__label">两侧独立调研，指向同一条结论</span>
+    <p>
+      中文侧与英文侧是<b>分开检索</b>的，但都落到「<b>评测是最大的区分度</b>」上：
+      中文侧的原话是「2026 下半年区分度最高的一簇」，英文侧把 evals 直接叫 <i>the differentiator</i>，
+      且 take-home 作业里约 20% 就是「写一个评估框架」。
+      两边也都把<b>成本</b>当必答项 —— 英文侧尤其把它当作每道设计题的<b>一等公民</b>，不是加分项。
+    </p>
+    <p>
+      对你的含义：<code>CharApp/eval</code> 是你最被低估的资产。它的价值不在「我做了评测」，
+      而在「我有一套装了<b>口径推导</b>的判据」—— 这正好是第三层追问要的东西。
+    </p>
+  </div>
+
+  <div class="callout">
+    <span class="callout__label">不在表里但会考的两类</span>
+    <ul>
+      <li>
+        <b>软性 / AI Coding 协作</b> —— 「平时用什么 AI Coding 工具」「多人用不同工具开发同一功能怎么协作」「怎么保证 AI 生成的代码质量」<span class="cite">[S5][S3]</span>。
+        这类几乎不淘汰人，但答不好会显得与 2026 的工作方式脱节。
+      </li>
+      <li>
+        <b>当场验真</b> —— 「能不能现场演示一下你负责的 Agent？」<span class="cite">[S10]</span>。
+        你的面试形式本来就是<b>共享桌面演示</b>，而你有 <code>sh/charapp_demo.sh</code> 一键装置 —— 这是资产，但要<b>练过</b>才算资产。
+      </li>
+    </ul>
+  </div>
+
+  <!-- ============================================ -->
+  <h2 id="new-words"><span class="num">3</span>2026 的新词带电区</h2>
+
+  <p>
+    这一节是首课的<b>最高优先级发现</b>。2026 年冒出一批新说法，而它们描述的东西你几乎全都实现过 ——
+    <b>你缺的只是那些名字</b>。
+  </p>
+
+  <table>
+    <thead><tr><th style="width:11rem">行业新词</th><th>它指的是什么</th><th style="width:14rem">你的对应物</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><b>Harness</b><br><span style="color:var(--ink-faint);font-size:0.85em">Agent = Model + Harness</span></td>
+        <td>
+          模型之外的<b>全部工程装置</b>：循环、工具、状态与上下文管理、权限、流式、重试。
+          提法源自 Mitchell Hashimoto 2026-02-05 的《My AI Adoption Journey》，OpenAI 随后以官方博客背书
+          <span class="cite">[一手：<a href="https://mitchellh.com/writing/my-ai-adoption-journey">mitchellh.com</a> / <a href="https://openai.com/index/harness-engineering/">openai.com</a>]</span>。
+        </td>
+        <td>
+          <b>CharAgent 整个就是 harness</b>。被问「解释下 Harness 相关概念」时，你可以拿自己的项目当教科书 ——
+          这是 2026 的<b>送分题</b>，前提是你会用这个词。
+        </td>
+      </tr>
+      <tr>
+        <td><b>Loop Engineering</b></td>
+        <td>
+          把「循环」本身当一个工程对象：循环里在循环什么、怎么防失控、怎么排查。
+          代表追问是「ReAct 不就是个 while 循环吗，有什么好讲的」<span class="cite">[S16]</span>。
+        </td>
+        <td>
+          九类事件状态机 + 四条硬不变量 + 三种软限制 + kill switch —— 你的循环是这批语料里<b>最规范的一档</b>。
+        </td>
+      </tr>
+      <tr>
+        <td><b>Context Anxiety<br>/ Context Reset</b></td>
+        <td>
+          两个配套概念：模型在上下文<b>将满时过早收尾、敷衍了事</b>（<i>Context Anxiety</i>）；
+          压缩不够时干脆重置上下文、把状态外化到外部存储（<i>Context Reset</i>）。
+          值得记的是 Anthropic 自己留下的一条观察：这个现象在 Sonnet 4.5 上明显，到 Opus 4.5 消失了 ——
+          reset 反而成了负担。<b>工程手段会随模型换代失效。</b>
+          <span class="cite">[一手：<a href="https://www.anthropic.com/engineering/managed-agents">Anthropic《Scaling Managed Agents》</a>]</span>
+        </td>
+        <td>
+          你的「<b>摘要失败不切刀，只有上游报超窗口才允许硬截断</b>」（ADR-0012）就是 Context Reset 的<b>判据化版本</b> ——
+          不只是「什么时候重置」，而是「什么条件下<i>才允许</i>重置」。
+        </td>
+      </tr>
+      <tr>
+        <td><b>渐进式披露</b></td>
+        <td>Skill / 指令不一次性全塞进上下文，按需分层加载（<code>AGENTS.md</code> 控制在约 100 行是常被引用的经验值）。</td>
+        <td><code>DESIGN #51</code> 的「三级渐进披露 + 三级路由」——你已经写过了，缺的是把它叫出这个名字。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="callout callout--warn">
+    <span class="callout__label">为什么这件事排第一</span>
+    <p>
+      面试里最亏的不是「不会」，是<b>会但没被认出来</b>。你说「我手写了 agent runtime」，面试官听到的是「自己写了个 while 循环」；
+      你说「harness 层我全部自研，模型接口是最薄的一层」，面试官听到的是「这人在 2026 的坐标系里」。
+      <b>同一件事，两种评价。</b>
+    </p>
+    <p>
+      而且这不是我们编的叙事 —— <b>LangChain 官方文档自己的分层口径就是</b>：
+      Deep Agents = <i>batteries-included harness</i>，LangChain = <i>customizable harness</i>，
+      LangGraph = <i>low-level orchestration</i>，LangSmith = trace/debug/evaluate/monitor。
+      <b>厂商是用「harness」给自己的产品分类的。</b>
+      <span class="cite">[<a href="https://docs.langchain.com/oss/python/langchain/overview">docs.langchain.com</a>]</span>
+    </p>
+  </div>
+
+  <!-- ============================================ -->
+  <h2 id="diagnostic"><span class="num">4</span>自测：把「以为知道」和「答得上」分开</h2>
+
+  <p>
+    下面 3 道选择题 + 5 张口述卡。选择题立即判分；口述卡要<b>先说出口</b>再展开对照 ——
+    不出声地「想了一遍」不算数，因为面试考的是检索，不是识别。
+  </p>
+
+  <div class="progress" data-progress></div>
+
+  <div class="quiz">
+
+    <!-- MCQ 1 -->
+    <div class="q" data-type="mcq" data-qid="q1">
+      <p class="q__prompt"><span class="q__tag">术语</span>「Agent = Model + Harness」里的 Harness 指什么？</p>
+      <ul class="options">
+        <li class="opt" data-correct="false">承载模型推理的服务器、显卡与调度这些底层硬件资源</li>
+        <li class="opt" data-correct="true">模型以外的一整套工程装置：循环、工具、状态与上下文管理</li>
+        <li class="opt" data-correct="false">统一封装多家模型接口的网关层，负责路由与密钥管理</li>
+        <li class="opt" data-correct="false">评测模型能力用的标准化测试装置与一套固定的打分口径</li>
+      </ul>
+      <div class="feedback">
+        <strong>对：模型以外的一切工程装置。</strong>
+        这个等式把「模型能力」和「工程能力」明确切开 —— 而面试官问它，是在探你知不知道<b>自己做的价值在哪一侧</b>。
+        你几乎 100% 的产出都在 Harness 这一侧：循环、事件总线、快照、HITL、脱敏、工具协议。
+        <br><span style="font-size:0.85em">出处：Mitchell Hashimoto《My AI Adoption Journey》（2026-02-05）；OpenAI《Harness engineering》。</span>
+      </div>
+    </div>
+
+    <!-- MCQ 2 -->
+    <div class="q" data-type="mcq" data-qid="q2">
+      <p class="q__prompt"><span class="q__tag">校准</span>「渐进式披露」在 Skill 体系里解决的核心问题是什么？</p>
+      <ul class="options">
+        <li class="opt" data-correct="false">让用户逐步看到 Agent 的推理过程，提升产品的可解释性</li>
+        <li class="opt" data-correct="true">避免把全部能力描述一次性塞进上下文，按需分层加载</li>
+        <li class="opt" data-correct="false">按权限逐级放开工具，防止低权限用户触发高危的操作</li>
+        <li class="opt" data-correct="false">让模型先输出摘要再输出细节，减少答案里的冗余内容</li>
+      </ul>
+      <div class="feedback">
+        <strong>对：上下文预算问题，不是可解释性、也不是权限。</strong>
+        这道题是<b>校准项</b> —— 预期你会答对。<code>DESIGN #51</code> 已经写过「三级渐进披露 + 三级路由」，
+        如果答错或犹豫，说明这条虽然写过但没进到随口能答的层；如果秒答，说明这块可以跳过。
+      </div>
+    </div>
+
+    <!-- MCQ 3 -->
+    <div class="q" data-type="mcq" data-qid="q3">
+      <p class="q__prompt"><span class="q__tag">判断力</span>面试官问「你怎么证明新版本比旧版本更好」，哪种答法最容易被一路追到底？</p>
+      <ul class="options">
+        <li class="opt" data-correct="false">给出对比结论，并说明两组分别在什么条件下跑的、各几条</li>
+        <li class="opt" data-correct="false">先说指标定义，再说这次改动预期影响哪一项指标</li>
+        <li class="opt" data-correct="true">给出提升的百分比，并强调这是真实环境跑出来的结果</li>
+        <li class="opt" data-correct="false">承认没有量化，转而说明这次改动解决了哪一个具体故障</li>
+      </ul>
+      <div class="feedback">
+        <strong>最危险的是「给数字但不给口径」。</strong>
+        平台侧的原话是：「简历上写的每个数字都要能讲清楚是怎么算出来的 —— 只报结论不报口径，基本会被一路追到底」<span class="cite">[S10]</span>。
+        有口径的结论（选了第 1 项）和主动承认边界（第 4 项）都是安全答法；
+        <b>唯一会被追打的是第 3 项</b>：数字越大、越强调「真实环境」，面试官越想问「样本多少、跑了几次、和谁比」。
+      </div>
+    </div>
+
+    <!-- Recall 1 -->
+    <div class="recall" data-qid="r1">
+      <p class="recall__prompt">口述 1 · 60 秒：用面试官的语言说清「你的 CharAgent 是什么」</p>
+      <p class="recall__hint">不要用「手写的 agent 框架」开场。想清楚：在 2026 的坐标系里，这东西叫什么？</p>
+      <button class="btn btn--reveal" type="button">先说出口，再展开参考</button>
+      <div class="recall__answer">
+        <p><b>参考结构（三段）：</b></p>
+        <ol>
+          <li>
+            <b>定位</b>：「我做的是 <b>harness 层</b> —— 从一个 agent runtime 的完整工程装置入手，
+            模型接口是其中最薄的一层。这样划分的好处是：模型换代时我的工作量接近零。」
+          </li>
+          <li>
+            <b>机制</b>：挑三个能证明「不是调包」的：「agent loop 是九类事件的状态机，有四条硬不变量，违反就抛错；
+            <code>finish_reason</code> 六态分流；三种软限制加 kill switch。」
+          </li>
+          <li>
+            <b>数字</b>：「1739 个用例、31 条 ADR 记每项取舍的代价与重评条件；
+            真机上增量渲染把长答复首字 16.0s 压到 1.4s。」
+          </li>
+        </ol>
+        <p>
+          <b>为什么这样开场</b>：一句话把自己放进 2026 的坐标系，后面所有细节都会被自动归位。
+          反过来，「我手写了一个框架」会让面试官先怀疑轮子质量，你得花更多力气爬回来。
+        </p>
+      </div>
+      <div class="recall__grade">
+        <button class="grade-btn" data-grade="hit" type="button">答稳了</button>
+        <button class="grade-btn" data-grade="miss" type="button">答漏了</button>
+        <button class="grade-btn" data-grade="lost" type="button">没答上</button>
+      </div>
+    </div>
+
+    <!-- Recall 2 -->
+    <div class="recall" data-qid="r2">
+      <p class="recall__prompt">口述 2 · 「你这个系统有多少人用？日活多少？Token 月消耗多少？」</p>
+      <p class="recall__hint">这是业务口径题，个人项目必然没有真实用户量。想清楚：怎么答才不掉分？</p>
+      <button class="btn btn--reveal" type="button">先说出口，再展开参考</button>
+      <div class="recall__answer">
+        <p><b>参考结构：</b>承认性质 → 给等价的量化替代 → 给成本口径。</p>
+        <ol>
+          <li><b>承认性质</b>：「这是我自建的求职作品，没有对外的用户量 —— 我不编这个数。」</li>
+          <li>
+            <b>给量化替代</b>：「但我有等价的评测规模：离线评估 20 题 6 场景、两组 A/B，每项跑 3 次取分布；
+            要验证行为就重跑同一批题。」
+          </li>
+          <li>
+            <b>给成本口径</b>：「成本我按真机账算 —— 金额在收尾那一刻按峰谷价算好写死，
+            逐模型归因；所以我随时能说出某一次 run 花了多少、花在哪个模型上。」
+          </li>
+        </ol>
+        <p>
+          <b>为什么安全</b>：面试官问业务数字的真正意图是「你有没有度量意识」。
+          「没有用户量但有一套能报出数字的评测装置」比「大概几百人吧」强得多 ——
+          后者是编的，而面试官一旦发现一个数字是编的，会怀疑所有数字。
+        </p>
+      </div>
+      <div class="recall__grade">
+        <button class="grade-btn" data-grade="hit" type="button">答稳了</button>
+        <button class="grade-btn" data-grade="miss" type="button">答漏了</button>
+        <button class="grade-btn" data-grade="lost" type="button">没答上</button>
+      </div>
+    </div>
+
+    <!-- Recall 3 -->
+    <div class="recall" data-qid="r3">
+      <p class="recall__prompt">口述 3 · 60 秒：「为什么手搓，不直接用 LangChain / LangGraph？」</p>
+      <p class="recall__hint">这题在面经里成对出现：「为什么手搓 agent，而不是用框架」「有没有调研过其他框架」</p>
+      <button class="btn btn--reveal" type="button">先说出口，再展开参考</button>
+      <div class="recall__answer">
+        <p><b>陷阱</b>：答成「框架不好」会立刻被追问「那你了解它吗」。正确姿势是<b>把「为什么」换成「换到了什么」</b>。</p>
+        <p><b>参考结构：</b></p>
+        <ol>
+          <li>
+            <b>先承认框架的价值</b>：「框架替你做的是状态与编排的样板 —— LangGraph 用图模型表达控制流、
+            内置 checkpointer 与 interrupt，省下的主要是编排代码。」
+          </li>
+          <li>
+            <b>再说我换到了什么</b>：「我选择手写，换的是<b>控制力</b>：我需要循环语义、事件不变量、
+            挂起恢复的边界完全可控，而且能对每一处取舍给出代价与重评条件（31 条 ADR）。」
+          </li>
+          <li>
+            <b>最后给能力证据</b>：「这条纪律由用例守着 —— 加业务能力不许改 <code>agent/loop.py</code>，
+            工具超时、熔断、记忆、MCP 四批纯加法都没碰过它。」
+          </li>
+        </ol>
+        <p>
+          <b>加分项</b>：主动说「这条经验反过来也能用 —— 在 charplot 里我就用 LangGraph + DeepAgents
+          落了一条产品线，知道框架在什么规模下是正收益」。<b>只讲一边会被怀疑二极管。</b>
+        </p>
+      </div>
+      <div class="recall__grade">
+        <button class="grade-btn" data-grade="hit" type="button">答稳了</button>
+        <button class="grade-btn" data-grade="miss" type="button">答漏了</button>
+        <button class="grade-btn" data-grade="lost" type="button">没答上</button>
+      </div>
+    </div>
+
+    <!-- Recall 4 -->
+    <div class="recall" data-qid="r4">
+      <p class="recall__prompt">口述 4 · 「Agent 跑久了上下文腐化怎么办？」</p>
+      <p class="recall__hint">你有一整份底稿可以答这题 —— 这次的要求是：<b>说的时候用上 2026 的词</b>。</p>
+      <button class="btn btn--reveal" type="button">先说出口，再展开参考</button>
+      <div class="recall__answer">
+        <p><b>参考结构（在底稿之上加一层行业坐标）：</b></p>
+        <ol>
+          <li><b>先给行业路径</b>：「业界的路径一般是三级：先压缩 → 压缩不够再 <b>Context Reset</b>，
+            把状态外化到外部存储；Anthropic 在长运行 harness 那篇里讲的就是这条。」</li>
+          <li>
+            <b>再说我的做法与它的差别</b>：「我做的是账本 / 视图分离：历史 append-only 永不改写，
+            每次调用前把账本投影成 system + 滚动摘要 + 最近 N 个提问的视图。
+            关键差别在<b>触发条件</b> —— 我的设计是摘要失败不切刀，只有上游报超窗口才允许硬裁，
+            也就是把 Context Reset 变成一条有判据的规则，而不是一个兜底动作。」
+          </li>
+          <li>
+            <b>给真机细节</b>：「真机上抓出过两个静态读码看不出的缺陷：投影与切刀合并会让视图隔轮失效、
+            摘要白烧一半；估算器坐标不一致会高估一倍、低估 20 倍。」
+          </li>
+        </ol>
+        <p><b>为什么加第一段</b>：不加的话，面试官听到的是一套自创方案；加了之后，你的方案有了坐标 —— 你是三级路径里第二级的强化版。</p>
+      </div>
+      <div class="recall__grade">
+        <button class="grade-btn" data-grade="hit" type="button">答稳了</button>
+        <button class="grade-btn" data-grade="miss" type="button">答漏了</button>
+        <button class="grade-btn" data-grade="lost" type="button">没答上</button>
+      </div>
+    </div>
+
+    <!-- Recall 5 -->
+    <div class="recall" data-qid="r5">
+      <p class="recall__prompt">口述 5 · 面试官说「共享桌面演示一下吧」—— 你的 2 分钟路径是什么？</p>
+      <p class="recall__hint">你的面试形式本来就是演示制，而且有 <code>sh/charapp_demo.sh</code> 一键装置。想过没有：<b>演示什么最值钱</b>？</p>
+      <button class="btn btn--reveal" type="button">先说出口，再展开参考</button>
+      <div class="recall__answer">
+        <p>
+          <b>原则：演示<b>机制</b>，不演示<b>功能</b>。</b>「能买东西」谁都能演示，面试官要看的是只有真做过的人才演得出来的东西。
+        </p>
+        <p><b>两个候选（选一个，取决于时间）：</b></p>
+        <ul>
+          <li>
+            <b>HITL 挂起-恢复</b>：触发一次需要确认的写操作 → 看它挂起并落库 → 拒绝一次 / 批准一次 →
+            看它只补做欠着的那一步、已完成轮次一步不重跑。数字：<b>恢复请求重放两次，一分钱没多扣、工具一次没多跑</b>。
+          </li>
+          <li>
+            <b>增量渲染</b>：问一道长答复的问题，看首字时间。数字：<b>16.0s → 1.4s</b>。
+          </li>
+        </ul>
+        <p>
+          <b>为什么这两个</b>：前者是「你实现了一个别人只能讲原理的机制」，后者是「你有用户可感知的量化收益」——
+          正好落在三层追问的第一层和第三层上。
+        </p>
+        <p>
+          <b>要提前练的</b>：冷启动 14–30 s 是真的；演示前先跑一遍热身，别让面试官等你 30 秒。
+          演示剧本和每段兜底动作在 <code>sh/charapp_demo.md</code>。
+        </p>
+      </div>
+      <div class="recall__grade">
+        <button class="grade-btn" data-grade="hit" type="button">答稳了</button>
+        <button class="grade-btn" data-grade="miss" type="button">答漏了</button>
+        <button class="grade-btn" data-grade="lost" type="button">没答上</button>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ============================================ -->
+  <h2 id="followup"><span class="num">5</span>被追问三层</h2>
+
+  <div class="followup">
+    <h3>现在换我当面试官 —— 你自己先答，答完再找我追问</h3>
+    <ol>
+      <li>
+        <b>针对你的自测结果</b>：哪几道口述卡卡住了？卡在「想不起内容」还是「组织不成话」？
+        这两者的修法完全不同 —— 前者要回去翻材料，后者只要练结构。
+      </li>
+      <li>
+        <b>针对「稳」的那几档</b>：地图上判定为「稳」的簇（循环 / 上下文 / 记忆 / 工具协议 / RAG / 评测 / 安全），
+        <b>有没有哪个其实你答不出来</b>？我判定「稳」的依据是文件里写了，不是你嘴里说得出 —— 这个差集最重要。
+      </li>
+      <li>
+        <b>针对「弱」的两档</b>：框架生态与模型侧基础，你想先补哪一块？
+        框架那块偏事实（要读当前文档），模型侧偏机制（要理解原理）—— 时间不够时先补哪个，取决于你投的岗位更偏平台还是更偏应用。
+      </li>
+    </ol>
+    <p class="followup__note">
+      直接回复你的答案就行 —— 我会接着追问第二、三层，并按你的实际水平调整下一课。
+    </p>
+  </div>
+
+  <!-- ============================================ -->
+  <h2 id="primary-source"><span class="num">6</span>本课的一手来源</h2>
+
+  <div class="source-primary">
+    <span class="callout__label">首推精读</span>
+    <p>
+      <a href="https://mitchellh.com/writing/my-ai-adoption-journey">Mitchell Hashimoto, <i>My AI Adoption Journey</i>（2026-02-05）</a>
+    </p>
+    <p>
+      读它不是为了学技术，是为了<b>拿到坐标系</b>：作者是 Terraform 的作者，他把「围绕模型的工程」正式命名为
+      <i>engineer the harness</i>，这个提法此后被 OpenAI 在官方博客接住。读完全文你会清楚
+      「Harness 这一侧包含什么」，也就能把自己的项目逐项摆进去。约 20 分钟。
+    </p>
+  </div>
+
+  <div class="ask-teacher">
+    <strong>我是你的老师，随时打断我。</strong>
+    任何一处不清楚都可以直接问 —— 比如「Harness 和 Runtime 这两个词有什么区别」
+    「我的 forget 机制够不够答记忆冲突题」「框架那块到底要读到什么颗粒度」。
+    问得越具体，我给的越准。别攒着问题往下走。
+  </div>
+
+  <nav class="lesson-nav">
+    <span>← 这是第一课</span>
+    <span><a href="../reference/existing-corpus-index.html">存量索引（复习用）→</a></span>
+  </nav>
+
+</main>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>
